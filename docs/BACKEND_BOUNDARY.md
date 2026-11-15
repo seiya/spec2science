@@ -47,7 +47,7 @@ Out of scope, each for a stated reason:
 
 ## Definitions
 - **target-stack axis** (**axis**): one dimension of the technology choice a run makes. The
-  declared axes are `language`, `build_system`, `compiler`, `linter`, `parallel`, `hardware`, and `scheduler`. Each axis
+  declared axes are `language`, `build_system`, `compiler`, `linter`, `parallel`, `hardware`, `scheduler`, and `output_format`. Each axis
   and the artifact key its value is read from is declared in `tools/backends/registry.py`, which
   is the source of truth; this sentence is the only place the list is written out, and
   `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` and fails on any
@@ -86,8 +86,8 @@ Out of scope, each for a stated reason:
   clause of `registry.missing_capability_reason` (the refusal clause of `provides`, below), on the
   same terms.
   An **absent** value is a separate case: only an optional field can be absent (a target
-  profile's `toolchain.compiler` / `toolchain.linker` pin), and it takes the default
-  `docs/IMPL_PLAN_SPEC.md` §3 documents, which this rule does not change.
+  profile's `toolchain.compiler` / `toolchain.linker` pin, and its `output.format`), and it
+  takes the default `docs/IMPL_PLAN_SPEC.md` §3 documents, which this rule does not change.
 - **There are four questions about an axis value, and a caller must ask the one it means.** They
   are separate functions in `tools/backends/registry.py` because they were once fewer, and each
   merge was a fail-open.

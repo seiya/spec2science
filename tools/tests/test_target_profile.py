@@ -56,7 +56,8 @@ class _ScratchRepo:
             obj = doc
             *parents, leaf = dotted.split("__")
             for part in parents:
-                obj = obj[part]
+                # an optional object the checked-in profile does not carry (`output`) is created
+                obj = obj.setdefault(part, {})
             if value is _DELETE:
                 del obj[leaf]
             else:
@@ -501,6 +502,73 @@ class LoaderTests(unittest.TestCase):
                 tp.load_target_profile(repo.root, "absent")
             with self.assertRaises(tp.TargetProfileError):
                 tp.load_target_profile(repo.root, "../escape")
+
+
+class OutputFormatTests(unittest.TestCase):
+    """`output.format`, the `output_format` axis value (issue #644, Part 3 P3)."""
+
+    def test_a_profile_that_states_none_reads_the_default_and_its_document_is_untouched(
+            self) -> None:
+        # Kills: filling the default into the hashed document (every existing target's sha256,
+        # and with it every Generate / Build / Validate key, would move).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1")
+            profile = tp.load_target_profile(repo.root, "t1")
+        self.assertEqual(profile.output_format, tp.DEFAULT_OUTPUT_FORMAT)
+        self.assertEqual(tp.DEFAULT_OUTPUT_FORMAT, "json")
+        self.assertNotIn("output", profile.doc)
+
+    def test_a_stated_format_is_read_and_is_in_the_identity(self) -> None:
+        # Kills: the property answering the default whatever the profile says.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1")
+            bare = tp.load_target_profile(repo.root, "t1")
+            repo.write("t1", output__format="json")
+            stated = tp.load_target_profile(repo.root, "t1")
+            repo.write("t1", output__format="other_format")
+            other = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual(stated.output_format, "json")
+            self.assertEqual(other.output_format, "other_format")
+            self.assertNotEqual(stated.sha256, bare.sha256)
+            self.assertEqual(tp.target_profile_violations(repo.root, stated), [])
+
+    def test_a_format_that_is_no_token_is_refused_by_the_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", output__format="Net CDF")
+            with self.assertRaises(tp.TargetProfileError) as ctx:
+                tp.load_target_profile(repo.root, "t1")
+        self.assertIn("output.format: 'Net CDF' is not a lowercase token", ctx.exception.detail)
+
+    def test_the_launch_gate_refuses_a_format_no_backend_declares(self) -> None:
+        # Kills: deleting the launch gate's clause (the run would fail at its first capture
+        # read, after Generate and Build were paid for).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", output__format="other_format")
+            violations = tp.target_profile_violations(
+                repo.root, tp.load_target_profile(repo.root, "t1"))
+        from tools.backends import registry
+        self.assertEqual(
+            [v for v in violations if v.startswith("output.format: ")],
+            ["output.format: " + registry.unavailable_reason("output_format", "other_format")])
+
+    def test_the_launch_gate_refuses_a_declared_format_with_no_store(self) -> None:
+        # Kills: asking only whether the value is declared — a record without `capture_store`
+        # has no reader.
+        from tools.backends import registry
+        bare = registry.Backend("output_format", "bare", "tools.backends.output_format.json")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                registry._BACKENDS, {("output_format", "bare"): bare}):
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", output__format="bare")
+            violations = tp.target_profile_violations(
+                repo.root, tp.load_target_profile(repo.root, "t1"))
+            expected = registry.missing_capability_reason(
+                "output_format", "bare", "capture_store")
+        self.assertIn("output.format: " + expected, violations)
 
 
 class SchemaAgreementTests(unittest.TestCase):
