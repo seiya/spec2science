@@ -21537,6 +21537,18 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
                 self.assertIn(relative, v[0])
                 self.assertIn("the driver's capture carries no 'step'", v[0])
 
+    def test_a_state_record_that_does_not_decode_is_passed_over(self) -> None:
+        # The verdict's reader refuses it (a structural record), so this gate names it in no
+        # violation — reporting it here would move the run from the verdict's route to the
+        # post_execute one (issue #644 P3 keeps main's). Kills: a violation per undecodable
+        # record, and reading "no record decoded" as "no record".
+        for relative in ("snapshot000.json", "initial/snapshot000.json",
+                         "history/snapshot000__1.json"):
+            with self.subTest(relative=relative):
+                self.assertEqual(self._violations(
+                    lambda snapshots, relative=relative:
+                    (snapshots / relative).write_text("{broken", encoding="utf-8")), [])
+
     def test_a_harness_s_own_snapshot_without_step_is_admitted(self) -> None:
         # The polarity's other half: only the driver writes `initial/`, which is how the gate
         # knows whose capture this is. No `step_series`, no `initial/`, and no `step`.

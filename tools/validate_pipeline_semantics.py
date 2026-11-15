@@ -1760,11 +1760,13 @@ def _validate_raw_evidence(
             # here, as before, and refused by the verdict's reader. A file the store places in
             # no case is read by no reader and is not judged here.
             store = capture_store.store(_execution_output_format(repo_root, execution))
-            state_paths, state_records = _state_records(store, snapshots_dir)
+            state_keys = _state_record_files(store, snapshots_dir)
+            state_paths = [path for path, *_key in state_keys]
             _validate_series_files(repo_root, execution, snapshots_dir, store, violations)
             driver_wrote_snapshots = _ir_drives_the_runner(store, snapshots_dir)
             if driver_wrote_snapshots:
-                _validate_driver_step_key(state_records, violations)
+                _validate_driver_step_key(
+                    _decoded_state_records(store, snapshots_dir, state_keys), violations)
             for snapshot in files:
                 text = snapshot.read_text(encoding="utf-8", errors="ignore")
                 compact = text.replace(" ", "").replace("\n", "")
@@ -1852,8 +1854,9 @@ def _validate_raw_evidence(
                         # Every declared variable in every snapshot of every node (issue
                         # #582, D7): a host-rendered runner emits each one for each case, and a
                         # harness self-test emits a shape-valid placeholder on its guard case.
-                        # (an undecodable record is already a violation, `_state_records`)
-                        for snapshot, data in state_records:
+                        # (an undecodable record is passed over, `_decoded_state_records`)
+                        for snapshot, data in _decoded_state_records(
+                                store, snapshots_dir, state_keys):
                             keys = set(data.keys())
                             missing_state = sorted(name for name in state_variables if name not in keys)
                             if missing_state:
@@ -1986,21 +1989,25 @@ def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, 
     return keys
 
 
-def _state_records(store: Any, snapshots_dir: Path
-                   ) -> tuple[list[Path], list[tuple[Path, dict[str, Any]]]]:
-    """(the file of every state record the store finds, `(file, members)` of those it
-    decodes), each in file order. A record that does not decode is passed over by the shape
+def _state_record_files(store: Any, snapshots_dir: Path
+                        ) -> list[tuple[Path, str, str, int | None]]:
+    """`(file, group, case id, step)` of every state record the store finds, in file order."""
+    return sorted((Path(store.record_path(snapshots_dir, group, case_id, step)),
+                   group, case_id, step)
+                  for group, case_id, step in _state_record_keys(store, snapshots_dir))
+
+
+def _decoded_state_records(store: Any, snapshots_dir: Path,
+                           keys: list[tuple[Path, str, str, int | None]]
+                           ) -> Iterator[tuple[Path, dict[str, Any]]]:
+    """`(file, members)` of each of those records the store decodes, one at a time — a run's
+    samples are not held together. A record that does not decode is passed over by the shape
     checks; the verdict's reader refuses it."""
-    paths: list[Path] = []
-    records: list[tuple[Path, dict[str, Any]]] = []
-    for group, case_id, step in _state_record_keys(store, snapshots_dir):
-        path = Path(store.record_path(snapshots_dir, group, case_id, step))
-        paths.append(path)
+    for path, group, case_id, step in keys:
         try:
-            records.append((path, dict(store.read_record(snapshots_dir, group, case_id, step))))
+            yield path, dict(store.read_record(snapshots_dir, group, case_id, step))
         except capture_store.CaptureError:
             continue
-    return sorted(paths), sorted(records, key=lambda item: item[0])
 
 
 def _ir_drives_the_runner(store: Any, snapshots_dir: Path) -> bool:
@@ -2009,7 +2016,7 @@ def _ir_drives_the_runner(store: Any, snapshots_dir: Path) -> bool:
     return bool(store.case_ids(snapshots_dir, capture_store.INITIAL))
 
 
-def _validate_driver_step_key(captures: list[tuple[Path, dict[str, Any]]],
+def _validate_driver_step_key(captures: Iterable[tuple[Path, dict[str, Any]]],
                               violations: list[str]) -> None:
     """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
     for path, data in captures:
@@ -2508,8 +2515,7 @@ def _validate_harness_reported_block(repo_root: Path, execution: NodeExecution, 
 
 def _final_records(target: Any, snap_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
     """`(file, members)` of every final capture the target's capture store finds and decodes,
-    by file. An undecodable one is left out: the snapshot gate reports it
-    (`_state_records`)."""
+    by file. An undecodable one is left out: the verdict's reader refuses it."""
     store = capture_store.store(target.output_format)
     out: list[tuple[Path, dict[str, Any]]] = []
     for case_id in store.case_ids(snap_dir):
