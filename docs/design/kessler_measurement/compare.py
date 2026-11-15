@@ -271,8 +271,9 @@ def cmd_screen(args: argparse.Namespace) -> int:
     violations = gate_violations(REPO / spec_dir / "tests.md", suite, predicates)
     for line in violations:
         print(f"GATE {line}")
-    comparand = pe.ComparandEvidence("low_optimization", "-", "-", other.resolve(), "-")
-    records = pe.evaluate_primary_predicates(ir, run, comparands=[comparand])
+    comparand = pe.ComparandEvidence("low_optimization", "-", "-", other.resolve(), "-", "json")
+    records = pe.evaluate_primary_predicates(ir, run, output_format="json",
+                                             comparands=[comparand])
     failed = 0
     covered_cases: set[str] = set()
     tests: dict[str, list[bool]] = {}
