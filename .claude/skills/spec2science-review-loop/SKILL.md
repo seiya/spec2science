@@ -564,6 +564,14 @@ when a rule does not obviously apply:
    prompt-contract pins (`tools/tests/test_leaf_prompt_contract_drift.py`) do the same to leaf-read
    text: any member moves the whole digest, and a member a reader reads moves that phase's reader
    digest as well.
+   **A re-pin SCRIPT makes both drift files green by construction, so green is not the check.**
+   A helper that writes the recomputed digest for whatever moved will also overwrite the pin of
+   a version the branch did not bump, and a shipped digest replaced in place is a missed bump
+   or a lost revert entry with nothing red. After the last re-pin, read
+   `git diff origin/main...HEAD -U0` on the two pin files: every line must be an ADDITION,
+   except a shipped version re-pinned in place on purpose, whose old digest reappears as a
+   `<version>@<main sha>` entry (`references/measurement-records.md` §"A re-pin script and
+   the audit it needs").
    **The drift pins are not the only reader of prose, so "the files this edit touches" is not
    the suite to run.** The backend-boundary token ratchet counts technology tokens in
    neutral-core docstrings and comments: issue #316 PR-1 wrote a language's name into a gate's
