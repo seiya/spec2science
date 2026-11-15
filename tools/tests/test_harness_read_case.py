@@ -1,6 +1,6 @@
 """The reading operations of the harness specs (issue #589, PR-2), held to the host's writer.
 
-`data/harness_read_case/` is a hand-written realization of `harness_fortran_cpu@0.10.0` §2 / §3.2,
+`data/harness_read_case/` is a hand-written realization of `harness_fortran_cpu@0.11.0` §2 / §3.2,
 not a certified source. These rows pin that the contract the three specs state is implementable
 against the bytes `primary_evidence.write_case_inputs` really writes (`1e-30`, an integer token, a
 bool as `1`, `[]`), and the fail-closed half of that contract. They do not certify a harness: a
@@ -91,8 +91,8 @@ class SpecSurfaceTests(unittest.TestCase):
                                      ("out", r, True))
 
     def test_every_tests_document_has_the_tests_and_counts_them(self) -> None:
-        words = {"harness_fortran_cpu": ("ten", 10), "harness_cpp_gpu": ("eleven", 11),
-                 "harness_fortran_cpu_mpi": ("sixteen", 16)}
+        words = {"harness_fortran_cpu": ("nine", 9), "harness_cpp_gpu": ("ten", 10),
+                 "harness_fortran_cpu_mpi": ("fifteen", 15)}
         for spec_id, (word, count) in words.items():
             with self.subTest(spec_id=spec_id):
                 text = _tests_md(spec_id)

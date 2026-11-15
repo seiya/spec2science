@@ -231,8 +231,19 @@ def list_record_ir(record_first: bool) -> dict[str, Any]:
                {"step": [record, plain] if record_first else [plain, record]}, cases)
 
 
+#: The store's group directories under the capture directory, which `Validate.execute` creates
+#: before a run (`capture_store.run_dirs`): the harness opens each file relatively.
+CAPTURE_SUBDIRS = capture_store.store("json").run_dirs()
+
+
+def read_series(snap_dir: Path, case_id: str) -> dict[str, Any]:
+    """The series of ``case_id`` under ``snap_dir``, its chunks joined by the store."""
+    return capture_store.store("json").read_record(snap_dir, capture_store.SERIES, case_id)
+
+
 class Run:
-    """One driver built and run in a temporary directory; `snapshot(name)` reads a capture."""
+    """One driver built and run in a temporary directory; `snapshot(name)` reads a capture,
+    `series(case_id)` a case's series."""
 
     def __init__(self, directory: Path, proc: subprocess.CompletedProcess) -> None:
         self.dir = directory
@@ -243,6 +254,9 @@ class Run:
     def snapshot(self, name: str) -> dict[str, Any]:
         return json.loads((self.snapshots / f"{name}.json").read_text())
 
+    def series(self, case_id: str) -> dict[str, Any]:
+        return read_series(self.snapshots, case_id)
+
     def perf(self) -> dict[str, Any]:
         return json.loads((self.dir / "run" / "perf.json").read_text())
 
@@ -251,7 +265,7 @@ def _prepare(tmp: Path, ir: dict[str, Any], case_ids: list[str] | None) -> list[
     (tmp / "ir").mkdir()
     (tmp / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, tmp / "ir")
-    for sub in ("initial", "history", "series"):
+    for sub in CAPTURE_SUBDIRS:
         (tmp / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True)
     # the first pass: every case that is no continuation (issue #632), in declaration order
     return case_ids if case_ids is not None else [
@@ -303,7 +317,7 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
     if not files:
         return [], problems
     rdir = shape_dir / pe.RESTART_DIRNAME
-    for sub in ("initial", "history", "series"):
+    for sub in CAPTURE_SUBDIRS:
         (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
     (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     merged = []
@@ -497,6 +511,16 @@ class _DriverBehaviour:
         self.assertEqual(final["t"], initial["t"])
         self.assertEqual(pe._load_series(run.captures, "m3")["step"].tolist(), [])
 
+    def test_every_case_has_a_series_and_one_with_no_committed_row_an_empty_one(self) -> None:
+        # Issue #644 P4a: the series is opened and closed on every case, a one-call node's with
+        # no name but the commit's, and a loop case refused at its first step commits no row.
+        self.assertEqual(self._run(loop_ir(3)).series("m3"),
+                         {name: [] for name in ("step", "t", "u_min", "u_max", "w_min", "w_max")})
+        with tempfile.TemporaryDirectory() as tmp:
+            run = type(self).build_and_run(Path(tmp), call_ir(0))
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self.assertEqual(run.series("m0"), {"step": [], "t": []})
+
     def test_a_never_assigned_result_reads_zero(self) -> None:
         run = self._run(loop_ir(3))
         self.assertEqual(run.snapshot("m3")["ok"], 0.0)
@@ -517,9 +541,13 @@ class _DriverBehaviour:
         self.assertNotEqual(final["t"], accumulated)
 
     def test_the_series_carries_the_time_of_the_last_committed_state(self) -> None:
+        # Every row carries its own `t` (issue #644 P4a), and the last row's is the time of the
+        # last committed state.
         run = self._run(loop_ir(1))
-        doc = json.loads((run.snapshots / "series" / "m1.json").read_text())
-        self.assertEqual(doc["t"], 1.5)
+        doc = run.series("m1")
+        self.assertEqual(doc["step"], [1, 2])
+        self.assertEqual(doc["t"], [1.25, 1.5])
+        self.assertEqual(doc["t"][-1], run.snapshot("m1")["t"])
 
     def test_walltime_is_summed_over_the_step_calls(self) -> None:
         perf = self._run(loop_ir(0, every=0, n_step=500)).perf()
@@ -595,7 +623,7 @@ class _DriverBehaviour:
 
     def test_the_fold_carries_a_committed_nan_into_the_series_and_the_loader_refuses_it(self) -> None:
         run = self._run(loop_ir(4))
-        doc = json.loads((run.snapshots / "series" / "m4.json").read_text())
+        doc = run.series("m4")
         self.assertEqual(doc["u_min"][0], 1.25)
         self.assertNotEqual(doc["u_min"][1], doc["u_min"][1])
         self.assertNotEqual(doc["u_max"][1], doc["u_max"][1])
@@ -813,7 +841,7 @@ class _DriverBehaviour:
         files, refused = pe.write_continuation_inputs(
             ir, run.dir / "run", pe.restart_point_reader(run.dir / "run", "json"))
         rdir = run.dir / "run" / pe.RESTART_DIRNAME
-        for sub in ("initial", "history", "series"):
+        for sub in CAPTURE_SUBDIRS:
             (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
         (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
         for cf in files:
@@ -859,12 +887,14 @@ class _DriverBehaviour:
         self.assertEqual(initial["t"], sample["t"])
         for var in pe.restart_variables(ir):
             self.assertEqual(initial[var], sample[var], var)
-        series = json.loads((snaps / "series" / f"{cid}.json").read_text())
-        base_series = run.snapshot(f"series/{base}")
-        self.assertEqual(series["step"], base_series["step"][step:])
+        # the continuation commits only its own rows: the base's from `step + 1` on, each with
+        # its own `t`
+        series = read_series(snaps, cid)
+        base_series = run.series(base)
+        self.assertEqual(sorted(series), sorted(base_series))
+        self.assertEqual(series["step"], list(range(step + 1, n_step + 1)))
         for name, column in series.items():
-            if name != "t":
-                self.assertEqual(column, base_series[name][step:], name)
+            self.assertEqual(column, base_series[name][step:], name)
         later = sorted(p.name for p in (snaps / "history").iterdir())
         self.assertEqual(later, sorted(f"{cid}__{k}.json" for k in range(step + 1, n_step + 1)
                                        if (run.dir / "run" / "raw" / "state_snapshots"
@@ -899,7 +929,7 @@ class _DriverBehaviour:
                 case = json.loads(case_file.read_text())
                 case_file.write_text(json.dumps({**case, "restart.step": step}))
                 shutil.rmtree(run.snapshots)
-                for sub in ("initial", "history", "series"):
+                for sub in CAPTURE_SUBDIRS:
                     (run.snapshots / sub).mkdir(parents=True)
                 again = _exec(Path(tmp), ["m0"])
                 self.assertNotEqual(again.proc.returncode, 0)
@@ -915,7 +945,7 @@ class _DriverBehaviour:
         case_file = run.dir / "ir" / "case_inputs" / "m10.json"
         case_file.write_text(json.dumps({**json.loads(case_file.read_text()),
                                          "restart.step": 2}))
-        for sub in ("initial", "history", "series"):
+        for sub in CAPTURE_SUBDIRS:
             shutil.rmtree(run.snapshots / sub)
             (run.snapshots / sub).mkdir()
         again = _exec(run.dir, ["m10"], {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
@@ -950,7 +980,7 @@ class _DriverBehaviour:
                 ("the initial state", {"restart.u": base_case["u"], "restart.w": [0.0] * 3})):
             with self.subTest(label):
                 cf.path.write_text(json.dumps({**json.loads(cf.path.read_text()), **edit}))
-                for sub in ("initial", "history", "series"):
+                for sub in CAPTURE_SUBDIRS:
                     shutil.rmtree(rdir / "raw" / "state_snapshots" / sub, ignore_errors=True)
                     (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True)
                 (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
@@ -1078,14 +1108,22 @@ class CppDriverTest(_DriverBehaviour, unittest.TestCase):
 
 class RestartRenderTest(unittest.TestCase):
     """Issue #632: only a loop node's driver reads `restart.step`; a one-call node's renders
-    with no word of it, in both languages, and the loop node's names the host's key spelling."""
+    with no word of it, in both languages — on the Fortran driver but for each state's capture
+    flag `restart` (issue #644 P4a), false on such a node — and the loop node's names the
+    host's key spelling."""
 
     def test_a_node_without_loop_renders_no_restart_read(self) -> None:
         for ir in (call_ir(0), init_call_ir(0)):
-            for text in (f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU),
-                         cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU)):
-                self.assertNotIn("restart", text)
-                self.assertNotIn("step0", text)
+            text = cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU)
+            self.assertNotIn("restart", text)
+            self.assertNotIn("step0", text)
+            text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+            flags = [ln for ln in text.splitlines() if "%restart = " in ln]
+            self.assertTrue(flags)
+            self.assertEqual({ln.split("%restart = ", 1)[1] for ln in flags}, {".false."})
+            self.assertNotIn("restart", "\n".join(ln for ln in text.splitlines()
+                                                   if "%restart = " not in ln))
+            self.assertNotIn("step0", text)
 
     def test_a_loop_node_reads_the_host_s_key(self) -> None:
         ir = loop_ir(0)
@@ -1392,7 +1430,7 @@ def render_rotating_makefile(closure: list[str]) -> str:
     return control_file.render_node(
         rules=rules, compiler="gfortran", bin_name=f"{ROTATING}_runner", cases_default="c",
         model_stem=f"{ROTATING}_model", runner_stem=f"{ROTATING}_runner", closure=closure,
-        capture_dirs=capture_store.run_dirs("json", host_rendered=True))
+        capture_dirs=capture_store.run_dirs("json"))
 
 
 class ProblemOverProblemEndToEndTest(unittest.TestCase):
@@ -2032,13 +2070,19 @@ class RenderRefusalTest(unittest.TestCase):
     def test_a_distributed_harness_takes_the_distributed_form(self) -> None:
         """Issue #610: what was refused here as `driver_distributed_pending` until PR-B2 renders
         the distributed form; an axis-less node keeps the serial body under the distributed
-        harness's names, with rank 0 writing and the result reduced, and no partition."""
+        harness's names, with rank 0 capturing and the result reduced, and no partition."""
         text = f_runner.render_runner(loop_ir(0), "drv_toy", "harness_fortran_cpu_mpi",
                                       target=CPU)
         self.assertIn("  call harness_fortran_cpu_mpi__init()", text)
         self.assertIn("lg_ok = nok == nranks", text)
-        self.assertIn("    if (rank == 0) call harness_fortran_cpu_mpi__write_snapshot(cid, vals, t_c)",
-                      text)
+        self.assertIn("    if (rank == 0) call harness_fortran_cpu_mpi__capture_commit(group, "
+                      "step_c, t_c)", text)
+        # only rank 0 calls a capture operation, here and on a distributed fixture
+        for rendered in (text, _mpi_runner_text("fx_loop")):
+            calls = [ln.strip() for ln in rendered.splitlines()
+                     if "call harness_fortran_cpu_mpi__capture_" in ln]
+            self.assertTrue(calls)
+            self.assertEqual([c for c in calls if not c.startswith("if (rank == 0) call ")], [])
         self.assertNotIn("__partition", text)
         self.assertNotIn("nranks", f_runner.render_runner(loop_ir(0), "drv_toy",
                                                           "harness_fortran_cpu", target=CPU))
@@ -2188,7 +2232,8 @@ class ProcedureGateTest(unittest.TestCase):
 # `data/driver_e2e/mpi/` holds the certified `harness_fortran_cpu_mpi@0.2.0` model with three
 # blocks of the certified `harness_fortran_cpu@0.10.0` model inserted under its names (the
 # variables of the reading state, `__parse_cases` in the form that keeps the spec path, and
-# `__read_case` with its getters): `0.4.0`'s surface by hand, held to the real `0.4.0` §5.1 by
+# `__read_case` with its getters) and the capture operations written by hand (issue #644 P4a):
+# `0.5.0`'s surface by hand, held to the real `0.5.0` §5.1 by
 # `assert_harness_pin` below. Five hand-written models, each with the IR its builder returns and the
 # `tests.md` line gate (o) holds that IR to.
 
@@ -2541,6 +2586,9 @@ class MpiRun:
         return {str(p.relative_to(root)): json.loads(p.read_text())
                 for p in sorted(root.rglob("*.json"))}
 
+    def series(self, case_id: str) -> dict[str, Any]:
+        return read_series(self.dir / "raw" / "state_snapshots", case_id)
+
     def perf(self) -> dict[str, Any]:
         return json.loads((self.dir / "perf.json").read_text())
 
@@ -2593,7 +2641,7 @@ class MpiBuild:
         from tools.backends.parallel.mpi import execution
         d = self.tmp / f"run_{grid[0]}x{grid[1]}"
         shutil.rmtree(d, ignore_errors=True)
-        for sub in ("initial", "history", "series"):   # what `_run_raw_dirs` creates
+        for sub in CAPTURE_SUBDIRS:   # what `capture_store.run_dirs` creates
             (d / "raw" / "state_snapshots" / sub).mkdir(parents=True)
         env = {k: v for k, v in os.environ.items() if k != execution.PROCESS_GRID_VARIABLE}
         argv = [str(self.tmp / "bin")]
@@ -3207,7 +3255,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(run.rc, 0, run.stderr[-1000:])
                 snaps = run.snapshots()
                 for cid in ("ny4", "ny8"):
-                    series = snaps[f"series/{cid}.json"]
+                    series = run.series(cid)
                     for name in ("h_min", "h_max"):
                         column = np.asarray(series[name], float)
                         self.assertTrue(np.isnan(column[0]), (cid, name))
@@ -3369,8 +3417,10 @@ _DRIVER_DEFECTS: tuple[tuple[str, str, str, str], ...] = (
     ("fx_loop", "a derived slice has its axes swapped",
      "h5 = h5g(dlo1:dhi1, dlo2:dhi2)", "h5 = h5g(dlo2:dhi2, dlo1:dhi1)"),
     ("fx_loop", "the record gather is dropped",
-     "    if (replicated) then\n      if (rank == 0) out(5) =",
-     "    if (.true.) then\n      if (rank == 0) out(5) ="),
+     "    if (replicated) then\n      if (rank == 0) call harness_fortran_cpu_mpi__capture_array_r3("
+     "group, &\n        'stage_q1', &\n        st_stage_q1)",
+     "    if (.true.) then\n      if (rank == 0) call harness_fortran_cpu_mpi__capture_array_r3("
+     "group, &\n        'stage_q1', &\n        st_stage_q1)"),
 )
 
 #: The seeded kernel defects: (fixture, label, the model edits, cases, grids). Each fails a

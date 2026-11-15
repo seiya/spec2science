@@ -402,13 +402,14 @@ class StateSnapshotsTest(unittest.TestCase):
 
     def test_series_summarizes_each_name_and_is_none_without_a_file(self):
         self.assertIsNone(self._case()["series"])
-        self.raw.write("state_snapshots/series/case_a.json",
-                       '{"t": 2.0, "step": [1, 2, 3], "h_max": [1.0, 5.0, NaN]}')
+        self.raw.write("state_snapshots/series/case_a__0.json",
+                       '{"t": [0.5, 1.0, 2.0], "step": [1, 2, 3], "h_max": [1.0, 5.0, NaN]}')
         series = self._case()["series"]
         self.assertEqual(sorted(series), ["h_max", "step", "t"])
         self.assertEqual(series["step"]["shape"], [3])
         self.assertEqual((series["step"]["min"], series["step"]["max"]), (1, 3))
-        self.assertEqual(series["t"]["value"], 2.0)
+        self.assertEqual((series["t"]["shape"], series["t"]["min"], series["t"]["max"]),
+                         ([3], 0.5, 2.0))
         # A non-finite entry is counted, and none is inlined.
         self.assertEqual((series["h_max"]["nan_count"], series["h_max"]["max"]), (1, 5.0))
         # Another case's file is not this one's.
@@ -416,21 +417,20 @@ class StateSnapshotsTest(unittest.TestCase):
         self.assertIsNone(self._case("case_b")["series"])
 
     def test_a_series_that_is_no_object_or_no_json_is_a_problem_and_no_summary(self):
-        for text, needle in (("[1]", "raw/state_snapshots/series/case_a.json"),
-                             ("{", "raw/state_snapshots/series/case_a.json")):
+        for text in ("[1]", "{"):
             with self.subTest(text=text):
-                self.raw.write("state_snapshots/series/case_a.json", text)
+                self.raw.write("state_snapshots/series/case_a__0.json", text)
                 self.assertIsNone(self._case()["series"])
-        self.raw.write("state_snapshots/series/case_a.json", "{")
+        self.raw.write("state_snapshots/series/case_a__0.json", "{")
         problems = rex.raw_evidence_excerpt(self.raw.path, _contract(),
                                             output_format="json")["problems"]
-        self.assertTrue(any("raw/state_snapshots/series/case_a.json" in p for p in problems),
+        self.assertTrue(any("raw/state_snapshots/series/case_a__0.json" in p for p in problems),
                         problems)
 
     def test_a_series_or_a_sample_is_not_read_as_a_final_capture(self):
         self._case()
         self.raw.write("state_snapshots/history/case_a__1.json", {"h": [[1.0]], "t": 0.0})
-        self.raw.write("state_snapshots/series/case_a.json", {"t": 1.0, "step": [1]})
+        self.raw.write("state_snapshots/series/case_a__0.json", {"t": [1.0], "step": [1]})
         self.assertEqual([c["case_id"] for c in self._snapshots()["cases"]], ["case_a"])
 
 
@@ -492,7 +492,7 @@ class RequiredEvidenceTest(unittest.TestCase):
         self.raw.write("state_snapshots/history/case_a__1.json", {"h": [[1.0]]})
         self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": True,
                                               "step_series": False})
-        self.raw.write("state_snapshots/series/case_a.json", {"step": [1], "t": 1.0})
+        self.raw.write("state_snapshots/series/case_a__0.json", {"step": [1], "t": [1.0]})
         self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": True,
                                               "step_series": True})
 
@@ -586,7 +586,8 @@ class ExcerptIsBoundedTest(unittest.TestCase):
         # 2 since Z6 (issue #255): the window gained each case's `initial` capture. 3 since
         # issue #582: the metrics-basis sections left it and each variable names its `source`. 4
         # since issue #589: `source` went, and each case carries `history_samples` and `series`.
-        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 4)
+        # 5 since issue #644 P4: every case has a `series`, whose `t` is one entry per row.
+        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 5)
 
 
 if __name__ == "__main__":

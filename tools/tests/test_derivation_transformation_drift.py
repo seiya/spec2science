@@ -950,6 +950,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-34": "19eed56f9ffc4d2b301c660ac992d1ed2915cdcad070487c7560ad32328f9369",
     # compile-docs-35: phase_01_compile.md states the `libraries` list of `dependency_surface.json` (issue #644 P1).
     "compile-docs-35": "76b905c10c8b8591e9c3ef0db49362527085370d17524a623c17ddcc3a33f9cd",
+    # compile-docs-36 (issue #644 P4a): `phase_01_compile.md` names the capture groups where it named capture files.
+    "compile-docs-36": "09b5ca4c73643c128de0c4a91b2e467936b2354e286bd815d6b344257c262abc",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1418,6 +1420,8 @@ PINNED_RENDER: dict[str, str] = {
     # diffing `render_tuple()` against origin/main c38a3d8b's: those rows and no other.) The
     # digest `render-12` shipped with at c38a3d8b:
     "render-12@c38a3d8b": "e67d6b26885115087847d3cb1ae58e95657a261335fc00e35716c51dcb0c5d2d",
+    # render-21 (issue #644 P4a): the driver renderers write through the harness's capture interface (no file name, no token), and every node's run gets the capture store's directories.
+    "render-21": "38041da48f21ef8efd84ba06c888c123af69e2e0064c6428969d4be79df04269",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1656,9 +1660,11 @@ PINNED_BUILD: dict[str, str] = {
     # Issue #644 Part 3 P3 re-pinned build-5 in place (`make/control_file.py` takes `capture_dirs`; the build is unchanged).
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "build-5@b3282e9b": "061cd7e29290976e3858f2c8b953f756e44d2544d41ed4ec145bf4b1587e3dc3",
-    "build-5": "7854bf7dac3a0e053471b12e76ae632abe468b20ba98d5d14c1d675364063b10",
+    # Issue #644 P4a re-pinned build-5 in place (the harness manifest rows and the launch gate's capture-format clause are in the slice; no build output moves). The digest main 1812c09e shipped is kept, so a revert under this version collides.
+    "build-5@1812c09e": "7854bf7dac3a0e053471b12e76ae632abe468b20ba98d5d14c1d675364063b10",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
+    "build-5": "e6d209160c8cc5dfba1b79cc523f60537ba8439e2742ee576da8adb33d84fb05",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2012,6 +2018,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "execute-19@b3282e9b": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
     "execute-19": "cc250ea6cc74b1b3783ca96ec5fb5d3d34ba63ffa0e7ef6c5b8399cbec4a6d85",
+    # execute-20 (issue #644 P4a): the json store's restart points and series chunks, the capture directories on every node, the IR-based driver-ran rule.
+    "execute-20": "f013fc6e2773c5eedf3341444141887000ad0207b00d828f500dba1399de85d5",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2224,6 +2232,8 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-17@b3282e9b": "1c567db76c7df37709810a3807c9e8d529d8298b48b66c198103622a0949b4a2",
     "verdict-17": "d23dd1ffdd2a71d52e0fc5747ab210330304b5ee1f9d7ee4317491f229aebb6c",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
+    # verdict-18 (issue #644 P4a): a series is its chunks joined and carries one `t` per row.
+    "verdict-18": "5bed227c79670f15ca5f7a9e5bba5c1f149c3ed39b33e5d42bf083dd27e8a42c",
 }
 
 

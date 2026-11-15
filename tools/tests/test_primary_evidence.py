@@ -115,8 +115,8 @@ class _RunDir:
         (self.sdir / f"{cid}.json").write_text(json.dumps(final))
 
     def write_state(self, cid: str, h0: np.ndarray, h1: np.ndarray, *, s: float = 1.0) -> None:
-        self.write(cid, initial={"h": h0.tolist(), "s": s, "t": 0.0},
-                   final={"h": h1.tolist(), "s": s, "t": 0.2})
+        self.write(cid, initial={"h": h0.tolist(), "s": s, "step": 0, "t": 0.0},
+                   final={"h": h1.tolist(), "s": s, "step": 2, "t": 0.2})
 
     def cleanup(self) -> None:
         self._td.cleanup()
@@ -4033,8 +4033,9 @@ class LazyLoaderTest(unittest.TestCase):
         return pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
 
     def _series(self, cid: str, doc: dict) -> None:
+        """The case's series as one chunk, `series/<cid>__0.json` (the json store's layout)."""
         (self.run.sdir / "series").mkdir(exist_ok=True)
-        (self.run.sdir / "series" / f"{cid}.json").write_text(json.dumps(doc))
+        (self.run.sdir / "series" / f"{cid}__0.json").write_text(json.dumps(doc))
 
     def test_nothing_is_read_when_no_predicate_names_them(self) -> None:
         recs = self._eval("sum(final.h)")
@@ -4043,7 +4044,7 @@ class LazyLoaderTest(unittest.TestCase):
 
     def test_an_empty_series_loads_and_a_reduction_over_it_is_structural_alone(self) -> None:
         for cid in "ab":
-            self._series(cid, {"t": 0.0, "step": [], "h_min": [], "h_max": []})
+            self._series(cid, {"t": [], "step": [], "h_min": [], "h_max": []})
         recs = self._eval("min(series.h_min)")
         self.assertEqual(recs[0]["kind"], "structural")
         self.assertIn("reduction over an empty array", recs[0]["evaluated"][0]["error"])
@@ -4053,24 +4054,34 @@ class LazyLoaderTest(unittest.TestCase):
                 rec = self._eval(f"{fn}(series.h_min)")[0]
                 self.assertEqual(rec["kind"], "structural")
 
-    def test_a_series_file_holds_the_writer_s_scalar_time(self) -> None:
-        for doc in ({"step": [1], "h_min": [1.0], "h_max": [1.0]},
-                    {"t": [0.1], "step": [1], "h_min": [1.0], "h_max": [1.0]},
-                    {"t": True, "step": [1], "h_min": [1.0], "h_max": [1.0]}):
-            with self.subTest(doc=doc):
-                self._series("a", doc)
+    def test_a_series_holds_each_commit_s_time(self) -> None:
+        # `t` is one entry per row (each commit's), required, and held to a name's rules.
+        rows = {"step": [1, 2], "h_min": [1.0, 1.0], "h_max": [1.0, 1.0]}
+        for t, error in ((None, "holds no 't'"),
+                         ([0.1], "not of one length"),
+                         ([0.1, True], "'t' is not a list of numbers"),
+                         ([0.1, "x"], "'t' is not a list of numbers"),
+                         (0.1, "not an object of lists"),   # the store refuses it
+                         ([0.1, float("inf")], "'t' holds a non-finite value")):
+            with self.subTest(t=t):
+                self._series("a", rows if t is None else {"t": t, **rows})
                 rec = self._eval("min(series.h_max)")[0]
                 self.assertEqual(rec["kind"], "structural")
-                self.assertIn("not the number the writer adds", rec["evaluated"][0]["error"])
+                self.assertIn(error, rec["evaluated"][0]["error"])
+        for cid in "ab":
+            self._series(cid, {"t": [0.1, 0.2], **rows})
+        self.assertEqual(self._eval("min(series.h_max)")[0]["kind"], "pass")
+        # and `t` is not a series name (kills: keeping it among the loaded names)
+        self.assertEqual(self._eval("min(series.t) + min(series.h_max)")[0]["kind"], "structural")
 
     def test_a_non_finite_series_entry_is_refused(self) -> None:
-        self._series("a", {"t": 0.1, "step": [1], "h_min": [float("nan")], "h_max": [1.0]})
+        self._series("a", {"t": [0.1], "step": [1], "h_min": [float("nan")], "h_max": [1.0]})
         rec = self._eval("min(series.h_max)")[0]
         self.assertEqual(rec["kind"], "structural")
         self.assertIn("'h_min' holds a non-finite value", rec["evaluated"][0]["error"])
 
     def test_series_entries_of_unequal_length_are_refused(self) -> None:
-        self._series("a", {"t": 0.2, "step": [1, 2], "h_min": [1.0]})
+        self._series("a", {"t": [0.1, 0.2], "step": [1, 2], "h_min": [1.0]})
         self.assertIn("not of one length", self._eval("min(series.h_min) + min(series.step)")[0]["evaluated"][0]["error"])
 
     def test_history_stacks_samples_by_numeric_step(self) -> None:

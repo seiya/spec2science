@@ -296,8 +296,8 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
-    # The distributed operations are bounded with the plumbing: `exchange_halo_r1` is longer than
-    # any plumbing name, and a consumer's model calls it.
+    # The distributed operations are bounded with the plumbing: `exchange_halo_r1` is as long as
+    # the longest plumbing name (`capture_array_r4`), and a consumer's model calls it.
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS, *_DISTRIBUTED_RUNNER_OPS,
                 *PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
         name = _hname(harness_spec_id, sym)
@@ -969,7 +969,8 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         for var, rank in plan.variables.items():
             put = H("capture_real") if rank == 0 else H(f"capture_array_r{rank}")
             a(f"    call {put}(group, &")
-            a(f"      '{_flit(var)}', {_ST}{var})")
+            a(f"      '{_flit(var)}', &")
+            a(f"      {_ST}{var})")
         a(f"    call {H('capture_commit')}(group, step_c, t_c)")
     else:
         _render_distributed_capture(a, plan, dist, H)
@@ -1068,18 +1069,21 @@ def _render_distributed_capture(a: Any, plan: runner_ir.DriverPlan, dist: _Dist,
                 slots += ["0", "1", "1", "1"]
             a("    if (replicated) then")
             a(f"      {call}")
-            a(f"        '{_flit(var)}', {_ST}{var})")
+            a(f"        '{_flit(var)}', &")
+            a(f"        {_ST}{var})")
             a("    else")
             a(f"      call {H(f'gather_r{rank}')}({_ST}{var}, &")
             a(f"        {', '.join(slots[:4])}, &")
             a(f"        {', '.join(slots[4:])}, g_r{rank})")
             a(f"      {call}")
-            a(f"        '{_flit(var)}', g_r{rank})")
+            a(f"        '{_flit(var)}', &")
+            a(f"        g_r{rank})")
             a("    end if")
             continue
         source = f"{_GL}{var}" if var in dist.layouts else f"{_ST}{var}"
         a(f"    {call}")
-        a(f"      '{_flit(var)}', {source})")
+        a(f"      '{_flit(var)}', &")
+        a(f"      {source})")
     a(f"    if (rank == 0) call {H('capture_commit')}(group, step_c, t_c)")
 
 
@@ -1368,9 +1372,11 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
             # An array nothing writes: its global copy, the same on every rank and every grid.
             source = f"{_GL}{var}" if dist is not None and var in dist.layouts else f"{_ST}{var}"
             a(f"{in1}{root}call {put}('series', &")
-            a(f"{in1}  {lo}, fold_min_r{rank}({source}))")
+            a(f"{in1}  {lo}, &")
+            a(f"{in1}  fold_min_r{rank}({source}))")
             a(f"{in1}{root}call {put}('series', &")
-            a(f"{in1}  {hi}, fold_max_r{rank}({source}))")
+            a(f"{in1}  {hi}, &")
+            a(f"{in1}  fold_max_r{rank}({source}))")
     a(f"{in1}{root}call {H('capture_commit')}('series', n, t_c)")
     a(f"{in1}if (every_c > 0) then")
     a(f"{in1}  if (mod(n, every_c) == 0) call capture_state('history')")
@@ -1417,6 +1423,11 @@ subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, o
   integer, intent(out) :: ncases
   logical, intent(out) :: ok
 end subroutine harness_fortran_cpu__parse_cases
+
+function harness_fortran_cpu__real_token(x) result(s)
+  real(dp), intent(in) :: x
+  character(len=:), allocatable :: s
+end function harness_fortran_cpu__real_token
 
 subroutine harness_fortran_cpu__capture_open(case_id, vars, restart_point_capacity, series_names, series_capacity)
   character(len=*), intent(in) :: case_id

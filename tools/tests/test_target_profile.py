@@ -73,13 +73,35 @@ _DELETE = object()
 
 _HARNESS_X = "infrastructure/harness_x@0.7.0"
 
+#: The scratch catalog's harness rows, installed for every row of the module: each writes the
+#: `json` captures the default `output.format` reads (`capture_format_json@1`, the launch gate's
+#: `_capture_format_violations`, issue #644). A row about that clause replaces them.
+_SCRATCH_MANIFESTS = {
+    f"infrastructure/harness_x@{v}": frozenset({"sync_single_case@1", "capture_format_json@1"})
+    for v in ("0.4.0", "0.7.0")}
+_MANIFEST_PATCH: Any = None
+
+
+def setUpModule() -> None:
+    global _MANIFEST_PATCH
+    from tools import codegen_bundle
+    _MANIFEST_PATCH = mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS,
+                                      _SCRATCH_MANIFESTS)
+    _MANIFEST_PATCH.start()
+
+
+def tearDownModule() -> None:
+    if _MANIFEST_PATCH is not None:
+        _MANIFEST_PATCH.stop()
+
 
 def _distributed_harness_x() -> Any:
     """The scratch catalog's harness, declared as providing `distributed_state@1`."""
     from tools import codegen_bundle
     return mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS, {
         "infrastructure/harness_x@0.7.0": frozenset(
-            {"sync_single_case@1", "state_registration@1", "distributed_state@1"})})
+            {"sync_single_case@1", "state_registration@1", "distributed_state@1",
+             "capture_format_json@1"})})
 
 
 class CheckedInProfileTests(unittest.TestCase):
@@ -200,7 +222,7 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
-        self.assertEqual(harness, "infrastructure/harness_fortran_cpu_mpi@0.4.0")
+        self.assertEqual(harness, "infrastructure/harness_fortran_cpu_mpi@0.5.0")
         for phase in sorted(tp.NON_EXECUTING_PHASES) + ["validate"]:
             self.assertEqual(tp.target_profile_violations(
                 REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
@@ -544,7 +566,10 @@ class OutputFormatTests(unittest.TestCase):
 
     def test_the_launch_gate_refuses_a_format_no_backend_declares(self) -> None:
         # Kills: deleting the launch gate's clause (the run would fail at its first capture
-        # read, after Generate and Build were paid for).
+        # read, after Generate and Build were paid for). And, the scratch harness providing no
+        # `capture_format_other_format@1`, it kills asking the harness clause on top of this
+        # refusal (dropping `if reason is None` in `target_profile_violations`): that refusal
+        # stands alone.
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             repo.write("t1", output__format="other_format")
@@ -555,6 +580,39 @@ class OutputFormatTests(unittest.TestCase):
             [v for v in violations if v.startswith("output.format: ")],
             ["output.format: " + registry.unavailable_reason("output_format", "other_format")])
 
+
+    def _harness_x_providing(self, *tokens: str) -> Any:
+        from tools import codegen_bundle
+        return mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS,
+                               {_HARNESS_X: frozenset(tokens)})
+
+    def test_a_harness_that_writes_no_format_is_refused_at_launch(self) -> None:
+        # Kills: deleting `_capture_format_violations` (or its call): a harness that names no
+        # format would pass the launch gate, and the store would find no record of any case at
+        # `Validate.execute`, after Compile, Generate and Build were paid for.
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._harness_x_providing("sync_single_case@1"):
+            repo = _ScratchRepo(tmp)
+            repo.write("t1")
+            violations = tp.target_profile_violations(
+                repo.root, tp.load_target_profile(repo.root, "t1"))
+        self.assertEqual(violations, [
+            f"output.format: target t1 reads its captures as json, and harness {_HARNESS_X} "
+            "does not provide capture_format_json@1; name the format the harness writes"])
+
+    def test_a_harness_that_writes_another_format_is_refused_at_launch(self) -> None:
+        # Kills: a clause that asks whether the harness names ANY format (a `capture_format_`
+        # prefix) rather than the target's own: the store would read a format the harness did
+        # not write.
+        with tempfile.TemporaryDirectory() as tmp, \
+                self._harness_x_providing("sync_single_case@1", "capture_format_netcdf@1"):
+            repo = _ScratchRepo(tmp)
+            repo.write("t1")
+            violations = tp.target_profile_violations(
+                repo.root, tp.load_target_profile(repo.root, "t1"))
+        self.assertEqual([v for v in violations if v.startswith("output.format: ")], [
+            f"output.format: target t1 reads its captures as json, and harness {_HARNESS_X} "
+            "does not provide capture_format_json@1; name the format the harness writes"])
 
 class SchemaAgreementTests(unittest.TestCase):
     """The schema is the declarative copy of `PROFILE_SHAPE` (spec/schema/SCHEMA.md)."""
