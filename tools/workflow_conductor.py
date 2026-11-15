@@ -620,8 +620,8 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # Categories the table above routes to Generate that a HOST-RENDERED-runner node (M3c, see
 # `_conductor_authors_runner`) cannot repair there. On such a node the leaf authors only
 # the model; the runner is rendered by the
-# conductor from the IR (`host_render.render_runner`), which emits the per-case
-# `__write_snapshot` call for every `case.test_case_set[].case_id`. A missing per-case snapshot
+# conductor from the IR (`host_render.render_runner`), which commits the per-case
+# `final` record for every `case.test_case_set[].case_id`. A missing per-case snapshot
 # file is therefore decided entirely by the IR + the renderer — regenerating the model cannot
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
 # attempt that provably cannot converge (the C1/C2 "regenerating one side can't fix the other"
@@ -13012,8 +13012,7 @@ class Conductor:
 
         Validate.execute's deliverable gate (build_launch_request) requires one final
         capture per case, in the file the target's capture store names for it
-        (`expected_layout`). A hand-authored runner names its files
-        freely, so a fixed/sequential name or a combined file
+        (`expected_layout`). A harness whose capture operations name a file otherwise
         leaves the expected one absent and the deliverable gate fails
         with no recorded cause. This returns an actionable message (expected vs
         written vs missing) so the failure routes to Generate with a clear reason

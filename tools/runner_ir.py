@@ -111,15 +111,15 @@ def snapshot_schema(
 
 
 def require_time_variable_t(time_var: str) -> None:
-    """The certified harness writes the per-case snapshot time under the FIXED key `t`
-    (harness controlled_spec §2/§3: `__write_snapshot(case_id, values, time)` takes a time
-    value, not a name). A physics IR that declares a different `time_variable` cannot be
-    honored by the harness — the emitted snapshot would carry `t` while the run contract
-    expects the declared name — so fail closed rather than silently render a mismatch."""
+    """The certified harness records a capture's time under the FIXED name `t`
+    (harness controlled_spec §3.2: `__capture_commit(group, step, t)` takes a time value, not
+    a name). A physics IR that declares a different `time_variable` cannot be honored by the
+    harness — the record would carry `t` while the run contract expects the declared name —
+    so fail closed rather than silently render a mismatch."""
     if time_var != "t":
         raise RenderError(
-            f"snapshot time_variable is {time_var!r}, but the harness writes the snapshot time "
-            "under the fixed key 't' (harness __write_snapshot takes a time value, not a name); "
+            f"snapshot time_variable is {time_var!r}, but the harness records a capture's time "
+            "under the fixed name 't' (harness __capture_commit takes a time value, not a name); "
             "declare time_variable: t for a harness-backed node")
 
 

@@ -8,10 +8,10 @@ It takes a compiled IR plus the target/harness spec ids and returns the text of
 ``<spec_id>_runner.f90`` — the deterministic driver of the physics node (issue #589): per case it
 reads the host-written case file through the certified harness (``harness_fortran_cpu``), allocates
 the state, calls the operations the node's model publishes, owns the time loop on a ``loop`` node,
-and writes every capture THROUGH the harness's plumbing. Because the harness's interface owns the
-JSON envelope assembly (§3 / §5.1 of the harness controlled_spec), this renderer holds **no
-serialization knowledge**: it calls the writers — it never formats a JSON token, and it judges
-nothing (the host's predicates over the captures do, issue #582).
+and writes every capture THROUGH the harness's capture interface. Because the harness owns the
+output format (§3.2 / §5.1 of the harness controlled_spec), this renderer holds **no knowledge
+of it**: it names a capture group and a value — it never spells a file name or a token, and it
+judges nothing (the host's predicates over the captures do, issue #582).
 
 Split of authorship on an M3c node:
 - ``<spec_id>_model.f90`` — the physics kernel + its published operations   (LLM leaf)
@@ -211,7 +211,7 @@ def _threads(target: dict[str, Any]) -> int:
     variant's perf record writes it (a launcher target runs one thread per rank, so every
     shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
     writes the one the run's shared-memory runtime gives the program, obtained at run time
-    (`harness_fortran_cpu@0.10.0` §3.2, issue #512)."""
+    (`harness_fortran_cpu@0.11.0` §3.2, issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -1529,7 +1529,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
     f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
 )
 
-# Verbatim copy of `harness_fortran_cpu_mpi@0.4.0` §5.1's distributed-state operations (§3.3),
+# Verbatim copy of `harness_fortran_cpu_mpi@0.5.0` §5.1's distributed-state operations (§3.3),
 # as the language backend renders them. That harness's §5.1 is `_HARNESS_V3_INTERFACE` under its
 # own `<spec_id>__` names followed by this block (its §5 says so), so its pinned interface is
 # composed below rather than copied twice.
@@ -1654,7 +1654,7 @@ end function harness_fortran_cpu_mpi__reduce_sum_int
 """
 
 
-# `harness_fortran_cpu@0.10.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
+# `harness_fortran_cpu@0.11.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
 # renders it: the stanza of `_HARNESS_V3_INTERFACE` without the `threads_per_rank` argument,
 # because that harness's writer obtains the thread count itself, at run time. Its §5.1 is
 # `_HARNESS_V3_INTERFACE` with this stanza in place of that one; the distributed harness keeps

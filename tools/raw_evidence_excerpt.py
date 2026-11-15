@@ -49,7 +49,10 @@ from tools import capture_store
 #: 4 (issue #589 PR-1b): `source` is gone with its vocabulary, `step` is the driver's own column
 #: (an ordinary row with no declared shape), each case carries `history_samples` and `series`, and `required_evidence`
 #: looks for `state_history` / `step_series` where the driver writes them.
-RAW_EXCERPT_POLICY_VERSION = 4
+#: 5 (issue #644 P4): every case has a `series` (the harness's capture interface ends each
+#: case with one, with no row on a node that commits none), whose `t` is one entry per row
+#: where it was the writer's one scalar.
+RAW_EXCERPT_POLICY_VERSION = 5
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
 RAW_EVIDENCE_ALIASES = {

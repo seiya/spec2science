@@ -14,7 +14,7 @@ This project divides the specification into the following 2 layers.
 - `problem` defines the equation system to be integrated and the runtime input contract, and references the dependent `component`, the dependent `problem` and the adopted `profile`. A `problem` that depends on `problem`s is an assembled model: its `__step` composes theirs.
 - `component` defines the input/output contract of a reusable physics operation and the published `operation`.
 - `profile` defines the selection rules and parameter constraints for a `component`. The selection is resolved at Compile time, by the host, for the `node` that adopts the profile; a `profile` is not a certified code `node` (`docs/SPEC.md` §Design Policy, issue #175), so nothing is generated or executed for it.
-- `infrastructure` (R1 harness) defines the shared runner plumbing (argv/case parsing, case-loop driver, JSON/snapshot/perf emission) as a certified node per `(language, hardware)` target, carrying no physics.
+- `infrastructure` (R1 harness) defines the shared runner plumbing (argv/case parsing, case-loop driver, the capture interface in the target's output format, the perf writer) as a certified node per `(language, hardware)` target, carrying no physics.
 
 2. `tests` (`tests.md`)
 - It describes the input conditions used in verification (initial conditions, execution conditions, case expansion) and the judgment thresholds.
@@ -138,13 +138,13 @@ A `profile spec` has FIVE sections and no `tests.md`: nothing is generated or ex
 An `infrastructure spec` takes the `component spec` section shape **minus section 9 (AD preparation information)** — a harness carries no physics, so it has nothing to differentiate. The **section numbers are load-bearing**: the deterministic `Compile` gate reads the published surface out of `## 5.` and its `### 5.1` subsection by number (`docs/workflow/phases/phase_01_compile.md`), so a harness that renumbers its sections fails to certify.
 
 1. **Responsibility and scope**
-- Required statement: state the runner plumbing this harness provides (argv/`--cases` parsing, the case-loop driver, JSON/snapshot/perf emission) and the `(language, hardware)` target it serves; state explicitly that it carries no physics.
+- Required statement: state the runner plumbing this harness provides (argv/`--cases` parsing, the case-loop driver, the capture interface, the perf writer) and the `(language, hardware)` target it serves; state explicitly that it carries no physics.
 
 2. **input/output contract**
-- Required statement: state the runner argv it parses, and the `perf.json` / `raw/state_snapshots/*` shapes it emits, with the abstract serialization rules (a real as a round-trip-lossless exponential token, an integer as its minimal decimal, a boolean as the literal `true` / `false`; the target-language realization — e.g. the Fortran edit descriptors — is canonical in `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §4).
+- Required statement: state the runner argv it parses, the `perf.json` shape it writes, and the layout of its output format under `raw/state_snapshots/` — which file holds a record of each capture group (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3 states what a group holds; the harness states where its format puts it) —, with the abstract serialization rules where the format is JSON (a real as a round-trip-lossless exponential token, an integer as its minimal decimal; the target-language realization — e.g. the Fortran edit descriptors — is canonical in `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §4).
 
 3. **Operation definition**
-- Required statement: state, per published `<spec_id>__*` operation, its argument roles and behavior (case-set parse, per-case snapshot/JSON writers, rank-N array emitters, the perf writer), and the published derived types the operations exchange.
+- Required statement: state, per published `<spec_id>__*` operation, its argument roles and behavior (case-set parse, the capture operations — open, the scalar and rank-N puts, commit, close —, the perf writer), and the published derived types the operations exchange.
 
 4. **Failure conditions and constraints**
 - Required statement: state the guard behaviors (e.g. missing `--cases` aborts) and the invariants the harness enforces.

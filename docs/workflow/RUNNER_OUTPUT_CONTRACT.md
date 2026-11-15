@@ -68,25 +68,30 @@ The required composition is IR-driven —
 `spec.ir.yaml.io_contract.raw_requirements.required_evidence` is the canonical
 source; do not uniformly require a fixed minimal composition.
 
-- **`raw/state_snapshots/<case_id>.json`** — when `state_snapshots` is required,
-  the runner writes **exactly one snapshot per case**, named from the `case_id`
-  it receives on argv (`--cases <spec.ir.yaml> <case_id>...`, one positional per
-  case the invocation runs: a continuation case runs alone, below). Build the path from that `case_id`
-  (`trim(case_id)//'.json'`), never a hardcoded/sequential literal
-  (`snapshot_0001.json`) or a single combined file: a string-literal name is
-  flagged by `post_generate`; a wrong runtime-built name fails
-  `Validate.execute`'s per-`<case_id>.json` deliverable gate. Each snapshot must
+The captures of a run are the records under `raw/state_snapshots/`. A runner writes them only
+through the capture interface of the target's harness (the harness's `controlled_spec.md` §3.2):
+it starts a case's output, puts named float64 values into the open record of a **group**, commits
+the record with the committed `step` and the time `t`, and ends the case's output. Which files
+hold the records is the target's **output format** (`output.format` of the target profile). The
+harness's spec states that layout, and the host reads it through the format's capture store
+(`docs/backends/output_format/<id>/CAPTURE_LAYOUT.md`). No runner and no rule of this document
+names a capture file. The host creates the format's directories under `raw/state_snapshots/`
+before every run, on every node, and a runner creates and lists none.
+
+- **`final`** — when `state_snapshots` is required, **exactly one record per case**: the state
+  after the case's last call. A case is a `case_id` the runner receives on argv
+  (`--cases <spec.ir.yaml> <case_id>...`, one positional per case the invocation runs: a
+  continuation case runs alone, below); a case whose `final` record the host does not find fails
+  `Validate.execute`'s per-case deliverable gate. Each record must
   hold **every** declared state variable, in every case and on every node (a harness
-  self-test as a host-rendered runner), **plus the declared `time_variable`**, each
-  shape-matching its
-  `snapshot_schema.json` declaration (state variables their `shape_expr`, the
-  `time_variable` its `time_shape_expr`). A case that rejects its input or
+  self-test as a host-rendered runner), each shape-matching its `snapshot_schema.json`
+  declaration (its `shape_expr`), with the `step` and the time its commit carries (the schema's
+  `time_variable`, of shape `time_shape_expr`). A case that rejects its input or
   produces no meaningful values (e.g. a `*_xfail` length-guard case) **still
-  emits every declared variable, shape-valid, and must not drop the key**: a value
-  whose JSON shape matches its `shape_expr`, `0.0` or zeros of the declared extents
+  captures every declared variable, shape-valid**: `0.0` or zeros of the declared extents
   (the host refuses an empty array in any capture). It may additionally record a guard flag.
-  - Correct (a guard case, `x` declared `[3]`): `{"case_id":"l0_invalid_length_xfail","step":0,"x":[0.0,0.0,0.0],"invalid_rejected":true}`.
-  - Wrong: `{"case_id":"l0_invalid_length_xfail","step":0,"invalid_rejected":true}` — drops the declared `x` → `post_execute` fails with "declared state_variables missing"; and `"x":[]` — the host refuses an empty capture.
+  - Correct (a guard case, `x` declared `[3]`): `x` captured as three zeros, `invalid_rejected` as `1.0`.
+  - Wrong: `x` not captured → `post_execute` fails with "declared state_variables missing"; and `x` captured with no element → the host refuses an empty capture.
   - **No placeholder text.** `post_execute` scans every file under
     `raw/state_snapshots/` (`snapshot_schema.json` included), spaces and newlines
     removed, for `"dummy"` / `"placeholder"` / `"sample": "state_recorded"`; a hit
@@ -96,46 +101,44 @@ source; do not uniformly require a fixed minimal composition.
 
   When `required_evidence` does not declare `state_snapshots` as required,
   `raw/state_snapshots/` must not be required.
-- **`raw/state_snapshots/initial/<case_id>.json`** (host-rendered runners only) — the
-  driver the host renders for an M3c physics node writes a SECOND capture of each case,
-  before the first call of `step`, after `init`, under `initial/`, of exactly the per-case
-  shape above (Z6, issue #255). It is a deliverable of that runner and is
-  shape-checked like the final snapshot. A hand-authored runner (a harness self-test)
-  does not write it, and nothing requires it to. The host pre-creates
-  `raw/state_snapshots/` in the run directory of every runner, and
-  `raw/state_snapshots/initial/`, `history/` and `series/` only for a host-rendered one, so a
-  hand-authored runner's run directory `raw/state_snapshots/` holds exactly the files it writes
-  ([issue #368](https://github.com/seiya/spec2science/issues/368)).
-- **`raw/state_snapshots/history/<case_id>__<k>.json`** (a host-rendered runner on a node whose
-  `drive` declares `loop`, when the IR requires `state_history`) — a sample of the full state at
-  committed step `<k>`, every `every` committed steps (`every` = 0: none), of the per-case shape
-  above.
-- **`raw/state_snapshots/series/<case_id>.json`** (the same node, when the IR requires
-  `step_series`) — exactly the names the IR's `step_series` entry declares, `step`, `<v>_min` and
-  `<v>_max` of every array state, each a list with one entry per committed step it ran, all of one length,
-  and the writer's scalar `t`, the time of the last committed state. `t` is not a series name. The
-  driver folds the extrema over the committed state and carries a non-finite committed cell into
-  the entry as `NaN`, and the host's series reader refuses such an entry.
+- **`initial`** (host-rendered runners) — the driver the host renders for an M3c physics node
+  commits a SECOND record of each case, before the first call of `step`, after `init`, of
+  exactly the shape above (Z6, issue #255). It is a deliverable of that runner and is
+  shape-checked like the `final` record. A harness self-test commits none, and nothing requires
+  it to.
+- **`history`** (a host-rendered runner on a node whose `drive` declares `loop`, when the IR
+  requires `state_history`) — a record of the full state at committed step `<k>`, every `every`
+  committed steps (`every` = 0: none), of the shape above.
+- **`series`** (the same node, when the IR requires `step_series`) — one row per committed step
+  the case ran, holding exactly the names the IR's `step_series` entry declares: `step`, and
+  `<v>_min` and `<v>_max` of every array state. Each row also carries its `t`, which is not a
+  series name. The driver folds the extrema over the committed state and carries a non-finite
+  committed cell into the row as `NaN`, and the host's series reader refuses such a row. Every
+  case has a series, with no row where it committed none; on a node that declares no
+  `step_series` the host does not read it.
+- **`restart_point`** — a record of a case's restart variables at a committed step. The capture
+  interface carries the group and no runner commits to it: a `restart point` is a `history`
+  record (`docs/GLOSSARY.md`).
 
-**What the driver captures.** A capture of a host-rendered driver holds every state variable, `step`
-and the writer's scalar `t`. Per case the driver reads the case through `__read_case` and the getters
+**What the driver captures.** A record of a host-rendered driver holds every state variable, with
+the `step` and the `t` of its commit. Per case the driver reads the case through `__read_case` and the getters
 (§6), allocates each state and fills it from the case's `initial_state`, and calls `init` if `drive`
-declares one on the state itself; a false `init` result leaves the case with both captures written
-and no step. It then writes the initial capture. On a node whose `drive` declares `loop` it calls
+declares one on the state itself; a false `init` result leaves the case with both records committed
+and no step. It then commits the `initial` record. On a node whose `drive` declares `loop` it calls
 `step` up to `n_step` times through work copies: an `inout` dummy receives a copy of the state and every `out`
 array a NaN-filled work array. A true result commits the call: the state is copied back, `step`
-advances, `t = t_start + step * dt`, a series entry is appended and a sample is written every `every`
+advances, `t = t_start + step * dt`, a `series` row is committed and a `history` record every `every`
 steps. A false result ends the loop on the last committed state. After `init` a loop node's driver
 reads `restart.step`; at `K` > 0 (a continuation case: another case continued from its step `K`,
 `phase_04_validate.md` §4-1) it restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
 state itself, each `out` starting at its `initial_state` content, and `step` becomes 1 only on a true
-result. After every call each logical `out` is written into its state as 1 or 0. It then writes the
-final capture and, on a `loop` node, the series file; after the last case, `__write_perf`.
+result. After every call each logical `out` is written into its state as 1 or 0. It then commits the
+`final` record and ends the case's output; after the last case, `__write_perf`.
 
 ## 4. JSON serialization (UTF-8)
 
-`perf.json` and every `.json` under `raw/` must be a UTF-8
-JSON object restorable by a standard JSON parser. Every finite numeric token follows
+`perf.json`, and every capture file a harness writes under `raw/` in an output format that is
+JSON, must be a UTF-8 JSON object restorable by a standard JSON parser. Every finite numeric token follows
 RFC 8259 (`.123` / `-.123` with a missing leading zero are forbidden).
 
 **A non-finite real** is written as the literal token `NaN`, `Infinity` or `-Infinity`

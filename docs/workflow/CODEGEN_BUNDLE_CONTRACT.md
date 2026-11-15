@@ -401,27 +401,29 @@ it to the spec would edit a certified artifact and force recertification for no 
 in generated behavior.
 
 ```
-"infrastructure/harness_fortran_cpu@0.10.0": {"sync_single_case@1"}
-"infrastructure/harness_cpp_gpu@0.4.0":      {"sync_single_case@1"}
-"infrastructure/harness_fortran_cpu_mpi@0.4.0": {"sync_single_case@1", "distributed_state@2"}
+"infrastructure/harness_fortran_cpu@0.11.0": {"sync_single_case@1", "capture_format_json@1"}
+"infrastructure/harness_cpp_gpu@0.5.0":      {"sync_single_case@1", "capture_format_json@1"}
+"infrastructure/harness_fortran_cpu_mpi@0.5.0": {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}
 ```
 
 `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
-version: at this writing the canonical interface block of `harness_fortran_cpu@0.10.0` §5.1
+version: at this writing the canonical interface block of `harness_fortran_cpu@0.11.0` §5.1
 (19 operations, 1 published type, `dp = float64`, `case_id_len = 64`), under the providing harness
 node's own `<spec_id>__` names and bound to its target language by that language's backend. The
 token names the block of whichever version the catalog holds, not one generation of it: `0.10.0`
 ([issue #589](https://github.com/seiya/spec2science/issues/589)) extends the block by `__read_case` and
 the typed getters under the same token, because no physics bundle calls an operation of the block,
 the language backend's `assert_harness_pin` is the mechanical enforcer of its text, and no consumer
-distinguishes a generation. Until `0.9.0`
+distinguishes a generation; `0.11.0`
+([issue #644](https://github.com/seiya/spec2science/issues/644)) replaces its emitters and snapshot writer by the
+capture operations under the same token, for the same reason. Until `0.9.0`
 ([issue #582](https://github.com/seiya/spec2science/issues/582)) the block also held the writers of two
 documents no runner writes now, and their types, which no consuming node's bundle code called.
 Its performance-record writer, which no consuming node's bundle code calls either (the
 host-rendered runner calls it, and so does the providing harness's
 own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
-shared-memory runtime gives the program itself (issue #512); `harness_fortran_cpu_mpi@0.4.0` §5.1
-begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.4.0` §5.1 likewise begins
+shared-memory runtime gives the program itself (issue #512); `harness_fortran_cpu_mpi@0.5.0` §5.1
+begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.5.0` §5.1 likewise begins
 with the block with the eight-argument writer,
 followed by `__block_size` (the threads per block the host imposes on the program's kernels,
 issue #512, which the CUDA C++ runner calls).
@@ -431,8 +433,13 @@ compares §5.1 against the certified
 harness IR's `public_api.signatures` and the generated harness source; this contract
 adds a name for the ABI, not a second checker of it.
 
+`capture_format_<id>@1` ([issue #644](https://github.com/seiya/spec2science/issues/644)) names the
+output format the harness's capture operations write, `<id>` a member of the `output_format`
+axis. The launch gate holds it equal to the target profile's `output.format`. No bundle requires
+it: the target decides the format, and a bundle writes no capture.
+
 `distributed_state@2` ([issue #512](https://github.com/seiya/spec2science/issues/512)) is defined as
-the distributed-state operations of `harness_fortran_cpu_mpi@0.4.0` §3.3, which that harness
+the distributed-state operations of `harness_fortran_cpu_mpi@0.5.0` §3.3, which that harness
 publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
 process grid the host imposes and its queries, the block partition of a global index range over
 the ranks along one grid dimension, the halo exchange of an array along one grid dimension, the
