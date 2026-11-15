@@ -86,8 +86,9 @@ name is one of `series_names`, which never hold `step` or `t`. `capture_commit(g
 closes that record: it holds exactly the values put into `group` since that group's previous
 commit, with `step` and `t`, and a `series` commit closes one row. `capture_close()` ends the
 case's output. A call with no case open (`capture_open`: with one open), with a `group` that is
-none of the five, with an array put into `series`, or with a `series` name outside
-`series_names` stops the program with a non-zero exit status. A non-finite value is written,
+none of the five, with an array put into `series`, with a `series` name outside
+`series_names`, or with `step` or `t` among `series_names` stops the program with a non-zero
+exit status. A non-finite value is written,
 never refused by the harness.
 
 - **`final`** — when `state_snapshots` is required, **exactly one record per case**: the state

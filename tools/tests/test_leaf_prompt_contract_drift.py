@@ -1185,7 +1185,7 @@ PINNED: dict[str, str] = {
     # contract state the capture interface; the Fortran runner-output binding gains the
     # trailing-blank rule; a new member, `capture_layout_document`, is the output format's
     # capture layout seeded after the contract in the harness trees.
-    "leaf-100": "33063d2cdb92d65651b8ed440baf657f94f533183928b820ef6dfb3e47d70c22",
+    "leaf-100": "a3ba868a7e70a224f818081f96379b635347c3b6dff190ddd8072158ff1a7924",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1254,10 +1254,10 @@ PINNED_READER: dict[str, str] = {
     "validate-judge-8": "bda4693f18f623c24da88bf8a8b2101c0cfe50524cfc1713b9ef909732c059c3",
     # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section, the
     # harness reviewer's rules, the Fortran binding and the new `capture_layout_document` member.
-    "generate-verify-11": "3f7bcd4029f99d3c42fd5634892a9518ce7d78dfca2daa76ea22a269d3cd2975",
+    "generate-verify-11": "6ac8c9e4c2e6f360541b8d9e6ac3218807da61c1ef55aec7dcab25546564f279",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
-    "validate-judge-9": "bf52fce369cdfc74ecdc344bbbd96b66f04d7e8a45a8417a7894249e04e28a4a",
+    "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
