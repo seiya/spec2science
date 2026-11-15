@@ -81,7 +81,8 @@ def continue_(out: Path, node: str) -> list[str]:
     runs (none, and no `go2.sh`, on an IR without a continuation); a refused restart point is
     printed and not run."""
     ir = yaml.safe_load(NODES[node][0].read_text())
-    files, refused = pe.write_continuation_inputs(ir, out / "run")
+    files, refused = pe.write_continuation_inputs(
+        ir, out / "run", pe.restart_point_reader(out / "run", "json"))
     for cid, why in sorted(refused.items()):
         print(f"{cid}: no restart point: {why}")
     if not files:
@@ -103,7 +104,8 @@ def judge(out: Path, node: str) -> int:
     ir = yaml.safe_load(NODES[node][0].read_text())
     problems = []
     if pe.continuation_cases(ir):
-        files, refused = pe.write_continuation_inputs(ir, out / "run")
+        files, refused = pe.write_continuation_inputs(
+            ir, out / "run", pe.restart_point_reader(out / "run", "json"))
         problems += [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
         rdir = out / "run" / pe.RESTART_DIRNAME
         for cf in files:
@@ -111,12 +113,13 @@ def judge(out: Path, node: str) -> int:
             if merged.exists() and not (rdir / "raw" / "state_snapshots" / "initial"
                                         / f"{cf.case_id}.json").exists():
                 continue   # an earlier `judge` checked and merged it (a re-run reads it again)
-            why = (pe.continuation_start_violation(ir, rdir, cf)
-                   or Conductor._merge_continuation_captures(rdir, out / "run", cf.case_id))
+            why = (pe.continuation_start_violation(ir, rdir, cf, "json")
+                   or Conductor._merge_continuation_captures(rdir, out / "run", cf.case_id, "json"))
             if why:
                 problems.append(f"{cf.case_id}: {why}")
     verdict = verdict_evaluator.evaluate_verdict(
-        ir["io_contract"]["tests"], pe.evaluate_primary_predicates(ir, out / "run"))
+        ir["io_contract"]["tests"], pe.evaluate_primary_predicates(ir, out / "run",
+                                                                   output_format="json"))
     expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
     wrong = {t["test_id"]: t["status"] for t in verdict["per_test"]
              if t["status"] != expected[t["test_id"]]}

@@ -211,6 +211,11 @@ def render_tuple() -> dict[str, str]:
         "codegen_bundle._is_node_key": _source_digest(cb._is_node_key),
         "codegen_bundle._projected_toolchain": _source_digest(cb._projected_toolchain),
         "codegen_bundle.language_facts": _source_digest(cb.language_facts),
+        # The directories the `test` recipe creates before the runner runs (issue #644, Part 3
+        # P3): the conductor's answer, which both writers hand the renderer, and the capture
+        # store it asks.
+        "Conductor._run_raw_dirs": _source_digest(wc.Conductor._run_raw_dirs),
+        **{f"capture store: {k}": v for k, v in capture_store_members().items()},
     }
 
 
@@ -288,6 +293,34 @@ def library_members() -> dict[str, str]:
                     rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
                     members[f"compiler/{backend_id} {capability} {label} {rel}"] = \
                         _file_digest(rel)
+    return members
+
+
+def capture_store_members() -> dict[str, str]:
+    """The capture store (issue #644, Part 3 P3): the neutral seam every reader and writer of a
+    run's captures goes through, the attribute row its dispatch resolves by, and — per
+    `output_format` record — whether it declares `capture_store`, and the package and module
+    files `capability_module` returns. The control file's `test` recipe creates the directories
+    it names, Validate.execute places and promotes a run's captures through it, and the verdict
+    reads them through it, so they are members of those three tuples (Build reads no capture and
+    carries none of them)."""
+    from tools.backends import registry
+
+    members: dict[str, str] = {
+        "tools/capture_store.py": _file_digest("tools/capture_store.py"),
+        "registry capture_store attr": registry_attr("capture_store")}
+    for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
+        if axis != "output_format":
+            continue
+        declared = "capture_store" in record.backend_provides
+        members[f"output_format/{backend_id} capture_store declared"] = json.dumps(declared)
+        if declared:
+            package = registry.load(axis, backend_id)
+            module = registry.capability_module(axis, backend_id, "capture_store")
+            for label, loaded in (("package", package), ("module", module)):
+                rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
+                members[f"output_format/{backend_id} capture_store {label} {rel}"] = \
+                    _file_digest(rel)
     return members
 
 
@@ -488,6 +521,9 @@ def execute_tuple() -> dict[str, str]:
         # The loader path every run of a binary linking external libraries is given (issue
         # #644), composed from the Build's recorded directories.
         **{f"libraries: {k}": v for k, v in library_members().items()},
+        # The store the run's captures are placed, promoted and read through (issue #644, Part
+        # 3 P3): the file names, the copy and the move left the conductor methods above for it.
+        **{f"capture store: {k}": v for k, v in capture_store_members().items()},
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
@@ -507,6 +543,9 @@ def verdict_tuple() -> dict[str, str]:
         "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
+        # The store the predicates' captures are found and decoded through (issue #644, Part 3
+        # P3): the file layout and the decoding left `primary_evidence.py` for it.
+        **{f"capture store: {k}": v for k, v in capture_store_members().items()},
         # The comparand selection (`resolve_comparands`, `COMPARAND_OWN_VERDICTS`), the
         # `aggregate_verdict.json#cross_target` author and the comparand binding were members
         # from R4-d (issue #324) through verdict-8. Issue #383 (verdict-9) took the comparison
@@ -1296,7 +1335,10 @@ PINNED_RENDER: dict[str, str] = {
     # file's `CASES ?=` default lists the base cases (`Conductor.read_base_case_ids`, a member).
     "render-19": "25d4f625ec8f39ab1d3df26ce44666785e6c801846c18134be12b7d1c0b9b7cb",
     # render-20: every control file declares LIBINC/LIBS and the flag string references $(LIBINC) (issue #644 P1).
-    "render-20": "9beddb37541b9193256787b04d308b31a230aebb066edc8b9add7fe605ca0665",
+    # Issue #644 Part 3 P3 re-pinned render-20 in place (the `test` recipe's directories are the capture store's, handed to the renderer (`capture_dirs`); the rendered bytes are unchanged).
+    # The digest main b3282e9b shipped is kept, so a revert under this version collides.
+    "render-20@b3282e9b": "9beddb37541b9193256787b04d308b31a230aebb066edc8b9add7fe605ca0665",
+    "render-20": "4edbfa8ac1b3d99c893a3b1e8250ffde561a41dfcf0f03171337c1a33c95dcfa",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
@@ -1611,7 +1653,10 @@ PINNED_BUILD: dict[str, str] = {
     # reader of its output are the same module and move together, and no build output moves.
     "build-4": "a26c5e752d6e83f924bb8401485db6dfccf2c1d83f673aa44b90f55f9da5d20e",
     # build-5: the library variables on every build, the post-build symbol checks, the library members (issue #644 P1).
-    "build-5": "061cd7e29290976e3858f2c8b953f756e44d2544d41ed4ec145bf4b1587e3dc3",
+    # Issue #644 Part 3 P3 re-pinned build-5 in place (`make/control_file.py` takes `capture_dirs`; the build is unchanged).
+    # The digest main b3282e9b shipped is kept, so a revert under this version collides.
+    "build-5@b3282e9b": "061cd7e29290976e3858f2c8b953f756e44d2544d41ed4ec145bf4b1587e3dc3",
+    "build-5": "7854bf7dac3a0e053471b12e76ae632abe468b20ba98d5d14c1d675364063b10",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
@@ -1963,7 +2008,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # file of a loop node carries `restart.step`.
     "execute-18": "455401740956c07c7757572260025941d80ab30f009777f32e08a54ac14bea97",
     # execute-19: the loader path of the Build's library directories on every run, the library members (issue #644 P1).
-    "execute-19": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
+    # Issue #644 Part 3 P3 re-pinned execute-19 in place (the run's captures are placed, promoted and read through the capture store; no run output changes).
+    # The digest main b3282e9b shipped is kept, so a revert under this version collides.
+    "execute-19@b3282e9b": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
+    "execute-19": "cc250ea6cc74b1b3783ca96ec5fb5d3d34ba63ffa0e7ef6c5b8399cbec4a6d85",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2171,7 +2219,10 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-17 (issue #632, system tier Part 2 P1): `primary_evidence.py` evaluates a
     # continuation case as its base, and gains gate (p), the continuation writer and the start
     # check.
-    "verdict-17": "1c567db76c7df37709810a3807c9e8d529d8298b48b66c198103622a0949b4a2",
+    # Issue #644 Part 3 P3 re-pinned verdict-17 in place (the predicates' captures are read through the capture store; no verdict changes).
+    # The digest main b3282e9b shipped is kept, so a revert under this version collides.
+    "verdict-17@b3282e9b": "1c567db76c7df37709810a3807c9e8d529d8298b48b66c198103622a0949b4a2",
+    "verdict-17": "d23dd1ffdd2a71d52e0fc5747ab210330304b5ee1f9d7ee4317491f229aebb6c",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 

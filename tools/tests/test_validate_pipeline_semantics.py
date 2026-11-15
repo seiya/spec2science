@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import yaml
 
 import tools.validate_pipeline_semantics as vps
+from tools import capture_store
 from tools.backends import registry as backend_registry
 from tools.backends.language.fortran import structure as fortran_structure
 from tools.backends.language.fortran.lines import normalize_fortran_line
@@ -132,7 +133,8 @@ def _validate_component_generated_surface(repo_root, execution, model_files, vio
 def _validate_runner_source_files(execution, runner_files, violations, known_case_ids=None):
     vps._validate_runner_source_files(
         execution, runner_files, violations, known_case_ids,
-        bundle=fortran_bundle, source_reading=fortran_source)
+        bundle=fortran_bundle, source_reading=fortran_source,
+        format_facts=capture_store.store("json").FORMAT_FACTS)
 
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import install_target_profile
@@ -9787,7 +9789,9 @@ end program shallow_water2d_runner
 
         def run(src: str, case_ids: set[str] | None = None) -> list[str]:
             out: list[str] = []
-            _validate_runner_snapshot_filenames(runner, src.lower(), out, case_ids)
+            _validate_runner_snapshot_filenames(
+                runner, src.lower(), out, case_ids,
+                format_facts=capture_store.store("json").FORMAT_FACTS)
             return out
 
         # Hardcoded sequential name, no per-case construction -> flagged.
@@ -14263,7 +14267,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             with mock.patch.object(tp_mod, "harness_node_key_for_target",
                                    return_value="infrastructure/h@0.3.0"):
                 vps._validate_harness_reported_block(
-                    Path(tmp), execution, mock.Mock(block_size=128), violations)
+                    Path(tmp), execution, mock.Mock(block_size=128, output_format="json"),
+                    violations)
         self.assertEqual(len(violations), 1, violations)
         self.assertIn("z.json", violations[0])
 
@@ -15990,7 +15995,8 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
             req = wc.build_launch_request(
                 refs, step=step, substep=substep, orchestration_id="o",
                 orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-                workflow_mode="dev", case_ids=("a",), evidence_artifacts=("state_snapshots",))
+                workflow_mode="dev", case_ids=("a",), evidence_artifacts=("state_snapshots",),
+                output_format="json")
             prepared = prepare_launch_request_payload(req)
             self.assertIsNone(prepared.get("skill_name"))
             self.assertIsNone(prepared.get("skill_ref"))
@@ -16045,7 +16051,8 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
             req = wc.build_launch_request(
                 refs, step=step, substep=substep, orchestration_id="o",
                 orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-                workflow_mode="dev", case_ids=("a",), evidence_artifacts=("state_snapshots",))
+                workflow_mode="dev", case_ids=("a",), evidence_artifacts=("state_snapshots",),
+                output_format="json")
             self.assertTrue(req.get("deterministic"))
             self.assertNotIn("skill_ref", req)
             prompt = render_launch_prompt_text(req)
@@ -21530,6 +21537,18 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
                 self.assertIn(relative, v[0])
                 self.assertIn("the driver's capture carries no 'step'", v[0])
 
+    def test_a_state_record_that_does_not_decode_is_passed_over(self) -> None:
+        # The verdict's reader refuses it (a structural record), so this gate names it in no
+        # violation — reporting it here would move the run from the verdict's route to the
+        # post_execute one (issue #644 P3 keeps main's). Kills: a violation per undecodable
+        # record, and reading "no record decoded" as "no record".
+        for relative in ("snapshot000.json", "initial/snapshot000.json",
+                         "history/snapshot000__1.json"):
+            with self.subTest(relative=relative):
+                self.assertEqual(self._violations(
+                    lambda snapshots, relative=relative:
+                    (snapshots / relative).write_text("{broken", encoding="utf-8")), [])
+
     def test_a_harness_s_own_snapshot_without_step_is_admitted(self) -> None:
         # The polarity's other half: only the driver writes `initial/`, which is how the gate
         # knows whose capture this is. No `step_series`, no `initial/`, and no `step`.
@@ -21601,8 +21620,10 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
 
         def as_text(snapshots: Path) -> None:
             (snapshots / "series" / "snapshot000.json").write_text("{", encoding="utf-8")
-        self.assertTrue(any("must be json object" in x for x in self._violations(as_list)))
-        self.assertTrue(any("invalid json" in x for x in self._violations(as_text)))
+        self.assertTrue(any(x.endswith("series/snapshot000.json: not a JSON object")
+                            for x in self._violations(as_list)))
+        self.assertTrue(any("series/snapshot000.json: unreadable: " in x
+                            for x in self._violations(as_text)))
 
     def test_a_series_file_on_a_node_that_declares_no_step_series_is_refused(self) -> None:
         def change(snapshots: Path) -> None:
@@ -23053,7 +23074,7 @@ class ComposingInitPostGenerateTests(unittest.TestCase):
             rules=rules, compiler="gfortran", bin_name=f"{drv.CMP_SUB}_runner",
             cases_default="a1", model_stem=f"{drv.CMP_SUB}_model",
             runner_stem=f"{drv.CMP_SUB}_runner", closure=["harness_fortran_cpu", drv.CMP_MEM],
-            initial_capture_dir=True), encoding="utf-8")
+            capture_dirs=capture_store.run_dirs("json", host_rendered=True)), encoding="utf-8")
         # The composite's one counted loop is the sequence of sub-steps, which carries a
         # dependence: its plan declines OpenMP, the floor's one exemption.
         (src.parent / "codegen_bundle.json").write_text(json.dumps({"target_lowering_plan": {

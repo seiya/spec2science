@@ -49,7 +49,7 @@ from typing import Any, ClassVar, NamedTuple
 
 import yaml
 
-from tools import usage_reset
+from tools import capture_store, usage_reset
 from tools.backends import registry as backend_registry
 from tools.execution_sites import Site
 from tools.host_execution import KERNEL_TRACE_ARTIFACT
@@ -1566,6 +1566,7 @@ def build_launch_request(
     evidence_artifacts: tuple[str, ...] = ("state_snapshots",),
     exe_name: str | None = None,
     runner_host_authored: bool = False,
+    output_format: str = "",
     device_trace: bool = False,
     checked_build: bool = False,
     repair: dict[str, str] | None = None,
@@ -1583,7 +1584,9 @@ def build_launch_request(
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
-    case_ids is required for validate.execute (per-case raw/state_snapshots paths).
+    case_ids is required for validate.execute (the per-case capture paths), and with them
+    output_format, the target's (`TargetProfile.output_format`): its capture store names the
+    files a case's records are delivered in.
     evidence_artifacts is the IR's required raw-evidence artifact types (validate.execute
     only); it drives which raw/* paths are deliverables so an IR that does not require
     state_snapshots is not forced to produce them (phase_04 §44).
@@ -1798,15 +1801,19 @@ def build_launch_request(
             ]
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
             # artifacts the IR's required_evidence declares. A host-rendered runner (Z6, issue
-            # #255) additionally writes the case's INITIAL capture under `initial/` — the same
+            # #255) additionally writes the case's INITIAL capture — the same
             # per-case shape, taken before the case's step; a hand-authored harness runner
-            # writes none, so the deliverable is keyed on `runner_host_authored`.
+            # writes none, so the deliverable is keyed on `runner_host_authored`. Which file
+            # holds each is the target's capture store's (`expected_layout`).
             if "state_snapshots" in evidence_artifacts:
+                snaps = f"{rundir}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}"
+                store = capture_store.store(output_format)
                 for cid in case_ids:
-                    outs.append(f"{rundir}/raw/state_snapshots/{cid}.json")
+                    layout = store.expected_layout(cid)
+                    outs.append(f"{snaps}/{layout[capture_store.FINAL]}")
                     if runner_host_authored:
-                        outs.append(f"{rundir}/raw/state_snapshots/initial/{cid}.json")
-                outs.append(f"{rundir}/raw/state_snapshots/snapshot_schema.json")
+                        outs.append(f"{snaps}/{layout[capture_store.INITIAL]}")
+                outs.append(f"{snaps}/{capture_store.SNAPSHOT_SCHEMA_FILENAME}")
             # A target whose parallel backend declares `device_trace` runs the binary under the
             # trace, and execute promotes the trace's per-kernel summary (issue #307).
             if device_trace:
@@ -3906,7 +3913,7 @@ def _runner_host_authored_m3c(refs: NodeRefs) -> bool:
     narrowed the AGENTIC contract-doc set while a pure launch emptied `skill_must_read_refs`
     regardless; Z4 (issue #171) deleted that reader with the rest of the must-read machinery.
     Since Z6 (issue #255) `build_launch_request` reads the flag again, for ONE decision on the
-    validate.execute request only: whether the `raw/state_snapshots/initial/<case_id>.json`
+    validate.execute request only: whether the cases' initial
     captures are deliverables — and THAT caller passes the node's real answer
     (`_conductor_authors_runner`, in `run_substep`), never this constant, so the literal here
     stays inert and recorded provenance on the compile path. It is written down because this
@@ -6288,7 +6295,6 @@ class Conductor:
         # this profile field plus a run_syntax_check adapter); unset keeps the language's default.
         # A parallel backend's compiler wrapper replaces both (issue #316).
         compiler = build_compiler(tc)
-        authors_runner = self._conductor_authors_runner(refs)
         # CASES default baked from the IR; Validate.execute overrides CASES/SPEC via the env so
         # `make test` invokes the runner identically to run_program (`--cases <spec>
         # <case_id>...`). The runner does not read the spec, and it reads `case_inputs/` beside the
@@ -6303,7 +6309,7 @@ class Conductor:
             runner_stem=f"{refs.spec_id}_runner",
             # Dependency closure (Model B). Empty for leaf nodes -> the leaf template.
             closure=self._dependency_closure(refs),
-            initial_capture_dir=authors_runner,
+            capture_dirs=self._run_raw_dirs(refs),
         )
         path = self.repo_root / refs.source_dir() / "src" / self._control_file_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -6644,7 +6650,7 @@ class Conductor:
             "compiler": build_compiler(tc),
             "bin_name": self._resolve_exe_name(refs),
             "cases_default": " ".join(self.read_base_case_ids(refs)),
-            "initial_capture_dir": self._conductor_authors_runner(refs),
+            "capture_dirs": self._run_raw_dirs(refs),
         }
 
     @staticmethod
@@ -9344,7 +9350,8 @@ class Conductor:
                 "the IR declares no io_contract")
 
         excerpt = raw_evidence_excerpt(
-            self.repo_root / paths["raw_evidence_excerpt_document"], io_contract)
+            self.repo_root / paths["raw_evidence_excerpt_document"], io_contract,
+            output_format=self.target.output_format)
         context = {key: _read(key) for key, _ in self._LEAF_JUDGE_RUN_NODE_DOCUMENTS}
         context.update({
             "tests_document": _read("tests_document"),
@@ -10431,11 +10438,11 @@ class Conductor:
         if not isinstance(tcs, list):
             return ()
         # strip() so the case_id identity is the SAME across the runner argv
-        # (--cases), the expected raw/state_snapshots/<case_id>.json deliverable
+        # (--cases), the expected per-case capture deliverable
         # path, and the validator's _case_ids_for_execution exemption set.
         #
-        # This case_id becomes a FILESYSTEM PATH — the runner writes
-        # raw/state_snapshots/<case_id>.json — so a `/` or `..` would let the run write outside
+        # This case_id becomes a FILESYSTEM PATH — the runner writes a file named after it under
+        # the run's capture directory — so a `/` or `..` would let the run write outside
         # its directory. The Compile gate `_validate_case_ids` rejects such an id for every node,
         # but this is the shared runtime boundary (M3c and non-M3c alike), so drop any unsafe
         # token here too: never put a traversal string on the argv, even from a hand-crafted IR
@@ -12913,35 +12920,18 @@ class Conductor:
 
     @staticmethod
     def _merge_continuation_captures(restart_dir: Path, shape_dir: Path,
-                                     case_id: str) -> str | None:
+                                     case_id: str, output_format: str) -> str | None:
         """Move continuation ``case_id``'s captures from its shape's `restart/` directory into
-        the shape's own capture directory (issue #632): exactly the names the driver writes for
-        it — `<C>.json` there and below `initial/` and `series/`, and `<C>__<k>.json` (`<k>`
-        digits) below `history/` — and no other file, so the captures of another continuation
+        the shape's own capture directory (issue #632): exactly the files the target's capture
+        store names for the case (`move_case`: its final, initial and series records and its
+        samples) and no other file, so the captures of another continuation
         that failed its start check stay behind whatever its id (`<C>__x` included). A name that
         exists there is refused (None when every file moved, else the reason, and nothing is
         moved)."""
-        src_root = restart_dir / "raw" / "state_snapshots"
-        dst_root = shape_dir / "raw" / "state_snapshots"
-        sample = re.compile(re.escape(case_id) + r"__[0-9]+\.json")
-        moves: list[tuple[Path, Path]] = []
-        for sub in ("", "initial", "history", "series"):
-            source = src_root / sub if sub else src_root
-            if not source.is_dir():
-                continue
-            for f in sorted(source.glob("*.json")):
-                if not (sample.fullmatch(f.name) if sub == "history"
-                        else f.name == f"{case_id}.json"):
-                    continue
-                dest = (dst_root / sub if sub else dst_root) / f.name
-                if dest.exists():
-                    return (f"its capture {f.name} names a file the first pass wrote "
-                            f"({'/'.join(p for p in (sub, f.name) if p)})")
-                moves.append((f, dest))
-        for f, dest in moves:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(f), str(dest))
-        return None
+        reason = capture_store.store(output_format).move_case(
+            capture_store.snapshot_dir(restart_dir), capture_store.snapshot_dir(shape_dir),
+            case_id)
+        return None if reason is None else str(reason)
 
     def _promote_run_evidence(self, run_tmp: Path, node_dir: Path,
                               artifacts: list[str]) -> list[str]:
@@ -12959,52 +12949,49 @@ class Conductor:
         node_ref = self._rel(node_dir)
         for art in artifacts:
             if art == "state_snapshots":
-                sdst = raw_dst / "state_snapshots"
+                sdst = capture_store.snapshot_dir(node_dir)
                 sdst.mkdir(parents=True, exist_ok=True)
-                for f in sorted((run_tmp / "raw" / "state_snapshots").glob("*.json")):
-                    shutil.copy2(f, sdst / f.name)
-                    raw_refs.append(f"{node_ref}/raw/state_snapshots/{f.name}")
-                # What the host-rendered driver writes beside the final captures (issue #255,
-                # issue #589): the initial capture, the samples and the series, flat files one
-                # directory down. A harness node's own runner writes none of them: no empty dir.
-                for sub in ("initial", "history", "series"):
-                    source = run_tmp / "raw" / "state_snapshots" / sub
-                    files = sorted(source.glob("*.json")) if source.is_dir() else []
-                    # An earlier attempt's sample or series must not be read as this run's: the
-                    # final captures are overwritten by name, and a sample of another step is not.
-                    for stale in (sdst / sub).glob("*.json") if (sdst / sub).is_dir() else ():
-                        stale.unlink()
-                    if files:
-                        (sdst / sub).mkdir(exist_ok=True)
-                    for f in files:
-                        shutil.copy2(f, sdst / sub / f.name)
-                        raw_refs.append(f"{node_ref}/raw/state_snapshots/{sub}/{f.name}")
+                # The target's capture store copies what the run wrote (`copy_run`): the final
+                # captures, and what the host-rendered driver writes beside them (issue #255,
+                # issue #589) — the initial capture, the samples and the series. An earlier
+                # attempt's sample or series is removed, so it is not read as this run's; a
+                # harness node's own runner writes none of them, and no empty directory is made.
+                snaps_ref = f"{node_ref}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}"
+                for name in capture_store.store(self.target.output_format).copy_run(
+                        capture_store.snapshot_dir(run_tmp), sdst):
+                    raw_refs.append(f"{snaps_ref}/{name}")
         return raw_refs
 
     def _author_snapshot_schema(self, ir: dict[str, Any], node_dir: Path) -> str | None:
-        """Author raw/state_snapshots/snapshot_schema.json from the IR schema +
-        the per-case files actually present. Deterministic (no judgment)."""
+        """Author the capture directory's `snapshot_schema.json` from the IR schema +
+        the per-case final captures the target's capture store finds. Deterministic (no
+        judgment)."""
         io = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         rr = (io.get("raw_requirements") or {}) if isinstance(io, dict) else {}
         entry = next((e for e in (rr.get("required_evidence") or [])
                       if isinstance(e, dict) and e.get("artifact") == "state_snapshots"), None)
         if entry is None:
             return None
-        sdir = node_dir / "raw" / "state_snapshots"
+        sdir = capture_store.snapshot_dir(node_dir)
         if not sdir.exists():
             return None
         schema = entry.get("schema") or {}
-        present = {f.name for f in sdir.glob("*.json") if f.name != "snapshot_schema.json"}
+        store = capture_store.store(self.target.output_format)
+
+        def final_name(case_id: str) -> str:
+            return str(store.expected_layout(case_id)[capture_store.FINAL])
+
+        present = {final_name(cid) for cid in store.case_ids(sdir)}
         # Order samples by IR test_case_set declaration order (fallback: sorted).
         # strip() to match the stripped case_id identity read_case_ids imposes on
         # the runner argv / on-disk <case_id>.json name (else a whitespace-bearing
         # case_id misses `present` and silently drops to sorted order).
         case = (ir.get("case") or {}) if isinstance(ir, dict) else {}
         tcs = case.get("test_case_set") or [] if isinstance(case, dict) else []
-        ordered = [f"{c['case_id'].strip()}.json" for c in tcs
+        ordered = [final_name(c["case_id"].strip()) for c in tcs
                    if isinstance(c, dict) and isinstance(c.get("case_id"), str)
                    and c["case_id"].strip()
-                   and f"{c['case_id'].strip()}.json" in present]
+                   and final_name(c["case_id"].strip()) in present]
         samples = ordered + sorted(present - set(ordered))
         doc = {
             "variables": schema.get("variables", []),
@@ -13012,9 +12999,10 @@ class Conductor:
             "time_shape_expr": schema.get("time_shape_expr"),
             "samples": samples,
         }
-        (sdir / "snapshot_schema.json").write_text(
+        (sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        return f"{self._rel(node_dir)}/raw/state_snapshots/snapshot_schema.json"
+        return (f"{self._rel(node_dir)}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}/"
+                f"{capture_store.SNAPSHOT_SCHEMA_FILENAME}")
 
     def _snapshot_deliverable_gap(self, snapshots_dir: Path, case_ids: list[str],
                                   artifacts: list[str], *,
@@ -13022,58 +13010,63 @@ class Conductor:
                                   series_required: bool = False) -> str:
         """Diagnostic for a per-case snapshot deliverable mismatch, else "".
 
-        Validate.execute's deliverable gate (build_launch_request) requires one
-        raw/state_snapshots/<case_id>.json per case. The runner names snapshots
-        freely, so a fixed/sequential name (snapshot_0001.json) or a combined file
-        leaves the expected <case_id>.json absent and the deliverable gate fails
+        Validate.execute's deliverable gate (build_launch_request) requires one final
+        capture per case, in the file the target's capture store names for it
+        (`expected_layout`). A hand-authored runner names its files
+        freely, so a fixed/sequential name or a combined file
+        leaves the expected one absent and the deliverable gate fails
         with no recorded cause. This returns an actionable message (expected vs
         written vs missing) so the failure routes to Generate with a clear reason
         instead of an opaque deliverable-missing fail. Empty when snapshots are not
-        required or every expected <case_id>.json is present.
+        required or every expected file is present.
 
         ``snapshots_dir`` is the runner's THIS-attempt output dir (the per-run tmp
-        raw/state_snapshots), so the written set is fresh by construction — a stale
+        capture directory), so the written set is fresh by construction — a stale
         correctly-named file from a prior attempt in the canonical node dir cannot
         mask a real gap (matching the gate's mtime freshness semantics).
         """
         if "state_snapshots" not in artifacts or not case_ids:
             return ""
-        present = ({f.name for f in snapshots_dir.glob("*.json")
-                    if f.name != "snapshot_schema.json"}
-                   if snapshots_dir.exists() else set())
-        expected = {f"{cid}.json" for cid in case_ids}
-        missing = sorted(expected - present)
+        store = capture_store.store(self.target.output_format)
+        groups = [capture_store.FINAL]
         if initial_required:
-            # The host-rendered runner's initial captures (Z6, issue #255), under `initial/`.
-            initial_dir = snapshots_dir / "initial"
-            present_initial = ({f.name for f in initial_dir.glob("*.json")}
-                               if initial_dir.exists() else set())
-            missing += [f"initial/{name}" for name in sorted(expected - present_initial)]
-            present |= {f"initial/{name}" for name in present_initial}
+            # The host-rendered runner's initial captures (Z6, issue #255).
+            groups.append(capture_store.INITIAL)
         if series_required:
             # The driver's per-step series (issue #589), which a refused first step still writes.
-            series_dir = snapshots_dir / "series"
-            present_series = ({f.name for f in series_dir.glob("*.json")}
-                              if series_dir.exists() else set())
-            missing += [f"series/{name}" for name in sorted(expected - present_series)]
-            present |= {f"series/{name}" for name in present_series}
+            groups.append(capture_store.SERIES)
+        # Per group: the file each case owes and the files the runner wrote, by name relative
+        # to the capture directory (the store's layout).
+        present: set[str] = set()
+        missing: list[str] = []
+        for group in groups:
+            wrote = {str(store.expected_layout(cid)[group])
+                     for cid in store.case_ids(snapshots_dir, group)}
+            owed = {str(store.expected_layout(cid)[group]) for cid in case_ids}
+            missing += sorted(owed - wrote)
+            present |= wrote
         if not missing:
             return ""
+        expected = sorted(str(store.expected_layout(cid)[capture_store.FINAL])
+                          for cid in set(case_ids))
+        snaps = "/".join(capture_store.SNAPSHOT_DIR_PARTS)
+        layout = store.expected_layout()
         return (
             "[execute fail: snapshot deliverable mismatch] Validate.execute requires "
-            "one raw/state_snapshots/<case_id>.json per case"
-            + (" (and one raw/state_snapshots/initial/<case_id>.json, the host-rendered "
+            f"one {snaps}/{layout[capture_store.FINAL]} per case"
+            + (f" (and one {snaps}/{layout[capture_store.INITIAL]}, the host-rendered "
                "runner's capture before the first call)" if initial_required else "")
-            + (" and one raw/state_snapshots/series/<case_id>.json" if series_required else "")
-            + f". expected={sorted(expected)}; runner wrote={sorted(present)}; "
-            f"missing={missing}. Name each snapshot exactly <case_id>.json, built "
-            "from the case_id passed via --cases (e.g. trim(case_id)//'.json'). "
+            + (f" and one {snaps}/{layout[capture_store.SERIES]}" if series_required else "")
+            + f". expected={expected}; runner wrote={sorted(present)}; "
+            f"missing={missing}. Name each snapshot exactly {layout[capture_store.FINAL]}, built "
+            "from the case_id passed via --cases (e.g. trim(case_id)//"
+            f"'{store.FORMAT_FACTS['suffix']}'). "
             "Canonical: phase_02_generate.md / phase_04_validate.md §43."
         )
 
     @staticmethod
     def _shape_state_agreement(ir: dict[str, Any], reference_dir: Path, label: str,
-                               shape_dir: Path) -> dict[str, Any]:
+                               shape_dir: Path, output_format: str) -> dict[str, Any]:
         """Whether the state one execution shape captured agrees with the serial reference's,
         under the IR's cross-target predicates (issue #512): the comparison those predicates
         state between two targets' runs of one node holds between two shapes of one run too —
@@ -13096,11 +13089,14 @@ class Conductor:
         if not cross_target_predicates(ir):
             return {"status": "not_applicable"}
         try:
-            comparand = ComparandEvidence(target_id=label, pipeline_ref="", run_id="",
-                                          run_dir=shape_dir,
-                                          evidence=comparand_evidence_sha256(shape_dir))
-            records = evaluate_primary_predicates(ir, reference_dir, comparands=[comparand],
-                                                  cross_target_only=True)
+            # Both directories are this run's, so both are read in the target's own format.
+            comparand = ComparandEvidence(
+                target_id=label, pipeline_ref="", run_id="", run_dir=shape_dir,
+                evidence=comparand_evidence_sha256(shape_dir, output_format),
+                output_format=output_format)
+            records = evaluate_primary_predicates(
+                ir, reference_dir, output_format=output_format, comparands=[comparand],
+                cross_target_only=True)
         except PrimaryEvidenceError as exc:
             return {"status": "unevaluable", "error": str(exc)[:400]}
         evaluated = [(r, ev) for r in records for ev in (r.get("evaluated") or [])
@@ -13125,7 +13121,8 @@ class Conductor:
                 "failures": failures[:5], "worst": worst}
 
     @staticmethod
-    def _shape_verdict(ir: dict[str, Any], shape_dir: Path) -> dict[str, Any] | None:
+    def _shape_verdict(ir: dict[str, Any], shape_dir: Path,
+                       output_format: str) -> dict[str, Any] | None:
         """The host's verdict over one execution shape's captures, as `{self_verdict, per_test:
         {test_id: status}}` (issue #582, D6), or None when it cannot be evaluated at all (a
         malformed test or predicate; a capture that is absent or unreadable is a structural record
@@ -13135,7 +13132,8 @@ class Conductor:
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         try:
             doc = evaluate_verdict(io_contract.get("tests"),
-                                   evaluate_primary_predicates(ir, shape_dir))
+                                   evaluate_primary_predicates(
+                                       ir, shape_dir, output_format=output_format))
         except Exception:  # noqa: BLE001 - as `_author_execute_verdict`: a malformed IR is a named
             # outcome, never a transport fail_closed (`target_cases: 5` raises TypeError).
             return None
@@ -13145,15 +13143,16 @@ class Conductor:
                 "per_test": {t["test_id"]: t["status"] for t in doc["per_test"]}}
 
     @staticmethod
-    def _ir_unevaluable(ir: dict[str, Any], run_dir: Path) -> bool:
+    def _ir_unevaluable(ir: dict[str, Any], run_dir: Path, output_format: str) -> bool:
         """Whether the host cannot evaluate the IR's tests over a run at all, which says nothing
         of that run."""
-        return Conductor._shape_verdict(ir, run_dir) is None
+        return Conductor._shape_verdict(ir, run_dir, output_format) is None
 
     @staticmethod
     def _author_quality_check(node_dir: Path, qc_cmd_id: str | None,
                               preset: str, *, ir: dict[str, Any], reference_dir: Path,
                               shape_runs: list[dict[str, Any]], launcher: bool,
+                              output_format: str,
                               block_imposed: bool = False,
                               threads_checked: bool = False) -> str:
         """quality_check.json = the run of every execution shape compared with the serial
@@ -13178,7 +13177,8 @@ class Conductor:
         one thread per rank (`threads_checked`, `TargetProfile.thread_count_observable`), the
         thread count it reports must be the shape's. The top-level
         `checks` and `comparison` are the certified shape's, which the post-execute gate reads
-        as it did before the sweep."""
+        as it did before the sweep. `output_format` is the target's: every shape's captures and
+        the reference's are read through its capture store."""
         def _object(path: Path) -> dict[str, Any]:
             # A runner output that is unreadable, not UTF-8, not JSON or not an object reads as
             # empty: the comparison then fails, and the post-execute gate names the file.
@@ -13188,11 +13188,12 @@ class Conductor:
                 return {}
             return doc if isinstance(doc, dict) else {}
 
-        qc_verdict = Conductor._shape_verdict(ir, reference_dir)
+        qc_verdict = Conductor._shape_verdict(ir, reference_dir, output_format)
         shapes: list[dict[str, Any]] = []
         for entry in shape_runs:
             shape, shape_dir = entry["shape"], Path(entry["dir"])
-            verdict = Conductor._shape_verdict(ir, shape_dir) if entry["ok"] else None
+            verdict = (Conductor._shape_verdict(ir, shape_dir, output_format)
+                       if entry["ok"] else None)
             row: dict[str, Any] = {
                 **shape.record(), "command_id": entry.get("command_id"),
                 "run_ok": bool(entry["ok"]),
@@ -13222,7 +13223,8 @@ class Conductor:
                                        and row["observed_threads_per_rank"]
                                        == shape.threads_per_rank)
             row["state_agreement"] = (
-                Conductor._shape_state_agreement(ir, reference_dir, shape.label, shape_dir)
+                Conductor._shape_state_agreement(ir, reference_dir, shape.label, shape_dir,
+                                                 output_format)
                 if entry["ok"] else {"status": "not_run"})
             row["status"] = "pass" if (
                 row["run_ok"] and row["verdict_available"]
@@ -13366,14 +13368,12 @@ class Conductor:
 
     def _run_raw_dirs(self, refs: NodeRefs) -> tuple[tuple[str, ...], ...]:
         """The directories created under a run's working directory before the binary runs, each
-        as its path parts: `raw/state_snapshots/` for every runner, and `initial/`, `history/` and
-        `series/` below it only for the runner the host renders (see `_execute_inproc`). One
-        answer, read by `Validate.execute`, its remote job and a `workshop leaf`'s wrapper
-        `run`."""
-        base = ("raw", "state_snapshots")
-        if not self._conductor_authors_runner(refs):
-            return (base,)
-        return tuple((*base, sub) for sub in ("initial", "history", "series"))
+        as its path parts (`capture_store.run_dirs`): the capture directory for every runner,
+        and the target's capture store's own directories below it only for the runner the host
+        renders (see `_execute_inproc`). One answer, read by `Validate.execute`, its remote job,
+        a `workshop leaf`'s wrapper `run` and the build control file's `test` recipe."""
+        return capture_store.run_dirs(self.target.output_format,
+                                      host_rendered=self._conductor_authors_runner(refs))
 
     def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
@@ -13571,12 +13571,12 @@ class Conductor:
                 f"{exc}") from exc
 
         # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
-        # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3): `raw/state_snapshots/` for
-        # every runner, and `initial/`, `history/`, `series/` only for the runner the host renders,
-        # which opens a file there and fails without it. A hand-authored runner writes none of
+        # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3; `_run_raw_dirs`): the capture
+        # directory for every runner, and the capture store's directories below it only for the
+        # runner the host renders, which opens a file there and fails without it. A hand-authored runner writes none of
         # them, and its strict fan-out self-test (`case_fanout`) refuses an entry it did not write
         # (issue #368). The build control file's quality-check recipe pre-creates the same set
-        # (`initial_capture_dir`), so the run and the quality check see one directory set.
+        # (`capture_dirs`, this same answer), so the run and the quality check see one directory set.
         authors_runner = self._conductor_authors_runner(refs)
         run_raw_dirs = self._run_raw_dirs(refs)
 
@@ -13637,6 +13637,7 @@ class Conductor:
         from tools.primary_evidence import (
             RESTART_DIRNAME,
             continuation_start_violation,
+            restart_point_reader,
             write_continuation_inputs,
         )
 
@@ -13654,7 +13655,8 @@ class Conductor:
             pre-created capture directories."""
             shape_dir = shape_dirs[label]
             try:
-                files, refused = write_continuation_inputs(ir, shape_dir)
+                files, refused = write_continuation_inputs(
+                    ir, shape_dir, restart_point_reader(shape_dir, target.output_format))
             except PrimaryEvidenceError as exc:
                 raise RuntimeError(
                     f"the continuation case files of {refs.ir_ref} could not be written at "
@@ -13983,9 +13985,10 @@ class Conductor:
                             **_stderr_head_and_tail(res.get("stderr") or "")})})
                     causes[cf.case_id] = "its process did not exit 0"
                 else:
-                    why = continuation_start_violation(ir, rdir, cf)
+                    why = continuation_start_violation(ir, rdir, cf, target.output_format)
                     if why is None:
-                        why = self._merge_continuation_captures(rdir, shape_dir, cf.case_id)
+                        why = self._merge_continuation_captures(rdir, shape_dir, cf.case_id,
+                                                                target.output_format)
                     if why is not None:
                         causes[cf.case_id] = why
                         row["start_check"] = why
@@ -14043,8 +14046,8 @@ class Conductor:
         schema_ref = self._author_snapshot_schema(ir, node_dir)
         if schema_ref:
             raw_refs.append(schema_ref)
-        # Per-case snapshot deliverable check (build_launch_request requires one
-        # raw/state_snapshots/<case_id>.json per case). Compute a clear diagnostic
+        # Per-case snapshot deliverable check (build_launch_request requires one final
+        # capture per case). Compute a clear diagnostic
         # here so a misnamed/combined snapshot fails with an actionable cause rather
         # than the opaque determine_substep_status deliverable-presence fail. Read
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
@@ -14057,7 +14060,7 @@ class Conductor:
                              for cid in cont_ids if cid not in cont_missing
                              and "run" not in restart_files})
         snapshot_gap = self._snapshot_deliverable_gap(
-            run_tmp / "raw" / "state_snapshots",
+            capture_store.snapshot_dir(run_tmp),
             [c for c in case_ids if c not in cont_missing], artifacts,
             initial_required=authors_runner,
             series_required="step_series" in artifacts)
@@ -14068,8 +14071,8 @@ class Conductor:
                 + ([snapshot_gap] if snapshot_gap else []))
 
         def _captured(run_dir: Path) -> bool:
-            return any(p.name != "snapshot_schema.json"
-                       for p in (run_dir / "raw" / "state_snapshots").glob("*.json"))
+            return bool(capture_store.store(target.output_format).case_ids(
+                capture_store.snapshot_dir(run_dir)))
 
         def second_pass_failure(failed: dict[str, Any]) -> dict[str, Any]:
             """A shape row's `run_failure` for a second-pass process that did not exit 0: the
@@ -14128,6 +14131,7 @@ class Conductor:
             node_dir, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
             ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,
             launcher=declares_launcher(target.parallel_backend),
+            output_format=target.output_format,
             block_imposed=imposes_block_size(target.parallel_backend),
             threads_checked=target.thread_count_observable)
 
@@ -14235,7 +14239,8 @@ class Conductor:
         # on the reference, which Compile forbids) is no defect of the run: it fails every
         # comparison above, and step 5 authors the `structural_violation` verdict that routes
         # it to the diagnostician, not to a Generate repair that cannot fix an IR.
-        ir_unevaluable = gate.returncode in (0, 1) and self._ir_unevaluable(ir, qc_tmp)
+        ir_unevaluable = gate.returncode in (0, 1) and self._ir_unevaluable(
+            ir, qc_tmp, target.output_format)
         structural_ok = ir_unevaluable or (gate.returncode == 0
                                            and qc_status == "pass" and not snapshot_gap)
         if not structural_ok:
@@ -14370,9 +14375,8 @@ class Conductor:
     def _author_execute_verdict(self, refs: NodeRefs, ir: dict[str, Any]) -> dict[str, Any]:
         """Author verdict.json from ``io_contract.tests`` and the host-evaluated
         ``io_contract.predicates`` over the promoted captures under the run node directory
-        (issue #582; `tools/primary_evidence.py` reads
-        `raw/state_snapshots/{initial/,}<case_id>.json`, which `_promote_run_evidence` has
-        already placed there). Returns the authored doc. A missing / malformed test or predicate
+        (issue #582; `tools/primary_evidence.py` reads each case's initial and final
+        captures, which `_promote_run_evidence` has already placed there). Returns the authored doc. A missing / malformed test or predicate
         (which the Compile-stage gate forbids) is authored as a ``structural_violation``
         verdict; classify_failure's execute branch then routes it to the escalate diagnostician
         (prod) / fail_closed (dev) — the diagnostician can reopen Compile for the IR defect —
@@ -14390,7 +14394,9 @@ class Conductor:
             if not isinstance(tests, list) or not tests:
                 raise PredicateError(
                     "io_contract.tests missing/empty (Compile must author it)")
-            records = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir())
+            records = evaluate_primary_predicates(
+                ir, self.repo_root / refs.run_node_dir(),
+                output_format=self.target.output_format)
             doc = evaluate_verdict(tests, records, run_id=refs.run_id, node_key=refs.node_key)
         except Exception as exc:  # noqa: BLE001 - any evaluation failure is an IR/contract defect
             # Catch broadly (not just PredicateError): a malformed IR must always route via the
@@ -14490,7 +14496,9 @@ class Conductor:
             # build's allowed_output_paths binary path = the imposed canonical exe name.
             exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
             # `validate` too: execute's deliverable set depends on whether the runner is the
-            # host-rendered glue (which writes the `initial/` captures) — Z6, issue #255.
+            # host-rendered glue (which writes the initial captures) — Z6, issue #255 — and on
+            # the files the target's capture store names for a case.
+            output_format=self.target.output_format,
             runner_host_authored=(
                 phase in ("generate", "validate") and self._conductor_authors_runner(refs)),
             device_trace=(phase == "validate" and self._traces_execution()),

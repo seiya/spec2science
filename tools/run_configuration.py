@@ -3,7 +3,7 @@
 Part 2): a certified case as the base, with some of its numeric `inputs` overridden.
 
   python3 tools/run_configuration.py <spec_ref> --target <target_id> --config <file>
-      --out <dir> [--restart-from <capture.json>] [--timeout-sec <N>]
+      --out <dir> [--restart-from <capture>] [--timeout-sec <N>]
 
 Operator-only. The workflow never invokes it, no leaf runs, and no verdict is reached: a run
 of this tool is NOT a certification of its configuration, and its `run_record.json` says so.
@@ -50,9 +50,9 @@ What it does, in order (each refusal exits 2 before anything runs):
    written. The run is `ok` only when the binary exits 0 and its final capture holds every
    state an entry's result dummy is bound to in the case, true: a kernel that refuses a
    configuration exits 0 and stops short of `n_step`.
-4. `--restart-from <capture.json>` continues an earlier run of this tool: the capture (a
-   history sample `<prev>/raw/state_snapshots/history/<base_case>__<K>.json`, or a final
-   capture `<prev>/raw/state_snapshots/<base_case>.json`) must sit in an output directory of
+4. `--restart-from <capture>` continues an earlier run of this tool: the capture (a history
+   sample of the base case, or its final capture, as the target's capture store lays them out
+   under `<prev>/raw/state_snapshots/`) must sit in an output directory of
    this tool whose `run_record.json` names the same node, target, IR, binary and
    configuration, and whose case file, its `restart.*` keys aside, is this run's evaluated case
    file. The IR's own continuation cases play no part.
@@ -100,13 +100,15 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import yaml
+
+from tools import capture_store
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -407,22 +409,35 @@ def select_certified(repo_root: Path, spec_ref: str, target_id: str) -> Selectio
 
 # ----------------------------------------------------------------------------- restart
 
-def _source_run_dir(capture: Path, base: str) -> tuple[Path, str]:
-    """(the tool output directory a capture sits in, its kind: `history` or `final`); refuses
-    a path that is not a capture of ``base`` laid out by the binary."""
-    if capture.parent.name == "history" and capture.name.startswith(f"{base}__"):
-        snaps, kind = capture.parent.parent, "history"
-    elif capture.name == f"{base}.json":
-        snaps, kind = capture.parent, "final"
-    else:
+class RestartSource(NamedTuple):
+    """Where a `--restart-from` capture sits: the tool output directory it is in, its kind (the
+    capture group: `history` or `final`), and the record it is — the members as the target's
+    capture store reads them."""
+    run_dir: Path
+    kind: str
+    point: dict[str, Any]
+
+
+def _restart_source(capture: Path, base: str, output_format: str) -> RestartSource:
+    """The `RestartSource` of a capture path; refuses a path the target's capture store does
+    not place as a history sample or the final capture of ``base`` in a run's capture
+    directory, and one it cannot read."""
+    store = capture_store.store(output_format)
+    snaps_label = "<run>/" + "/".join(capture_store.SNAPSHOT_DIR_PARTS) + "/"
+    located = store.locate(capture, base)
+    if located is None:
         raise ConfigurationRefused(
-            f"--restart-from {capture}: not a capture of {base!r} (expected "
-            f"<run>/raw/state_snapshots/history/{base}__<K>.json or "
-            f"<run>/raw/state_snapshots/{base}.json)")
-    if snaps.name != "state_snapshots" or snaps.parent.name != "raw":
-        raise ConfigurationRefused(
-            f"--restart-from {capture}: not under <run>/raw/state_snapshots/")
-    return snaps.parent.parent, kind
+            f"--restart-from {capture}: not a capture of {base!r} (expected a history sample "
+            f"or the final capture of that case under {snaps_label})")
+    snaps, group, step = located
+    parts = capture_store.SNAPSHOT_DIR_PARTS
+    if tuple(snaps.parts[-len(parts):]) != parts:
+        raise ConfigurationRefused(f"--restart-from {capture}: not under {snaps_label}")
+    try:
+        point = dict(store.read_record(snaps, group, base, step))
+    except capture_store.CaptureError as exc:
+        raise ConfigurationRefused(f"--restart-from {capture}: {exc.reason}") from None
+    return RestartSource(snaps.parents[len(parts) - 1], group, point)
 
 
 def _group_alive(pgid: int) -> bool:
@@ -494,10 +509,12 @@ def _host_scalar(payload: dict[str, Any], binding: Any) -> float | None:
 
 
 def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any],
-                         capture: Path, stage: Path) -> tuple[dict[str, Any], int]:
-    """(the continuation's case-file payload, K). The capture is staged as the base's history
-    sample at K under ``stage`` (a scratch directory) and handed to the continuation writer
-    through a continuation case of ``ir2``, so its refusals are that writer's."""
+                         capture: Path, point: dict[str, Any], stage: Path
+                         ) -> tuple[dict[str, Any], int]:
+    """(the continuation's case-file payload, K). ``point`` — the record ``capture`` holds
+    (`_restart_source`) — is handed to the continuation writer as the base's restart point at
+    K, through a continuation case of ``ir2``, so its refusals are that writer's; ``stage`` (a
+    scratch directory) takes the case file it writes."""
     from tools.primary_evidence import (
         CASE_INPUTS_DIRNAME,
         RESTART_DIRNAME,
@@ -514,11 +531,8 @@ def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any]
     if model.block.loop is None:
         raise ConfigurationRefused("--restart-from: the node's drive declares no loop; there is "
                                    "no step to continue from")
-    try:
-        doc = json.loads(capture.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ConfigurationRefused(f"--restart-from {capture}: unreadable: {exc}") from None
-    step = doc.get(STEP_CAPTURE) if isinstance(doc, dict) else None
+    doc = point
+    step = doc.get(STEP_CAPTURE)
     if not (isinstance(step, (int, float)) and not isinstance(step, bool)
             and float(step).is_integer() and step >= 1):
         raise ConfigurationRefused(
@@ -551,11 +565,9 @@ def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any]
     ir3["case"]["test_case_set"] = [
         c for c in ir3["case"]["test_case_set"] if not is_continuation(c)]
     ir3["case"]["test_case_set"].append({"case_id": cid, "restart": {"from": base, "step": k}})
-    sample = stage / "raw" / "state_snapshots" / "history" / f"{base}__{k}.json"
-    sample.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(capture, sample)
     try:
-        files, refused = write_continuation_inputs(ir3, stage)
+        files, refused = write_continuation_inputs(
+            ir3, stage, lambda _base, _step: (capture.name, dict(point)))
     except PrimaryEvidenceError as exc:
         raise ConfigurationRefused(f"--restart-from {capture}: {exc}") from None
     if refused or [f.case_id for f in files] != [cid]:
@@ -650,19 +662,18 @@ def result_states(ir: dict[str, Any], base: str) -> list[str]:
     return names
 
 
-def _kernel_outcome(ir: dict[str, Any], out: Path, base: str) -> tuple[Any, str | None]:
+def _kernel_outcome(ir: dict[str, Any], out: Path, base: str,
+                    output_format: str) -> tuple[Any, str | None]:
     """(the final capture's step, None when the run reached its end, else why not): a final
     capture must exist, and every state an entry's result dummy is bound to in this case
     (`result_states`) must be in it and true. A kernel that refused the configuration exits 0
     and leaves its result false, with fewer steps than planned. A logical `out` that is not an
     entry's result (a convergence flag) is not read."""
-    path = out / "raw" / "state_snapshots" / f"{base}.json"
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        doc = capture_store.store(output_format).read_record(
+            capture_store.snapshot_dir(out), capture_store.FINAL, base)
+    except capture_store.CaptureError as exc:
         return None, f"no readable final capture ({exc})"
-    if not isinstance(doc, dict):
-        return None, "the final capture is not a JSON object"
     names = result_states(ir, base)
     step = doc.get("step")
     missing = [n for n in names if n not in doc]
@@ -701,26 +712,31 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
     ir2, payload = evaluate_configuration(ir, base, overrides)
     binary_sha = _sha256(sel.binary)
     launch = _launch(repo_root, sel.profile)
+    # the captures are written and read in the target's output format
+    output_format = sel.profile.output_format
 
     restart: dict[str, Any] | None = None
     cont: ContinuationFile | None = None
     if restart_from is not None:
         capture = Path(restart_from).resolve()
-        prev, kind = _source_run_dir(capture, base)
+        source = _restart_source(capture, base, output_format)
+        prev, kind = source.run_dir, source.kind
         _check_source_record(prev, sel, binary_sha, base, overrides, payload)
         with tempfile.TemporaryDirectory(prefix="run_configuration_") as stage:
-            payload, k = continuation_payload(ir2, base, payload, capture, Path(stage))
+            payload, k = continuation_payload(ir2, base, payload, capture, source.point,
+                                              Path(stage))
         restart = {"source": str(capture), "source_kind": kind, "sha256": _sha256(capture),
                    "step": k, "source_run": str(prev)}
         # the start check compares the run's initial capture with the capture itself
-        cont = ContinuationFile(base, base, k, capture,
+        cont = ContinuationFile(base, base, k, source.point,
                                 out / CASE_INPUTS_DIRNAME / f"{base}.json")
     # nothing is written under <out> before every refusal has had its turn
     out.mkdir(parents=True, exist_ok=True)
     _write_case_files({base: payload}, out / CASE_INPUTS_DIRNAME)
     shutil.copyfile(ir_path, out / "spec.ir.yaml")
-    for sub in ("initial", "history", "series"):
-        (out / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    # the directories the host-rendered driver opens its captures in
+    for parts in capture_store.run_dirs(output_format, host_rendered=True):
+        out.joinpath(*parts).mkdir(parents=True, exist_ok=True)
 
     # The launcher is refused above, so the launch prefix holds at most a device trace's
     # profiling half, which a person's run does not take.
@@ -765,11 +781,11 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         record.update(exit_status=rc, timed_out=timed_out, finished_at=_now())
         failed = rc != 0
         if not failed:
-            record["final_step"], why = _kernel_outcome(ir, out, base)
+            record["final_step"], why = _kernel_outcome(ir, out, base, output_format)
             record["kernel"] = why or "reached its end"
             failed = why is not None
         if not failed and cont is not None:
-            why = continuation_start_violation(ir2, out, cont)
+            why = continuation_start_violation(ir2, out, cont, output_format)
             record["start_check"] = why or "held"
             failed = why is not None
         record["status"] = "failed" if failed else "ok"

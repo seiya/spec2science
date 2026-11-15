@@ -2,8 +2,9 @@
 """Host-evaluated predicates (Z6, issue #255; issue #582; `zero_base_architecture.md` §A4).
 
 An `io_contract.predicates[]` entry is an arithmetic expression over the state the host-rendered
-runner captured through the certified harness emitters (`raw/state_snapshots/initial/<case_id>.json`
-before the case's step, `raw/state_snapshots/<case_id>.json` after its last), over the
+runner captured through the certified harness emitters (the case's initial record before its
+step, its final record after its last, read through the capture store of the target's output
+format, `tools/capture_store.py`), over the
 case's declared inputs, and over grid coordinates the host derives from those inputs — evaluated
 HERE, by the host, with the generated code contributing nothing to the value but the
 captured arrays themselves (`initial.t` / `final.t` is the driver's own clock; an expression that needs the case's end time reads the
@@ -68,10 +69,10 @@ Names, and where each resolves:
   (a scalar `shape_expr` gives a float, an array one a float64 array of that rank);
   ``initial.<time_variable>`` / ``final.<time_variable>`` — the capture's time value;
   ``initial.step`` / ``final.step`` (grammar 6) — the driver's committed step count.
-- ``history.<var>`` (grammar 6) — the samples `raw/state_snapshots/history/<case_id>__<k>.json`,
-  `k` ascending, stacked on a LEADING axis (rank of the variable + 1); ``history.t`` /
+- ``history.<var>`` (grammar 6) — the case's samples, one per committed step `k` the run
+  sampled, `k` ascending, stacked on a LEADING axis (rank of the variable + 1); ``history.t`` /
   ``history.step`` rank 1. ``series.<name>`` — a rank-1 entry of
-  `raw/state_snapshots/series/<case_id>.json`, a name the `step_series` evidence entry lists. Both
+  the case's series record, a name the `step_series` evidence entry lists. Both
   are loaded only when a predicate names them; zero samples / zero committed steps is admitted,
   a non-finite entry is refused, and a reduction over an empty one is an evaluation error of that
   predicate. ``derived.<name>`` — the case's `derived` value as the host evaluated it
@@ -168,6 +169,8 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from tools import capture_store
+from tools.capture_store import CaptureError
 from tools.verdict_evaluator import (_QUANTITY_RE, _apply_op, _is_number, _resolve_value,
                                      scalar_pairs)
 
@@ -793,13 +796,18 @@ def cross_target_predicates(ir: dict[str, Any]) -> list[dict[str, Any]]:
 class ComparandEvidence(NamedTuple):
     """One comparand of a cross-target agreement: another target's eligible run of the same
     node over the same IR. `run_dir` is the run node directory (absolute) the captures are
-    read from; `evidence` is `comparand_evidence_sha256(run_dir)` at selection time — a record
-    of which bytes the agreement read, not an input of any key."""
+    read from; `evidence` is `comparand_evidence_sha256(run_dir, output_format)` at selection
+    time — a record of which bytes the agreement read, not an input of any key.
+    `output_format` is the format the COMPARAND's target writes its captures in
+    (`TargetProfile.output_format`): its run directory is read through that format's store,
+    whatever the reading run's own format is. It is how the directory is read, not part of
+    the record (`detail`)."""
     target_id: str
     pipeline_ref: str
     run_id: str
     run_dir: Path
     evidence: str
+    output_format: str
 
     def detail(self) -> dict[str, str]:
         return {"target_id": self.target_id, "pipeline_ref": self.pipeline_ref,
@@ -850,23 +858,17 @@ class CrossTargetAgreement(NamedTuple):
                 "records": list(self.records), "own_run": self.own_run, "error": self.error}
 
 
-#: The host-authored file under `raw/state_snapshots/` that is not a capture: the snapshot
-#: schema the conductor writes from the IR. Excluded from the comparand evidence hash — it is
-#: not state the comparand's kernel produced.
-SNAPSHOT_SCHEMA_FILENAME = "snapshot_schema.json"
-
-
-def comparand_evidence_sha256(run_dir: Path) -> str:
-    """The identity of a comparand run's captures: sha256 over every `*.json` under
-    `run_dir/raw/state_snapshots/` (recursively, `snapshot_schema.json` excluded), in order of
-    the path relative to that directory, each contributing `<path>\\0<byte length>\\0<bytes>`.
-    Raises `PrimaryEvidenceError` when there is no capture at all."""
+def comparand_evidence_sha256(run_dir: Path, output_format: str) -> str:
+    """The identity of a comparand run's captures: sha256 over every capture file the store of
+    ``output_format`` (the format of the target that wrote ``run_dir``) finds under the run's
+    capture directory (`capture_store.capture_paths`: at any depth, the snapshot schema
+    excluded), in order of the path relative to that directory, each contributing
+    `<path>\\0<byte length>\\0<bytes>`. Raises `PrimaryEvidenceError` when there is no capture
+    at all."""
     import hashlib
-    sdir = Path(run_dir) / "raw" / "state_snapshots"
-    files = sorted(
-        (p.relative_to(sdir).as_posix(), p) for p in (sdir.rglob("*.json") if sdir.is_dir()
-                                                       else ())
-        if p.is_file() and p.relative_to(sdir).as_posix() != SNAPSHOT_SCHEMA_FILENAME)
+    sdir = capture_store.snapshot_dir(run_dir)
+    files = sorted((p.relative_to(sdir).as_posix(), p)
+                   for p in capture_store.capture_paths(output_format, run_dir))
     if not files:
         raise PrimaryEvidenceError(f"{sdir}: no state snapshot capture to bind as a comparand")
     h = hashlib.sha256()
@@ -1113,18 +1115,40 @@ def _state_shaped_derived(derived: Any, shape: tuple[int, ...] | None) -> Any:
     return Lazy(expanded)
 
 
-def _load_capture(path: Path, variables: dict[str, list[str]],
+class _Captures(NamedTuple):
+    """One run's capture directory and the store that reads it: the store of the format the
+    target that WROTE the directory writes (`capture_store.store`)."""
+    store: Any
+    sdir: Path
+
+    @classmethod
+    def of(cls, run_dir: Path, output_format: str) -> _Captures:
+        return cls(capture_store.store(output_format), capture_store.snapshot_dir(run_dir))
+
+    def label(self, group: str, case_id: str, step: int | None = None) -> str:
+        """What a message calls a record: the name of the file that holds it."""
+        return str(self.store.record_path(self.sdir, group, case_id, step).name)
+
+    def has(self, group: str, case_id: str) -> bool:
+        return bool(self.store.has_record(self.sdir, group, case_id))
+
+    def read(self, group: str, case_id: str, step: int | None = None, *,
+             what: str = "capture file") -> dict[str, Any]:
+        """One record's members; the store's refusal as a `PrimaryEvidenceError`
+        (`<what> <label> is <reason>`)."""
+        try:
+            return dict(self.store.read_record(self.sdir, group, case_id, step))
+        except CaptureError as exc:
+            raise PrimaryEvidenceError(f"{what} {exc.label} is {exc.reason}") from None
+
+
+def _load_capture(captures: _Captures, group: str, case_id: str, step: int | None,
+                  variables: dict[str, list[str]],
                   time_variable: str | None, *, empty_state: bool = False) -> dict[str, Any]:
-    """One capture file as `variable -> float | float64 ndarray`, each checked against its
+    """One state record as `variable -> float | float64 ndarray`, each checked against its
     declared rank (and equal extents for a repeated dimension token) and for finiteness."""
-    if not path.is_file():
-        raise PrimaryEvidenceError(f"capture file {path.name} is absent")
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise PrimaryEvidenceError(f"capture file {path.name} is unreadable: {exc}") from None
-    if not isinstance(doc, dict):
-        raise PrimaryEvidenceError(f"capture file {path.name} is not a JSON object")
+    doc = captures.read(group, case_id, step)
+    label = captures.label(group, case_id, step)
     out: dict[str, Any] = {}
     wanted = dict(variables)
     if time_variable:
@@ -1142,10 +1166,10 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
             arr = np.asarray(raw, dtype=np.float64)
         except (TypeError, ValueError) as exc:
             raise PrimaryEvidenceError(
-                f"{path.name}: variable {name!r} is not a rectangular numeric array "
+                f"{label}: variable {name!r} is not a rectangular numeric array "
                 f"({exc})") from None
         if _contains_non_number(raw):
-            raise PrimaryEvidenceError(f"{path.name}: variable {name!r} holds a non-numeric value")
+            raise PrimaryEvidenceError(f"{label}: variable {name!r} holds a non-numeric value")
         if arr.size == 0 and empty_state:
             # A zero-extent guard case's state, written by the host-rendered driver
             # (`_evaluate_case` admits one only on a case only `xfail` tests target): nested
@@ -1155,22 +1179,22 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
             continue
         if arr.ndim != len(dims):
             raise PrimaryEvidenceError(
-                f"{path.name}: variable {name!r} has rank {arr.ndim}, declared "
+                f"{label}: variable {name!r} has rank {arr.ndim}, declared "
                 f"shape_expr has rank {len(dims)}")
         if arr.size == 0:
-            raise PrimaryEvidenceError(f"{path.name}: variable {name!r} has no elements")
+            raise PrimaryEvidenceError(f"{label}: variable {name!r} has no elements")
         bound: dict[str, int] = {}
         for token, extent in zip(dims, arr.shape):
             if token.isdigit():
                 if int(token) != extent:
                     raise PrimaryEvidenceError(
-                        f"{path.name}: variable {name!r} extent {extent} != declared {token}")
+                        f"{label}: variable {name!r} extent {extent} != declared {token}")
             elif bound.setdefault(token, extent) != extent:
                 raise PrimaryEvidenceError(
-                    f"{path.name}: variable {name!r} repeats dimension {token!r} with "
+                    f"{label}: variable {name!r} repeats dimension {token!r} with "
                     f"unequal extents")
         if not np.all(np.isfinite(arr)):
-            raise PrimaryEvidenceError(f"{path.name}: variable {name!r} holds a non-finite value")
+            raise PrimaryEvidenceError(f"{label}: variable {name!r} holds a non-finite value")
         out[name] = float(arr) if arr.ndim == 0 else arr
     return out
 
@@ -1181,32 +1205,25 @@ def _contains_non_number(value: Any) -> bool:
     return not _is_number(value)
 
 
-def _load_history(sdir: Path, case_id: str, variables: dict[str, list[str]],
+def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[str]],
                   time_variable: str | None, final: dict[str, Any]) -> dict[str, Any]:
-    """The `history/` samples of one case, `<case_id>__<k>.json` with `k` the committed step,
-    ascending by `k`, every name stacked on a LEADING axis. Each sample is read like a capture
-    (`_load_capture`: declared rank, finiteness) and must carry `step` equal to its `k`; a name
-    every sample carries is stacked (equal shapes required), one a sample omits is left out (a
-    predicate naming it fails on that predicate). No sample at all is admitted (`every = 0`, or
-    a first step refused): every name is then empty, an array variable shaped like its final
-    capture."""
-    hdir = sdir / _HISTORY
-    pattern = re.compile(re.escape(case_id) + r"__([0-9]+)\.json")
-    found: list[tuple[int, Path]] = []
-    if hdir.is_dir():
-        for path in hdir.iterdir():
-            match = pattern.fullmatch(path.name)
-            if match and path.is_file():
-                found.append((int(match.group(1)), path))
-    found.sort(key=lambda item: item[0])
+    """The samples of one case, one per committed step `k` the store lists
+    (`history_steps`), ascending by `k`, every name stacked on a LEADING axis. Each sample is
+    read like a capture (`_load_capture`: declared rank, finiteness) and must carry `step`
+    equal to its `k`; a name every sample carries is stacked (equal shapes required), one a
+    sample omits is left out (a predicate naming it fails on that predicate). No sample at all
+    is admitted (`every = 0`, or a first step refused): every name is then empty, an array
+    variable shaped like its final capture."""
     samples: list[dict[str, Any]] = []
-    for k, path in found:
-        sample = _load_capture(path, variables, time_variable)
+    for k in captures.store.history_steps(captures.sdir, case_id):
+        name = captures.label(capture_store.HISTORY, case_id, k)
+        sample = _load_capture(captures, capture_store.HISTORY, case_id, k, variables,
+                               time_variable)
         if STEP_CAPTURE not in sample:
-            raise PrimaryEvidenceError(f"history sample {path.name} carries no {STEP_CAPTURE!r}")
+            raise PrimaryEvidenceError(f"history sample {name} carries no {STEP_CAPTURE!r}")
         if sample[STEP_CAPTURE] != float(k):
             raise PrimaryEvidenceError(
-                f"history sample {path.name} carries step {sample[STEP_CAPTURE]!r}, not the "
+                f"history sample {name} carries step {sample[STEP_CAPTURE]!r}, not the "
                 f"committed step {k} its name says")
         samples.append(sample)
     names = list(variables) + [n for n in (time_variable, STEP_CAPTURE)
@@ -1228,22 +1245,18 @@ def _load_history(sdir: Path, case_id: str, variables: dict[str, list[str]],
     return out
 
 
-def _load_series(sdir: Path, case_id: str) -> dict[str, np.ndarray]:
-    """`series/<case_id>.json`: one rank-1 numeric list per name, all of one length — zero
-    admitted (no committed step) — and every entry finite (the driver's fold carries a
-    non-finite committed cell into the entry; it is refused here, never laundered). The file is
-    written through the harness's `__write_snapshot`, which adds the scalar time of the last
-    committed state under `t` (no boxed name can take that key: the JSON would hold it twice,
+def _load_series(captures: _Captures, case_id: str) -> dict[str, np.ndarray]:
+    """The series record of one case: one rank-1 numeric list per name, all of one length —
+    zero admitted (no committed step) — and every entry finite (the driver's fold carries a
+    non-finite committed cell into the entry; it is refused here, never laundered). The record
+    is written through the harness's `__write_snapshot`, which adds the scalar time of the last
+    committed state under `t` (no boxed name can take that key: the record would hold it twice,
     the writer's last): that one number is required and is not a series name."""
-    path = sdir / _SERIES / f"{case_id}.json"
-    if not path.is_file():
-        raise PrimaryEvidenceError(f"series file {_SERIES}/{path.name} is absent")
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise PrimaryEvidenceError(f"series file {path.name} is unreadable: {exc}") from None
-    if not isinstance(doc, dict):
-        raise PrimaryEvidenceError(f"series file {path.name} is not a JSON object")
+    path = captures.store.record_path(captures.sdir, capture_store.SERIES, case_id)
+    if not captures.has(capture_store.SERIES, case_id):
+        raise PrimaryEvidenceError(
+            f"series file {path.relative_to(captures.sdir).as_posix()} is absent")
+    doc = captures.read(capture_store.SERIES, case_id, what="series file")
     envelope = doc.pop("t", None)
     if isinstance(envelope, bool) or not isinstance(envelope, (int, float)):
         raise PrimaryEvidenceError(
@@ -1268,9 +1281,11 @@ def _load_series(sdir: Path, case_id: str) -> dict[str, np.ndarray]:
 
 
 def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
-                  derived: Any = None, *, empty_state: bool = False) -> CaseEnv:
-    """The environment of one case: both captures under ``run_dir/raw/state_snapshots``, the
-    case's inputs and its coordinate arrays; `history/` and `series/` as `Lazy` loaders,
+                  derived: Any = None, *, empty_state: bool = False,
+                  output_format: str) -> CaseEnv:
+    """The environment of one case: both captures of ``run_dir``'s capture directory, read
+    through the store of ``output_format`` (the format of the target that wrote the run), the
+    case's inputs and its coordinate arrays; the samples and the series as `Lazy` loaders,
     read only when a predicate names them; ``derived`` (a mapping or a `Lazy` of one) through
     `_state_shaped_derived`. ``empty_state``: the host-rendered driver wrote the captures, so a state with no
     elements is a zero-extent case's; a harness self-test's own runner has no such case."""
@@ -1282,15 +1297,16 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
     variables = schema_variables(schema)
     tv = schema.get("time_variable")
     tv = tv.strip() if isinstance(tv, str) and tv.strip() else None
-    sdir = Path(run_dir) / "raw" / "state_snapshots"
-    initial_path = sdir / "initial" / f"{case_id}.json"
-    # A node whose own runner writes the snapshots (a harness self-test) writes no `initial/`
+    captures = _Captures.of(run_dir, output_format)
+    # A node whose own runner writes the snapshots (a harness self-test) writes no initial
     # capture; the host-rendered runner always does, and the conductor's
     # `_snapshot_deliverable_gap(initial_required=True)` refuses a run without one before any
-    # verdict is authored (the `--stage post_execute` validator only shape-checks the file).
-    initial = (_load_capture(initial_path, variables, tv, empty_state=empty_state)
-               if initial_path.is_file() else None)
-    final = _load_capture(sdir / f"{case_id}.json", variables, tv, empty_state=empty_state)
+    # verdict is authored (the `--stage post_execute` validator only shape-checks the record).
+    initial = (_load_capture(captures, capture_store.INITIAL, case_id, None, variables, tv,
+                             empty_state=empty_state)
+               if captures.has(capture_store.INITIAL, case_id) else None)
+    final = _load_capture(captures, capture_store.FINAL, case_id, None, variables, tv,
+                          empty_state=empty_state)
     rank = state_rank(schema)
     shape = state_shape_of(final, rank)
     if shape is not None and initial is not None and state_shape_of(initial, rank) != shape:
@@ -1298,8 +1314,8 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
             f"{case_id}: the initial and final captures disagree on the state shape")
     return CaseEnv(case_id=case_id, initial=initial, final=final, inputs=inputs,
                    coordinates=coordinate_arrays(schema, inputs, shape),
-                   history=Lazy(lambda: _load_history(sdir, case_id, variables, tv, final)),
-                   series=Lazy(lambda: _load_series(sdir, case_id)),
+                   history=Lazy(lambda: _load_history(captures, case_id, variables, tv, final)),
+                   series=Lazy(lambda: _load_series(captures, case_id)),
                    derived=_state_shaped_derived(derived, shape), state_rank=rank,
                    captured_shapes=frozenset(np.shape(v) for v in final.values()))
 
@@ -1613,8 +1629,7 @@ def _capture_value(env: CaseEnv, point: str, var: str, *, who: str = "this run")
     if table is None:
         raise PrimaryEvidenceError(
             f"{point}.{var}: case {env.case_id!r} of {who} has no initial capture "
-            "(raw/state_snapshots/initial/<case_id>.json is absent: a node whose own runner "
-            "writes the snapshots writes none)")
+            "(a node whose own runner writes the snapshots writes none)")
     if var not in table:
         raise PrimaryEvidenceError(
             f"{point}.{var}: not captured in case {env.case_id!r} of {who}")
@@ -1782,11 +1797,14 @@ def primary_predicates(ir: dict[str, Any]) -> list[Any]:
 
 
 def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
+                                output_format: str,
                                 comparands: Sequence[ComparandEvidence] = (),
                                 cross_target_only: bool = False,
                                 ) -> list[dict[str, Any]]:
     """Evaluate every `io_contract.predicates[]` entry of ``ir`` against the captures
-    under ``run_dir``. Returns one record per predicate, in order::
+    under ``run_dir``, read through the store of ``output_format`` — the format of the target
+    that wrote ``run_dir``; each comparand's run is read through its own
+    (`ComparandEvidence.output_format`). Returns one record per predicate, in order::
 
         {test_id, quantity, expr, op, scope, target_cases, cases_read, scalar_pairing,
          grammar_version, comparands, satisfied, kind,
@@ -1838,13 +1856,15 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     all_derived = Lazy(lambda: {cid: dict(values.derived)
                                 for cid, values in _evaluate_cases(ir).items()})
 
-    def env_for(cid: str, where: Path = Path(run_dir), key: str = "") -> CaseEnv:
+    def env_for(cid: str, where: Path = Path(run_dir), key: str = "",
+                written_as: str = output_format) -> CaseEnv:
         if (key, cid) not in env_cache:
             if cid not in cases:
                 raise PrimaryEvidenceError(f"case {cid!r} is not in case.test_case_set")
             derived = Lazy(lambda: all_derived.get().get(cid, {}))
             env_cache[(key, cid)] = load_case_env(where, cases[cid], schema, derived,
-                                                   empty_state=_has_drive(ir))
+                                                   empty_state=_has_drive(ir),
+                                                   output_format=written_as)
         return env_cache[(key, cid)]
 
     out: list[dict[str, Any]] = []
@@ -1910,7 +1930,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                 try:
                     env = env_for(cid)
                     at_envs = {t: env_for(t) for t in targets}
-                    cenv = (env_for(cid, comp.run_dir, f"comparand:{comp.target_id}")
+                    cenv = (env_for(cid, comp.run_dir, f"comparand:{comp.target_id}",
+                                    comp.output_format)
                             if comp is not None else None)
                     mismatch = _shape_disagreement(env, cenv) if cenv is not None else None
                     if mismatch is not None:
@@ -3864,82 +3885,92 @@ RESTART_DIRNAME = "restart"
 
 class ContinuationFile(NamedTuple):
     """One continuation case file `write_continuation_inputs` wrote: the case, its base and
-    restart step, the restart point it was written from and the file."""
+    restart step, the restart point it was written from (the record's members, as read) and
+    the file."""
     case_id: str
     base: str
     step: int
-    sample: Path
+    point: dict[str, Any]
     path: Path
 
 
-def _restart_sample_path(shape_dir: Path, base: str, step: int) -> Path:
-    return Path(shape_dir) / "raw" / "state_snapshots" / _HISTORY / f"{base}__{step}.json"
+#: `(base, step) -> (label, record)`: how `write_continuation_inputs` obtains a restart point —
+#: the name a message calls it by and its members. Raises `CaptureError` when it cannot.
+RestartPointReader = Callable[[str, int], tuple[str, dict[str, Any]]]
 
 
-def _restart_point(path: Path, ir: dict[str, Any], base: str, step: int,
+def restart_point_reader(shape_dir: Path, output_format: str) -> RestartPointReader:
+    """The reader of a shape directory's OWN restart points: its base's history sample at the
+    step, through the store of ``output_format`` (the target's)."""
+    captures = _Captures.of(shape_dir, output_format)
+
+    def read(base: str, step: int) -> tuple[str, dict[str, Any]]:
+        return (captures.label(capture_store.HISTORY, base, step),
+                dict(captures.store.read_record(captures.sdir, capture_store.HISTORY, base,
+                                                step)))
+    return read
+
+
+def _restart_point(read: RestartPointReader, ir: dict[str, Any], base: str, step: int,
                    shapes: dict[str, tuple[int, ...]], names: frozenset[str]) -> dict[str, Any]:
-    """The restart point of a continuation: its base's history sample at `step`, read as the
-    JSON object the driver wrote. Refused (`PrimaryEvidenceError`) when it is absent or
+    """The restart point of a continuation: its base's history sample at `step`, as the record
+    the driver wrote (all its members). Refused (`PrimaryEvidenceError`) when it is absent or
     unreadable, carries another `step`, lacks a restart variable (`_load_capture` skips an
     absent one silently, so presence is checked here), holds a variable whose extents differ
     from the base's evaluated ones, or holds a non-numeric or non-finite value."""
-    if not path.is_file():
-        raise PrimaryEvidenceError(
-            f"no restart point: {path.name} (the history sample of {base!r} at step {step}) was "
-            "not written — the base wrote no sample there: the step must be a multiple of the "
-            "base's history.every and below the steps it ran (the tests.md `restart:` line and "
-            "the case's restart.step state it)")
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise PrimaryEvidenceError(f"the restart point {path.name} is unreadable: {exc}") \
-            from None
-    if not isinstance(doc, dict):
-        raise PrimaryEvidenceError(f"the restart point {path.name} is not a JSON object")
+        label, doc = read(base, step)
+    except CaptureError as exc:
+        if exc.absent:
+            raise PrimaryEvidenceError(
+                f"no restart point: {exc.label} (the history sample of {base!r} at step {step}) "
+                "was not written — the base wrote no sample there: the step must be a multiple "
+                "of the base's history.every and below the steps it ran (the tests.md "
+                "`restart:` line and the case's restart.step state it)") from None
+        raise PrimaryEvidenceError(f"the restart point {exc.label} is {exc.reason}") from None
     got = doc.get(STEP_CAPTURE)
     if isinstance(got, bool) or not isinstance(got, (int, float)) or got != step:
         raise PrimaryEvidenceError(
-            f"the restart point {path.name} carries step {got!r}, not {step}")
+            f"the restart point {label} carries step {got!r}, not {step}")
     missing = sorted(names - set(doc))
     if missing:
         raise PrimaryEvidenceError(
-            f"the restart point {path.name} lacks the restart variable(s) {missing}")
-    out: dict[str, Any] = {}
+            f"the restart point {label} lacks the restart variable(s) {missing}")
     for var in sorted(names):
         raw = doc[var]
         if isinstance(raw, bool) or _contains_non_number(raw) or isinstance(raw, dict) \
                 or (not isinstance(raw, list) and not isinstance(raw, (int, float))):
             raise PrimaryEvidenceError(
-                f"the restart point {path.name}: {var!r} is not a number or a numeric array")
+                f"the restart point {label}: {var!r} is not a number or a numeric array")
         try:
             arr = np.asarray(raw, dtype=np.float64)
         except (TypeError, ValueError):
             raise PrimaryEvidenceError(
-                f"the restart point {path.name}: {var!r} is not a rectangular numeric "
+                f"the restart point {label}: {var!r} is not a rectangular numeric "
                 "array") from None
         if tuple(arr.shape) != tuple(shapes.get(var, ())):
             raise PrimaryEvidenceError(
-                f"the restart point {path.name}: {var!r} has extents {list(arr.shape)}, the "
+                f"the restart point {label}: {var!r} has extents {list(arr.shape)}, the "
                 f"base case's are {list(shapes.get(var, ()))}")
         if not np.all(np.isfinite(arr)):
             raise PrimaryEvidenceError(
-                f"the restart point {path.name}: {var!r} holds a non-finite value")
-        out[var] = raw
+                f"the restart point {label}: {var!r} holds a non-finite value")
     tv = (snapshot_schema(ir) or {}).get("time_variable")
     if isinstance(tv, str) and tv.strip():
         t_raw = doc.get(tv.strip())
         if isinstance(t_raw, bool) or not isinstance(t_raw, (int, float)) \
                 or not math.isfinite(float(t_raw)):
             raise PrimaryEvidenceError(
-                f"the restart point {path.name} carries no finite {tv.strip()!r}")
-    return out
+                f"the restart point {label} carries no finite {tv.strip()!r}")
+    return doc
 
 
-def write_continuation_inputs(ir: dict[str, Any], shape_dir: Path
+def write_continuation_inputs(ir: dict[str, Any], shape_dir: Path, read: RestartPointReader
                               ) -> tuple[list[ContinuationFile], dict[str, str]]:
     """The second pass's case files of one execution shape (issue #632): for every
-    continuation case `C` (`continuation_cases`, base `B`, step `K`), from the shape's OWN
-    history sample of `B` at `K` (`<shape_dir>/raw/state_snapshots/history/<B>__<K>.json`),
+    continuation case `C` (`continuation_cases`, base `B`, step `K`), from the restart point
+    ``read`` returns for `B` at `K` — the shape's OWN history sample for the conductor
+    (`restart_point_reader(shape_dir, <the target's output format>)`) —
     `<shape_dir>/restart/case_inputs/<C>.json`: `B`'s evaluated payload whole
     (`evaluate_case_inputs`), with `restart.step` = `K` and, per restart variable `v`
     (`restart_variables`), the sample's value under `restart.<v>` (an integer for an
@@ -3954,48 +3985,48 @@ def write_continuation_inputs(ir: dict[str, Any], shape_dir: Path
     evaluated = _evaluate_cases(ir)
     payloads = evaluate_case_inputs(ir)
     files: dict[str, dict[str, Any]] = {}
-    samples: dict[str, Path] = {}
+    points: dict[str, dict[str, Any]] = {}
     refused: dict[str, str] = {}
     for cid, (base, step) in sorted(conts.items()):
-        sample = _restart_sample_path(shape_dir, base, step)
         try:
-            point = _restart_point(sample, ir, base, step, evaluated[base].shapes, names)
+            point = _restart_point(read, ir, base, step, evaluated[base].shapes, names)
         except PrimaryEvidenceError as exc:
             refused[cid] = str(exc)
             continue
         payload = dict(payloads[base])
         payload[RESTART_STEP_KEY] = step
-        for var, raw in point.items():
+        for var in sorted(names):
+            raw = point[var]
             as_int = model.types.get(var) == "integer"
             payload[f"{RESTART_KEY_PREFIX}{var}"] = _json_number(
                 np.asarray(raw, dtype=np.float64) if isinstance(raw, list) else float(raw),
                 as_int)
         files[cid] = payload
-        samples[cid] = sample
+        points[cid] = point
     out_dir = Path(shape_dir) / RESTART_DIRNAME / CASE_INPUTS_DIRNAME
     written = _write_case_files(files, out_dir) if files else []
     by_name = {path.stem: path for path in written}
-    return ([ContinuationFile(cid, conts[cid][0], conts[cid][1], samples[cid], by_name[cid])
+    return ([ContinuationFile(cid, conts[cid][0], conts[cid][1], points[cid], by_name[cid])
              for cid in sorted(files)], refused)
 
 
 def continuation_start_violation(ir: dict[str, Any], restart_dir: Path,
-                                 cont: ContinuationFile) -> str | None:
+                                 cont: ContinuationFile, output_format: str) -> str | None:
     """The host's check that a continuation started where it was told to (issue #632), before
-    its captures count: its initial capture (`<restart_dir>/raw/state_snapshots/initial/<C>.json`)
-    carries `step` = `K`, the restart point's time variable, and every restart variable equal
-    to the restart point's value. A driver that read `restart.step` as 0, a file written with
-    0, or a second pass handed the base's file re-runs the base, and every equality predicate
-    would then hold; this check is what refuses that. None when it holds, else the reason."""
-    capture = Path(restart_dir) / "raw" / "state_snapshots" / "initial" / f"{cont.case_id}.json"
+    its captures count: its initial capture (the initial record of `C` under ``restart_dir``,
+    read through the store of ``output_format``, the target's) carries `step` = `K`, the
+    restart point's time variable, and every restart variable equal to the restart point's
+    value (`cont.point`, the record its case file was written from). A driver that read
+    `restart.step` as 0, a file written with 0, or a second pass handed the base's file re-runs
+    the base, and every equality predicate would then hold; this check is what refuses that.
+    None when it holds, else the reason."""
     where = f"continuation {cont.case_id!r}"
+    captures = _Captures.of(restart_dir, output_format)
     try:
-        doc = json.loads(capture.read_text(encoding="utf-8"))
-        point = json.loads(cont.sample.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return f"{where}: its initial capture or its restart point is unreadable ({exc})"
-    if not isinstance(doc, dict) or not isinstance(point, dict):
-        return f"{where}: its initial capture or its restart point is not a JSON object"
+        doc = captures.store.read_record(captures.sdir, capture_store.INITIAL, cont.case_id)
+    except CaptureError as exc:
+        return f"{where}: its initial capture is unreadable ({exc})"
+    point = cont.point
     got = doc.get(STEP_CAPTURE)
     if isinstance(got, bool) or not isinstance(got, (int, float)) or got != cont.step:
         return (f"{where} did not start at step {cont.step} of {cont.base!r}: its initial "
@@ -5102,27 +5133,54 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ir", required=True, type=Path,
                         help="the IR directory (holding spec.ir.yaml) or the file itself")
     parser.add_argument("--run", required=True, type=Path,
-                        help="the run node directory holding raw/state_snapshots/")
+                        help="the run node directory holding the captures")
+    parser.add_argument("--target", default=None, metavar="TARGET_ID",
+                        help="the target whose run wrote --run: its profile says which output "
+                             "format the captures are read in. Default: the target segment of "
+                             "--run when it lies under a pipeline tree, else the profile "
+                             "default format")
     parser.add_argument("--comparand", action="append", default=[], metavar="TARGET_ID=RUN_DIR",
                         help="bind another target's run node directory as a comparand of the "
                              "cross-target predicates (repeatable; the host's own selection is "
                              "orchestration_runtime.resolve_comparands, read by "
                              "orchestration_runtime.cross_target_agreement)")
     args = parser.parse_args(argv)
+
+    def written_as(target_id: str | None, run: Path) -> str:
+        """The output format of the target that wrote ``run``: the target `--target` names
+        (for `--run`), else the one the pipeline path names, else — a directory outside a
+        pipeline tree — the profile default. Never guessed from the directory's content."""
+        from tools.target_profile import (DEFAULT_OUTPUT_FORMAT, TargetProfileError,
+                                          load_target_profile, pipeline_target_id)
+        target_id = target_id or pipeline_target_id(str(Path(run).resolve()))
+        if not target_id:
+            return DEFAULT_OUTPUT_FORMAT
+        try:
+            return load_target_profile(Path(__file__).resolve().parents[1],
+                                       target_id).output_format
+        except TargetProfileError as exc:
+            raise PrimaryEvidenceError(f"target {target_id!r}: {exc}") from None
+
     try:
         ir = _read_ir(args.ir)
-        if not (Path(args.run) / "raw" / "state_snapshots").is_dir():
-            raise PrimaryEvidenceError(f"{args.run}: no raw/state_snapshots directory")
+        if not capture_store.snapshot_dir(args.run).is_dir():
+            raise PrimaryEvidenceError(
+                f"{args.run}: no {'/'.join(capture_store.SNAPSHOT_DIR_PARTS)} directory")
+        output_format = written_as(args.target, args.run)
         comparands: list[ComparandEvidence] = []
         for item in args.comparand:
             target_id, sep, run = str(item).partition("=")
             if not sep or not target_id.strip() or not run.strip():
                 raise PrimaryEvidenceError(f"--comparand {item!r}: expected TARGET_ID=RUN_DIR")
             run_path = Path(run.strip())
+            # the label names the comparand in the records; it need not be a target
+            theirs = written_as(None, run_path)
             comparands.append(ComparandEvidence(
                 target_id=target_id.strip(), pipeline_ref="", run_id=run_path.parent.name,
-                run_dir=run_path, evidence=comparand_evidence_sha256(run_path)))
-        records = evaluate_primary_predicates(ir, args.run, comparands=comparands)
+                run_dir=run_path, evidence=comparand_evidence_sha256(run_path, theirs),
+                output_format=theirs))
+        records = evaluate_primary_predicates(ir, args.run, output_format=output_format,
+                                              comparands=comparands)
     except PrimaryEvidenceError as exc:
         print(json.dumps({"error": str(exc)}, indent=2))
         return 2

@@ -33,10 +33,12 @@ import math
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from tools import capture_store
+
 #: Bumped when what the excerpt CONTAINS changes, so a recorded `semantic_review.json` says
 #: which window its judge was looking through. Stamped by the host into that file.
 #: 2: each snapshot case additionally carries `initial` — the summary of the host-rendered
-#: runner's capture before the case's step (`raw/state_snapshots/initial/<case_id>.json`,
+#: runner's capture before the case's step (the case's initial record,
 #: Z6, issue #255) — so the judge sees both capture points of a case.
 #: `schema.min_samples` was dropped without a bump (issue #396): `phase_04_validate.md` §4-2-1,
 #: canonical for the contents, never listed it, and it echoed the IR's declaration rather than
@@ -54,13 +56,18 @@ RAW_EVIDENCE_ALIASES = {
     "state_snapshots": "state_snapshots",
     "raw/state_snapshots": "state_snapshots",
     "raw/state_snapshots/": "state_snapshots",
-    # Issue #589: the driver's samples and its per-step series (`_EVIDENCE_DIRS`).
+    # Issue #589: the driver's samples and its per-step series (`_EVIDENCE_GROUPS`).
     "state_history": "state_history",
     "step_series": "step_series",
 }
 
-#: Where under `raw/` a canonical artifact lives, when that is not its own name.
-_EVIDENCE_DIRS = {"state_history": "state_snapshots/history", "step_series": "state_snapshots/series"}
+#: The capture group a canonical artifact is, when it is one: its presence is asked of the
+#: capture store of the run's output format, not of a directory name.
+_EVIDENCE_GROUPS = {"state_history": capture_store.HISTORY, "step_series": capture_store.SERIES}
+
+#: The capture directory as the excerpt's labels spell it, and its place below `raw/`.
+_SNAPSHOTS_LABEL = "/".join(capture_store.SNAPSHOT_DIR_PARTS)
+_SNAPSHOTS_BELOW_RAW = capture_store.SNAPSHOT_DIR_PARTS[1:]
 
 #: How many distinct string values a non-numeric field is summarized by before the summary
 #: says "and more" — the excerpt is a summary, and an unbounded one is the thing it exists
@@ -88,19 +95,23 @@ def normalize_raw_evidence_artifact(token: str) -> str | None:
 # --------------------------------------------------------------------------------------
 
 
-def raw_evidence_excerpt(raw_dir: Path, io_contract: dict[str, Any]) -> dict[str, Any]:
-    """Summarize a run's `raw/` directory against its `io_contract`, inlining no array.
+def raw_evidence_excerpt(raw_dir: Path, io_contract: dict[str, Any], *,
+                         output_format: str) -> dict[str, Any]:
+    """Summarize a run's `raw/` directory against its `io_contract`, inlining no array. The
+    captures are found and decoded by the capture store of ``output_format``, the format of the
+    target that wrote the run (`tools/capture_store.py`).
 
     Total by construction: every failure to read or parse becomes a `problems` entry, never an
     exception (see the module docstring). The result is JSON-serializable and deterministic —
     every list is ordered — so the same run excerpts to the same bytes.
     """
     problems: list[str] = []
+    store = capture_store.store(output_format)
     return {
         "policy_version": RAW_EXCERPT_POLICY_VERSION,
         "raw_dir_present": raw_dir.is_dir(),
-        "required_evidence": _required_evidence_rows(raw_dir, io_contract),
-        "state_snapshots": _state_snapshots(raw_dir, problems),
+        "required_evidence": _required_evidence_rows(raw_dir, io_contract, store),
+        "state_snapshots": _state_snapshots(raw_dir, problems, store),
         "problems": problems,
     }
 
@@ -118,27 +129,28 @@ def _read_json(path: Path, problems: list[str], label: str) -> Any:
     return None
 
 
-def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
+def _state_snapshots(raw_dir: Path, problems: list[str], store: Any) -> dict[str, Any]:
     """Each per-case snapshot summarized against `snapshot_schema.json`'s declaration.
 
     The declared shape travels with the summary so the judge can compare them: a snapshot
     whose array is not the shape the schema declares is evidence about the runner, and it is
     invisible from the numbers alone.
 
-    A case whose runner is host-rendered has TWO captures (Z6, issue #255): the final one at
-    `<case_id>.json` and the initial one at `initial/<case_id>.json`, taken before the first
-    call. The initial capture is summarized under the case's `initial` key by the same
-    summarizer, or `None` when the runner wrote none (a harness self-test's own runner). On a
-    `loop` node (issue #589) `history_samples` counts the case's `history/` files and `series` is
-    the summary of its `series/` file: each name's length, minimum and maximum, or `None`.
+    A case whose runner is host-rendered has TWO captures (Z6, issue #255): the final one and
+    the initial one, taken before the first call. The initial capture is summarized under the
+    case's `initial` key by the same summarizer, or `None` when the runner wrote none (a
+    harness self-test's own runner). On a `loop` node (issue #589) `history_samples` counts the
+    case's samples and `series` is the summary of its series record: each name's length,
+    minimum and maximum, or `None`. The cases are those ``store`` finds a final capture of, in
+    its order; a record is labelled by the file the store reads it from.
     """
-    snapshots_dir = raw_dir / "state_snapshots"
+    snapshots_dir = raw_dir.joinpath(*_SNAPSHOTS_BELOW_RAW)
     if not snapshots_dir.is_dir():
         return {"present": False, "schema": None, "cases": []}
 
     schema = _read_json(
-        snapshots_dir / "snapshot_schema.json", problems,
-        "raw/state_snapshots/snapshot_schema.json")
+        snapshots_dir / capture_store.SNAPSHOT_SCHEMA_FILENAME, problems,
+        f"{_SNAPSHOTS_LABEL}/{capture_store.SNAPSHOT_SCHEMA_FILENAME}")
     declared: dict[str, Any] = {}
     time_variable = None
     if isinstance(schema, dict):
@@ -149,21 +161,19 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
 
     cases: list[dict[str, Any]] = []
     try:
-        files = sorted(p for p in snapshots_dir.iterdir()
-                       if p.is_file() and p.name != "snapshot_schema.json")
+        case_ids = list(store.case_ids(snapshots_dir))
     except OSError as exc:
-        problems.append(f"raw/state_snapshots: unreadable ({type(exc).__name__})")
-        files = []
-    for path in files:
-        case = _snapshot_case(path, f"raw/state_snapshots/{path.name}", declared,
+        problems.append(f"{_SNAPSHOTS_LABEL}: unreadable ({type(exc).__name__})")
+        case_ids = []
+    for case_id in case_ids:
+        case = _snapshot_case(store, snapshots_dir, capture_store.FINAL, case_id, declared,
                               time_variable, problems)
-        initial_path = snapshots_dir / "initial" / path.name
         case["initial"] = (
-            _snapshot_case(initial_path, f"raw/state_snapshots/initial/{path.name}",
-                           declared, time_variable, problems)
-            if initial_path.is_file() else None)
-        case["history_samples"] = _history_count(snapshots_dir, path.stem)
-        case["series"] = _series_summary(snapshots_dir, path.name, problems)
+            _snapshot_case(store, snapshots_dir, capture_store.INITIAL, case_id, declared,
+                           time_variable, problems)
+            if store.has_record(snapshots_dir, capture_store.INITIAL, case_id) else None)
+        case["history_samples"] = len(store.history_steps(snapshots_dir, case_id))
+        case["series"] = _series_summary(store, snapshots_dir, case_id, problems)
         cases.append(case)
     return {
         "present": True,
@@ -176,42 +186,41 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
     }
 
 
-def _history_count(snapshots_dir: Path, case_id: str) -> int:
-    """How many `history/<case_id>__<k>.json` samples the case has (0: none, or no `history/`)."""
-    history = snapshots_dir / "history"
-    if not history.is_dir():
-        return 0
-    prefix = f"{case_id}__"
-    return sum(1 for p in history.iterdir()
-               if p.is_file() and p.name.startswith(prefix) and p.suffix == ".json"
-               and p.stem[len(prefix):].isdigit())
+def _record(store: Any, snapshots_dir: Path, group: str, case_id: str,
+            problems: list[str]) -> dict[str, Any] | None:
+    """One record's members, or None with the store's refusal recorded — never raised — under
+    the record's label (the file the store reads it from, below `raw/`)."""
+    try:
+        return dict(store.read_record(snapshots_dir, group, case_id))
+    except capture_store.CaptureError as exc:
+        rel = store.record_path(snapshots_dir, group, case_id).relative_to(snapshots_dir)
+        problems.append(f"{_SNAPSHOTS_LABEL}/{rel.as_posix()}: {exc.reason}")
+    return None
 
 
-def _series_summary(snapshots_dir: Path, name: str, problems: list[str]) -> dict[str, Any] | None:
+def _series_summary(store: Any, snapshots_dir: Path, case_id: str,
+                    problems: list[str]) -> dict[str, Any] | None:
     """Each series name of the case summarized like a variable (a non-finite entry counted, none
-    inlined), or None when the case has no `series/` file."""
-    path = snapshots_dir / "series" / name
-    if not path.is_file():
+    inlined), or None when the case has no series record or it cannot be read."""
+    if not store.has_record(snapshots_dir, capture_store.SERIES, case_id):
         return None
-    doc = _read_json(path, problems, f"raw/state_snapshots/series/{name}")
-    if not isinstance(doc, dict):
+    doc = _record(store, snapshots_dir, capture_store.SERIES, case_id, problems)
+    if doc is None:
         return None
     return {key: _summarize(doc[key]) for key in sorted(doc)}
 
 
-def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variable: Any,
+def _snapshot_case(store: Any, snapshots_dir: Path, group: str, case_id: str,
+                   declared: dict[str, Any], time_variable: Any,
                    problems: list[str]) -> dict[str, Any]:
-    """One snapshot file summarized against the declaration (the per-case body of
+    """One state record summarized against the declaration (the per-case body of
     `_state_snapshots`, shared by the final and the initial capture of a case)."""
-    doc = _read_json(path, problems, label)
-    case: dict[str, Any] = {"case_id": path.stem, "variables": []}
+    doc = _record(store, snapshots_dir, group, case_id, problems)
+    case: dict[str, Any] = {"case_id": case_id, "variables": []}
     if doc is None:
         case["read"] = False
         return case
     case["read"] = True
-    if not isinstance(doc, dict):
-        problems.append(f"{label}: not a JSON object")
-        return case
     if isinstance(time_variable, str):
         case["time_variable"] = time_variable
         case["time_value"] = _summarize(doc.get(time_variable)) if (
@@ -225,8 +234,21 @@ def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variab
     return case
 
 
-def _required_evidence_rows(raw_dir: Path, io_contract: Any) -> list[dict[str, Any]]:
-    """Each declared `raw_requirements.required_evidence` artifact against what is on disk.
+def _group_present(store: Any, snapshots_dir: Path, group: str) -> bool:
+    """Whether the run holds any record of a capture group."""
+    try:
+        if group == capture_store.HISTORY:
+            return any(store.history_steps(snapshots_dir, case_id)
+                       for case_id in store.case_ids(snapshots_dir))
+        return bool(store.case_ids(snapshots_dir, group))
+    except OSError:
+        return False
+
+
+def _required_evidence_rows(raw_dir: Path, io_contract: Any, store: Any) -> list[dict[str, Any]]:
+    """Each declared `raw_requirements.required_evidence` artifact against what is on disk: a
+    capture group (`_EVIDENCE_GROUPS`) by whether ``store`` finds a record of it, any other
+    artifact by its own name under `raw/`.
 
     The declared spelling is kept beside the canonical name: an artifact the aliases do not
     recognise is a contract the gate silently ignores, and saying so is more useful to the
@@ -247,14 +269,19 @@ def _required_evidence_rows(raw_dir: Path, io_contract: Any) -> list[dict[str, A
         if not isinstance(spelling, str):
             continue
         artifact = normalize_raw_evidence_artifact(spelling)
-        target = raw_dir / _EVIDENCE_DIRS.get(artifact, artifact) if artifact else None
+        if artifact in _EVIDENCE_GROUPS:
+            present = _group_present(store, raw_dir.joinpath(*_SNAPSHOTS_BELOW_RAW),
+                                     _EVIDENCE_GROUPS[artifact])
+        else:
+            target = raw_dir / artifact if artifact else None
+            present = bool(target and (target.is_file() or target.is_dir()))
         rows.append({
             "declared_as": spelling,
             "artifact": artifact,
-            # `every: 0` is a legal stride, so an absent `history/` is no missing evidence: a
+            # `every: 0` is a legal stride, so a run with no sample is missing no evidence: a
             # predicate over `history.*` is what needs samples, and it answers `structural`.
             "required": item.get("required") is not False and artifact != "state_history",
-            "present": bool(target and (target.is_file() or target.is_dir())),
+            "present": present,
         })
     return rows
 

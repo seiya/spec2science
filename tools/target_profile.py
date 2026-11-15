@@ -77,7 +77,7 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "": (
         frozenset({"target_profile_version", "target_id", "hardware", "toolchain",
                    "parallel", "execution", "harness"}),
-        frozenset(),
+        frozenset({"output"}),
     ),
     "hardware": (frozenset({"class"}), frozenset({"architecture"})),
     "toolchain": (frozenset({"language", "standard", "build_system"}),
@@ -86,7 +86,13 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "execution": (frozenset({"threads_per_rank"}),
                   frozenset({"ranks", "process_grid", "block_size", "sweep"})),
     "harness": (frozenset({"infrastructure_id", "version_constraint"}), frozenset()),
+    "output": (frozenset(), frozenset({"format"})),
 }
+
+#: The `output_format` axis value of a profile that states none (`output.format`, issue #644):
+#: every profile written before the key existed. The default is read, never written into the
+#: document, so those profiles' sha256 are unchanged. `docs/IMPL_PLAN_SPEC.md` §3 documents it.
+DEFAULT_OUTPUT_FORMAT = "json"
 
 #: The members `execution.sweep` may name (issue #512): each is a list of values the execution
 #: shape takes in turn, one more run of the binary per value. `grids` varies the process grid
@@ -150,6 +156,12 @@ class TargetProfile:
     @property
     def parallel_backend(self) -> str:
         return str(self.doc["parallel"]["backend"])
+
+    @property
+    def output_format(self) -> str:
+        """The `output_format` axis value the target's runs write their captures in
+        (`output.format`, issue #644); `DEFAULT_OUTPUT_FORMAT` when the profile states none."""
+        return str((self.doc.get("output") or {}).get("format") or DEFAULT_OUTPUT_FORMAT)
 
     @property
     def threads_per_rank(self) -> int:
@@ -397,7 +409,7 @@ def _shape_violations(doc: Any) -> list[str]:
                          ("toolchain", "language"), ("toolchain", "standard"),
                          ("toolchain", "build_system"), ("toolchain", "compiler"),
                          ("toolchain", "linker"), ("parallel", "backend"),
-                         ("harness", "infrastructure_id")):
+                         ("harness", "infrastructure_id"), ("output", "format")):
         token(obj_key, key)
     execution = doc.get("execution")
     if isinstance(execution, dict) and "threads_per_rank" in execution:
@@ -858,6 +870,11 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
             out.append(f"parallel.backend: {profile.parallel_backend}'s compiler wrapper runs "
                        f"{wrapped}, and toolchain.language {tc['language']} compiles with "
                        f"{compiler}")
+    # The format the target's runs write their captures in: every reader of a run directory
+    # decodes it through that format's store.
+    reason = backend_registry.unavailable_reason("output_format", profile.output_format)
+    if reason is not None:
+        out.append(f"output.format: {reason}")
     try:
         harness_nk = harness_node_key_for_target(repo_root, profile)
     except TargetProfileError as exc:

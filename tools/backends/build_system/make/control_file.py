@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import posixpath
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from tools.backends.build_system.make.failure import (  # noqa: F401  (re-export)
     classify_build_failure,
@@ -99,16 +99,15 @@ def _padded(variable: str) -> str:
     return f"{variable:<8}"
 
 
-def _snapshot_dir(initial_capture_dir: bool) -> str:
+def _capture_dirs(capture_dirs: Iterable[Sequence[str]]) -> str:
     """The directories the `test` recipe pre-creates in the run directory before the runner
-    runs: `raw/state_snapshots/`, plus its `initial/`, `history/` and `series/` capture points only
-    when the host renders the runner (`initial_capture_dir`), which opens each file relatively
-    (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3). A hand-authored runner writes none of them,
-    so its `raw/state_snapshots/` holds only what it wrote and a strict fan-out self-test may
-    refuse any other entry (issue #368). ONE helper so the two renderers cannot drift."""
-    if not initial_capture_dir:
-        return "$(RUNDIR)/raw/state_snapshots"
-    return " ".join(f"$(RUNDIR)/raw/state_snapshots/{d}" for d in ("initial", "history", "series"))
+    runs, as the `mkdir -p` operands: each of ``capture_dirs`` (path parts below the run
+    directory) under `$(RUNDIR)`. Which directories those are is the host's answer
+    (`tools/capture_store.run_dirs`: the capture directory alone for a hand-authored runner,
+    the target's capture store's own directories below it for the runner the host renders,
+    `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3), the same one `Validate.execute` creates for
+    the run. ONE helper so the two renderers cannot drift."""
+    return " ".join("$(RUNDIR)/" + "/".join(parts) for parts in capture_dirs)
 
 
 def render_node(
@@ -120,7 +119,7 @@ def render_node(
     model_stem: str,
     runner_stem: str,
     closure: Iterable[str],
-    initial_capture_dir: bool = False,
+    capture_dirs: Iterable[Sequence[str]],
 ) -> str:
     """The IR-shaped Makefile: a node's model and runner, plus the Model B dependency
     closure `closure` (dependency spec_ids, deepest first) whose sources the conductor stages into
@@ -131,7 +130,7 @@ def render_node(
     (`compile_project`) and Validate.execute (`run_quality_checks`); SPEC / CASES default so a
     local `make all test` runs the full case set standalone, and Validate.execute overrides them
     through the make-test environment so `make test` invokes the runner as `run_program` does.
-    `initial_capture_dir`: see `_snapshot_dir`."""
+    `capture_dirs`: see `_capture_dirs`."""
     closure = list(closure)
     suffix = rules["source_suffix"]
     cc = _compile(rules)
@@ -204,7 +203,7 @@ $(sort $(OBJDIR) $(BINDIR)):
 
 test:
 \ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p {_snapshot_dir(initial_capture_dir)}
+\tmkdir -p {_capture_dirs(capture_dirs)}
 \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
 
 clean:
@@ -218,7 +217,7 @@ def render_from_graph(
     bin_name: str,
     cases_default: str,
     graph: dict[str, Any],
-    initial_capture_dir: bool = False,
+    capture_dirs: Iterable[Sequence[str]],
 ) -> str:
     """The Makefile of a pure `CodegenBundle`: EXACTLY the derived build graph's
     `compile_units` (so a bundle that declares a helper / internal-module file is built too) and
@@ -226,7 +225,7 @@ def render_from_graph(
     so Build and Validate.execute drive both identically. A `staged:` source is
     `$(OBJDIR)/<name>` (staged by the conductor before make), a `bundle:` / `glue:` source a
     filename in the src/ cwd; objects live under `$(OBJDIR)`, in the graph's conservative total
-    prerequisite order. `initial_capture_dir`: see `_snapshot_dir`."""
+    prerequisite order. `capture_dirs`: see `_capture_dirs`."""
     cc = _compile(rules)
 
     def _src_path(source: str) -> str:
@@ -276,7 +275,7 @@ $(sort $(OBJDIR) $(BINDIR)):
 
 test:
 \ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p {_snapshot_dir(initial_capture_dir)}
+\tmkdir -p {_capture_dirs(capture_dirs)}
 \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
 
 clean:

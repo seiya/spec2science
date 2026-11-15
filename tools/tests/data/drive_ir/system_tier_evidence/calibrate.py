@@ -118,7 +118,7 @@ def values(ir: dict[str, Any], run: Path, cases: set[str]) -> dict[tuple[str, st
             split.append(q)
     keep["io_contract"]["predicates"] = split
     out: dict[tuple[str, str], float] = {}
-    for rec in pe.evaluate_primary_predicates(keep, run):
+    for rec in pe.evaluate_primary_predicates(keep, run, output_format="json"):
         rec = dict(rec)
         for ev in rec.get("evaluated") or []:
             if "value" in ev:

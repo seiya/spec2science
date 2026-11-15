@@ -792,7 +792,8 @@ class RunConfigurationTest(unittest.TestCase):
         stage = self.tmp / "stage"
         stage.mkdir()
         with self.assertRaises(rc.ConfigurationRefused) as ctx:
-            rc.continuation_payload(ir, "m0", payload, capture, stage)
+            rc.continuation_payload(ir, "m0", payload, capture,
+                                    json.loads(capture.read_text()), stage)
         self.assertIn("not > 0", str(ctx.exception))
 
     # --- review round 3 ---------------------------------------------------------------------

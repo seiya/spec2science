@@ -1099,7 +1099,8 @@ class ContinuationAtExecuteTests(unittest.TestCase):
         from tools.verdict_evaluator import evaluate_verdict
         ir = yaml.safe_load((n.repo / n.refs.ir_ref / "spec.ir.yaml").read_text())
         verdict = evaluate_verdict(ir["io_contract"]["tests"],
-                                   pe.evaluate_primary_predicates(ir, n.node_dir))
+                                   pe.evaluate_primary_predicates(ir, n.node_dir,
+                                                                  output_format="json"))
         self.assertEqual([(r["test_id"], r["status"]) for r in verdict["per_test"]],
                          [("t_restart", "pass")])
         quality = json.loads((n.node_dir / "quality_check.json").read_text())
@@ -1296,7 +1297,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             for rel in names:
                 (src / rel).parent.mkdir(parents=True, exist_ok=True)
                 (src / rel).write_text("{}")
-            self.assertIsNone(wc.Conductor._merge_continuation_captures(rdir, shape, "c"))
+            self.assertIsNone(wc.Conductor._merge_continuation_captures(rdir, shape, "c", "json"))
             dst = shape / "raw" / "state_snapshots"
             moved = sorted(str(p.relative_to(dst)) for p in dst.rglob("*.json"))
             self.assertEqual(moved, sorted(names[:4]))
@@ -1304,7 +1305,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             (src / "d.json").write_text("{}")
             (src / "initial" / "d.json").write_text("{}")
             (dst / "initial" / "d.json").write_text("{\"first\": 1}")
-            why = wc.Conductor._merge_continuation_captures(rdir, shape, "d")
+            why = wc.Conductor._merge_continuation_captures(rdir, shape, "d", "json")
             self.assertIn("initial/d.json", why)
             self.assertTrue((src / "d.json").exists())          # nothing moved
             self.assertFalse((dst / "d.json").exists())

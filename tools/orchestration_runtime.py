@@ -3007,14 +3007,16 @@ def resolve_comparands(
             absent.append({"target_id": tid, "reason": "no_eligible_run"})
             continue
         _rkey, run_id, node_dir = best
+        # The comparand's run is read through the store of ITS target's output format
+        # (issue #644), whatever format the asking target writes.
         try:
-            evidence = comparand_evidence_sha256(node_dir)
+            evidence = comparand_evidence_sha256(node_dir, other.output_format)
         except PrimaryEvidenceError as exc:
             raise CrossTargetUnevaluable(
                 f"comparand: {tid} run {run_id} of {node_key}: {exc}") from exc
         out.append(ComparandEvidence(
             target_id=tid, pipeline_ref=str(build.pipeline_ref), run_id=run_id,
-            run_dir=node_dir, evidence=evidence))
+            run_dir=node_dir, evidence=evidence, output_format=other.output_format))
     return ComparandResolution(comparands=out, absent=absent)
 
 
@@ -3085,14 +3087,16 @@ def cross_target_agreement(
         resolution = resolve_comparands(
             repo_root, node_key=node_key, ir_hash=ir_hash, target=resolver.target,
             spec_refs={node_key: spec} if spec else None)
+        own_format = resolver.target.output_format
         own_run = {"pipeline_ref": str(sel.pipeline_ref), "run_id": str(sel.run_id),
-                   "evidence": comparand_evidence_sha256(run_dir)}
+                   "evidence": comparand_evidence_sha256(run_dir, own_format)}
         comparands = [c.detail() for c in resolution.comparands]
         absent = list(resolution.absent)
         if not resolution.comparands:
             return CrossTargetAgreement("no_comparand", [], absent, [], [], own_run, None)
         records = evaluate_primary_predicates(
-            ir, run_dir, comparands=resolution.comparands, cross_target_only=True)
+            ir, run_dir, output_format=own_format, comparands=resolution.comparands,
+            cross_target_only=True)
         structural = [r for r in records if r.get("kind") == "structural"]
         if structural:
             errors = [str(ev.get("error")) for r in structural
@@ -6961,8 +6965,10 @@ def _mandatory_phase_outputs_for_launch(
         # run_id not determinable → inject nothing and preserve the loud
         # downstream failure rather than guessing a placement.
         return []
+    from tools.capture_store import SNAPSHOT_DIR_PARTS, SNAPSHOT_SCHEMA_FILENAME
     return [
-        f"{validate_prefix}{run_id}/{node_safe}/raw/state_snapshots/snapshot_schema.json"
+        f"{validate_prefix}{run_id}/{node_safe}/{'/'.join(SNAPSHOT_DIR_PARTS)}/"
+        f"{SNAPSHOT_SCHEMA_FILENAME}"
     ]
 
 

@@ -53,7 +53,7 @@ def max_spec_id_len() -> int:
     return min(bounds)
 
 # The character grammar a case_id must obey. The runner harness builds each per-case snapshot
-# path by concatenating the runtime case_id — `raw/state_snapshots/<case_id>.json` — so a
+# path by concatenating the runtime case_id — a file named after it under `raw/state_snapshots/` — so a
 # `case_id` such as `../../evil` traverses OUT of the run directory and a program that compiles
 # and runs cleanly writes an arbitrary file. The compile gates only require a case_id to be a
 # non-empty string, so `..`/`/` would otherwise slip through. Restrict the id to the same safe

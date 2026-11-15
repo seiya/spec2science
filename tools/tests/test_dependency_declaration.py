@@ -627,7 +627,9 @@ class _RunbookReaderMixin:
 def _launch_probed_modules() -> tuple[tuple[str, str], ...]:
     """Every (import name, distribution) a launch can refuse a host for: the neutral tuple
     `tools/run_workflow.py` checks for every run, and each declared language backend's
-    `source_reading.REQUIRED_PYTHON_MODULES`, checked for a target in that language (issue #469).
+    `source_reading.REQUIRED_PYTHON_MODULES`, checked for a target in that language (issue #469),
+    and each declared output format's `capture_store.REQUIRED_PYTHON_MODULES`, checked for every
+    target (issue #644).
     """
     from tools.backends import registry
 
@@ -636,6 +638,9 @@ def _launch_probed_modules() -> tuple[tuple[str, str], ...]:
         if registry.provides("language", language, "source_reading"):
             found += registry.capability_module(
                 "language", language, "source_reading").REQUIRED_PYTHON_MODULES
+    for output_format in registry.backend_ids("output_format"):
+        found += registry.capability_module(
+            "output_format", output_format, "capture_store").REQUIRED_PYTHON_MODULES
     return tuple(dict.fromkeys(found))
 
 

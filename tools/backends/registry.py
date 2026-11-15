@@ -185,6 +185,19 @@ AXES: dict[str, Axis] = {
             "job script runs under, and how the job names itself."
         ),
     ),
+    "output_format": Axis(
+        name="output_format",
+        source=(
+            "target profile output.format (optional; `json` when absent, "
+            "spec/targets/<target_id>.yaml)"
+        ),
+        description=(
+            "The format a run writes its captures in under `raw/state_snapshots/`: which "
+            "files hold a case's records and how one is decoded. The run's runner writes "
+            "it; the host reads it through the format's `capture_store`, the store of the "
+            "target whose run wrote the directory (`tools/capture_store.py`)."
+        ),
+    ),
 }
 
 
@@ -380,6 +393,15 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "`tools/remote_execution.py` runs the job and reads its evidence, the scheduler spells "
         "the prefix).",
     ),
+    "capture_store": (
+        ("output_format",),
+        ("The host can find and decode the captures a run wrote in this format: which files "
+         "under the capture directory hold a case's final, initial, sampled and series records, "
+         "one record as its members, the directories a host-rendered runner needs created, and "
+         "how a run's captures are copied and a case's moved (issue #644; "
+         "`tools/capture_store.py` is the seam every reader goes through). Every member of "
+         "the axis declares it."),
+    ),
 }
 
 
@@ -429,6 +451,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "device_trace": "trace",
     "launcher": "launcher",
     "compiler_wrapper": "wrapper",
+    "capture_store": "store",
 }
 
 
@@ -634,6 +657,12 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         Backend(
             "scheduler", "slurm", "tools.backends.scheduler.slurm",
             backend_provides=frozenset({"job_submit"}),
+        ),
+        # The format a run's captures are written in (issue #644, Part 3 P3): one JSON object
+        # per record. The only member until the second format lands with its own harness.
+        Backend(
+            "output_format", "json", "tools.backends.output_format.json",
+            backend_provides=frozenset({"capture_store"}),
         ),
     )
 }

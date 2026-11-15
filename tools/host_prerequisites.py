@@ -490,20 +490,26 @@ def unsupported_host_tool_versions(
 
 
 def required_python_modules(selection: dict[str, str]) -> tuple[tuple[str, str], ...]:
-    """The (import name, distribution name) pairs the selection's language reader imports.
+    """The (import name, distribution name) pairs the selection's language reader imports, then
+    those every output format's capture store imports.
 
-    The language backend's `source_reading` module declares them (`REQUIRED_PYTHON_MODULES`, an
-    empty tuple for a reader that imports none); read through the registry, so this file names no
-    package. Asked after the target is resolved, so a run for one language does not require
-    another language's packages."""
+    The language backend's `source_reading` module declares the first (`REQUIRED_PYTHON_MODULES`,
+    an empty tuple for a reader that imports none); read through the registry, so this file names
+    no package. Asked after the target is resolved, so a run for one language does not require
+    another language's packages. The stores are every declared `output_format` member's, not
+    the resolved target's alone (issue #644): a cross-target agreement reads another target's
+    run through that target's store, so one rule — every store's modules on every host —
+    replaces a condition per comparand."""
     from tools.backends import registry as backend_registry
 
     language = selection["language"]
     _require_implemented("language", language)
-    return tuple(
-        (str(module_name), str(distribution))
-        for module_name, distribution in backend_registry.capability_module(
-            "language", language, "source_reading").REQUIRED_PYTHON_MODULES)
+    declared = list(backend_registry.capability_module(
+        "language", language, "source_reading").REQUIRED_PYTHON_MODULES)
+    for output_format in backend_registry.backend_ids("output_format"):
+        declared += backend_registry.capability_module(
+            "output_format", output_format, "capture_store").REQUIRED_PYTHON_MODULES
+    return tuple((str(module_name), str(distribution)) for module_name, distribution in declared)
 
 
 def missing_host_executables(

@@ -165,7 +165,8 @@ def _host_probe_selection(target_profile: TargetProfile) -> dict[str, str]:
 
 
 def _target_python_modules(target_profile: TargetProfile) -> tuple[tuple[str, str], ...]:
-    """The Python modules the resolved target's language backend declares (issue #469)."""
+    """The Python modules the resolved target's language backend declares (issue #469) and
+    those of every output format's capture store (issue #644)."""
     from tools.host_prerequisites import required_python_modules
 
     return required_python_modules(_host_probe_selection(target_profile))
@@ -2986,7 +2987,8 @@ def _run_main(
             args.stdout_format,
         )
         return 2
-    # The Python modules the resolved target's language reads its sources with, checked after the
+    # The Python modules the resolved target's language reads its sources with, and those the
+    # output formats' capture stores read a run's captures with, checked after the
     # gate passed the target (a run for one language does not require another's packages) and
     # before any orchestration state is touched. The neutral modules were checked above.
     target_modules = _target_python_modules(target_profile)
@@ -2999,7 +3001,8 @@ def _run_main(
                 # Installed from the FILE, as the neutral refusal above says why.
                 "detail": (
                     f"missing python packages: {','.join(missing_target_modules)} (required by "
-                    f"toolchain.language={target_profile.toolchain['language']!r}) — install "
+                    f"toolchain.language={target_profile.toolchain['language']!r} and the "
+                    f"output formats' capture stores) — install "
                     f"with: pip install -r requirements.txt"
                 ),
                 "missing": missing_target_modules,

@@ -1993,14 +1993,16 @@ def validate_runner_json_serialization(
 
 
 
-# A whole-path snapshot data filename embedded in a single string literal:
-# ``state_snapshots/<name>.json``. The per-case contract requires the runner to
-# BUILD the name from the case_id it receives on argv (e.g.
-# ``'raw/state_snapshots/'//trim(case_id)//'.json'``), which keeps ``.json`` in a
-# SEPARATE literal so this pattern does not match. A fixed/sequential literal
-# (``snapshot_0001.json``, a combined file) does match. The character class
-# excludes quotes so a match never crosses a string-literal boundary.
-_RUNNER_SNAPSHOT_LITERAL = re.compile(r"state_snapshots/([^/'\"]+)\.json")
+def _runner_snapshot_literal(suffix: str) -> re.Pattern[str]:
+    """A whole-path snapshot data filename embedded in a single string literal:
+    ``state_snapshots/<name><suffix>``, ``suffix`` being the capture file suffix of the run's
+    output format (`FORMAT_FACTS`, handed in by the validator). The per-case contract requires
+    the runner to BUILD the name from the case_id it receives on argv (e.g.
+    ``'raw/state_snapshots/'//trim(case_id)//'<suffix>'``), which keeps the suffix in a
+    SEPARATE literal so this pattern does not match. A fixed/sequential literal
+    (``snapshot_0001<suffix>``, a combined file) does match. The character class
+    excludes quotes so a match never crosses a string-literal boundary."""
+    return re.compile(r"state_snapshots/([^/'\"]+)" + re.escape(suffix))
 
 
 
@@ -2009,8 +2011,12 @@ def validate_runner_snapshot_filenames(
     text: str,
     violations: list[str],
     known_case_ids: set[str] | None = None,
+    *,
+    format_facts: Mapping[str, Any],
 ) -> None:
-    """Flag a hardcoded ``raw/state_snapshots/<name>.json`` filename in the runner.
+    """Flag a hardcoded ``raw/state_snapshots/<name><suffix>`` filename in the runner,
+    ``<suffix>`` being ``format_facts["suffix"]`` — the capture file suffix of the run's output
+    format (the capture store's `FORMAT_FACTS`; ``.json`` in the examples below).
 
     ``Validate.execute``'s deliverable gate requires exactly one
     ``raw/state_snapshots/<case_id>.json`` per ``case.test_case_set[].case_id``
@@ -2031,6 +2037,8 @@ def validate_runner_snapshot_filenames(
     case_id_stems = (
         {cid.lower() for cid in known_case_ids} if known_case_ids else set()
     )
+    suffix = str(format_facts["suffix"])
+    pattern = _runner_snapshot_literal(suffix)
     for lineno, line in iter_logical_lines(text):
         if "state_snapshots/" not in line:
             continue
@@ -2038,15 +2046,15 @@ def validate_runner_snapshot_filenames(
         # *content* (not an output target) is never mistaken for a filename.
         if "file=" not in line and not re.search(r"\bopen\s*\(", line):
             continue
-        for match in _RUNNER_SNAPSHOT_LITERAL.finditer(line):
+        for match in pattern.finditer(line):
             name = match.group(1)
             if name == "snapshot_schema" or name in case_id_stems:
                 continue
             violations.append(
                 f"{runner_file}:{lineno}: hardcoded snapshot filename "
-                f"'state_snapshots/{name}.json' — write one "
-                "raw/state_snapshots/<case_id>.json per case, building the name "
-                "from the case_id received on argv (e.g. trim(case_id)//'.json'); "
+                f"'state_snapshots/{name}{suffix}' — write one "
+                f"raw/state_snapshots/<case_id>{suffix} per case, building the name "
+                f"from the case_id received on argv (e.g. trim(case_id)//'{suffix}'); "
                 "a fixed/sequential name fails Validate.execute's per-case "
                 "deliverable gate (phase_02_generate.md / phase_04_validate.md §43)"
             )
