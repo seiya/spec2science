@@ -1421,7 +1421,7 @@ PINNED_RENDER: dict[str, str] = {
     # digest `render-12` shipped with at c38a3d8b:
     "render-12@c38a3d8b": "e67d6b26885115087847d3cb1ae58e95657a261335fc00e35716c51dcb0c5d2d",
     # render-21 (issue #644 P4a): the driver renderers write through the harness's capture interface (no file name, no token), and every node's run gets the capture store's directories.
-    "render-21": "940275be367d02a38f735763b395d07475df6a35f27be2514d2fd4205bf7f6f8",
+    "render-21": "1f932dd02b5c2d47d9f15c9263a23907114819e47f1edfa6f26693dededb1c5d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -2019,7 +2019,7 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-19@b3282e9b": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
     "execute-19": "cc250ea6cc74b1b3783ca96ec5fb5d3d34ba63ffa0e7ef6c5b8399cbec4a6d85",
     # execute-20 (issue #644 P4a): the json store's restart points and series chunks, the capture directories on every node, the IR-based driver-ran rule.
-    "execute-20": "5bc9b4a3fc2355fa2bce115cba4094eb6f1fb0cede2aa42da40748b64f9b44f2",
+    "execute-20": "a5ee88735d315151e5f50545ce0e578f68f5783e218af8f5a66d7ea8a1be26b9",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2233,7 +2233,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-17": "d23dd1ffdd2a71d52e0fc5747ab210330304b5ee1f9d7ee4317491f229aebb6c",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
     # verdict-18 (issue #644 P4a): a series is its chunks joined and carries one `t` per row.
-    "verdict-18": "25e53f463f9b2e4878fdd2001ccfd6fc436d5f1875c90e1051702de547e9d211",
+    "verdict-18": "521fa37140b167feb3da68f9826c5e1a5e1cd3fa3cda972e503c6e3e78495203",
 }
 
 

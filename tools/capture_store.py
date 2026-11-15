@@ -18,11 +18,11 @@ The store that reads a directory is the store of the target whose run WROTE it: 
 that target's `output_format` (`TargetProfile.output_format`), never a format guessed from the
 directory's content.
 
-What a store is: a module with `FORMAT_FACTS` (its `suffix`), `REQUIRED_PYTHON_MODULES`, and
-the functions the readers call —
+What a store is: a module with `REQUIRED_PYTHON_MODULES` and the functions the host calls —
 `run_dirs`, `record_path`, `has_record`, `read_record`, `case_ids`, `history_steps`,
 `restart_point_steps`, `case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`,
-`expected_layout` (`tools/backends/output_format/json/store.py` states each). A record is what
+`expected_layout`, and `capture_layout_document`, the layout as a harness's author is told it
+(`tools/backends/output_format/json/store.py` states each). A record is what
 one commit of the harness's capture interface closed, except a case's series, which is every
 row the case committed: how many files hold either is the store's. A record's
 members are returned as JSON spells them — a number, a boolean, a string, nested lists of

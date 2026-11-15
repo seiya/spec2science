@@ -5791,7 +5791,11 @@ class Conductor:
     def _runner_output_contract_with_binding(self, contract_text: str) -> str:
         """`RUNNER_OUTPUT_CONTRACT.md` whole, followed by the target language's runner-output
         binding (the writer rules its JSON tokens follow; issue #289, R4-b PR-2 moved them out of
-        the neutral document). The binding is read through `prompt_fragments`, and every failure
+        the neutral document) and by the capture layout of the target's output format (which
+        file holds a record of each capture group; issue #644 P4a moved it out of the neutral
+        document, and a harness producer is seeded no `controlled_spec.md`, so this is where the
+        layout its model must write reaches it). The binding is read through
+        `prompt_fragments` and the layout through the format's capture store, and every failure
         RAISES a named `RuntimeError` for the reason `_generate_rules_text` gives."""
         language = self.target.toolchain["language"]
         try:
@@ -5804,7 +5808,14 @@ class Conductor:
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
                 f"pure_runner_output_binding_missing: language {language!r}: {exc}") from exc
-        return f"{contract_text.rstrip()}\n\n{binding}"
+        try:
+            layout = str(capture_store.store(
+                self.target.output_format).capture_layout_document())
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_capture_layout_missing: output format "
+                f"{self.target.output_format!r}: {exc}") from exc
+        return f"{contract_text.rstrip()}\n\n{binding.rstrip()}\n\n{layout}"
 
     def _language_facts(self) -> Any:
         """The target language's `bundle_facts` module: the names the host gives its files."""
@@ -13060,7 +13071,7 @@ class Conductor:
             + f". expected={expected}; runner wrote={sorted(present)}; "
             f"missing={missing}. Commit each case's record through the harness's capture "
             "operations, under the case_id passed via --cases: the harness names the file, "
-            "and a runner opens none under the capture directory. "
+            "and a runner holds no path under the capture directory. "
             "Canonical: phase_02_generate.md / phase_04_validate.md §43."
         )
 
@@ -14045,12 +14056,12 @@ class Conductor:
             raw_refs.append(schema_ref)
         # Per-case snapshot deliverable check (build_launch_request requires one final
         # capture per case). Compute a clear diagnostic
-        # here so a misnamed/combined snapshot fails with an actionable cause rather
+        # here so a case with no record fails with an actionable cause rather
         # than the opaque determine_substep_status deliverable-presence fail. Read
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
-        # A continuation's absent captures are the second pass's, not a misnamed file (issue
+        # A continuation's absent captures are the second pass's, not an uncommitted record (issue
         # #632): each is reported with its own cause INSTEAD of the deliverable gap's generic
-        # remedy, which tells Generate to rename snapshot files; the gap is still computed over
+        # remedy, which tells Generate to commit the record; the gap is still computed over
         # every other case.
         cont_missing = {cid: why for cid, why in restart_causes.get("run", {}).items()}
         cont_missing.update({cid: "the second pass did not run (the first pass failed)"

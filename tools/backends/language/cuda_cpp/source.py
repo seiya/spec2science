@@ -458,7 +458,6 @@ def validate_runner_json_serialization(
             "manipulator `std::hexfloat` — hexadecimal floating point is not a JSON number")
 
 
-_FILE_OPEN_RE = re.compile(r"\bofstream\b|\bfopen\s*\(|\.\s*open\s*\(|\bfreopen\s*\(")
 
 
 def validate_runner_snapshot_filenames(
@@ -466,23 +465,18 @@ def validate_runner_snapshot_filenames(
     text: str,
     violations: list[str],
 ) -> None:
-    """Flag a string literal naming the capture directory (`state_snapshots/`) on a line of the
-    runner that opens a file, however the name is built — a whole literal, a concatenation with
-    the case id, any of them: a runner writes a capture only through the harness's capture
-    operations and opens no file under the capture directory (the Fortran scan's rule and
-    reason). A literal on a line that opens no file (a message) and a comment are not read.
-    `text` is lowercased by the validator."""
-    code_lines = cpp_lines.mask(text).split("\n")
+    """Flag a string literal of the runner that names the capture directory (`state_snapshots`):
+    a runner writes a capture only through the harness's capture operations and holds no path
+    under the capture directory, in a file name, a variable or a message (the Fortran scan's
+    rule and reason). A comment is not read. `text` is lowercased by the validator."""
     for lineno, literal in cpp_lines.literals(text):
-        if "state_snapshots/" not in literal:
-            continue
-        if not _FILE_OPEN_RE.search(code_lines[lineno - 1]):
+        if "state_snapshots" not in literal:
             continue
         violations.append(
-            f"{runner_file}:{lineno}: the runner opens a file under the capture directory "
-            "(state_snapshots/) — commit the case's record through the harness's capture "
-            "operations (capture_open, capture_real / capture_array_rN, capture_commit, "
-            "capture_close); the runner opens no file under the capture directory")
+            f"{runner_file}:{lineno}: the runner names the capture directory (state_snapshots) — "
+            "commit the case's record through the harness's capture operations (capture_open, "
+            "capture_real / capture_array_rN, capture_commit, capture_close); a runner holds no "
+            "path under the capture directory, in a file name, a variable or a message")
 
 
 # --- the parallel presence floor's loop count ---------------------------------------------------

@@ -40,9 +40,8 @@ from tools.capture_store import (
     CaptureError,
 )
 
-#: The format's facts: the suffix of its capture files.
-FORMAT_FACTS: dict[str, Any] = {"suffix": ".json"}
-_SUFFIX = FORMAT_FACTS["suffix"]
+#: The suffix of this format's capture files.
+_SUFFIX = ".json"
 
 #: The Python modules reading this format needs beyond the standard library: none.
 REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = ()
@@ -56,6 +55,18 @@ _STEPPED = (HISTORY, RESTART_POINT)
 #: `__`, and the step (the chunk's count) in decimal digits with no leading zero — the one
 #: spelling `record_path` produces, so a record found is a record read.
 _SAMPLE = re.compile(r"(?P<case>.+)__(?P<step>0|[1-9][0-9]*)")
+
+
+#: This format's capture layout as a harness's author reads it: seeded after the runner-output
+#: contract wherever that document is seeded whole.
+CAPTURE_LAYOUT_DOCUMENT = (Path(__file__).resolve().parents[4]
+                           / "docs" / "backends" / "output_format" / "json" / "CAPTURE_LAYOUT.md")
+
+
+def capture_layout_document() -> str:
+    """The capture layout, whole. Raises `OSError` / `UnicodeError` when it cannot be read; the
+    caller turns that into a named fail-closed outcome."""
+    return CAPTURE_LAYOUT_DOCUMENT.read_text(encoding="utf-8")
 
 
 def run_dirs() -> tuple[str, ...]:

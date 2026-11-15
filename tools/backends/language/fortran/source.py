@@ -1998,35 +1998,34 @@ def validate_runner_snapshot_filenames(
     text: str,
     violations: list[str],
 ) -> None:
-    """Flag a statement of the runner that opens a file and names the capture directory
-    (``state_snapshots/``), however the name is built — a whole literal, a concatenation with
-    the case id, any of them.
+    """Flag a statement of the runner that names the capture directory (``state_snapshots``).
 
     A runner writes a capture only through the harness's published capture operations
     (``capture_open`` / ``capture_real`` / ``capture_array_rN`` / ``capture_commit`` /
     ``capture_close``); it holds no capture file name and creates, lists and reads nothing
     under the capture directory (the harness's controlled spec §3.2). The scan reads every
     runner, the host-rendered driver included; the one a leaf authors is a harness self-test's
-    entry, and a self-test that opens the capture files itself certifies nothing about the
-    capture operations a consumer relies on.
+    entry, and a self-test that writes or reads the capture files itself certifies nothing
+    about the capture operations a consumer relies on.
 
-    Scoped to file-opening statements (``open(`` or a ``file=`` specifier), so the directory
-    named in a message or a comment is not flagged. ``text`` is the lowercased runner source.
-    ``perf.json`` and the case files are not under the capture directory and are untouched.
+    The rule is the name, not the statement kind: a path held in a variable or a named
+    constant, handed to a helper or opened directly all spell it, and a rule on file-opening
+    statements alone saw a third of the ways the generated runners of the old contract reached
+    the directory (issue #644 P4a review round 2). So a message that names the directory is
+    refused too; a comment is not read. A name assembled from pieces (`'state_snap'//'shots'`)
+    is not seen: this is the ordinary spelling's rule. ``text`` is the lowercased runner
+    source. ``perf.json`` and the case files are not under the capture directory.
     """
     for lineno, line in iter_logical_lines(text):
-        if "state_snapshots/" not in line:
-            continue
-        if "file=" not in line and not re.search(r"\bopen\s*\(", line):
+        if "state_snapshots" not in line:
             continue
         violations.append(
-            f"{runner_file}:{lineno}: the runner opens a file under the capture directory "
-            "(state_snapshots/) — commit the case's record through the harness's capture "
-            "operations (capture_open, capture_real / capture_array_rN, capture_commit, "
-            "capture_close); the runner opens no file under the capture directory "
+            f"{runner_file}:{lineno}: the runner names the capture directory (state_snapshots) — "
+            "commit the case's record through the harness's capture operations (capture_open, "
+            "capture_real / capture_array_rN, capture_commit, capture_close); a runner holds no "
+            "path under the capture directory, in a file name, a variable or a message "
             "(phase_02_generate.md)"
         )
-
 
 
 def statements(text: str) -> list[str]:

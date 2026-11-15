@@ -234,7 +234,7 @@ contains
     if (.not. cap_open) call cap_refuse('capture_real', 'no case is open')
     if (group == 'series') then
       do k = 1, size(cap_names)
-        if (trim(cap_names(k)) == name) then
+        if (cap_names(k) == name) then
           cap_row(k) = x
           return
         end if
@@ -368,7 +368,7 @@ contains
     if (.not. cap_open) call cap_refuse('capture', 'no case is open')
     if (group == 'series') call cap_refuse('capture', 'a series value is a scalar')
     g = cap_group(group)
-    cap_body(g)%text = cap_body(g)%text // '"' // name // '": ' // token // ', '
+    cap_body(g)%text = cap_body(g)%text // '"' // trim(name) // '": ' // token // ', '
   end subroutine cap_put
 
   subroutine cap_write(name, doc)

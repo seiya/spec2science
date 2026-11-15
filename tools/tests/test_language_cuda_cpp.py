@@ -1057,23 +1057,26 @@ class SourceGateTests(unittest.TestCase):
         self.assertTrue(any(":3:" in v and "hexfloat" in v for v in out))
 
     def test_runner_snapshot_filenames(self) -> None:
-        """A line that opens a file and names the capture directory in a literal is flagged
-        however the name is built (a whole literal, a declared case id's, a concatenation with
-        the case id); the directory in a literal that opens nothing, in a comment, and an open of
-        `perf.json` or the case file are not."""
+        """A string literal naming the capture directory is flagged whatever the statement does
+        with it (an open, a path kept in a variable, a directory listing, a multi-line open);
+        the directory in a comment, and an open of `perf.json` or the case file, are not."""
         text = ('std::ofstream f("raw/state_snapshots/snap_0001.json");\n'
                 'std::ofstream g("raw/state_snapshots/" + case_id + ".json");\n'
                 'std::ofstream h("raw/state_snapshots/case_a.json");\n'
                 'FILE *s = fopen("raw/state_snapshots/snapshot_schema.json", "w");\n'
                 'std::string doc = "raw/state_snapshots/other.json";\n'
+                'for (auto& e : std::filesystem::directory_iterator("raw/state_snapshots")) {}\n'
+                'std::ofstream m(\n'
+                '    "raw/state_snapshots/" + case_id + ".json");\n'
                 'std::ofstream p("perf.json"); // raw/state_snapshots/x.json\n'
                 'std::ifstream c(dir + "/case_inputs/" + case_id + ".json");\n')
         out: list[str] = []
         cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), text, out)
-        self.assertEqual(["r.cu:1:", "r.cu:2:", "r.cu:3:", "r.cu:4:"],
+        self.assertEqual(["r.cu:1:", "r.cu:2:", "r.cu:3:", "r.cu:4:", "r.cu:5:", "r.cu:6:",
+                          "r.cu:8:"],
                          [v.split(" ", 1)[0] for v in out], out)
         self.assertTrue(all("capture operations" in v
-                            and "opens no file under the capture directory" in v for v in out))
+                            and "holds no path under the capture directory" in v for v in out))
 
     def test_model_source_gates(self) -> None:
         literal = "".join(f"metrics[{i}] = 1.{i};\n" for i in range(6))

@@ -598,7 +598,7 @@ class OutputFormatTests(unittest.TestCase):
                 repo.root, tp.load_target_profile(repo.root, "t1"))
         self.assertEqual(violations, [
             f"output.format: target t1 reads its captures as json, and harness {_HARNESS_X} "
-            "does not provide capture_format_json@1; name the format the harness writes"])
+            "does not provide capture_format_json@1"])
 
     def test_a_harness_that_writes_another_format_is_refused_at_launch(self) -> None:
         # Kills: a clause that asks whether the harness names ANY format (a `capture_format_`
@@ -612,7 +612,7 @@ class OutputFormatTests(unittest.TestCase):
                 repo.root, tp.load_target_profile(repo.root, "t1"))
         self.assertEqual([v for v in violations if v.startswith("output.format: ")], [
             f"output.format: target t1 reads its captures as json, and harness {_HARNESS_X} "
-            "does not provide capture_format_json@1; name the format the harness writes"])
+            "does not provide capture_format_json@1"])
 
 class SchemaAgreementTests(unittest.TestCase):
     """The schema is the declarative copy of `PROFILE_SHAPE` (spec/schema/SCHEMA.md)."""

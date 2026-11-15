@@ -140,9 +140,15 @@ class LayoutTests(unittest.TestCase):
             "final": "<case_id>.json", "initial": "initial/<case_id>.json",
             "series": "series/<case_id>__0.json"})
 
-    def test_format_facts_carry_the_suffix(self) -> None:
-        self.assertEqual(STORE.FORMAT_FACTS["suffix"], ".json")
+    def test_the_store_needs_no_module_and_states_its_layout(self) -> None:
         self.assertEqual(STORE.REQUIRED_PYTHON_MODULES, ())
+        layout = STORE.capture_layout_document()
+        # every group's file, as `record_path` spells it for a case `<C>`
+        for group, step in ((cs.FINAL, None), (cs.INITIAL, None)):
+            self.assertIn(f"`{STORE.record_path(Path(), group, '<C>', step).as_posix()}`", layout)
+        for name in ("`history/<C>__<k>.json`", "`restart_point/<C>__<k>.json`",
+                     "`series/<C>__<i>.json`"):
+            self.assertIn(name, layout)
 
 
 class ReadTests(unittest.TestCase):
@@ -639,7 +645,8 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
         sub for fmt in registry.backend_ids(cs.AXIS) for sub in cs.store(fmt).run_dirs()})
     #: Every file of a directory by a declared store's suffix.
     _SUFFIX_GLOBS = frozenset(
-        "*" + cs.store(fmt).FORMAT_FACTS["suffix"] for fmt in registry.backend_ids(cs.AXIS))
+        "*" + cs.store(fmt).record_path(Path(), cs.FINAL, "c").suffix
+        for fmt in registry.backend_ids(cs.AXIS))
     #: The declared formats: a capture-path module that names one of these ids reads every
     #: target's run in that format, whatever the target writes.
     _FORMAT_IDS = frozenset(registry.backend_ids(cs.AXIS))

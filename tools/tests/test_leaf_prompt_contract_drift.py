@@ -1182,7 +1182,7 @@ PINNED: dict[str, str] = {
     # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
     "leaf-99": "eeca1f9e837ec78e2adca277bfcf735c99f9b6cdd8818dc5dd078b4cc5845d95",
     # leaf-100 (issue #644 P4a): the harness templates and the runner-output contract state the capture interface.
-    "leaf-100": "4c162e27984113b99e080da79777555045a661dfabfd7befe49c4e3513853ef2",
+    "leaf-100": "b67f5b41a0de945401f70cd3ccc3668875732ff55af2df0a7676c99f3a9d1731",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1250,7 +1250,7 @@ PINNED_READER: dict[str, str] = {
     # validate-judge-8: the judge reads the `## External libraries` block of DEPENDENCIES.md (issue #644 P1).
     "validate-judge-8": "bda4693f18f623c24da88bf8a8b2101c0cfe50524cfc1713b9ef909732c059c3",
     # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section and the harness reviewer's rules state the capture interface.
-    "generate-verify-11": "de6315128f9edb5642e1190580edfc1dcd9d54445ccb997a422d33a24c7f3c19",
+    "generate-verify-11": "cd63b29febeb73a9a38ebf5a54a6afeff38aea986666a5c56a9182df88c96168",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's capture section and the harness reviewer's rules state the capture interface.
     "validate-judge-9": "3f6bc85cfefe6d89ca162354f7aaad76bd4862e8e7c0fc1e3b7c3b90265ece2d",
 }
@@ -1386,6 +1386,13 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
                 "language", language, "prompt_fragments").runner_output_document()
             for language in _prompt_languages()
         },
+        # ... and the capture layout of each declared output format, seeded after both (issue
+        # #644 P4a): where a harness model's capture operations put each record.
+        "capture_layout_document": {
+            fmt: _registry.capability_module(
+                "output_format", fmt, "capture_store").capture_layout_document()
+            for fmt in _registry.backend_ids("output_format")
+        },
         # The fixed text of `DEPENDENCIES.md` as a generate and a judge leaf read it, per language
         # that reads a dependency's interface (issue #574): rendered over a payload whose every
         # varying field is this tuple's constant, so only the renderer's words can move it.
@@ -1476,6 +1483,7 @@ READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
         "generate_verify_severity_rubric_section",
         "runner_output_contract_document",
         "runner_output_binding_document",
+        "capture_layout_document",
         "dependency_facts_render",
         "external_library_facts_render",
     },

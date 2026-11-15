@@ -259,7 +259,7 @@ together with the bundle's `target_lowering_plan.parallelization`.
     file name, suffix or group directory of their own; a comparand's run is read through the
     comparand target's store, whatever the asking target writes. The build control file's
     `test` recipe is handed the directories to create, and a language's runner-output scan
-    refuses a runner statement that opens any file under the capture directory, so neither names
+    refuses a runner statement that names the capture directory, so neither names
     a capture file. A language backend's
     driver renderer (`runner.py`) names a capture group and a value through the harness's
     capture interface and spells no file; the writer of the format is the target's harness,

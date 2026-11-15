@@ -3026,16 +3026,25 @@ class PureHarnessShapeTests(unittest.TestCase):
         contract = (Path(wc.__file__).resolve().parents[1]
                     / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(
                         encoding="utf-8")
-        # ... followed by the target language's runner-output binding (issue #289), whole too.
+        # ... followed by the target language's runner-output binding (issue #289), whole too,
+        # and by the capture layout of the target's output format (issue #644 P4a): the producer
+        # is seeded no controlled spec, so this is where the layout its model writes reaches it.
         from tools.backends.language.fortran import prompts as fortran_prompts
+        from tools.backends.output_format.json import store as json_store
         self.assertEqual(ctx["runner_output_contract_document"],
-                         contract.rstrip() + "\n\n" + fortran_prompts.runner_output_document())
-        # A failed binding read is a named refusal, not a shorter document.
-        with mock.patch.object(fortran_prompts, "runner_output_document",
-                               side_effect=OSError("gone")):
-            with self.assertRaises(RuntimeError) as caught:
-                self.c._build_leaf_harness_context(self.refs)
-        self.assertIn("pure_runner_output_binding_missing", str(caught.exception))
+                         contract.rstrip() + "\n\n"
+                         + fortran_prompts.runner_output_document().rstrip() + "\n\n"
+                         + json_store.capture_layout_document())
+        self.assertIn("`series/<C>__<i>.json`", ctx["runner_output_contract_document"])
+        # A failed binding or layout read is a named refusal, not a shorter document.
+        for module, name, reason in (
+                (fortran_prompts, "runner_output_document",
+                 "pure_runner_output_binding_missing"),
+                (json_store, "capture_layout_document", "pure_capture_layout_missing")):
+            with mock.patch.object(module, name, side_effect=OSError("gone")):
+                with self.assertRaises(RuntimeError) as caught:
+                    self.c._build_leaf_harness_context(self.refs)
+            self.assertIn(reason, str(caught.exception))
         # ...and the manifest it is shown is its OWN.
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
@@ -3207,10 +3216,13 @@ class PureHarnessShapeTests(unittest.TestCase):
     def test_the_verify_context_carries_the_output_contract(self) -> None:
         ctx = self.c._build_leaf_harness_verify_context(self.refs)
         # The reviewer is shown the same runner-output document the producer wrote against:
-        # the neutral contract followed by the target language's binding (issue #289).
+        # the neutral contract followed by the target language's binding (issue #289) and the
+        # output format's capture layout (issue #644 P4a).
         from tools.backends.language.fortran import prompts as fortran_prompts
+        from tools.backends.output_format.json import store as json_store
         self.assertTrue(ctx["runner_output_contract_document"].endswith(
-            fortran_prompts.runner_output_document()))
+            fortran_prompts.runner_output_document().rstrip() + "\n\n"
+            + json_store.capture_layout_document()))
         self.assertEqual(
             sorted(ctx),
             sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("generate", "verify", "harness")]))

@@ -901,8 +901,7 @@ def _capture_format_violations(profile: TargetProfile, harness_nk: str) -> list[
     if token in (harness_provided_capabilities(harness_nk) or ()):
         return []
     return [f"output.format: target {profile.target_id} reads its captures as "
-            f"{profile.output_format}, and harness {harness_nk} does not provide {token}; "
-            "name the format the harness writes"]
+            f"{profile.output_format}, and harness {harness_nk} does not provide {token}"]
 
 
 def _process_model_violations(profile: TargetProfile, harness_nk: str) -> list[str]:

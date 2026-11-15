@@ -9778,13 +9778,13 @@ end program shallow_water2d_runner
                 f"correctly-named runner must not be flagged, got: {good}",
             )
 
-    def test_a_runner_open_naming_the_capture_directory_is_flagged(self) -> None:
+    def test_a_runner_naming_the_capture_directory_is_flagged(self) -> None:
         """A runner writes a capture only through the harness's capture operations, so a
-        file-opening statement that names the capture directory (`state_snapshots/`) is flagged
-        at post_generate however the name is built — a whole literal, one whose stem is a
-        declared case id, a concatenation with the case id, a continuation-split `open`. The
-        directory written as content, or in a comment, is not an open; `perf.json` and the case
-        file are not under the capture directory."""
+        statement that names the capture directory (`state_snapshots`) is flagged at
+        post_generate whatever it does with the name — an `open`, an `inquire`, a path kept in a
+        named constant or a variable and opened elsewhere (the shapes a file-open rule missed in
+        the generated runners of the old contract), a message. A comment is not read;
+        `perf.json` and the case file are not under the capture directory."""
         runner = Path("x_runner.f90")
 
         def run(src: str) -> list[str]:
@@ -9798,16 +9798,19 @@ end program shallow_water2d_runner
             "open(unit=10, file='raw/state_snapshots/'//trim(case_id)//'.json')\n",
             "open(unit=13, &\n  file='raw/state_snapshots/c1.json')\n",
             "inquire(file='raw/state_snapshots/history/'//trim(case_id)//'__1.json', exist=e)\n",
+            "character(len=*), parameter :: snapdir = 'raw/state_snapshots/'\n",
+            "path = 'raw/state_snapshots'//'/'//trim(case_id)//'.json'\n",
+            "call read_file('raw/state_snapshots/'//trim(case_id)//'.json', doc)\n",
+            "write(u, '(a)') 'raw/state_snapshots/snapshot_0001.json'\n",
+            "print *, 'see raw/state_snapshots/'//trim(case_id)\n",
         ):
             with self.subTest(src=src):
                 out = run(src)
                 self.assertEqual(1, len(out), out)
                 self.assertIn("capture operations", out[0])
-                self.assertIn("opens no file under the capture directory", out[0])
+                self.assertIn("holds no path under the capture directory", out[0])
 
         for src in (
-            "write(u, '(a)') 'raw/state_snapshots/snapshot_0001.json'\n",
-            "print *, 'see raw/state_snapshots/'//trim(case_id)\n",
             "open(unit=10, file='perf.json') ! not raw/state_snapshots/c1.json\n",
             "open(unit=12, file='perf.json', status='replace')\n",
             "open(unit=12, file=trim(dir)//'/case_inputs/'//trim(case_id)//'.json')\n",
@@ -15549,16 +15552,16 @@ class SourceGateDispatchTest(unittest.TestCase):
 
     def test_a_runner_open_of_the_capture_directory_is_reported_through_the_runner_gate(
             self) -> None:
-        """A name built from the case id is flagged too: the runner opens no capture file."""
+        """The gate calls the scan: a path kept in a variable is flagged through it."""
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             execution, src = self._pipeline(root)
             (src / "p_runner.f90").write_text(
-                "program p_runner\n  open(unit=10, file='raw/state_snapshots/'//trim(cid)//'.json')\n"
+                "program p_runner\n  path = 'raw/state_snapshots/'//trim(cid)//'.json'\n"
                 "end program p_runner\n")
             violations: list[str] = []
             vps._validate_runner_outputs(root, execution, src, violations)
-        self.assertTrue(any("opens a file under the capture directory" in v for v in violations),
+        self.assertTrue(any("names the capture directory" in v for v in violations),
                         violations)
 
 
