@@ -1660,7 +1660,7 @@ PINNED_BUILD: dict[str, str] = {
     # Issue #644 Part 3 P3 re-pinned build-5 in place (`make/control_file.py` takes `capture_dirs`; the build is unchanged).
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "build-5@b3282e9b": "061cd7e29290976e3858f2c8b953f756e44d2544d41ed4ec145bf4b1587e3dc3",
-    # Issue #644 P4a re-pinned build-5 in place (the harness manifest rows and the launch gate's capture-format clause are in the slice; no build output moves). The digest main 1812c09e shipped is kept, so a revert under this version collides.
+    # Issue #644 P4a re-pinned build-5 in place: of its members only `make/control_file.py` moved between 1812c09e and this pin, by a docstring (which directories the `test` recipe is handed); no build output moves. The digest main 1812c09e shipped is kept, so a revert under this version collides.
     "build-5@1812c09e": "7854bf7dac3a0e053471b12e76ae632abe468b20ba98d5d14c1d675364063b10",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",

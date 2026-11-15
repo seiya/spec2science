@@ -1,11 +1,11 @@
-! A hand-written realization of `harness_fortran_cpu@0.10.0` §2 / §3.2's reading operations
-! (issue #589, PR-2): `__parse_cases` keeping the spec path, `__read_case` and the typed getters,
-! with the module parameters they reference. It is a test fixture, not a certified source: it
-! shows the contract is implementable against what the host's case-file writer really produces.
-! The certified harness model is generated. Its reader is superlinear in the file's size, so a
-! timing measured over it says nothing of a generated one. Issue #589 PR-1b: the emitters and
-! writers below are the certified `harness_fortran_cpu@0.9.0`'s (2026-11-02), so the host-rendered
-! driver links and runs against the whole of §5.1.
+! A hand-written realization of `harness_fortran_cpu@0.11.0` §5.1: `__parse_cases` keeping the
+! spec path, `__read_case` and the typed getters (issue #589, PR-2), the capture operations in
+! the `json` layout of §3.2 (issue #644 P4a) and `__write_perf`. It is a test fixture, not a
+! certified source: it shows the contract is implementable against what the host's case-file
+! writer really produces and what the host's capture store really reads, and it lets the
+! host-rendered driver link and run against the whole of §5.1. The certified harness model is
+! generated. Its reader is superlinear in the file's size, so a timing measured over it says
+! nothing of a generated one.
 module harness_fortran_cpu_model
   use, intrinsic :: iso_fortran_env, only: real64, error_unit
   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite
