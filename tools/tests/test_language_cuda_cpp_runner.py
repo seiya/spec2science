@@ -205,9 +205,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_the_rendered_runner_passes_the_runner_scans(self) -> None:
         out: list[str] = []
         cpp_source.validate_runner_json_serialization(Path("r.cu"), self.text.lower(), out)
-        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), self.text.lower(), out,
-                                                      known_case_ids={"c0", "c1_xfail"},
-                                                      format_facts=capture_store.store("json").FORMAT_FACTS)
+        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), self.text.lower(), out)
         self.assertEqual([], out)
 
 
@@ -454,6 +452,40 @@ class HarnessPinTest(unittest.TestCase):
         symbol = "harness_cpp_gpu__capture_real"
         with self.assertRaisesRegex(RenderError, f"omits '{symbol}'"):
             self._pin(signatures=[s for s in _harness_signatures() if s["symbol"] != symbol])
+
+
+class CaptureOpenRenderTest(unittest.TestCase):
+    """What the driver declares to `capture_open` (issue #644 P4a; the Fortran twin is
+    `test_fortran_runner.CaptureOpenRenderTest`): the json harness does not read `h_var`, so no
+    json run observes it and these rows hold the text."""
+
+    _ENTRY = re.compile(r'\{"(\w+)", \d, \{[^}]*\}, ([^\n]+),\n\s*(true|false)\},')
+
+    def _entries(self, text: str) -> dict[str, tuple[str, str]]:
+        """Each declared variable's `(history_capacity, restart)`, by name."""
+        return {name: (cap, flag) for name, cap, flag in self._ENTRY.findall(text)}
+
+    def test_the_restart_flag_is_set_exactly_for_the_restart_variables(self) -> None:
+        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0))):
+            with self.subTest(label):
+                entries = self._entries(_render(ir, "drv_toy"))
+                restart = pe.restart_variables(ir)
+                self.assertTrue(restart)
+                self.assertEqual({v for v, (_, f) in entries.items() if f == "true"},
+                                 set(restart))
+                self.assertEqual(set(entries), {v["name"] for v in ir["io_contract"][
+                    "raw_requirements"]["required_evidence"][0]["schema"]["variables"]})
+
+    def test_the_history_capacity_is_the_sample_count_on_a_loop_node_and_0_otherwise(
+            self) -> None:
+        """`n_c / every_c` when `every_c > 0`, else 0, on a loop node; 0 on a one-call node. The
+        json harness does not read `h_var`, so no json run observes it: a text row."""
+        loop = self._entries(_render(loop_ir(0), "drv_toy"))
+        self.assertTrue(loop)
+        self.assertEqual({"every_c > 0 ? n_c / every_c : 0"}, {c for c, _ in loop.values()})
+        one = self._entries(_render(call_ir(0), "drv_toy"))
+        self.assertTrue(one)
+        self.assertEqual({"0"}, {c for c, _ in one.values()})
 
 
 def _nvcc_lint(directory: Path, sources: list[str]) -> subprocess.CompletedProcess:

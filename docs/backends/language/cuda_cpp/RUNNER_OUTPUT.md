@@ -45,5 +45,5 @@ spelling in the runner source; it never inspects runtime output, so a runtime fi
   by branching with `std::isnan` / `std::isinf` (`<cmath>`) before the value reaches `%.16e`, as
   `jnum` above does. `%.16e` itself prints `nan` / `-nan` / `inf` / `-inf` (measured), none of
   which the host's reader accepts: the host refuses the document as unreadable.
-  Never write `null` for a non-finite value, and never throw or stop the program in the emitter
+  Never write `null` for a non-finite value, and never throw or stop the program in the writer
   over one.

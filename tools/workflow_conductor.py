@@ -10439,7 +10439,7 @@ class Conductor:
             return ()
         # strip() so the case_id identity is the SAME across the runner argv
         # (--cases), the expected per-case capture deliverable
-        # path, and the validator's _case_ids_for_execution exemption set.
+        # path.
         #
         # This case_id becomes a FILESYSTEM PATH — the runner writes a file named after it under
         # the run's capture directory — so a `/` or `..` would let the run write outside
@@ -12955,7 +12955,8 @@ class Conductor:
                 # captures, and what the host-rendered driver writes beside them (issue #255,
                 # issue #589) — the initial capture, the samples and the series. An earlier
                 # attempt's sample or series is removed, so it is not read as this run's; a
-                # harness node's own runner writes none of them, and no empty directory is made.
+                # directory the run left empty is not made (a harness self-test's run leaves
+                # each case's rowless series and nothing else beside its final records).
                 snaps_ref = f"{node_ref}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}"
                 for name in capture_store.store(self.target.output_format).copy_run(
                         capture_store.snapshot_dir(run_tmp), sdst):
@@ -13057,9 +13058,9 @@ class Conductor:
                "runner's capture before the first call)" if initial_required else "")
             + (f" and one {snaps}/{layout[capture_store.SERIES]}" if series_required else "")
             + f". expected={expected}; runner wrote={sorted(present)}; "
-            f"missing={missing}. Name each snapshot exactly {layout[capture_store.FINAL]}, built "
-            "from the case_id passed via --cases (e.g. trim(case_id)//"
-            f"'{store.FORMAT_FACTS['suffix']}'). "
+            f"missing={missing}. Commit each case's record through the harness's capture "
+            "operations, under the case_id passed via --cases: the harness names the file, "
+            "and a runner opens none under the capture directory. "
             "Canonical: phase_02_generate.md / phase_04_validate.md §43."
         )
 

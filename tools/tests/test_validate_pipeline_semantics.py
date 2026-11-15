@@ -130,11 +130,10 @@ def _validate_component_generated_surface(repo_root, execution, model_files, vio
         identifier_key=fortran_bundle.identifier_key)
 
 
-def _validate_runner_source_files(execution, runner_files, violations, known_case_ids=None):
+def _validate_runner_source_files(execution, runner_files, violations):
     vps._validate_runner_source_files(
-        execution, runner_files, violations, known_case_ids,
-        bundle=fortran_bundle, source_reading=fortran_source,
-        format_facts=capture_store.store("json").FORMAT_FACTS)
+        execution, runner_files, violations,
+        bundle=fortran_bundle, source_reading=fortran_source)
 
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import install_target_profile
@@ -9779,79 +9778,42 @@ end program shallow_water2d_runner
                 f"correctly-named runner must not be flagged, got: {good}",
             )
 
-    def test_runner_snapshot_filename_must_be_per_case(self) -> None:
-        """D4: a hardcoded raw/state_snapshots/<name>.json literal (e.g.
-        snapshot_0001.json) is flagged at post_generate; a per-case name built from
-        the case_id (trim(case_id)//'.json'), the conductor-authored
-        snapshot_schema.json, and a hardcoded literal that matches a declared
-        case_id are not. The runtime deliverable gate is the deterministic
-        backstop, so this static check stays conservative."""
-        _validate_runner_snapshot_filenames = fortran_source.validate_runner_snapshot_filenames
+    def test_a_runner_open_naming_the_capture_directory_is_flagged(self) -> None:
+        """A runner writes a capture only through the harness's capture operations, so a
+        file-opening statement that names the capture directory (`state_snapshots/`) is flagged
+        at post_generate however the name is built — a whole literal, one whose stem is a
+        declared case id, a concatenation with the case id, a continuation-split `open`. The
+        directory written as content, or in a comment, is not an open; `perf.json` and the case
+        file are not under the capture directory."""
         runner = Path("x_runner.f90")
 
-        def run(src: str, case_ids: set[str] | None = None) -> list[str]:
+        def run(src: str) -> list[str]:
             out: list[str] = []
-            _validate_runner_snapshot_filenames(
-                runner, src.lower(), out, case_ids,
-                format_facts=capture_store.store("json").FORMAT_FACTS)
+            fortran_source.validate_runner_snapshot_filenames(runner, src.lower(), out)
             return out
 
-        # Hardcoded sequential name, no per-case construction -> flagged.
-        bad = run(
-            "open(unit=10, file='raw/state_snapshots/snapshot_0001.json', "
-            "status='replace')\n"
-        )
-        self.assertTrue(
-            any("hardcoded snapshot filename" in v and "snapshot_0001.json" in v
-                for v in bad),
-            f"expected a hardcoded-snapshot violation, got: {bad}",
-        )
+        for src in (
+            "open(unit=10, file='raw/state_snapshots/snapshot_0001.json', status='replace')\n",
+            "open(unit=14, file='raw/state_snapshots/l0_pass.json')\n",
+            "open(unit=10, file='raw/state_snapshots/'//trim(case_id)//'.json')\n",
+            "open(unit=13, &\n  file='raw/state_snapshots/c1.json')\n",
+            "inquire(file='raw/state_snapshots/history/'//trim(case_id)//'__1.json', exist=e)\n",
+        ):
+            with self.subTest(src=src):
+                out = run(src)
+                self.assertEqual(1, len(out), out)
+                self.assertIn("capture operations", out[0])
+                self.assertIn("opens no file under the capture directory", out[0])
 
-        # Name built from the case_id argv -> not flagged.
-        self.assertFalse(
-            run("open(unit=10, file='raw/state_snapshots/'//trim(case_id)//'.json')\n"),
-            "per-case snapshot name must not be flagged",
-        )
-
-        # Conductor-authored schema metadata is exempt.
-        self.assertFalse(
-            run("open(unit=11, file='raw/state_snapshots/snapshot_schema.json')\n"),
-            "snapshot_schema.json must be exempt",
-        )
-
-        # A non-snapshot output (diagnostics) is ignored.
-        self.assertFalse(
-            run("open(unit=12, file='diagnostics.json')\n"),
-            "non-snapshot open must be ignored",
-        )
-
-        # The literal in a non-open/non-file= line (e.g. written as content) is
-        # ignored: the open(/file= gating suppresses the false positive.
-        self.assertFalse(
-            run("write(u, '(a)') 'raw/state_snapshots/snapshot_0001.json'\n"),
-            "a snapshot path written as content (not a file= target) must be ignored",
-        )
-
-        # A continuation-split open is merged before matching.
-        self.assertTrue(
-            any("c1.json" in v for v in
-                run("open(unit=13, &\n  file='raw/state_snapshots/c1.json')\n")),
-            "continuation-split hardcoded snapshot must be flagged",
-        )
-
-        # A hardcoded literal whose stem IS a declared case_id is NOT a false
-        # positive (it satisfies the per-case deliverable gate).
-        self.assertFalse(
-            run("open(unit=14, file='raw/state_snapshots/l0_pass.json')\n",
-                {"l0_pass", "l0_xfail"}),
-            "a hardcoded name matching a declared case_id must not be flagged",
-        )
-        # ...but a non-matching hardcoded literal still is, even with case_ids known.
-        self.assertTrue(
-            run("open(unit=14, file='raw/state_snapshots/snapshot_0001.json')\n",
-                {"l0_pass", "l0_xfail"}),
-            "a hardcoded name not matching any case_id must be flagged",
-        )
+        for src in (
+            "write(u, '(a)') 'raw/state_snapshots/snapshot_0001.json'\n",
+            "print *, 'see raw/state_snapshots/'//trim(case_id)\n",
+            "open(unit=10, file='perf.json') ! not raw/state_snapshots/c1.json\n",
+            "open(unit=12, file='perf.json', status='replace')\n",
+            "open(unit=12, file=trim(dir)//'/case_inputs/'//trim(case_id)//'.json')\n",
+        ):
+            with self.subTest(src=src):
+                self.assertEqual([], run(src))
 
     def test_detects_missing_plan_step_result_when_orchestration_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15585,16 +15547,19 @@ class SourceGateDispatchTest(unittest.TestCase):
         self.assertTrue(any("missing dependency operation call (dep__*)" in v
                             for v in violations), violations)
 
-    def test_a_hardcoded_snapshot_name_is_reported_through_the_runner_gate(self) -> None:
+    def test_a_runner_open_of_the_capture_directory_is_reported_through_the_runner_gate(
+            self) -> None:
+        """A name built from the case id is flagged too: the runner opens no capture file."""
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             execution, src = self._pipeline(root)
             (src / "p_runner.f90").write_text(
-                "program p_runner\n  open(unit=10, file='raw/state_snapshots/snap_0001.json')\n"
+                "program p_runner\n  open(unit=10, file='raw/state_snapshots/'//trim(cid)//'.json')\n"
                 "end program p_runner\n")
             violations: list[str] = []
             vps._validate_runner_outputs(root, execution, src, violations)
-        self.assertTrue(any("hardcoded snapshot filename" in v for v in violations), violations)
+        self.assertTrue(any("opens a file under the capture directory" in v for v in violations),
+                        violations)
 
 
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):

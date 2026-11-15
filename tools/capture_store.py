@@ -18,8 +18,8 @@ The store that reads a directory is the store of the target whose run WROTE it: 
 that target's `output_format` (`TargetProfile.output_format`), never a format guessed from the
 directory's content.
 
-What a store is: a module with `FORMAT_FACTS` (its `suffix`, read by the language backends'
-runner-output scans), `REQUIRED_PYTHON_MODULES`, and the functions the readers call —
+What a store is: a module with `FORMAT_FACTS` (its `suffix`), `REQUIRED_PYTHON_MODULES`, and
+the functions the readers call —
 `run_dirs`, `record_path`, `has_record`, `read_record`, `case_ids`, `history_steps`,
 `restart_point_steps`, `case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`,
 `expected_layout` (`tools/backends/output_format/json/store.py` states each). A record is what

@@ -1630,6 +1630,23 @@ class CaptureOpenRenderTest(unittest.TestCase):
                 self.assertEqual(set(flags), {v["name"] for v in ir["io_contract"][
                     "raw_requirements"]["required_evidence"][0]["schema"]["variables"]})
 
+    def test_the_history_capacity_is_the_sample_count_on_a_loop_node_and_0_otherwise(
+            self) -> None:
+        """`n_c / every_c` when `every_c > 0`, else 0, on a loop node (the serial and the
+        distributed form); 0 on a one-call node. The json harness does not read `h_var`, so no
+        json run observes it: a text row."""
+        from tools.tests.test_driver_render import _mpi_runner_text
+
+        def capacities(text: str) -> set[str]:
+            return set(re.findall(r"cvars\(\d+\)%history_capacity = (.+)\n", text))
+
+        loop_capacity = {"merge(n_c / max(every_c, 1), 0, every_c > 0)"}
+        self.assertEqual(loop_capacity, capacities(
+            render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
+        self.assertEqual(loop_capacity, capacities(_mpi_runner_text("fx_loop")))
+        self.assertEqual({"0"}, capacities(
+            render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
+
     def test_the_distributed_form_declares_the_global_extents(self) -> None:
         # A partitioned state the kernel writes is held on each rank as its own block; the
         # capture holds it gathered, so its declared extents are the global cell counts, not the

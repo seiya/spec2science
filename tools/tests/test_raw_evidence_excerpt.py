@@ -264,9 +264,25 @@ class StateSnapshotsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _RawDir(self)
 
-    def _snapshots(self) -> dict:
-        return rex.raw_evidence_excerpt(self.raw.path, _contract(),
+    #: The contract of a node that declares a series (a `loop` node).
+    @staticmethod
+    def _loop_contract() -> dict:
+        contract = _contract()
+        contract["raw_requirements"]["required_evidence"].append({"artifact": "step_series"})
+        return contract
+
+    def _snapshots(self, contract=None) -> dict:
+        return rex.raw_evidence_excerpt(self.raw.path, contract or self._loop_contract(),
                                         output_format="json")["state_snapshots"]
+
+    def test_a_series_is_shown_only_where_the_node_declares_one(self):
+        """Every case has a series record, with no row on a node that commits none (issue #644
+        P4a); the judge is told a `series` is a loop node's. Mutation: `series_declared`
+        ignored — the non-declaring node's case shows the rowless record."""
+        self.raw.write("state_snapshots/case_a.json", {"h": [[1.0]], "t": 1.0})
+        self.raw.write("state_snapshots/series/case_a__0.json", {"t": [], "step": []})
+        self.assertIsNone(self._snapshots(_contract())["cases"][0]["series"])
+        self.assertEqual(sorted(self._snapshots()["cases"][0]["series"]), ["step", "t"])
 
     def test_cases_are_ordered(self):
         for name in ("case_c", "case_a", "case_b"):
@@ -422,7 +438,7 @@ class StateSnapshotsTest(unittest.TestCase):
                 self.raw.write("state_snapshots/series/case_a__0.json", text)
                 self.assertIsNone(self._case()["series"])
         self.raw.write("state_snapshots/series/case_a__0.json", "{")
-        problems = rex.raw_evidence_excerpt(self.raw.path, _contract(),
+        problems = rex.raw_evidence_excerpt(self.raw.path, self._loop_contract(),
                                             output_format="json")["problems"]
         self.assertTrue(any("raw/state_snapshots/series/case_a__0.json" in p for p in problems),
                         problems)

@@ -1173,6 +1173,93 @@ class ResultResetOptimisationTest(unittest.TestCase):
         self.assertIn("real(dp), volatile :: st_s", text)
 
 
+class HarnessModelRestartPointTest(unittest.TestCase):
+    """The hand-written Fortran harness model's `restart_point` path, which no rendered driver
+    commits (a restart point is a history sample the host takes): a program written here calls
+    the capture operations directly, and the store reads what the model wrote. The ordering
+    rule is `docs/backends/output_format/json/CAPTURE_LAYOUT.md`'s: the series rows committed
+    since the previous chunk are written as a chunk before each restart point's record."""
+
+    _PROGRAM = """program cap
+  use harness_fortran_cpu_model
+  implicit none
+  type(harness_fortran_cpu__h_var) :: v(1)
+  character(len=6), parameter :: names(2) = [character(len=6) :: 'ab', 'abcdef']
+  integer :: n
+  v(1)%name = 'u'
+  v(1)%rank = 1
+  v(1)%shape = [3, 0, 0, 0]
+  v(1)%history_capacity = 0
+  v(1)%restart = .true.
+  call harness_fortran_cpu__capture_open('c', v, 2, names, 5)
+  do n = 1, 2
+    call row(n)
+  end do
+  call harness_fortran_cpu__capture_array_r1('restart_point', 'u', [1.0_dp, 2.0_dp, 3.0_dp])
+  call harness_fortran_cpu__capture_commit('restart_point', 2, 0.5_dp)
+  do n = 3, 4
+    call row(n)
+  end do
+  call harness_fortran_cpu__capture_array_r1('restart_point', 'u', [4.0_dp, 5.0_dp, 6.0_dp])
+  call harness_fortran_cpu__capture_commit('restart_point', 4, 1.0_dp)
+  call row(5)
+  call harness_fortran_cpu__capture_array_r1('final', 'u', [7.0_dp, 8.0_dp, 9.0_dp])
+  call harness_fortran_cpu__capture_commit('final', 5, 1.25_dp)
+  call harness_fortran_cpu__capture_close()
+contains
+  subroutine row(n)
+    integer, intent(in) :: n
+    call harness_fortran_cpu__capture_real('series', 'ab', real(n, dp))
+    call harness_fortran_cpu__capture_real('series', 'abcdef', -real(n, dp))
+    call harness_fortran_cpu__capture_commit('series', n, 0.25_dp * n)
+  end subroutine row
+end program cap
+"""
+
+    def _run(self, root: Path, blocked: str | None = None) -> subprocess.CompletedProcess:
+        for parts in capture_store.run_dirs("json"):
+            root.joinpath("run", *parts).mkdir(parents=True)
+        if blocked is not None:  # a directory where the model will open a file
+            (root / "run" / "raw" / "state_snapshots" / blocked).mkdir()
+        shutil.copy(DATA / "harness_fortran_cpu_model.f90", root)
+        (root / "cap.f90").write_text(self._PROGRAM)
+        subprocess.run(["gfortran", "-std=f2008", "harness_fortran_cpu_model.f90", "cap.f90",
+                        "-o", "cap"], cwd=root, check=True, capture_output=True)
+        return subprocess.run([str(root / "cap")], cwd=root / "run", capture_output=True,
+                              text=True, timeout=60)
+
+    def test_restart_points_cut_the_series_into_chunks_written_before_them(self) -> None:
+        st = capture_store.store("json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proc = self._run(root)
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            sdir = capture_store.snapshot_dir(root / "run")
+            self.assertEqual({"step": [1, 2, 3, 4, 5], "t": [0.25, 0.5, 0.75, 1.0, 1.25],
+                              "ab": [1.0, 2.0, 3.0, 4.0, 5.0],
+                              "abcdef": [-1.0, -2.0, -3.0, -4.0, -5.0]},
+                             st.read_record(sdir, capture_store.SERIES, "c"))
+            self.assertEqual([2, 4], st.restart_point_steps(sdir, "c"))
+            self.assertEqual({"u": [1.0, 2.0, 3.0], "step": 2, "t": 0.5},
+                             st.read_record(sdir, capture_store.RESTART_POINT, "c", 2))
+            self.assertEqual({"u": [4.0, 5.0, 6.0], "step": 4, "t": 1.0},
+                             st.read_record(sdir, capture_store.RESTART_POINT, "c", 4))
+            self.assertEqual({"u": [7.0, 8.0, 9.0], "step": 5, "t": 1.25},
+                             st.read_record(sdir, capture_store.FINAL, "c"))
+            chunks = [json.loads(p.read_text()) for p in st.case_paths(sdir, "c")
+                      if p.parent.name == "series"]
+            # three chunks: the rows before each restart point, then the rest at the close
+            self.assertEqual([[1, 2], [3, 4], [5]], [c["step"] for c in chunks])
+        with tempfile.TemporaryDirectory() as tmp:
+            # the chunk before the first restart point cannot be written: the restart point's
+            # record, which comes after it, is not written either
+            root = Path(tmp)
+            proc = self._run(root, blocked="series/c__0.json")
+            self.assertNotEqual(0, proc.returncode)
+            self.assertEqual([], st.restart_point_steps(
+                capture_store.snapshot_dir(root / "run"), "c"))
+
+
 class FortranProcedureNameTest(unittest.TestCase):
     def test_a_procedure_name_past_the_identifier_limit_drops_the_dummy(self) -> None:
         """The plan's `driver_<dummy>_<n>` where it fits, `driver_<n>` where it does not, and no

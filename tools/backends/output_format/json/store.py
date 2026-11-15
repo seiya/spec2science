@@ -40,7 +40,7 @@ from tools.capture_store import (
     CaptureError,
 )
 
-#: The facts a language backend's runner-output lints build their patterns from.
+#: The format's facts: the suffix of its capture files.
 FORMAT_FACTS: dict[str, Any] = {"suffix": ".json"}
 _SUFFIX = FORMAT_FACTS["suffix"]
 

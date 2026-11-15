@@ -1182,7 +1182,7 @@ PINNED: dict[str, str] = {
     # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
     "leaf-99": "eeca1f9e837ec78e2adca277bfcf735c99f9b6cdd8818dc5dd078b4cc5845d95",
     # leaf-100 (issue #644 P4a): the harness templates and the runner-output contract state the capture interface.
-    "leaf-100": "e3bd6eb15f3baa79880b753c3e678bbe0e802ef6842ee4e12a9b47ec1b4887aa",
+    "leaf-100": "4c162e27984113b99e080da79777555045a661dfabfd7befe49c4e3513853ef2",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1250,7 +1250,7 @@ PINNED_READER: dict[str, str] = {
     # validate-judge-8: the judge reads the `## External libraries` block of DEPENDENCIES.md (issue #644 P1).
     "validate-judge-8": "bda4693f18f623c24da88bf8a8b2101c0cfe50524cfc1713b9ef909732c059c3",
     # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section and the harness reviewer's rules state the capture interface.
-    "generate-verify-11": "8ab1ba1a9f7711208054a4eb0150d7cacf2c80340a34eae5e2db7476532e5cde",
+    "generate-verify-11": "de6315128f9edb5642e1190580edfc1dcd9d54445ccb997a422d33a24c7f3c19",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's capture section and the harness reviewer's rules state the capture interface.
     "validate-judge-9": "3f6bc85cfefe6d89ca162354f7aaad76bd4862e8e7c0fc1e3b7c3b90265ece2d",
 }

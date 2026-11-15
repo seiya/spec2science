@@ -190,7 +190,7 @@ to this document wherever this document is seeded whole.
   `infrastructure` node it holds every numeric `inputs.*` leaf of the case, a boolean written as
   `1` or `0`.
 - Each value is an RFC 8259 number or a rectangular nested array of numbers of depth 1 to 4
-  (the leading array index outermost, as the emitters write it), an empty array admitted. This
+  (the leading array index outermost, as the capture operations write it), an empty array admitted. This
   grammar is not §4's: a number is spelled as the host's serializer spells it (`3`, `0.1`,
   `1e-30`), and no non-finite token occurs, because the host refuses a non-finite input.
 - The certified harness's reading operations are the only reader:

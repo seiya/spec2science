@@ -1244,7 +1244,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertIn("did not start at step 2", row["start_check"])
             # round 3 (D2 F2): its own cause INSTEAD of the generic rename remedy, and the
             # same failure category (the route is unchanged)
-            self.assertNotIn("Name each snapshot exactly", out["stderr"])
+            self.assertNotIn("Commit each case's record", out["stderr"])
             self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
             self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
 

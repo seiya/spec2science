@@ -1971,14 +1971,6 @@ def _execution_output_format(repo_root: Path, execution: NodeExecution) -> str:
     return target.output_format if target is not None else DEFAULT_OUTPUT_FORMAT
 
 
-def _capture_format_facts(repo_root: Path, execution: NodeExecution) -> Mapping[str, Any]:
-    """The facts of the run's output format a language backend's runner-output scans build
-    their patterns from (the capture store's `FORMAT_FACTS`)."""
-    facts: Mapping[str, Any] = capture_store.store(
-        _execution_output_format(repo_root, execution)).FORMAT_FACTS
-    return facts
-
-
 def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, int | None]]:
     """`(group, case_id, step)` of every state record the store finds: per case with a final
     capture, the final one, the initial one when there is one, and each sample."""
@@ -2986,13 +2978,11 @@ def _validate_generate_outputs_for_generation(
             expected_runner = bundle.runner_basename(runner_spec_id)
     host_runner_files = [p for p in runner_files if p.name == expected_runner]
     leaf_runner_files = [p for p in runner_files if p.name != expected_runner]
-    known_case_ids = _case_ids_for_execution(repo_root, execution)
     if host_runner_files:
         host_runner_violations: list[str] = []
         _validate_runner_source_files(
             execution, host_runner_files, host_runner_violations,
-            known_case_ids=known_case_ids, bundle=bundle, source_reading=source_reading,
-            format_facts=_capture_format_facts(repo_root, execution),
+            bundle=bundle, source_reading=source_reading,
         )
         violations.extend(
             _as_host_authored(v, "tools/host_render.render_runner, via "
@@ -3000,9 +2990,8 @@ def _validate_generate_outputs_for_generation(
             for v in host_runner_violations)
     if leaf_runner_files:
         _validate_runner_source_files(
-            execution, leaf_runner_files, violations, known_case_ids=known_case_ids,
+            execution, leaf_runner_files, violations,
             bundle=bundle, source_reading=source_reading,
-            format_facts=_capture_format_facts(repo_root, execution),
         )
     if is_m3c:
         pipeline_target = _pipeline_target(repo_root, execution.pipeline_dir)
@@ -4618,32 +4607,6 @@ def _parse_canonical_interface_from_controlled_spec(
     if not op_stanzas and not type_stanzas:
         return ({}, {}, {}, "§5.1 canonical interface block parsed 0 signatures")
     return (op_stanzas, type_stanzas, iface_stanzas, None)
-
-
-def _case_ids_for_execution(repo_root: Path, execution: NodeExecution) -> set[str]:
-    """All declared ``case.test_case_set[].case_id`` for the execution's IR.
-
-    Used by the post_generate snapshot-filename check to avoid a false positive on
-    a hardcoded capture file name that legitimately
-    matches a declared case (it satisfies the deliverable gate). Unlike
-    ``_case_id_to_test_id`` this includes cases whose ``test_id`` is null.
-    """
-    data = _ir_document_for_execution(repo_root, execution)
-    if not isinstance(data, dict):
-        return set()
-    case_section = data.get("case")
-    if not isinstance(case_section, dict):
-        return set()
-    test_case_set = case_section.get("test_case_set")
-    if not isinstance(test_case_set, list):
-        return set()
-    return {
-        item["case_id"].strip()
-        for item in test_case_set
-        if isinstance(item, dict)
-        and isinstance(item.get("case_id"), str)
-        and item["case_id"].strip()
-    }
 
 
 @lru_cache(maxsize=1)
@@ -6728,16 +6691,13 @@ def _validate_runner_source_files(
     execution: NodeExecution,
     runner_files: list[Path],
     violations: list[str],
-    known_case_ids: set[str] | None = None,
     *,
     bundle: Any,
     source_reading: Any,
-    format_facts: Mapping[str, Any],
 ) -> None:
     """The deterministic runner backstops over `runner_files`: the name, the forbidden judge
-    artifacts, and the target language's JSON-serialization and snapshot-filename scans. The
-    second scan builds its pattern from `format_facts`, the facts of the run's output format
-    (`_capture_format_facts`).
+    artifacts, and the target language's JSON-serialization and capture-directory scans (the
+    second refuses a file-opening statement that names the capture directory).
 
     The runner's name is the target language's `bundle_facts.runner_basename` — ONE spelling,
     shared with the conductor (`Conductor._runner_basename`) and with every reader in this module
@@ -6776,14 +6736,11 @@ def _validate_runner_source_files(
             runner_file=runner_file,
             text=text,
             violations=violations,
-            known_case_ids=known_case_ids,
-            format_facts=format_facts,
         )
 
 
 def _validate_runner_outputs(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str],
-    known_case_ids: set[str] | None = None,
 ) -> None:
     # A language missing either reader was already refused by `_validate_generate_outputs` on
     # this same src_dir — hence the discarded sink.
@@ -6796,9 +6753,8 @@ def _validate_runner_outputs(
     if not runner_files:
         return
     _validate_runner_source_files(
-        execution, runner_files, violations, known_case_ids=known_case_ids,
+        execution, runner_files, violations,
         bundle=bundle, source_reading=source_reading,
-        format_facts=_capture_format_facts(repo_root, execution),
     )
 
 
@@ -11823,9 +11779,7 @@ def _validate_impl(
                 repo_root, execution, in_scope_src_dir, violations
             )
             _validate_runner_outputs(
-                repo_root, execution, in_scope_src_dir, violations,
-                known_case_ids=_case_ids_for_execution(repo_root, execution),
-            )
+                repo_root, execution, in_scope_src_dir, violations)
         _validate_run_program_inputs(repo_root, execution, violations)
         # Per execution, not per source: each run carries its own trace (issue #307).
         if in_scope_src_dir is not None:

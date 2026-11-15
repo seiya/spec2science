@@ -424,13 +424,6 @@ class RoundOneWitnessTests(unittest.TestCase):
                                           init_member_ids=())
         self.assertTrue(any("hardcoded case_id -> metrics" in v for v in out), out)
 
-    def test_the_snapshot_schema_name_is_exempt(self) -> None:
-        out: list[str] = []
-        cpp_source.validate_runner_snapshot_filenames(
-            Path("r.cu"), 'std::ofstream f("raw/state_snapshots/snapshot_schema.json");\n', out,
-            format_facts=capture_store.store("json").FORMAT_FACTS)
-        self.assertEqual([], out)
-
     def test_the_compiler_version_is_the_first_versioned_line(self) -> None:
         """The build derivation key's `compiler_version`: a driver that prints its NAME first
         must still be keyed by its release (the server's `_syntax_compiler_version`)."""
@@ -1064,15 +1057,23 @@ class SourceGateTests(unittest.TestCase):
         self.assertTrue(any(":3:" in v and "hexfloat" in v for v in out))
 
     def test_runner_snapshot_filenames(self) -> None:
+        """A line that opens a file and names the capture directory in a literal is flagged
+        however the name is built (a whole literal, a declared case id's, a concatenation with
+        the case id); the directory in a literal that opens nothing, in a comment, and an open of
+        `perf.json` or the case file are not."""
         text = ('std::ofstream f("raw/state_snapshots/snap_0001.json");\n'
                 'std::ofstream g("raw/state_snapshots/" + case_id + ".json");\n'
                 'std::ofstream h("raw/state_snapshots/case_a.json");\n'
-                'std::string doc = "raw/state_snapshots/other.json";\n')
+                'FILE *s = fopen("raw/state_snapshots/snapshot_schema.json", "w");\n'
+                'std::string doc = "raw/state_snapshots/other.json";\n'
+                'std::ofstream p("perf.json"); // raw/state_snapshots/x.json\n'
+                'std::ifstream c(dir + "/case_inputs/" + case_id + ".json");\n')
         out: list[str] = []
-        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), text, out, {"case_a"},
-                                                      format_facts=capture_store.store("json").FORMAT_FACTS)
-        self.assertEqual(1, len(out), out)
-        self.assertIn("snap_0001", out[0])
+        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), text, out)
+        self.assertEqual(["r.cu:1:", "r.cu:2:", "r.cu:3:", "r.cu:4:"],
+                         [v.split(" ", 1)[0] for v in out], out)
+        self.assertTrue(all("capture operations" in v
+                            and "opens no file under the capture directory" in v for v in out))
 
     def test_model_source_gates(self) -> None:
         literal = "".join(f"metrics[{i}] = 1.{i};\n" for i in range(6))
