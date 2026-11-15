@@ -42,6 +42,7 @@ REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(HERE))
 
+from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 
 import build_ir  # noqa: E402
@@ -53,9 +54,9 @@ ORDER_REL = 1.0e-6
 
 def solve(work: Path, ir: dict[str, Any], variant: str = "stated") -> Path:
     """Solve every flat case the reference covers; write snapshots under `<work>/<variant>/run`."""
-    run = work / variant / "run" / "raw" / "state_snapshots"
-    for sub in ("initial", "history", "series"):
-        (run / sub).mkdir(parents=True, exist_ok=True)
+    run = capture_store.snapshot_dir(work / variant / "run")
+    for parts in capture_store.run_dirs("json"):
+        (work / variant / "run").joinpath(*parts).mkdir(parents=True, exist_ok=True)
     cdir = work / "ir" / "case_inputs"
     for case in ir["case"]["test_case_set"]:
         if pe.RESTART_CASE_KEY in case:
@@ -85,7 +86,7 @@ def solve(work: Path, ir: dict[str, Any], variant: str = "stated") -> Path:
 
         def snap(path: Path, state, step: int, t: float, ok: float) -> None:
             doc = {"h": state[0].tolist(), "hu": state[1].tolist(), "hv": state[2].tolist(),
-                   "z_b": zb.tolist(), "f": f.tolist(), "ok": ok, "step": float(step), "t": t}
+                   "z_b": zb.tolist(), "f": f.tolist(), "ok": ok, "step": int(step), "t": t}
             path.write_text(json.dumps(doc))
 
         snap(run / "initial" / f"{cid}.json", (h, hu, hv), 0, t0, 0.0)
@@ -170,7 +171,7 @@ def main() -> int:
     (work / "ir").mkdir()
     pe.write_case_inputs(ir, work / "ir")
     runs = {v: solve(work, ir, v) for v in ("stated", "swapped", "no_rotation", "no_member")}
-    solved = {p.stem for p in (runs["stated"] / "raw" / "state_snapshots").glob("*.json")}
+    solved = set(capture_store.store("json").case_ids(capture_store.snapshot_dir(runs["stated"])))
     ref = values(ir, runs["stated"], solved)
     var = {v: values(ir, runs[v], solved) for v in ("swapped", "no_rotation", "no_member")}
     bands: dict[str, Any] = {}

@@ -2,8 +2,10 @@
 """System tier PR-S2 bench (unbilled, no LLM): the hand-authored IR of
 `problem/shallow_water2d_rotating` (`build_ir.py`), a HAND-WRITTEN composing model
 (`models/shallow_water2d_rotating_model.f90`), and the CERTIFIED sources of its closure from the
-operator's `workspace/pipelines/` (the harness, the member `shallow_water2d` and its three
-components, Coriolis, RK4), each at the version the catalog holds. Run from the repository root:
+operator's `workspace/pipelines/` (the member `shallow_water2d` and its three components,
+Coriolis, RK4), each at the version the catalog holds; the harness is the hand-written model of
+the current harness spec (`HAND_HARNESS`), since no certified harness has the capture interface
+the rendered driver calls (issue #644 P4a). Run from the repository root:
 
   PYTHONPATH=. python3 <this file> [--gate | --gate-only] [--mutant <id>]... [--keep <dir>]
       [--flags certified|bounds] [--cases <id>,...] [--show-values]
@@ -66,6 +68,7 @@ REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(HERE))
 
+from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools import validate_pipeline_semantics as vps  # noqa: E402
 from tools import verdict_evaluator  # noqa: E402
@@ -86,6 +89,12 @@ CLOSURE = (("infrastructure", "harness_fortran_cpu"),
            ("problem", "shallow_water2d"),
            ("component", build_ir.CORIOLIS),
            ("component", build_ir.RK4))
+
+
+#: The harness linked in place of the certified one (issue #644 P4a): every certified harness
+#: predates the capture interface the rendered driver calls, so the hand-written model of the
+#: current harness spec stands in for `CLOSURE`'s harness entry until one is certified.
+HAND_HARNESS = REPO / "tools/tests/data/driver_e2e/harness_fortran_cpu_model.f90"
 
 
 #: `--at <spec_id>@<version>`: read that node at that version in place of the catalog's. Issue
@@ -198,12 +207,13 @@ def build(work: Path, ir: dict[str, Any], model_text: str, flags: list[str]) -> 
     (work / "ir").mkdir(parents=True)
     (work / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, work / "ir")
-    for sub in ("initial", "history", "series"):
-        (work / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+    for parts in capture_store.run_dirs("json"):
+        (work / "run").joinpath(*parts).mkdir(parents=True)
     (work / "runner.f90").write_text(
         f_runner.render_runner(ir, build_ir.SID, "harness_fortran_cpu", target=CPU))
     objs = []
-    texts = [certified_source(k, s).read_text() for k, s in CLOSURE] + [model_text]
+    texts = [(HAND_HARNESS if k == "infrastructure" else certified_source(k, s)).read_text()
+             for k, s in CLOSURE] + [model_text]
     for i, text in enumerate(texts):
         (work / f"s{i}.f90").write_text(text)
         r = subprocess.run(["gfortran", *flags, "-c", f"s{i}.f90", "-o", f"s{i}.o"], cwd=work,

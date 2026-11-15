@@ -17,7 +17,7 @@ latest. Each side's case inputs are the ones its own lineage names (`ir_ref`).
    printed, and the initial captures (step 2) are what makes the check non-vacuous.
 2. Every capture of the two cases is compared field by field, as the TEXT the binary wrote
    (`json` with `parse_float=str`), not as a parsed float: the initial state, every history
-   capture, the series, and the final state. A field the composite has and the member does not
+   capture, every restart point, the series, and the final state. A field the composite has and the member does not
    (`f`, the process inputs) is listed and not compared. Each of the following is a finding;
    there is no tolerance: a shared field that differs; a field the member has and the composite
    lacks; a state capture (all but the series) in which `h`, `hu`, `hv` or `z_b` is not shared;
@@ -46,6 +46,10 @@ bracket the initial `hu` expression differently and their case files differ by o
 of 4096 cells; with `--at shallow_water2d_rotating@0.1.0 --at shallow_water2d@0.5.1` it AGREEs.
 
 Exit 0 when nothing is found, 1 otherwise.
+
+The captures are read in the layout of the capture interface (issue #644 P4a: a series in chunks,
+each row carrying its `step` and `t`), through the store's paths: a run certified before that
+change (every run of R-S and R) is in the older layout and is no longer read.
 """
 from __future__ import annotations
 
@@ -61,6 +65,10 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
+sys.path.insert(0, str(REPO))
+
+from tools import capture_store  # noqa: E402
+
 REQUIRED_CAPTURES = ("initial", "final", "series")
 STATE_FIELDS: tuple[str, ...] = ("h", "hu", "hv", "z_b")
 
@@ -107,8 +115,18 @@ def run_of(pipe: Path, node: str, run_id: str | None = None) -> tuple[Path, Path
     return snaps, REPO / lineage["ir_ref"]
 
 
-def load_text(path: Path) -> Any:
-    return json.loads(path.read_text(), parse_float=str, parse_int=str)
+def load_text(paths: Path | list[Path]) -> Any:
+    """A capture as the text the binary wrote (`parse_float=str`); a series' chunks joined in
+    the order written."""
+    paths = [paths] if isinstance(paths, Path) else paths
+    docs = [json.loads(p.read_text(), parse_float=str, parse_int=str) for p in paths]
+    if len(docs) == 1:
+        return docs[0]
+    joined: dict[str, list[Any]] = {}
+    for doc in docs:
+        for k, v in doc.items():
+            joined.setdefault(k, []).extend(v)
+    return joined
 
 
 def compare_inputs(c_ir: Path, c_case: str, m_ir: Path, m_case: str) -> list[str]:
@@ -163,12 +181,24 @@ def _broadcast_equal(x: Any, y: Any) -> bool:
     return True
 
 
-def captures(snaps: Path, case: str) -> dict[str, Path]:
-    out = {"final": snaps / f"{case}.json", "initial": snaps / "initial" / f"{case}.json",
-           "series": snaps / "series" / f"{case}.json"}
-    for p in sorted((snaps / "history").glob(f"{case}__*.json")):
-        out["history/" + p.stem.split("__")[-1]] = p
-    return {k: v for k, v in out.items() if v.is_file()}
+def captures(snaps: Path, case: str) -> dict[str, list[Path]]:
+    """Each capture of `case` that exists, as the files the store holds it in (a series is its
+    chunks, in the order written; every other capture one file)."""
+    st = capture_store.store("json")
+    out: dict[str, list[Path]] = {}
+    for name, group in (("final", capture_store.FINAL), ("initial", capture_store.INITIAL)):
+        if st.has_record(snaps, group, case):
+            out[name] = [st.record_path(snaps, group, case)]
+    series_dir = st.record_path(snaps, capture_store.SERIES, case).parent
+    chunks = [p for p in st.case_paths(snaps, case) if p.parent == series_dir]
+    if chunks:
+        st.read_record(snaps, capture_store.SERIES, case)  # the store refuses a cut series
+        out["series"] = chunks
+    for group, steps in ((capture_store.HISTORY, st.history_steps(snaps, case)),
+                         (capture_store.RESTART_POINT, st.restart_point_steps(snaps, case))):
+        for step in steps:
+            out[f"{group}/{step}"] = [st.record_path(snaps, group, case, step)]
+    return out
 
 
 def compare_pair(c_snaps: Path, c_ir: Path, c_case: str, m_snaps: Path, m_ir: Path,

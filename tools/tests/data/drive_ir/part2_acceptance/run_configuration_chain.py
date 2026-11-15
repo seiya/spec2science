@@ -23,8 +23,13 @@ Per subject, every run goes through the tool's command line (`python3 tools/run_
    every capture it writes must equal U's: the final capture; each history sample (A and B
    write the samples after their start; the sample at the start step is the restored state,
    which the start check compares); and the series, which covers only the continuation's own
-   steps, against the tail of U's series (every per-step field; the scalar `t` field of a
-   series, the time of its last entry, whole).
+   steps, against the tail of U's series (every field; `t` is now one entry per row, so it is
+   compared as a tail like every other field, where the older layout's scalar `t` — the time
+   of the last entry — was compared whole); each restart point after the start likewise.
+
+The captures are read in the layout of the capture interface (issue #644 P4a: a series in chunks,
+each row carrying its `step` and `t`), through the store's paths: a run certified before that
+change (every run of R) is in the older layout and is no longer read.
 
 Exit 0 when every comparison holds and every run's exit status is the expected one; 1 otherwise.
 A refusal of the tool (exit 2) is a finding, not routed around: the tool selects the certified
@@ -45,6 +50,10 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
+sys.path.insert(0, str(REPO))
+
+from tools import capture_store  # noqa: E402
+
 
 STATE_FIELDS = ("h", "hu", "hv")
 REQUIRED = ("initial", "final", "series")
@@ -100,16 +109,38 @@ def write_config(path: Path, base: str, inputs: dict[str, Any]) -> Path:
     return path
 
 
-def load_text(path: Path) -> Any:
-    return json.loads(path.read_text(), parse_float=str, parse_int=str)
+def load_text(paths: Path | list[Path]) -> Any:
+    """A capture as the text the binary wrote (`parse_float=str`); a series' chunks joined in
+    the order written."""
+    paths = [paths] if isinstance(paths, Path) else paths
+    docs = [json.loads(p.read_text(), parse_float=str, parse_int=str) for p in paths]
+    if len(docs) == 1:
+        return docs[0]
+    joined: dict[str, list[Any]] = {}
+    for doc in docs:
+        for k, v in doc.items():
+            joined.setdefault(k, []).extend(v)
+    return joined
 
 
-def captures(snaps: Path, case: str) -> dict[str, Path]:
-    out = {"final": snaps / f"{case}.json", "initial": snaps / "initial" / f"{case}.json",
-           "series": snaps / "series" / f"{case}.json"}
-    for p in sorted((snaps / "history").glob(f"{case}__*.json")):
-        out["history/" + p.stem.split("__")[-1]] = p
-    return {k: v for k, v in out.items() if v.is_file()}
+def captures(snaps: Path, case: str) -> dict[str, list[Path]]:
+    """Each capture of `case` that exists, as the files the store holds it in (a series is its
+    chunks, in the order written; every other capture one file)."""
+    st = capture_store.store("json")
+    out: dict[str, list[Path]] = {}
+    for name, group in (("final", capture_store.FINAL), ("initial", capture_store.INITIAL)):
+        if st.has_record(snaps, group, case):
+            out[name] = [st.record_path(snaps, group, case)]
+    series_dir = st.record_path(snaps, capture_store.SERIES, case).parent
+    chunks = [p for p in st.case_paths(snaps, case) if p.parent == series_dir]
+    if chunks:
+        st.read_record(snaps, capture_store.SERIES, case)  # the store refuses a cut series
+        out["series"] = chunks
+    for group, steps in ((capture_store.HISTORY, st.history_steps(snaps, case)),
+                         (capture_store.RESTART_POINT, st.restart_point_steps(snaps, case))):
+        for step in steps:
+            out[f"{group}/{step}"] = [st.record_path(snaps, group, case, step)]
+    return out
 
 
 def compare(name: str, x: dict[str, Any], y: dict[str, Any]) -> list[str]:
@@ -169,7 +200,8 @@ def run_subject(key: str, cfg: dict[str, Any], root: Path) -> list[str]:
     if tool(spec_ref, write_config(d / "override.yaml", base, cfg["override"]), out):
         findings.append(f"{key}: override run failed")
     else:
-        fin = load_text(out / "raw" / "state_snapshots" / f"{base}.json")
+        fin = load_text(capture_store.store("json").record_path(
+            capture_store.snapshot_dir(out), capture_store.FINAL, base))
         moved = [k for k in STATE_FIELDS if fin.get(k) != control_final.get(k)]
         print(f"    status {record(out).get('status')}; state fields that moved: {moved}")
         if not moved:
@@ -182,10 +214,12 @@ def run_subject(key: str, cfg: dict[str, Any], root: Path) -> list[str]:
     u, a, b = d / "U", d / "A", d / "B"
     if tool(spec_ref, conf, u):
         return findings + [f"{key}: U failed"]
-    hist = u / "raw" / "state_snapshots" / "history"
-    if tool(spec_ref, conf, a, hist / f"{base}__{k1}.json"):
+    st = capture_store.store("json")
+    sample = lambda seg, k: st.record_path(capture_store.snapshot_dir(seg),  # noqa: E731
+                                           capture_store.HISTORY, base, k)
+    if tool(spec_ref, conf, a, sample(u, k1)):
         return findings + [f"{key}: A failed"]
-    if tool(spec_ref, conf, b, a / "raw" / "state_snapshots" / "history" / f"{base}__{k2}.json"):
+    if tool(spec_ref, conf, b, sample(a, k2)):
         return findings + [f"{key}: B failed"]
     ucap = captures(u / "raw" / "state_snapshots", base)
     if missing_required(ucap) or len([n for n in ucap if n.startswith("history/")]) < 2:
@@ -200,10 +234,11 @@ def run_subject(key: str, cfg: dict[str, Any], root: Path) -> list[str]:
                             f"{rec.get('start_check')}, restart step {rstep} (expected ok, "
                             f"held, {start})")
         scap = captures(seg / "raw" / "state_snapshots", base)
+        stepped = ("history/", "restart_point/")
         expect = {n for n in ucap if n in ("final", "series")
-                  or (n.startswith("history/") and int(n.split("/")[1]) > start)}
+                  or (n.startswith(stepped) and int(n.split("/")[1]) > start)}
         got = {n for n in scap if n != "initial"
-               and not (n.startswith("history/") and int(n.split("/")[1]) <= start)}
+               and not (n.startswith(stepped) and int(n.split("/")[1]) <= start)}
         if expect != got:
             findings.append(f"{key} {label}: capture set {sorted(got)} != U's after {start} "
                             f"{sorted(expect)}")
