@@ -702,6 +702,19 @@ recipes are in `references/input-surfaces.md`:
   template of the family — cold launch, cold repair, warm repair, each kind — and count the rule
   in each** (`grep -c <slot>` over the templates is the one-line check that would have shown it).
   Episode: `references/input-surfaces.md` §Surface 12, "A third form".
+  **A fourth form: moving a statement out of a SEEDED document into one that reads as its
+  proper home.** The move looks like tidying (a format's file layout out of a neutral contract,
+  a behaviour into the node's own spec), and every document stays true. Issue #644 P4a took the
+  capture file layout out of the runner-output contract, which the harness producer is seeded,
+  and left it in the harness `controlled_spec.md`, which only the reviewer is seeded; the
+  templates then pointed the producer at "the layout the controlled spec states". Round 2
+  found the layout missing from the producer's tree, and round 3 found the operations'
+  behaviour missing the same way. **Rule: before a statement leaves a document, list the
+  leaves seeded THAT document (`_WORKSHOP_DOCUMENT_SEEDS_BY_PHASE` and the context builders),
+  and for each say which seed carries the statement afterwards. "The spec" is not an answer
+  for a producer: check that the leaf is seeded it. Do the enumeration once for the whole
+  section you are moving**, since a second round on the same family means the first fix
+  answered one sentence. Episode: `references/input-surfaces.md` §Surface 12, "A fourth form".
 - **Surface 13 — a gate that refuses a SPELLING does not refuse a POINTER to where that spelling
   lives.** Every guard in this repository that protects a leaf-read surface decides by reading the
   text for a token: the severity allowlist refuses a severity VALUE, the restatement scans refuse a

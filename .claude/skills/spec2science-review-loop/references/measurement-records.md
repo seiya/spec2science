@@ -276,3 +276,18 @@ red on the three drift subtests, which is how it was caught before any commit; t
 each digest and wrote each pin inside one Python process, then re-read the file and printed each
 pin line to check it. The same session wrote a size into a ceiling comment by hand (113767 where
 `wc -c` said 113753) and corrected it from the measurement in the next command.
+
+## A re-pin script and the audit it needs (issue #644 P4a, PR #650)
+
+P4a moved seven version constants and re-pinned `build-5` in place, and its review rounds
+changed pinned text five more times. The pins were written by one scratch script: for each
+drift case it compared the pinned digest of the CURRENT version with the recomputed one and
+wrote the recomputed one when they differed, adding an entry when the version had none. Run
+after every fix, it left both drift files green each time. It would have done the same for a
+version the branch never bumped: had a fix moved a member of `COMPILE_VERIFY_CONTRACT_VERSION`
+or changed what `BUILD_VERSION` produces, the script would have overwritten the shipped digest
+and the suite would have stayed green. Nothing in the loop looked until the pre-push check,
+which ran `git diff origin/main...HEAD -U0` on the two pin files and found one removed line,
+the `build-5` entry, whose digest reappears as `build-5@1812c09e`. A round-3 reviewer had
+separately diffed each tuple's members at both revisions and confirmed that every bumped
+version had a moved member and that the two untouched constants had none.

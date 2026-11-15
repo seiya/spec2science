@@ -634,6 +634,33 @@ instruction nor the row. Round 2's blank-slate reviewer found it by rendering th
 through `prepare_launch_request_payload` and counting the row's phrases (0 / 0 / 0 against the
 cold launch's 1 / 1 / 1). `5a47d7c6` added the slot to both templates.
 
+### A fourth form: a statement moved to a document the leaf is not seeded (issue #644 P4a, PR #650, 2026-11-16)
+
+P4a made `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3 format-neutral: the capture file names
+(`initial/<case_id>.json`, `history/…`, `series/…`) left it for the harness `controlled_spec.md`
+§3.2 and a new backend document, and two harness templates were reworded to "the layout the
+controlled spec states". `Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE['generate']` holds no
+`controlled_spec.md`: the harness `generate.generate` producer, the leaf that writes the model,
+is seeded the contract and the IR, and only the reviewer is seeded the spec. The suite was
+green and two review rounds on function passed over it.
+
+- Round 2's blank-slate reviewer, told to act as that leaf and read only what it is handed,
+  found the layout of every group but `final` reaching the producer only through what a Compile
+  leaf writes into the IR. `c57c07f7` seeds the format's layout document after the contract and
+  the language binding (`_runner_output_contract_with_binding`) and pins it as a leaf-read member.
+- Round 3's reviewer grepped the three producers' rendered seed for five phrases of the spec's
+  §3.2 (the stop conditions, "previous commit", "writes nothing", the trailing-blank rule, the
+  MPI rank-0 rule) and found 0 of each. `1e44d13d` put the operations' behaviour into the
+  contract's §3 and the trailing-blank rule into the Fortran runner-output binding; `798a9190`
+  added the one stop condition that fix still omitted. The MPI rank-0 rule was not seeded on
+  `main` either and is listed for P4b.
+
+Why it recurred: each fix answered the sentences its round named. The enumeration that closes
+the family is one pass of the spec section against the producer's rendered seed, which neither
+fix ran. A self-test that judges only the `final` group made the gap invisible to
+certification too: a harness with a wrong `series` path passes its own suite and fails its
+consumers at `Validate.execute`, where no leaf can repair it.
+
 ## Surface 13 — the guard reads for a spelling; a pointer walks past it (issue #168)
 
 **What happened.** A `docs/RUNBOOK.md` bullet quoted a wrong number for what a blind `--resume`
