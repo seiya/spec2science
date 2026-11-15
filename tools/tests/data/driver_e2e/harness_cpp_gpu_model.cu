@@ -1,8 +1,9 @@
 // harness_cpp_gpu_model.cu: the published runner plumbing of harness_cpp_gpu (host code only).
 // Defines every operation the host-rendered header harness_cpp_gpu_model.cuh declares.
 // harness_cpp_gpu_model.cu: a test fixture for the host-rendered driver (issue #589 PR-1b), NOT a
-// certified source: the certified harness_cpp_gpu@0.2.0 (2026-10-29) emitters and writers, its
-// retired writers removed, with hand-written reading operations (the certified @0.4.0 is generated).
+// certified source: the certified harness_cpp_gpu@0.2.0 (2026-10-29) perf writer, with
+// hand-written reading operations and a hand-written `json` capture writer (issue #644 P4; the
+// certified @0.5.0 is generated).
 #include "harness_cpp_gpu_model.cuh"
 
 #include <chrono>
@@ -11,7 +12,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <cctype>
-#include <filesystem>
 #include <limits>
 #include <map>
 #include <fstream>
@@ -62,15 +62,6 @@ void write_text_file(const std::string& path, const std::string& text) {
     }
 }
 
-void ensure_directory(const std::string& dir) {
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    if (ec) {
-        std::cerr << "harness_cpp_gpu: cannot create directory " << dir << ": " << ec.message() << "\n";
-        std::exit(1);
-    }
-}
-
 // Nested JSON emission of a column-major array, the LEADING index outermost.
 // `dim` is the index being expanded, `offset` the column-major offset fixed so far.
 std::string emit_nested(const dp* data, const long* extent, const long* stride, int rank, int dim, long offset) {
@@ -81,7 +72,7 @@ std::string emit_nested(const dp* data, const long* extent, const long* stride, 
         }
         const long off = offset + i * stride[dim];
         if (dim == rank - 1) {
-            s += harness_cpp_gpu__emit_real(data[off]);
+            s += harness_cpp_gpu__real_token(data[off]);
         } else {
             s += emit_nested(data, extent, stride, rank, dim + 1, off);
         }
@@ -100,7 +91,79 @@ std::string emit_view(const spec2science::View<const dp, R>& a) {
     return emit_nested(a.data, a.extent, stride, R, 0, 0);
 }
 
-// Trailing blanks removed ('na  ' -> "na").
+std::string int_token(int i) {
+    return std::to_string(i);
+}
+
+// The capture writer's state: the case being written, the open record of each state group (its
+// members so far, as JSON text), and the series rows not yet written.
+bool cap_open = false;
+std::string cap_case;
+std::map<std::string, std::string> cap_body;
+std::vector<std::string> cap_names;
+std::vector<dp> cap_row;
+std::vector<std::vector<dp>> cap_rows;
+std::vector<int> cap_step;
+std::vector<dp> cap_t;
+int cap_chunks = 0;
+
+[[noreturn]] void cap_refuse(const char* op, const std::string& why) {
+    std::cerr << "error: harness_cpp_gpu__" << op << ": " << why << std::endl;
+    std::exit(2);
+}
+
+// The open record of a state group.
+std::string& cap_group(const std::string& group) {
+    if (!cap_open) {
+        cap_refuse("capture", "no case is open");
+    }
+    const auto found = cap_body.find(group);
+    if (found == cap_body.end()) {
+        cap_refuse("capture", "no state group " + group);
+    }
+    return found->second;
+}
+
+void cap_put(const std::string& group, const std::string& name, const std::string& token) {
+    if (group == "series") {
+        cap_refuse("capture", "a series value is a scalar");
+    }
+    cap_group(group) += json_string(name) + ": " + token + ", ";
+}
+
+std::string json_list(const std::vector<dp>& xs) {
+    std::string s = "[";
+    for (std::size_t i = 0; i < xs.size(); ++i) {
+        s += (i > 0 ? ", " : "") + harness_cpp_gpu__real_token(xs[i]);
+    }
+    return s + "]";
+}
+
+void cap_write(const std::string& name, const std::string& doc) {
+    write_text_file("raw/state_snapshots/" + name + ".json", doc + "\n");
+}
+
+// The pending rows as one chunk, `series/<case_id>__<i>.json`, `i` counting the case's chunks
+// from 0: the step and t of each row, then one list per series name.
+void cap_write_series() {
+    std::string steps = "[";
+    for (std::size_t i = 0; i < cap_step.size(); ++i) {
+        steps += (i > 0 ? ", " : "") + int_token(cap_step[i]);
+    }
+    std::string doc = "{\"step\": " + steps + "], \"t\": " + json_list(cap_t);
+    for (std::size_t k = 0; k < cap_names.size(); ++k) {
+        std::vector<dp> column;
+        for (const std::vector<dp>& row : cap_rows) {
+            column.push_back(row[k]);
+        }
+        doc += ", " + json_string(cap_names[k]) + ": " + json_list(column);
+    }
+    cap_write("series/" + cap_case + "__" + int_token(cap_chunks), doc + "}");
+    ++cap_chunks;
+    cap_rows.clear();
+    cap_step.clear();
+    cap_t.clear();
+}
 
 }  // namespace
 
@@ -140,7 +203,7 @@ void harness_cpp_gpu__parse_cases(
     }
 }
 
-std::string harness_cpp_gpu__emit_real(
+std::string harness_cpp_gpu__real_token(
     dp x) {
     if (std::isnan(x)) {
         return "NaN";
@@ -153,58 +216,127 @@ std::string harness_cpp_gpu__emit_real(
     return buf;
 }
 
-std::string harness_cpp_gpu__emit_int(
-    int i) {
-    return std::to_string(i);
-}
-
-std::string harness_cpp_gpu__emit_bool(
-    bool b) {
-    return b ? "true" : "false";
-}
-
-std::string harness_cpp_gpu__emit_array_r1(
-    spec2science::View<const dp, 1> a) {
-    return emit_view<1>(a);
-}
-
-std::string harness_cpp_gpu__emit_array_r2(
-    spec2science::View<const dp, 2> a) {
-    return emit_view<2>(a);
-}
-
-std::string harness_cpp_gpu__emit_array_r3(
-    spec2science::View<const dp, 3> a) {
-    return emit_view<3>(a);
-}
-
-std::string harness_cpp_gpu__emit_array_r4(
-    spec2science::View<const dp, 4> a) {
-    return emit_view<4>(a);
-}
-
-harness_cpp_gpu__h_named harness_cpp_gpu__box(
-    const std::string& name,
-    const std::string& json) {
-    harness_cpp_gpu__h_named nv;
-    nv.name = name;
-    nv.json = json;
-    return nv;
-}
-
-void harness_cpp_gpu__write_snapshot(
+// Start the output of one case. This format defines nothing up front: `vars` and the
+// capacities are not read; the series rows are buffered until a restart point or the close
+// writes them.
+void harness_cpp_gpu__capture_open(
     const std::string& case_id,
-    const std::vector<harness_cpp_gpu__h_named>& values,
-    dp time) {
-    const std::string dir = "raw/state_snapshots";
-    ensure_directory(dir);
-    const std::string path = dir + "/" + case_id + ".json";
-    std::string doc = "{\"t\": " + harness_cpp_gpu__emit_real(time);
-    for (const harness_cpp_gpu__h_named& v : values) {
-        doc += ", " + json_string(v.name) + ": " + v.json;
+    const std::vector<harness_cpp_gpu__h_var>& vars,
+    int restart_point_capacity,
+    const std::vector<std::string>& series_names,
+    int series_capacity) {
+    (void)vars;
+    (void)restart_point_capacity;
+    (void)series_capacity;
+    if (cap_open) {
+        cap_refuse("capture_open", "a case is already open");
     }
-    doc += "}\n";
-    write_text_file(path, doc);
+    for (const std::string& name : series_names) {
+        if (name == "step" || name == "t") {
+            cap_refuse("capture_open", "series name " + name + " is the commit's own");
+        }
+    }
+    cap_case = case_id;
+    cap_body = {{"initial", ""}, {"final", ""}, {"history", ""}, {"restart_point", ""}};
+    cap_names = series_names;
+    cap_row.assign(series_names.size(), 0.0);
+    cap_rows.clear();
+    cap_step.clear();
+    cap_t.clear();
+    cap_chunks = 0;
+    cap_open = true;
+}
+
+// One scalar into the open record of `group`; in `series`, into the open row.
+void harness_cpp_gpu__capture_real(
+    const std::string& group,
+    const std::string& name,
+    dp x) {
+    if (group == "series") {
+        for (std::size_t k = 0; k < cap_names.size(); ++k) {
+            if (cap_names[k] == name) {
+                cap_row[k] = x;
+                return;
+            }
+        }
+        cap_refuse("capture_real", "no series name " + name);
+    }
+    cap_put(group, name, harness_cpp_gpu__real_token(x));
+}
+
+void harness_cpp_gpu__capture_array_r1(
+    const std::string& group,
+    const std::string& name,
+    spec2science::View<const dp, 1> a) {
+    cap_put(group, name, emit_view<1>(a));
+}
+
+void harness_cpp_gpu__capture_array_r2(
+    const std::string& group,
+    const std::string& name,
+    spec2science::View<const dp, 2> a) {
+    cap_put(group, name, emit_view<2>(a));
+}
+
+void harness_cpp_gpu__capture_array_r3(
+    const std::string& group,
+    const std::string& name,
+    spec2science::View<const dp, 3> a) {
+    cap_put(group, name, emit_view<3>(a));
+}
+
+void harness_cpp_gpu__capture_array_r4(
+    const std::string& group,
+    const std::string& name,
+    spec2science::View<const dp, 4> a) {
+    cap_put(group, name, emit_view<4>(a));
+}
+
+// Close the open record of `group`. A state group's record is one file, written here and never
+// rewritten; a restart point is preceded by the series rows not yet written, so a restart point
+// that exists has its series before it. A series row is buffered.
+void harness_cpp_gpu__capture_commit(
+    const std::string& group,
+    int step,
+    dp t) {
+    if (!cap_open) {
+        cap_refuse("capture_commit", "no case is open");
+    }
+    if (group == "series") {
+        cap_rows.push_back(cap_row);
+        cap_step.push_back(step);
+        cap_t.push_back(t);
+        return;
+    }
+    std::string& body = cap_group(group);
+    std::string name;
+    if (group == "initial") {
+        name = "initial/" + cap_case;
+    } else if (group == "final") {
+        name = cap_case;
+    } else if (group == "history") {
+        name = "history/" + cap_case + "__" + int_token(step);
+    } else {
+        if (!cap_step.empty()) {
+            cap_write_series();
+        }
+        name = "restart_point/" + cap_case + "__" + int_token(step);
+    }
+    cap_write(name, "{" + body + "\"step\": " + int_token(step) + ", \"t\": "
+                        + harness_cpp_gpu__real_token(t) + "}");
+    body.clear();
+}
+
+// End the case's output: the series rows not yet written, and an empty chunk for a case that
+// wrote none, so every case has a series.
+void harness_cpp_gpu__capture_close() {
+    if (!cap_open) {
+        cap_refuse("capture_close", "no case is open");
+    }
+    if (!cap_step.empty() || cap_chunks == 0) {
+        cap_write_series();
+    }
+    cap_open = false;
 }
 
 void harness_cpp_gpu__write_perf(
@@ -225,15 +357,15 @@ void harness_cpp_gpu__write_perf(
 
     const std::string doc =
         "{\n  \"case_id\": " + json_string(case_id) + ",\n  \"target\": " + json_string(target) +
-        ",\n  \"walltime_sec\": " + harness_cpp_gpu__emit_real(walltime_sec) +
-        ",\n  \"steps\": " + harness_cpp_gpu__emit_int(steps) +
-        ",\n  \"cells_updated\": " + harness_cpp_gpu__emit_int(cells_updated) +
-        ",\n  \"throughput_cells_per_sec\": " + harness_cpp_gpu__emit_real(throughput) +
-        ",\n  \"parallelism\": {\"mpi_ranks\": " + harness_cpp_gpu__emit_int(mpi_ranks) +
-        ", \"threads_per_rank\": " + harness_cpp_gpu__emit_int(threads_per_rank) +
-        ", \"gpu_devices\": " + harness_cpp_gpu__emit_int(gpu_devices) +
-        ", \"parallel_degree_total\": " + harness_cpp_gpu__emit_int(parallel_degree_total) +
-        ", \"block_size\": " + harness_cpp_gpu__emit_int(harness_cpp_gpu__block_size()) +
+        ",\n  \"walltime_sec\": " + harness_cpp_gpu__real_token(walltime_sec) +
+        ",\n  \"steps\": " + int_token(steps) +
+        ",\n  \"cells_updated\": " + int_token(cells_updated) +
+        ",\n  \"throughput_cells_per_sec\": " + harness_cpp_gpu__real_token(throughput) +
+        ",\n  \"parallelism\": {\"mpi_ranks\": " + int_token(mpi_ranks) +
+        ", \"threads_per_rank\": " + int_token(threads_per_rank) +
+        ", \"gpu_devices\": " + int_token(gpu_devices) +
+        ", \"parallel_degree_total\": " + int_token(parallel_degree_total) +
+        ", \"block_size\": " + int_token(harness_cpp_gpu__block_size()) +
         "},\n  \"timestamp_utc\": " + json_string(stamp) + "\n}\n";
     write_text_file("perf.json", doc);
 }

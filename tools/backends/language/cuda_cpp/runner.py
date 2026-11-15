@@ -9,9 +9,9 @@ It renders ``<spec_id>_runner.cu`` of a `component` / `problem` node from the no
 (`render_runner`): the deterministic driver (issue #589). Per case it reads the host-written case
 file through the certified ``harness_cpp_gpu`` plumbing, allocates the state, calls the operations
 the node's model publishes, owns the time loop on a `loop` node, and emits the standard runner
-outputs through that plumbing, which owns the JSON envelope assembly (harness controlled_spec §3 /
-§5.1). The runner holds no serialization knowledge: it calls the writers — it never formats a JSON
-token, and it judges nothing.
+outputs through that plumbing's capture interface, which owns the output format and every file
+name (harness controlled_spec §3 / §5.1). The runner holds no serialization or file-layout
+knowledge: it puts named values into a group and commits it, and it judges nothing.
 
 Split of authorship on a physics node:
 - ``<spec_id>_model.cu`` — the physics kernel + the published operations   (LLM leaf)
@@ -22,8 +22,8 @@ Split of authorship on a physics node:
 Every snapshot variable is a namespace-scope variable of the driver, ``st_<var>``: a scalar is a
 ``double``, a rank-1 array a ``std::vector<double>``, a rank-R array a ``spec2science::Array<double, R>``
 (the owning column-major array the published-surface header defines); the driver hands the
-operations and the emitters a non-owning ``spec2science::View`` over it. So no generated function can
-filter, compute or rewrite a captured value on its way to the emitters, and a state's type is never
+operations and the capture puts a non-owning ``spec2science::View`` over it. So no generated function can
+filter, compute or rewrite a captured value on its way to the harness, and a state's type is never
 declared across two translation units.
 
 The language-neutral IR readers — the snapshot schema, the cases, and their refusals — are `tools/runner_ir.py`'s, shared with every backend that renders a runner.
@@ -64,13 +64,13 @@ MAX_SPEC_ID_LEN = bundle.SPEC_ID_MAX
 _IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
 
 #: The harness symbols this template calls, pinned by `assert_harness_pin` against the certified
-#: harness IR and source. Emitters are added per rank on demand (`_used_harness_ops`).
+#: harness IR and source. The capture puts are added per rank on demand (`_used_harness_ops`).
 _HARNESS_TYPES = (
-    "h_named",
+    "h_var",
 )
 _HARNESS_CORE_OPS = (
-    "parse_cases", "box", "write_snapshot", "write_perf", "block_size", "read_case",
-    "get_array_r4",
+    "parse_cases", "capture_open", "capture_real", "capture_array_r4", "capture_commit",
+    "capture_close", "write_perf", "block_size", "read_case", "get_array_r4",
 )
 
 #: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
@@ -132,16 +132,22 @@ def _clit(value: str) -> str:
 
 def _used_harness_ops(ir: dict[str, Any]) -> list[str]:
     """Unqualified harness op names the rendered driver calls (deterministic order): the core
-    writers and readers, the emitters and getters of what the IR declares, and the rank-1 emitter
-    of the series on a `loop` node. `assert_harness_pin` compares exactly these, so a name left
+    readers and writers, the getters of what the IR declares and the capture operations of what
+    it captures (`_capture_ops`). `assert_harness_pin` compares exactly these, so a name left
     out here is an unenforced pin."""
     schema, _ = _snapshot_schema(ir)
     plan = runner_ir.driver_plan(ir, schema)
-    ops = ["parse_cases", "read_case", *plan.getters, "emit_real"]
-    ranks = set(plan.array_ranks) | ({1} if plan.loop else set())
-    ops += [f"emit_array_r{r}" for r in sorted(ranks)]
-    ops += ["box", "write_snapshot", "write_perf", "block_size"]
-    return ops
+    return ["parse_cases", "read_case", *plan.getters, *_capture_ops(plan), "write_perf",
+            "block_size"]
+
+
+def _capture_ops(plan: runner_ir.DriverPlan) -> list[str]:
+    """The capture operations the driver of ``plan`` calls: the scalar put only where a state
+    is a scalar or a series is written, the array puts of the ranks the state holds."""
+    scalar = plan.loop or any(rank == 0 for rank in plan.variables.values())
+    return ["capture_open", *(["capture_real"] if scalar else []),
+            *(f"capture_array_r{r}" for r in plan.array_ranks),
+            "capture_commit", "capture_close"]
 
 
 def _hname(harness_spec_id: str, sym: str) -> str:
@@ -230,8 +236,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
       "edit.")
     a("// The driver (issue #589): per case it reads the host-written case file, allocates the")
     a("// state, calls the published operations, owns the time loop on a loop node, and writes")
-    a(f"// every capture THROUGH the certified {harness_spec_id} plumbing, which owns all JSON")
-    a("// assembly. The state is host memory; an operation copies to and from the device itself.")
+    a(f"// every capture THROUGH the certified {harness_spec_id} plumbing, which owns the output")
+    a("// format. The state is host memory; an operation copies to and from the device itself.")
     a(f'#include "{hm}.cuh"')
     a(f'#include "{md}.cuh"')
     a("")
@@ -254,8 +260,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f"static_assert(hm::case_id_len == {CASE_ID_LEN},")
     a(f'              "the certified {harness_spec_id} case_id_len is not the width this runner '
       'bounds case ids by");')
-    a("")
-    a(f"using Named = hm::{_hname(harness_spec_id, 'h_named')};")
     a("")
     # Every exit of the program, the successful one included, goes through `finish`, which
     # flushes and ends the process with `std::_Exit`: no namespace-scope destructor and no exit
@@ -289,22 +293,15 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("")
     for proc in (p for entry in plan.entries for p in entry.procedures):
         _render_procedure(a, plan, proc)
-    a("// Every declared state variable, `t` (the writer's) and `step`: the same set at every")
-    a("// capture point of every case.")
-    a("std::vector<Named> capture_state() {")
-    a("  std::vector<Named> out;")
+    a("// One record of `group`: every declared state variable, closed with the committed `step`")
+    a("// and `t` — the same set at every capture point of every case.")
+    a("void capture_state(const std::string& group) {")
     for var, rank in plan.variables.items():
-        vlit = _clit(var)
         if rank == 0:
-            a(f'  out.push_back({H("box")}("{vlit}", {H("emit_real")}(st_{var})));')
+            a(f'  {H("capture_real")}(group, "{_clit(var)}", st_{var});')
         else:
-            a(f'  out.push_back({H("box")}("{vlit}", {H(f"emit_array_r{rank}")}(cv(st_{var}))));')
-    a(f'  out.push_back({H("box")}("step", {H("emit_real")}(static_cast<double>(step_c))));')
-    a("  return out;")
-    a("}")
-    a("")
-    a("void write_capture(const std::string& name) {")
-    a(f"  {H('write_snapshot')}(name, capture_state(), t_c);")
+            a(f'  {H(f"capture_array_r{rank}")}(group, "{_clit(var)}", cv(st_{var}));')
+    a(f"  {H('capture_commit')}(group, step_c, t_c);")
     a("}")
     a("")
     if plan.loop:
@@ -323,15 +320,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("    x = want_max ? std::max(x, p[k]) : std::min(x, p[k]);")
         a("  }")
         a("  return x;")
-        a("}")
-        a("")
-        a("// One series column; the empty list is this glue's own token, since no emitter contract")
-        a("// covers a zero-length array.")
-        a("std::string series_json(std::vector<double>& column) {")
-        a("  if (column.empty()) {")
-        a('    return "[]";')
-        a("  }")
-        a(f"  return {H('emit_array_r1')}(cv(column));")
         a("}")
         a("")
     a("}  // namespace")
@@ -378,7 +366,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("    int every_c = 0;")
         a("    double dt_c = 0.0;")
         a("    double t_start_c = 0.0;")
-        a(f"    std::vector<std::vector<double>> se({len(plan.series_names)});")
     if plan.list_form:
         for k, entry in enumerate(plan.entries, start=1):
             joined = " || ".join(f'cid == "{_clit(c)}"' for c in entry.cases or ())
@@ -597,8 +584,7 @@ def _render_restart(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPl
     before the initial capture: the host-owned `restart.step` (0 on an ordinary case), refused
     below 0 and, on a case `init` did not refuse, at or past `n_step`; when positive, every
     restart variable is read from its `restart.<var>` key into the state and the step count and
-    `t` start at the global step. A refused case restores nothing and starts at 0. The series
-    is a vector filled from the first committed step, so it needs no offset."""
+    `t` start at the global step. A refused case restores nothing and starts at 0."""
     refused = entry.init is not None
     a(f"{ind}// --- the restart point: the global step this case starts at (0 unless a")
     a(f"{ind}// continuation case) ---")
@@ -686,10 +672,11 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
             a(f"{ind}if (case_refused) {{")
             a(f"{ind}  n_c = 0;")
             a(f"{ind}}}")
-    a(f"{ind}// --- the initial capture (raw/state_snapshots/initial/<case_id>.json) ---")
     if plan.loop:
         _render_restart(a, plan, entry, H, ind)
-    a(f'{ind}write_capture("initial/" + cid);')
+    _render_capture_open(a, plan, H, ind)
+    a(f"{ind}// --- the initial capture ---")
+    a(f'{ind}capture_state("initial");')
     if plan.loop:
         a(f"{ind}for (int n = step0 + 1; n <= n_c; ++n) {{")
         in1 = ind + "  "
@@ -701,19 +688,17 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         a(f"{in1}if (!lg_{entry.step.result_state}) {{")
         a(f"{in1}  break;")
         a(f"{in1}}}")
-        a(f"{in1}// --- committed: the state, step, t, the series entry, the sample ---")
+        a(f"{in1}// --- committed: the state, step, t, the series row, the sample ---")
         for var in (*entry.work_copy, *entry.work_nan):
             a(f"{in1}st_{var} = wk_{var};")
         a(f"{in1}step_c = n;")
         a(f"{in1}t_c = t_start_c + static_cast<double>(n) * dt_c;")
-        a(f"{in1}se[0].push_back(static_cast<double>(n));")
-        col = 1
         for var in plan.arrays:
-            a(f"{in1}se[{col}].push_back(fold(st_{var}, false));")
-            a(f"{in1}se[{col + 1}].push_back(fold(st_{var}, true));")
-            col += 2
+            a(f'{in1}{H("capture_real")}("series", "{_clit(var)}_min", fold(st_{var}, false));')
+            a(f'{in1}{H("capture_real")}("series", "{_clit(var)}_max", fold(st_{var}, true));')
+        a(f'{in1}{H("capture_commit")}("series", n, t_c);')
         a(f"{in1}if (every_c > 0 && n % every_c == 0) {{")
-        a(f'{in1}  write_capture("history/" + cid + "__" + std::to_string(n));')
+        a(f'{in1}  capture_state("history");')
         a(f"{in1}}}")
         a(f"{ind}}}")
     else:
@@ -724,15 +709,33 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         a(f"{ind}    step_c = 1;")
         a(f"{ind}  }}")
         a(f"{ind}}}")
-    a(f"{ind}// --- the final capture (raw/state_snapshots/<case_id>.json) ---")
-    a(f"{ind}write_capture(cid);")
-    if plan.loop:
-        a(f"{ind}{{")
-        a(f"{ind}  std::vector<Named> series;")
-        for col, name in enumerate(plan.series_names):
-            a(f'{ind}  series.push_back({H("box")}("{_clit(name)}", series_json(se[{col}])));')
-        a(f'{ind}  {H("write_snapshot")}("series/" + cid, series, t_c);')
-        a(f"{ind}}}")
+    a(f"{ind}// --- the final capture, and the end of the case's output ---")
+    a(f'{ind}capture_state("final");')
+    a(f"{ind}{H('capture_close')}();")
+
+
+def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, H: Any, ind: str) -> None:
+    """The start of the case's output: what the harness's format may need defined before the
+    first record — each state variable's name, rank and extents, the number of samples it may
+    hold, whether a restart point holds it — and the series' names (without `step`, which the
+    commit carries) and row count. No restart point is committed (a restart point is a history
+    sample), so its capacity is 0."""
+    a(f"{ind}// --- the case's output: its variables and the records it may hold ---")
+    restart = set(plan.restart_vars)
+    samples = "every_c > 0 ? n_c / every_c : 0" if plan.loop else "0"
+    a(f"{ind}const std::vector<{H('h_var')}> cvars = {{")
+    for var, rank in plan.variables.items():
+        if rank == 1:
+            extents = [f"static_cast<int>(st_{var}.size())"]
+        else:
+            extents = [f"static_cast<int>(st_{var}.extent[{k}])" for k in range(rank)]
+        shape = ", ".join([*extents, *["0"] * (4 - rank)])
+        a(f'{ind}    {{"{_clit(var)}", {rank}, {{{shape}}}, {samples},')
+        a(f"{ind}     {'true' if var in restart else 'false'}}},")
+    a(f"{ind}}};")
+    names = ", ".join(f'"{_clit(name)}"' for name in plan.series_names[1:])
+    rows = "std::max(n_c - step0, 0)" if plan.loop else "0"
+    a(f"{ind}{H('capture_open')}(cid, cvars, 0, {{{names}}}, {rows});")
 
 
 # --- harness interface signature pin (fail-closed, run before rendering) -----------------------
@@ -749,7 +752,7 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
 EXPECTED_HARNESS_SPEC_ID = "harness_cpp_gpu"
 
 # Verbatim copy of spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md §5.1
-# (spec_version 0.4.0). If a harness recert changes §5.1, THIS block and the render template must
+# (spec_version 0.5.0). If a harness recert changes §5.1, THIS block and the render template must
 # be updated together (the pin message says so).
 _HARNESS_V1_INTERFACE = """\
 module_parameters:
@@ -758,18 +761,28 @@ module_parameters:
 - name: case_id_len
   value: '64'
 types:
-- name: harness_cpp_gpu__h_named
+- name: harness_cpp_gpu__h_var
   components:
   - name: name
     spec:
       type: string
       len: deferred
       alloc: true
-  - name: json
+  - name: rank
     spec:
-      type: string
-      len: deferred
-      alloc: true
+      type: integer
+  - name: shape
+    rank: 1
+    dims:
+    - '4'
+    spec:
+      type: integer
+  - name: history_capacity
+    spec:
+      type: integer
+  - name: restart
+    spec:
+      type: logical
 procedures:
 - kind: subroutine
   name: harness_cpp_gpu__parse_cases
@@ -799,7 +812,7 @@ procedures:
     spec:
       type: logical
 - kind: function
-  name: harness_cpp_gpu__emit_real
+  name: harness_cpp_gpu__real_token
   args:
   - name: x
     intent: in
@@ -812,129 +825,148 @@ procedures:
       type: string
       len: deferred
       alloc: true
-- kind: function
-  name: harness_cpp_gpu__emit_int
-  args:
-  - name: i
-    intent: in
-    spec:
-      type: integer
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- kind: function
-  name: harness_cpp_gpu__emit_bool
-  args:
-  - name: b
-    intent: in
-    spec:
-      type: logical
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- kind: function
-  name: harness_cpp_gpu__emit_array_r1
-  args:
-  - name: a
-    rank: 1
-    intent: in
-    spec:
-      type: real
-      kind: dp
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- kind: function
-  name: harness_cpp_gpu__emit_array_r2
-  args:
-  - name: a
-    rank: 2
-    intent: in
-    spec:
-      type: real
-      kind: dp
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- kind: function
-  name: harness_cpp_gpu__emit_array_r3
-  args:
-  - name: a
-    rank: 3
-    intent: in
-    spec:
-      type: real
-      kind: dp
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- kind: function
-  name: harness_cpp_gpu__emit_array_r4
-  args:
-  - name: a
-    rank: 4
-    intent: in
-    spec:
-      type: real
-      kind: dp
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- kind: function
-  name: harness_cpp_gpu__box
-  args:
-  - name: name
-    intent: in
-    spec:
-      type: string
-      len: assumed
-  - name: json
-    intent: in
-    spec:
-      type: string
-      len: assumed
-  result:
-    name: nv
-    spec:
-      type: derived
-      name: harness_cpp_gpu__h_named
 - kind: subroutine
-  name: harness_cpp_gpu__write_snapshot
+  name: harness_cpp_gpu__capture_open
   args:
   - name: case_id
     intent: in
     spec:
       type: string
       len: assumed
-  - name: values
+  - name: vars
     rank: 1
     intent: in
     spec:
       type: derived
-      name: harness_cpp_gpu__h_named
-  - name: time
+      name: harness_cpp_gpu__h_var
+  - name: restart_point_capacity
+    intent: in
+    spec:
+      type: integer
+  - name: series_names
+    rank: 1
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: series_capacity
+    intent: in
+    spec:
+      type: integer
+- kind: subroutine
+  name: harness_cpp_gpu__capture_real
+  args:
+  - name: group
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: x
     intent: in
     spec:
       type: real
       kind: dp
+- kind: subroutine
+  name: harness_cpp_gpu__capture_array_r1
+  args:
+  - name: group
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 1
+    intent: in
+    spec:
+      type: real
+      kind: dp
+- kind: subroutine
+  name: harness_cpp_gpu__capture_array_r2
+  args:
+  - name: group
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 2
+    intent: in
+    spec:
+      type: real
+      kind: dp
+- kind: subroutine
+  name: harness_cpp_gpu__capture_array_r3
+  args:
+  - name: group
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 3
+    intent: in
+    spec:
+      type: real
+      kind: dp
+- kind: subroutine
+  name: harness_cpp_gpu__capture_array_r4
+  args:
+  - name: group
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 4
+    intent: in
+    spec:
+      type: real
+      kind: dp
+- kind: subroutine
+  name: harness_cpp_gpu__capture_commit
+  args:
+  - name: group
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: step
+    intent: in
+    spec:
+      type: integer
+  - name: t
+    intent: in
+    spec:
+      type: real
+      kind: dp
+- kind: subroutine
+  name: harness_cpp_gpu__capture_close
+  args: []
 - kind: subroutine
   name: harness_cpp_gpu__write_perf
   args:

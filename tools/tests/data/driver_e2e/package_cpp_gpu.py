@@ -28,6 +28,7 @@ from pathlib import Path
 
 import yaml
 
+from tools import capture_store
 from tools import primary_evidence as pe
 from tools import verdict_evaluator
 from tools.backends.language.cuda_cpp import header, runner
@@ -69,8 +70,8 @@ def package(out: Path, node: str, *, arch: str = "sm_60") -> list[str]:
         + "".join(f"nvcc -std=c++17 -O2 -rdc=true -arch={arch} -I. -c {s}.cu -o {s}.o\n"
                   for s in stems)
         + f"nvcc -rdc=true -arch={arch} *.o -o bin\n"
-        + "mkdir -p " + " ".join(f"run/raw/state_snapshots/{d}"
-                                 for d in ("initial", "history", "series")) + "\n"
+        + "mkdir -p " + " ".join("run/" + "/".join(parts)
+                                 for parts in capture_store.run_dirs("json")) + "\n"
         + f'cd run\nSPEC2SCIENCE_CUDA_BLOCK=128 ../bin --cases "$PWD/../ir/spec.ir.yaml" {ids}\n')
     return stems
 
@@ -88,8 +89,8 @@ def continue_(out: Path, node: str) -> list[str]:
     if not files:
         return []
     rdir = out / "run" / pe.RESTART_DIRNAME
-    for sub in ("initial", "history", "series"):
-        (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    for parts in capture_store.run_dirs("json"):
+        rdir.joinpath(*parts).mkdir(parents=True, exist_ok=True)
     (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     ids = [f.case_id for f in files]
     (out / "go2.sh").write_text(

@@ -21,8 +21,10 @@ directory's content.
 What a store is: a module with `FORMAT_FACTS` (its `suffix`, read by the language backends'
 runner-output scans), `REQUIRED_PYTHON_MODULES`, and the functions the readers call —
 `run_dirs`, `record_path`, `has_record`, `read_record`, `case_ids`, `history_steps`,
-`case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`, `expected_layout`
-(`tools/backends/output_format/json/store.py` states each). One record is one file. A record's
+`restart_point_steps`, `case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`,
+`expected_layout` (`tools/backends/output_format/json/store.py` states each). A record is what
+one commit of the harness's capture interface closed, except a case's series, which is every
+row the case committed: how many files hold either is the store's. A record's
 members are returned as JSON spells them — a number, a boolean, a string, nested lists of
 those — whatever the format holds on disk: the neutral readers judge rank, extents and
 finiteness on lists and refuse any other value as a non-number.
@@ -48,10 +50,12 @@ SNAPSHOT_DIR_PARTS: tuple[str, ...] = ("raw", "state_snapshots")
 SNAPSHOT_SCHEMA_FILENAME = "snapshot_schema.json"
 
 #: The groups a record belongs to. `INITIAL` and `FINAL` hold one record of a case's state
-#: each, `HISTORY` one per sampled step, `SERIES` the case's per-step series.
+#: each, `HISTORY` one per sampled step, `RESTART_POINT` one per restart point, `SERIES` the
+#: case's per-step series. The words are the group names of the harness's capture interface.
 INITIAL = "initial"
 FINAL = "final"
 HISTORY = "history"
+RESTART_POINT = "restart_point"
 SERIES = "series"
 
 
@@ -79,16 +83,15 @@ def store(output_format: str) -> Any:
     return registry.capability_module(AXIS, output_format, CAPABILITY)
 
 
-def run_dirs(output_format: str, *, host_rendered: bool) -> tuple[tuple[str, ...], ...]:
+def run_dirs(output_format: str) -> tuple[tuple[str, ...], ...]:
     """The directories created under a run's working directory before the binary runs, each as
-    its path parts: the capture directory for every runner, and the store's own directories
-    below it (`run_dirs()`) only for the runner the host renders, which opens each file
-    relatively. A hand-authored runner writes none of them, so its capture directory holds only
-    what it wrote and a strict fan-out self-test may refuse any other entry (issue #368). One
-    answer, read by `Validate.execute`, its remote job, a `workshop leaf`'s wrapper `run`, the
-    build control file's `test` recipe and `tools/run_configuration.py`."""
-    if not host_rendered:
-        return (SNAPSHOT_DIR_PARTS,)
+    its path parts: the store's own directories below the capture directory (`run_dirs()`),
+    for every node. Every runner writes its captures through the harness's capture
+    interface, and the harness opens each file relatively and creates no directory, a harness
+    self-test's included (issue #644 P4; before it only the host-rendered runner got them,
+    issue #368, when a self-test wrote its own files and could list the directory strictly).
+    One answer, read by `Validate.execute`, its remote job, a `workshop leaf`'s wrapper `run`,
+    the build control file's `test` recipe and `tools/run_configuration.py`."""
     return tuple((*SNAPSHOT_DIR_PARTS, sub) for sub in store(output_format).run_dirs())
 
 

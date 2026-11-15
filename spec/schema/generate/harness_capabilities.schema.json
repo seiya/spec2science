@@ -49,7 +49,8 @@
         "distributed_state",
         "batched_cases",
         "full_state_capture",
-        "trusted_reductions"
+        "trusted_reductions",
+        "capture_format_json"
       ],
       "x-execution-model-capabilities": [
         "sync_single_case",
@@ -62,12 +63,12 @@
     {
       "harness_capability_abi_version": 1,
       "manifests": [
-        {"node_key": "infrastructure/harness_cpp_gpu@0.4.0",
-         "provides": ["sync_single_case@1"]},
-        {"node_key": "infrastructure/harness_fortran_cpu@0.10.0",
-         "provides": ["sync_single_case@1"]},
-        {"node_key": "infrastructure/harness_fortran_cpu_mpi@0.4.0",
-         "provides": ["distributed_state@2", "sync_single_case@1"]}
+        {"node_key": "infrastructure/harness_cpp_gpu@0.5.0",
+         "provides": ["capture_format_json@1", "sync_single_case@1"]},
+        {"node_key": "infrastructure/harness_fortran_cpu@0.11.0",
+         "provides": ["capture_format_json@1", "sync_single_case@1"]},
+        {"node_key": "infrastructure/harness_fortran_cpu_mpi@0.5.0",
+         "provides": ["capture_format_json@1", "distributed_state@2", "sync_single_case@1"]}
       ]
     }
   ],

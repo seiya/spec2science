@@ -1763,7 +1763,10 @@ def _validate_raw_evidence(
             state_keys = _state_record_files(store, snapshots_dir)
             state_paths = [path for path, *_key in state_keys]
             _validate_series_files(repo_root, execution, snapshots_dir, store, violations)
-            driver_wrote_snapshots = _ir_drives_the_runner(store, snapshots_dir)
+            # Whether the host-rendered driver wrote the captures is the node's own fact (its
+            # kind and toolchain), not what the directory holds: a harness self-test may
+            # commit an initial record too.
+            driver_wrote_snapshots = _execution_m3c_language(repo_root, execution) is not None
             if driver_wrote_snapshots:
                 _validate_driver_step_key(
                     _decoded_state_records(store, snapshots_dir, state_keys), violations)
@@ -2010,12 +2013,6 @@ def _decoded_state_records(store: Any, snapshots_dir: Path,
             continue
 
 
-def _ir_drives_the_runner(store: Any, snapshots_dir: Path) -> bool:
-    """Whether the host-rendered driver ran: only it writes an initial capture; a harness
-    self-test does not (`RUNNER_OUTPUT_CONTRACT.md` §3)."""
-    return bool(store.case_ids(snapshots_dir, capture_store.INITIAL))
-
-
 def _validate_driver_step_key(captures: Iterable[tuple[Path, dict[str, Any]]],
                               violations: list[str]) -> None:
     """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
@@ -2026,10 +2023,12 @@ def _validate_driver_step_key(captures: Iterable[tuple[Path, dict[str, Any]]],
 
 def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_dir: Path,
                            store: Any, violations: list[str]) -> None:
-    """The series records (issue #589 D8): exactly the `step_series` names and the writer's
-    scalar `t`, each name a list of numbers of one length, and one record per final capture. A
-    record on a node that declares no series is refused too. `step_series` is declared iff
-    `drive.loop` is (`primary_evidence.drive_violations` (h))."""
+    """The series records (issue #589 D8) of a node that declares `step_series`: exactly its
+    names and the commits' `t`, each a list of numbers of one length, and one record per final
+    capture. `step_series` is declared iff `drive.loop` is (`primary_evidence.drive_violations`
+    (h)). On a node that declares none the records are not read: every case has a series, an
+    empty one where the case committed no row (the harness's `capture_close`, issue #644 P4),
+    and no predicate of such a node can name it."""
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     entries = raw_requirements.get("required_evidence") if isinstance(
         raw_requirements, dict) else None
@@ -2041,8 +2040,6 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
 
     series_ids = list(store.case_ids(snapshots_dir, capture_store.SERIES))
     if entry is None:
-        for path in sorted(series_path(c) for c in series_ids):
-            violations.append(f"{path}: a series file on a node that declares no step_series")
         return
     names = entry.get("names")
     expected = {n for n in (names if isinstance(names, list) else []) if isinstance(n, str)}
@@ -2057,13 +2054,12 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
             violations.append(f"{path}: {exc.reason}")
             continue
         got = set(data) - {"t"}
-        if isinstance(data.get("t"), bool) or not isinstance(data.get("t"), (int, float)) \
-                or got != expected:
+        if "t" not in data or got != expected:
             violations.append(
-                f"{path}: holds {sorted(data)}; a series file holds t (the writer's scalar) and "
+                f"{path}: holds {sorted(data)}; a series holds t (each commit's) and "
                 f"exactly the step_series names {sorted(expected)}")
             continue
-        columns = [data[n] for n in got]
+        columns = [data[n] for n in (*got, "t")]
         if any(not isinstance(c, list) or any(
                 isinstance(x, bool) or not isinstance(x, (int, float)) for x in c)
                for c in columns) or len({len(c) for c in columns}) > 1:

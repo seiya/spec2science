@@ -1248,19 +1248,16 @@ def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[s
 def _load_series(captures: _Captures, case_id: str) -> dict[str, np.ndarray]:
     """The series record of one case: one rank-1 numeric list per name, all of one length —
     zero admitted (no committed step) — and every entry finite (the driver's fold carries a
-    non-finite committed cell into the entry; it is refused here, never laundered). The record
-    is written through the harness's `__write_snapshot`, which adds the scalar time of the last
-    committed state under `t` (no boxed name can take that key: the record would hold it twice,
-    the writer's last): that one number is required and is not a series name."""
+    non-finite committed cell into the entry; it is refused here, never laundered). Each row is
+    one commit of the harness's capture interface, which carries the row's `step` and `t`:
+    `t` is required, is held to the same rules, and is not a series name."""
     path = captures.store.record_path(captures.sdir, capture_store.SERIES, case_id)
     if not captures.has(capture_store.SERIES, case_id):
         raise PrimaryEvidenceError(
             f"series file {path.relative_to(captures.sdir).as_posix()} is absent")
     doc = captures.read(capture_store.SERIES, case_id, what="series file")
-    envelope = doc.pop("t", None)
-    if isinstance(envelope, bool) or not isinstance(envelope, (int, float)):
-        raise PrimaryEvidenceError(
-            f"series file {path.name}: 't' is {envelope!r}, not the number the writer adds")
+    if "t" not in doc:
+        raise PrimaryEvidenceError(f"series file {path.name} holds no 't'")
     out: dict[str, np.ndarray] = {}
     for name, raw in doc.items():
         if not isinstance(raw, list) or _contains_non_number(raw):
@@ -1277,6 +1274,7 @@ def _load_series(captures: _Captures, case_id: str) -> dict[str, np.ndarray]:
         raise PrimaryEvidenceError(
             f"series file {path.name}: the entries are not of one length "
             f"({ {n: int(a.shape[0]) for n, a in sorted(out.items())} })")
+    del out["t"]
     return out
 
 

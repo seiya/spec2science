@@ -13368,12 +13368,11 @@ class Conductor:
 
     def _run_raw_dirs(self, refs: NodeRefs) -> tuple[tuple[str, ...], ...]:
         """The directories created under a run's working directory before the binary runs, each
-        as its path parts (`capture_store.run_dirs`): the capture directory for every runner,
-        and the target's capture store's own directories below it only for the runner the host
-        renders (see `_execute_inproc`). One answer, read by `Validate.execute`, its remote job,
-        a `workshop leaf`'s wrapper `run` and the build control file's `test` recipe."""
-        return capture_store.run_dirs(self.target.output_format,
-                                      host_rendered=self._conductor_authors_runner(refs))
+        as its path parts (`capture_store.run_dirs`): the target's capture store's directories
+        below the capture directory, for every node. One answer, read by `Validate.execute`,
+        its remote job, a `workshop leaf`'s wrapper `run` and the build control file's `test`
+        recipe."""
+        return capture_store.run_dirs(self.target.output_format)
 
     def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
@@ -13572,10 +13571,8 @@ class Conductor:
 
         # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
         # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3; `_run_raw_dirs`): the capture
-        # directory for every runner, and the capture store's directories below it only for the
-        # runner the host renders, which opens a file there and fails without it. A hand-authored runner writes none of
-        # them, and its strict fan-out self-test (`case_fanout`) refuses an entry it did not write
-        # (issue #368). The build control file's quality-check recipe pre-creates the same set
+        # store's directories below the capture directory, for every node — the harness opens a
+        # file there and fails without it. The build control file's quality-check recipe pre-creates the same set
         # (`capture_dirs`, this same answer), so the run and the quality check see one directory set.
         authors_runner = self._conductor_authors_runner(refs)
         run_raw_dirs = self._run_raw_dirs(refs)

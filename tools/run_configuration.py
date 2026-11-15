@@ -735,7 +735,7 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
     _write_case_files({base: payload}, out / CASE_INPUTS_DIRNAME)
     shutil.copyfile(ir_path, out / "spec.ir.yaml")
     # the directories the host-rendered driver opens its captures in
-    for parts in capture_store.run_dirs(output_format, host_rendered=True):
+    for parts in capture_store.run_dirs(output_format):
         out.joinpath(*parts).mkdir(parents=True, exist_ok=True)
 
     # The launcher is refused above, so the launch prefix holds at most a device trace's

@@ -1155,9 +1155,10 @@ class PhysicsGateTests(unittest.TestCase):
             model = src / "p_model.cu"
             out = self._isolation(src, '#include "harness_cpp_gpu_model.cuh"\nint x;\n')
             self.assertTrue(any(str(model) in v and "harness" in v for v in out), out)
-            for reference in ("void f() { harness_cpp_gpu_model::harness_cpp_gpu__emit_real(1.0); }",
+            for reference in ("void f() { harness_cpp_gpu_model::harness_cpp_gpu__capture_real("
+                              "g, n, 1.0); }",
                               "namespace h = harness_cpp_gpu_model;",
-                              "void f() { harness_cpp_gpu__box(a, b); }"):
+                              "void f() { harness_cpp_gpu__capture_commit(g, 1, t); }"):
                 out = self._isolation(src, reference + "\n")
                 self.assertTrue(any(str(model) in v for v in out), (reference, out))
             self.assertEqual([], self._isolation(
@@ -3312,8 +3313,7 @@ class RealDriverTests(unittest.TestCase):
             makefile = registry.capability_module("build_system", "make", "control_file") \
                 .render_from_graph(rules=rules, compiler="nvcc", bin_name="h_runner",
                                    cases_default="c1", graph=graph,
-                                   capture_dirs=capture_store.run_dirs("json",
-                                                                       host_rendered=False))
+                                   capture_dirs=capture_store.run_dirs("json"))
             (src / "Makefile").write_text(makefile)
             build = subprocess.run(["make", "OBJDIR=../obj", "BINDIR=../bin", "all"], cwd=src,
                                    capture_output=True, text=True, check=False, timeout=600)

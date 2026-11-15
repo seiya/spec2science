@@ -394,6 +394,7 @@ CAPABILITY_VOCABULARY: frozenset[str] = frozenset({
     "batched_cases",           # A6 reserved
     "full_state_capture",      # A4 / Z6 reserved
     "trusted_reductions",      # A4 / Z6 reserved
+    "capture_format_json",     # the output format a harness's capture operations write (#644)
 })
 # Every bundle states how it expects to be driven: exactly one of these.
 EXECUTION_MODEL_CAPABILITIES: frozenset[str] = frozenset(
@@ -409,14 +410,15 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # in generated behavior.
 #
 # `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
-# version: at this writing the canonical interface block of `harness_fortran_cpu@0.10.0` §5.1
+# version: at this writing the canonical interface block of `harness_fortran_cpu@0.11.0` §5.1
 # (19 operations, 1 published type, `dp = float64`, `case_id_len = 64`), under the providing
 # harness node's own `<spec_id>__` names and bound to its target language by that language's
 # backend. The token names the block of whichever version the catalog holds, not one generation
 # of it: `0.10.0` (issue #589) extends the block by `__read_case` and the typed getters under the
 # same token, because no physics bundle calls an operation of the block,
 # `assert_harness_pin` is the mechanical enforcer of its text, and no consumer distinguishes a
-# generation. Until `0.9.0` (issue #582) the block also held the writers of the two documents
+# generation; `0.11.0` (issue #644) replaces its emitters and snapshot writer by the capture
+# operations, under the same token for the same reason. Until `0.9.0` (issue #582) the block also held the writers of the two documents
 # the runner no longer writes, and their types, which no consuming node's bundle code called,
 # and the host-rendered runner stopped calling them with the issue's PR-H. Its `__write_perf`, which no consuming
 # node's bundle code calls either (the host-rendered runner calls it, and so does the providing
@@ -437,11 +439,17 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # the rule that the writers are called on rank 0 only. Its mechanical enforcer is the one
 # `sync_single_case@1` has: the harness's own `Generate.static` pin of §5.1, and the language
 # backend's `assert_harness_pin` for a physics source's operations on that harness.
+# `capture_format_<id>@1` (issue #644) names the output format the harness's capture
+# operations write, `<id>` a member of the `output_format` axis. The launch gate holds it equal
+# to the target's `output.format` (`target_profile._capture_format_violations`); no bundle
+# requires it, since the target decides the format and a bundle writes no capture.
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
-    "infrastructure/harness_fortran_cpu@0.10.0": frozenset({"sync_single_case@1"}),
-    "infrastructure/harness_cpp_gpu@0.4.0": frozenset({"sync_single_case@1"}),
-    "infrastructure/harness_fortran_cpu_mpi@0.4.0": frozenset(
-        {"sync_single_case@1", "distributed_state@2"}),
+    "infrastructure/harness_fortran_cpu@0.11.0": frozenset(
+        {"sync_single_case@1", "capture_format_json@1"}),
+    "infrastructure/harness_cpp_gpu@0.5.0": frozenset(
+        {"sync_single_case@1", "capture_format_json@1"}),
+    "infrastructure/harness_fortran_cpu_mpi@0.5.0": frozenset(
+        {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}),
 }
 
 
