@@ -47,6 +47,7 @@ import numpy as np
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
+from tools.tests.yaml_fixtures import load_yaml_fixture
 
 NX, NY = 8, 4
 
@@ -2590,8 +2591,7 @@ _DRIVE_DIR = Path(__file__).resolve().parent / "data" / "drive_ir"
 
 
 def _coriolis() -> dict:
-    import yaml
-    return yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
+    return load_yaml_fixture(_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml")
 
 
 def _arg(name: str, intent: str | None, typ: str, rank: int = 0,
@@ -5106,8 +5106,7 @@ class LoopTimeArgumentsTest(unittest.TestCase):
 
     @staticmethod
     def _swe() -> dict:
-        import yaml
-        return yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        return load_yaml_fixture(_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml")
 
     @staticmethod
     def _guard_toy(dt: dict[str, float], outcome: str = "xfail", n_step: float = 1,
@@ -5539,8 +5538,7 @@ _CELL_CELL = (None, (0, "cell"), (1, "cell"))
 
 
 def _bench(spec_id: str) -> dict:
-    import yaml
-    return yaml.safe_load((_BENCH_DIR / f"{spec_id}.yaml").read_text())
+    return load_yaml_fixture(_BENCH_DIR / f"{spec_id}.yaml")
 
 
 def _gate_n(ir: dict) -> list[str]:

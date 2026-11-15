@@ -34,6 +34,7 @@ from tools.backends.language.cuda_cpp import runner as cpp_runner
 from tools.backends.language.fortran import runner as f_runner
 from tools.host_render import RenderError
 from tools.tests import skip_probes
+from tools.tests.yaml_fixtures import load_yaml_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).parent / "data" / "driver_e2e"
@@ -1352,7 +1353,7 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
     its own as `Validate.execute` does, so its restart test is judged on the certified model."""
 
     def _verdict(self, ir_path: Path, sid: str, deps: tuple[str, ...]) -> dict[str, Any]:
-        ir = yaml.safe_load(ir_path.read_text())
+        ir = load_yaml_fixture(ir_path)
         with tempfile.TemporaryDirectory() as tmp:
             run = run_fortran(Path(tmp), ir, sid=sid, deps=deps)
             self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
@@ -1407,7 +1408,7 @@ ROTATING_LINK = (*SW2D_COMPONENTS, "shallow_water2d", CORIOLIS, RK4)
 
 
 def shallow_water2d_ir() -> dict[str, Any]:
-    return yaml.safe_load((DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())
+    return load_yaml_fixture(DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml")
 
 
 def shallow_water2d_rotating_ir(cases: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2085,7 +2086,7 @@ class CppGpuPackageSecondPassTest(unittest.TestCase):
                                                       DATA / "package_cpp_gpu.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        ir = yaml.safe_load(module.NODES["swe"][0].read_text())
+        ir = load_yaml_fixture(module.NODES["swe"][0])
         conts = sorted(pe.continuation_cases(ir))
         self.assertEqual(conts, ["swe2d_ref_n064_sx000_sy000_dts100_cont"])
         with tempfile.TemporaryDirectory() as tmp:
@@ -2333,7 +2334,7 @@ SINGLETON = (1, 1)
 
 
 def _mpi_target() -> dict[str, Any]:
-    return yaml.safe_load((ROOT / "spec/targets/fortran_cpu_mpi.yaml").read_text())
+    return load_yaml_fixture(ROOT / "spec/targets/fortran_cpu_mpi.yaml")
 
 
 def _mpi_flag_sets() -> dict[str, list[str]]:
@@ -2731,6 +2732,10 @@ class MpiBuild:
         for sub in CAPTURE_SUBDIRS:   # what `capture_store.run_dirs` creates
             (d / "raw" / "state_snapshots" / sub).mkdir(parents=True)
         env = {k: v for k, v in os.environ.items() if k != execution.PROCESS_GRID_VARIABLE}
+        # Open MPI's point-to-point layer is named rather than probed for: the probe is 0.2 s of
+        # a 0.5 s start (measured 2026-11-16 on 4.1.2, `MPI_Init` + `MPI_Finalize` alone), and
+        # these rows start about 320 binaries. Another MPI does not read the variable.
+        env.setdefault("OMPI_MCA_pml", "ob1")
         argv = [str(self.tmp / "bin")]
         if grid != SINGLETON:
             env.update(execution.environment(1, process_grid=grid))
@@ -2784,6 +2789,11 @@ def _witness_expectation(ir: dict[str, Any], grid: tuple[int, int]) -> dict[str,
     else:
         local = [float(nx)] * nx
     return {"w": local, "wb": local, "wg": [float(nx)] * nx}
+
+
+#: How long a seeded-defect row waits for one grid's run. A defect that hangs is waited out in
+#: full, and two rows hang; every run that ends does so within 1.7 s (measured 2026-11-16, idle).
+_DEFECT_TIMEOUT_S = 10
 
 
 class DistributedDriverEndToEndTest(unittest.TestCase):
@@ -2993,7 +3003,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 if run.rc == 0 else None, _witness_expectation(ir, (2, 1)), label)
             return
         reference = self._build(ir).run(SINGLETON).snapshots()
-        self.assertIsNotNone(self._first_disagreement(build, reference, timeout=30), label)
+        self.assertIsNotNone(self._first_disagreement(build, reference, timeout=_DEFECT_TIMEOUT_S),
+                             label)
 
     def _kernel_defect_fails_a_grid(self, sid: str, label: str,
                                     edits: tuple[tuple[str, str], ...], cases: list[str],
@@ -3012,7 +3023,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         self.assertEqual(single.rc, 0, single.stderr[-1000:])
         self.assertEqual(single.snapshots(), reference)
         self.assertIsNotNone(self._first_disagreement(
-            build, reference, grids, cases=cases, timeout=30), label)
+            build, reference, grids, cases=cases, timeout=_DEFECT_TIMEOUT_S), label)
 
     def test_an_init_scalar_unequal_across_the_ranks_stops_the_run(self) -> None:
         """B8: after an accepted `init`, a rank-0 real or integer it wrote must agree across the

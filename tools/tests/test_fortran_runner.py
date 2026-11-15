@@ -43,6 +43,7 @@ from tools.backends.language.fortran.signatures import parse_signatures_from_for
 from tools.host_render import RenderError
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir
+from tools.tests.yaml_fixtures import load_yaml_fixture
 
 HARNESS = "harness_fortran_cpu"
 #: The distributed harness, and the target a physics node is built for over it (issue #610).
@@ -1579,7 +1580,7 @@ class HarnessPinTest(unittest.TestCase):
         shapes = [("loop", loop_ir(0), "drv_toy"), ("init", init_ir(0), "drv_toy"),
                   ("call", call_ir(0), "drv_toy"), ("procedure", procedure_ir(), "drv_toy"),
                   *((sid, builder(), sid) for sid, builder in MPI_FIXTURES.items()),
-                  *((p.stem, yaml.safe_load(p.read_text()), p.stem)
+                  *((p.stem, load_yaml_fixture(p), p.stem)
                     for p in sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml")))]
         self.assertEqual(len(shapes), 4 + 5 + 20)
         for label, ir, sid in shapes:
@@ -1746,7 +1747,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
             for path in paths:
                 with self.subTest(path.stem, harness=harness):
                     self._assert_runner_clean_under_the_declared_lint_rules(
-                        yaml.safe_load(path.read_text()), path.stem, harness)
+                        load_yaml_fixture(path), path.stem, harness)
 
     def test_every_distributed_fixture_renders_a_clean_runner(self) -> None:
         from tools.tests.test_driver_render import MPI_FIXTURES

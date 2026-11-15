@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.validate_pipeline_semantics import (
     TEST_HISTORY_LINE,
     _tests_md_definition_blocks,
@@ -469,7 +470,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
         from tools.validate_pipeline_semantics import validate_compile_ir_dir
         with tempfile.TemporaryDirectory() as tmp:
             text = (_PR3_EVIDENCE / f"{spec_id}.yaml").read_text(encoding="utf-8")
-            ir = yaml.safe_load(text)
+            ir = load_yaml_fixture(_PR3_EVIDENCE / f"{spec_id}.yaml")
             ir_dir = Path(tmp)
             (ir_dir / "spec.ir.yaml").write_text(text, encoding="utf-8")
             key = ir["meta"]["node_key"]
@@ -504,7 +505,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
         self.assertIn("fortran_cpu_mpi", launchers)
         with_axes = 0
         for path in sorted(evidence.glob("*.yaml")):
-            ir = yaml.safe_load(path.read_text(encoding="utf-8"))
+            ir = load_yaml_fixture(path)
             axes = drive_distribute_axes(ir)
             if not axes:
                 continue

@@ -23692,8 +23692,9 @@ def _recording_server(status: int = 200, location: str | None = None):
 
     Returns `(server, seen)`; the caller shuts it down. Real sockets, so a probe's ROUTE —
     direct, through a proxy, following a redirect — is observed rather than assumed."""
-    import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from tools.tests.http_stand_ins import start_serving
 
     seen: list[str] = []
 
@@ -23710,7 +23711,7 @@ def _recording_server(status: int = 200, location: str | None = None):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    start_serving(server)
     return server, seen
 
 
