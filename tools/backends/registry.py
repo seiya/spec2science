@@ -193,8 +193,8 @@ AXES: dict[str, Axis] = {
         ),
         description=(
             "The format a run writes its captures in under `raw/state_snapshots/`: which "
-            "files hold a case's records and how one is decoded. The harness writes the "
-            "format; the host reads it through the format's `capture_store`, the store of the "
+            "files hold a case's records and how one is decoded. The run's runner writes "
+            "it; the host reads it through the format's `capture_store`, the store of the "
             "target whose run wrote the directory (`tools/capture_store.py`)."
         ),
     ),
@@ -399,8 +399,8 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
          "under the capture directory hold a case's final, initial, sampled and series records, "
          "one record as its members, the directories a host-rendered runner needs created, and "
          "how a run's captures are copied and a case's moved (issue #644; "
-         "`tools/capture_store.py` is the seam every reader goes through). A target whose "
-         "format does not declare it is refused at launch."),
+         "`tools/capture_store.py` is the seam every reader goes through). Every member of "
+         "the axis declares it."),
     ),
 }
 

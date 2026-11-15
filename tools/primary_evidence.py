@@ -5147,9 +5147,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     def written_as(target_id: str | None, run: Path) -> str:
-        """The output format of the target that wrote ``run``: the named target's, else the
-        one the pipeline path names, else — a directory outside a pipeline tree — the profile
-        default. Never guessed from the directory's content."""
+        """The output format of the target that wrote ``run``: the target `--target` names
+        (for `--run`), else the one the pipeline path names, else — a directory outside a
+        pipeline tree — the profile default. Never guessed from the directory's content."""
         from tools.target_profile import (DEFAULT_OUTPUT_FORMAT, TargetProfileError,
                                           load_target_profile, pipeline_target_id)
         target_id = target_id or pipeline_target_id(str(Path(run).resolve()))
@@ -5173,7 +5173,8 @@ def main(argv: list[str] | None = None) -> int:
             if not sep or not target_id.strip() or not run.strip():
                 raise PrimaryEvidenceError(f"--comparand {item!r}: expected TARGET_ID=RUN_DIR")
             run_path = Path(run.strip())
-            theirs = written_as(target_id.strip(), run_path)
+            # the label names the comparand in the records; it need not be a target
+            theirs = written_as(None, run_path)
             comparands.append(ComparandEvidence(
                 target_id=target_id.strip(), pipeline_ref="", run_id=run_path.parent.name,
                 run_dir=run_path, evidence=comparand_evidence_sha256(run_path, theirs),

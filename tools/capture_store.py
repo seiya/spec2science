@@ -65,8 +65,8 @@ def snapshot_dir(run_dir: Path) -> Path:
 
 def store(output_format: str) -> Any:
     """The `capture_store` module of ``output_format``. Raises the registry's refusal for a
-    value that is no declared member or declares no store (the launch gate refuses such a
-    target first, `target_profile.target_profile_violations`)."""
+    value that is no available member (the launch gate refuses such a target first,
+    `target_profile.target_profile_violations`)."""
     return registry.capability_module(AXIS, output_format, CAPABILITY)
 
 

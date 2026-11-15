@@ -2170,7 +2170,9 @@ class CliTest(unittest.TestCase):
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([MASS, HMIN])))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = pe.main(["--ir", str(ir_dir), "--run", str(run.root), "--target", "fortran_cpu"])
+            # no --target: a run directory outside a pipeline tree is read in the profile
+            # default format (kills: refusing it, which main did not)
+            rc = pe.main(["--ir", str(ir_dir), "--run", str(run.root)])
         self.assertEqual(rc, 0)
         records = json.loads(out.getvalue())
         self.assertEqual([r["quantity"] for r in records], ["mass_drift_rel", "h_min"])
@@ -2557,10 +2559,11 @@ class CrossTargetCliTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             rc = pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
                           "--target", "fortran_cpu",
-                          "--comparand", f"cpp_gpu={runs['gpu'].root}"])
+                          # a label that is no target profile: it only names the comparand
+                          "--comparand", f"gpu={runs['gpu'].root}"])
         self.assertEqual(rc, 0)
         cross = json.loads(out.getvalue())[1]
-        self.assertEqual([c["target_id"] for c in cross["comparands"]], ["cpp_gpu"])
+        self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
         self.assertEqual(cross["comparands"][0]["evidence"],
                          pe.comparand_evidence_sha256(runs["gpu"].root, "json"))
         with contextlib.redirect_stdout(io.StringIO()):
@@ -2568,12 +2571,12 @@ class CrossTargetCliTest(unittest.TestCase):
                                       "--target", "fortran_cpu"]), 0)
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
                                       "--target", "fortran_cpu",
-                                      "--comparand", "cpp_gpu"]), 2)
+                                      "--comparand", "gpu"]), 2)
         runs["gpu"].write_state("a", _field(), _field() * 2)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
                                       "--target", "fortran_cpu",
-                                      "--comparand", f"cpp_gpu={runs['gpu'].root}"]), 1)
+                                      "--comparand", f"gpu={runs['gpu'].root}"]), 1)
 
 
 # ------------------------------------------------------------------------- grammar 6 / drive

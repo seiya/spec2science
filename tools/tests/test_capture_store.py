@@ -320,7 +320,7 @@ class LocateTests(unittest.TestCase):
     def test_another_cases_file_or_another_place_is_not(self) -> None:
         # Kills: restarting from another case's capture, or from a sample-named file outside
         # `history/`. (An `initial/<C>` file is named like a final record; the caller holds the
-        # located directory to `<run>/raw/state_snapshots`, `run_configuration._source_run_dir`.)
+        # located directory to `<run>/raw/state_snapshots`, `run_configuration._restart_source`.)
         sdir = Path("/run/raw/state_snapshots")
         for path in (sdir / "d.json", sdir / "history" / "d__41.json", sdir / "c__41.json",
                      sdir / "series" / "c__41.json", sdir / "history" / "c__x.json",

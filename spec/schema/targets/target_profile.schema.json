@@ -81,7 +81,7 @@
       "required": [],
       "description": "Optional. What a run of the target writes its captures in.",
       "properties": {
-        "format": {"$ref": "#/definitions/token", "description": "The `output_format` axis value: the format of the captures under a run's `raw/state_snapshots/`. `json` when absent (`docs/IMPL_PLAN_SPEC.md` §3); the launch gate refuses a value with no `capture_store`."}
+        "format": {"$ref": "#/definitions/token", "description": "The `output_format` axis value: the format of the captures under a run's `raw/state_snapshots/`. `json` when absent (`docs/IMPL_PLAN_SPEC.md` §3); the launch gate refuses a value that is no available member."}
       }
     }
   },
