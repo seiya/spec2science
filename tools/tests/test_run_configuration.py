@@ -29,6 +29,7 @@ from unittest import mock
 
 import yaml
 
+from tools import capture_store
 from tools import run_configuration as rc
 from tools.backends.language.fortran import runner as f_runner
 from tools.tests.orchestration_fixtures import certify_node
@@ -341,9 +342,12 @@ class RunConfigurationTest(unittest.TestCase):
         for j in range(k + 1, n_step + 1):
             self.assertEqual(self.snap(cont, f"history/m0__{j}"),
                              self.snap(full, f"history/m0__{j}"), j)
-        series, base = self.snap(cont, "series/m0"), self.snap(full, "series/m0")
-        self.assertEqual(series.pop("t"), base.pop("t"))   # the series' `t` is the final time
+        series, base = (capture_store.store("json").read_record(
+            capture_store.snapshot_dir(self.tmp / out), capture_store.SERIES, "m0")
+            for out in (cont, full))
+        # every member, `t` and `step` among them, is one entry per committed row
         self.assertEqual(sorted(series), sorted(base))
+        self.assertIn("t", series)
         for name, column in series.items():
             self.assertEqual(column, base[name][k:], name)
 

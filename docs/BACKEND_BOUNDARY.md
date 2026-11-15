@@ -258,10 +258,13 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `tools/run_configuration.py` reach it through `tools/capture_store.py` and spell no capture
     file name, suffix or group directory of their own; a comparand's run is read through the
     comparand target's store, whatever the asking target writes. The build control file's
-    `test` recipe is handed the directories to create, and a language's runner-output scan the
-    format's facts (`FORMAT_FACTS`), so neither names a capture file. A language backend's
-    driver renderer (`runner.py`) still spells the `json` layout where the rendered driver
-    opens each file. What the
+    `test` recipe is handed the directories to create, and a language's runner-output scan
+    refuses a runner statement that names the capture directory, so neither names
+    a capture file. A language backend's
+    driver renderer (`runner.py`) names a capture group and a value through the harness's
+    capture interface and spells no file; the writer of the format is the target's harness,
+    whose manifest row names it (`capture_format_<id>@1`) and whose spec states its layout
+    (`docs/backends/output_format/<id>/CAPTURE_LAYOUT.md` is the format's own statement). What the
     host writes itself — `snapshot_schema.json`, the case files, and the harness-written
     `perf.json` — is JSON on every target and is not the store's.
   - Whether a language's quality check runs through the build system's test target, and whether

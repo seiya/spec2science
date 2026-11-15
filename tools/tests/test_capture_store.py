@@ -37,17 +37,14 @@ class SeamTests(unittest.TestCase):
         with self.assertRaises(registry.UnsupportedBackend):
             cs.store("netcdf")
 
-    def test_run_dirs_of_a_hand_authored_runner_is_the_capture_directory_alone(self) -> None:
-        # Kills: creating the group directories for every runner (issue #368's rule).
-        self.assertEqual(cs.run_dirs("json", host_rendered=False), (("raw", "state_snapshots"),))
-
-    def test_run_dirs_of_a_host_rendered_runner_are_the_stores_directories(self) -> None:
-        # Kills: dropping a group directory, or reordering them (the control file's recipe
-        # renders them in this order).
+    def test_run_dirs_are_the_stores_directories_for_every_node(self) -> None:
+        # Kills: dropping a group directory (`restart_point/` among them), or reordering them
+        # (the control file's recipe renders them in this order). Every node gets them since
+        # issue #644 P4: a harness self-test writes through the capture interface too.
         self.assertEqual(
-            cs.run_dirs("json", host_rendered=True),
+            cs.run_dirs("json"),
             (("raw", "state_snapshots", "initial"), ("raw", "state_snapshots", "history"),
-             ("raw", "state_snapshots", "series")))
+             ("raw", "state_snapshots", "restart_point"), ("raw", "state_snapshots", "series")))
 
     def test_capture_paths_drops_the_snapshot_schema_at_the_top_only(self) -> None:
         # Kills: hashing the host-written schema into a comparand's evidence; and dropping a
@@ -65,21 +62,18 @@ class SeamTests(unittest.TestCase):
 
 
 class ControlFileRecipeGoldenTests(unittest.TestCase):
-    """The `test` recipe's directory line, byte for byte as main `b3282e9b` rendered it (before
-    the directories came from the store), for both runners. The two renderers are held equal
-    to each other by `test_codegen_bundle.py`'s parity row; this holds one of them to the
-    bytes, so the pair cannot drift together."""
+    """The `test` recipe's directory line, byte for byte: main `b3282e9b`'s host-rendered line
+    with `restart_point/` added before `series/` (issue #644 P4, which also gives it to every
+    node). The two renderers are held equal to each other by `test_codegen_bundle.py`'s parity
+    row; this holds one of them to the bytes, so the pair cannot drift together."""
 
-    GOLDEN = {
-        False: "\tmkdir -p $(RUNDIR)/raw/state_snapshots",
-        True: ("\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial "
-               "$(RUNDIR)/raw/state_snapshots/history $(RUNDIR)/raw/state_snapshots/series"),
-    }
+    GOLDEN = ("\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial "
+              "$(RUNDIR)/raw/state_snapshots/history $(RUNDIR)/raw/state_snapshots/restart_point "
+              "$(RUNDIR)/raw/state_snapshots/series")
 
     def test_the_rendered_recipe_is_unchanged(self) -> None:
-        # Kills: a reordered or renamed directory, a changed separator, a directory added for
-        # the hand-authored runner — each moves a rendered byte of every control file, and with
-        # it a Generate output this change says it does not move.
+        # Kills: a reordered or renamed directory, a changed separator, a directory dropped —
+        # each moves a rendered byte of every control file, and with it a Generate output.
         from tools import workflow_conductor as wc
         from tools.target_profile import load_target_profile
         repo = Path(__file__).resolve().parents[2]
@@ -87,15 +81,12 @@ class ControlFileRecipeGoldenTests(unittest.TestCase):
         rules = wc.Conductor._control_file_rules(
             {**profile.toolchain, "backend": profile.parallel_backend}, None)
         control_file = registry.capability_module("build_system", "make", "control_file")
-        for host_rendered, line in self.GOLDEN.items():
-            with self.subTest(host_rendered=host_rendered):
-                text = control_file.render_node(
-                    rules=rules, compiler="gfortran", bin_name="x_runner",
-                    cases_default="c1 c2", model_stem="x_model", runner_stem="x_runner",
-                    closure=["dep_a", "dep_b"],
-                    capture_dirs=cs.run_dirs(profile.output_format, host_rendered=host_rendered))
-                self.assertEqual([ln for ln in text.split("\n")
-                                  if ln.startswith("\tmkdir -p $(RUNDIR)")], [line])
+        text = control_file.render_node(
+            rules=rules, compiler="gfortran", bin_name="x_runner",
+            cases_default="c1 c2", model_stem="x_model", runner_stem="x_runner",
+            closure=["dep_a", "dep_b"], capture_dirs=cs.run_dirs(profile.output_format))
+        self.assertEqual([ln for ln in text.split("\n")
+                          if ln.startswith("\tmkdir -p $(RUNDIR)")], [self.GOLDEN])
 
 
 class StartupModuleTests(unittest.TestCase):
@@ -122,9 +113,11 @@ class LayoutTests(unittest.TestCase):
         sdir = Path("/x")
         self.assertEqual(STORE.record_path(sdir, cs.FINAL, "c"), sdir / "c.json")
         self.assertEqual(STORE.record_path(sdir, cs.INITIAL, "c"), sdir / "initial" / "c.json")
-        self.assertEqual(STORE.record_path(sdir, cs.SERIES, "c"), sdir / "series" / "c.json")
+        self.assertEqual(STORE.record_path(sdir, cs.SERIES, "c"), sdir / "series" / "c__0.json")
         self.assertEqual(STORE.record_path(sdir, cs.HISTORY, "c", 12),
                          sdir / "history" / "c__12.json")
+        self.assertEqual(STORE.record_path(sdir, cs.RESTART_POINT, "c", 12),
+                         sdir / "restart_point" / "c__12.json")
 
     def test_a_sample_needs_a_step_and_no_other_record_takes_one(self) -> None:
         # Kills: a history read without a step silently reading the final record's name.
@@ -133,14 +126,29 @@ class LayoutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             STORE.record_path(Path("/x"), cs.FINAL, "c", 3)
 
+    def test_a_restart_point_needs_a_step_and_a_series_takes_none(self) -> None:
+        # Kills: `_STEPPED` losing `restart_point` (a restart point read without a step would
+        # name `restart_point/c.json`, which no harness writes), and gaining `series` (a series
+        # is named by its chunk 0, never by a step its caller passes).
+        with self.assertRaises(ValueError):
+            STORE.record_path(Path("/x"), cs.RESTART_POINT, "c")
+        with self.assertRaises(ValueError):
+            STORE.record_path(Path("/x"), cs.SERIES, "c", 3)
+
     def test_expected_layout_names_the_once_per_case_files(self) -> None:
         self.assertEqual(STORE.expected_layout(), {
             "final": "<case_id>.json", "initial": "initial/<case_id>.json",
-            "series": "series/<case_id>.json"})
+            "series": "series/<case_id>__0.json"})
 
-    def test_format_facts_carry_the_suffix(self) -> None:
-        self.assertEqual(STORE.FORMAT_FACTS["suffix"], ".json")
+    def test_the_store_needs_no_module_and_states_its_layout(self) -> None:
         self.assertEqual(STORE.REQUIRED_PYTHON_MODULES, ())
+        layout = STORE.capture_layout_document()
+        # every group's file, as `record_path` spells it for a case `<C>`
+        for group, step in ((cs.FINAL, None), (cs.INITIAL, None)):
+            self.assertIn(f"`{STORE.record_path(Path(), group, '<C>', step).as_posix()}`", layout)
+        for name in ("`history/<C>__<k>.json`", "`restart_point/<C>__<k>.json`",
+                     "`series/<C>__<i>.json`"):
+            self.assertIn(name, layout)
 
 
 class ReadTests(unittest.TestCase):
@@ -180,9 +188,82 @@ class ReadTests(unittest.TestCase):
                          ("c__3.json", "not a JSON object"))
 
     def test_has_record(self) -> None:
-        _write(self.sdir / "series" / "c.json")
+        # A series is had when its chunk 0 is: a later chunk alone is not the case's series.
+        _write(self.sdir / "series" / "c__0.json")
+        _write(self.sdir / "series" / "d__1.json")
         self.assertTrue(STORE.has_record(self.sdir, cs.SERIES, "c"))
+        self.assertFalse(STORE.has_record(self.sdir, cs.SERIES, "d"))
         self.assertFalse(STORE.has_record(self.sdir, cs.INITIAL, "c"))
+
+
+class SeriesChunkTests(unittest.TestCase):
+    """A case's series is its chunks `series/<C>__<i>.json` joined in the order written."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.sdir = Path(self._tmp.name)
+
+    def _chunk(self, case: str, i: int, rows: list[int], **extra: object) -> None:
+        _write(self.sdir / "series" / f"{case}__{i}.json",
+               {"step": rows, "t": [0.5 * r for r in rows], "h_min": [float(r) for r in rows],
+                **extra})
+
+    def _refusal(self, case: str = "c") -> cs.CaptureError:
+        with self.assertRaises(cs.CaptureError) as ctx:
+            STORE.read_record(self.sdir, cs.SERIES, case)
+        return ctx.exception
+
+    def test_the_chunks_join_in_numeric_order(self) -> None:
+        # Kills: joining in file-name order (`c__10` sorts before `c__2`), so the rows of chunk
+        # 10 would read before those of chunk 2; and reading chunk 0 alone.
+        for i in range(11):
+            self._chunk("c", i, [i])
+        self._chunk("cc", 0, [99])
+        self.assertEqual(STORE.read_record(self.sdir, cs.SERIES, "c"),
+                         {"step": list(range(11)), "t": [0.5 * i for i in range(11)],
+                          "h_min": [float(i) for i in range(11)]})
+
+    def test_a_missing_middle_chunk_is_refused(self) -> None:
+        # Kills: dropping the gap check in `_read_series` (chunks 0 and 2 would read as a
+        # shorter series that skips chunk 1's rows).
+        self._chunk("c", 0, [1])
+        self._chunk("c", 2, [3])
+        exc = self._refusal()
+        self.assertTrue(exc.absent)
+        self.assertEqual(exc.label, "c__1.json")
+
+    def test_a_member_that_is_no_list_is_refused(self) -> None:
+        # Kills: dropping the non-list check (a scalar member would raise inside `extend`, or
+        # a string be joined character by character).
+        self._chunk("c", 0, [1])
+        self._chunk("c", 1, [2], h_min=2.0)
+        exc = self._refusal()
+        self.assertEqual((exc.label, exc.reason, exc.absent),
+                         ("c__1.json", "not an object of lists", False))
+
+    def test_a_chunk_whose_members_differ_from_the_first_is_refused(self) -> None:
+        # Kills: dropping the member-set check: a name missing from a later chunk would read as
+        # a column shorter than the rest, and one added there as a column of only its rows.
+        self._chunk("c", 0, [1])
+        self._chunk("c", 1, [2], h_max=[2.0])
+        exc = self._refusal()
+        self.assertEqual(exc.label, "c__1.json")
+        self.assertTrue(exc.reason.startswith("unreadable: it holds "), exc.reason)
+
+    def test_no_chunk_zero_is_absent(self) -> None:
+        # Kills: reading a series whose first chunk is missing from its later ones.
+        self._chunk("c", 1, [1])
+        exc = self._refusal()
+        self.assertTrue(exc.absent)
+        self.assertEqual(self._refusal("none").label, "none__0.json")
+
+    def test_a_case_that_committed_no_row_reads_as_an_empty_series(self) -> None:
+        # Kills: refusing (or skipping) a chunk of empty lists — every case has a series, an
+        # empty one where it committed no row (the harness's `capture_close`).
+        _write(self.sdir / "series" / "c__0.json", {"step": [], "t": [], "h_min": []})
+        self.assertEqual(STORE.read_record(self.sdir, cs.SERIES, "c"),
+                         {"step": [], "t": [], "h_min": []})
 
 
 class EnumerationTests(unittest.TestCase):
@@ -198,15 +279,30 @@ class EnumerationTests(unittest.TestCase):
         for name in ("snapshot_schema.json", "a.json", "a-b.json", "zz.json", "note.txt"):
             _write(self.sdir / name)
         _write(self.sdir / "initial" / "a.json")
-        _write(self.sdir / "series" / "zz.json")
+        # a series is listed by its chunk 0 alone, once whatever its chunks
+        for name in ("zz__0.json", "zz__1.json", "a__1.json", "b__10.json", "a-b__0.json"):
+            _write(self.sdir / "series" / name)
         self.assertEqual(STORE.case_ids(self.sdir), ["a-b", "a", "zz"])
         self.assertEqual(STORE.case_ids(self.sdir, cs.INITIAL), ["a"])
-        self.assertEqual(STORE.case_ids(self.sdir, cs.SERIES), ["zz"])
+        self.assertEqual(STORE.case_ids(self.sdir, cs.SERIES), ["a-b", "zz"])
         self.assertEqual(STORE.case_ids(self.sdir / "absent"), [])
 
     def test_case_ids_of_history_is_not_a_question(self) -> None:
-        with self.assertRaises(ValueError):
-            STORE.case_ids(self.sdir, cs.HISTORY)
+        for group in (cs.HISTORY, cs.RESTART_POINT):
+            with self.subTest(group=group), self.assertRaises(ValueError):
+                STORE.case_ids(self.sdir, group)
+
+    def test_restart_point_steps_are_the_cases_own_restart_points_ascending(self) -> None:
+        # Kills: `restart_point_steps` reading `history/` (or the reverse), a prefix match and
+        # a lexical sort — the rules `history_steps` holds, on the other group.
+        for name in ("a__9.json", "a__10.json", "a__1__5.json", "b__3.json"):
+            _write(self.sdir / "restart_point" / name)
+        _write(self.sdir / "history" / "a__4.json")
+        self.assertEqual(STORE.restart_point_steps(self.sdir, "a"), [9, 10])
+        self.assertEqual(STORE.restart_point_steps(self.sdir, "a__1"), [5])
+        self.assertEqual(STORE.history_steps(self.sdir, "a"), [4])
+        for step in (9, 10):
+            self.assertTrue(STORE.has_record(self.sdir, cs.RESTART_POINT, "a", step))
 
     def test_history_steps_are_the_cases_own_samples_ascending(self) -> None:
         # Kills: a prefix match (`a__1__5` is step 5 of case `a__1`, never of `a`); a lexical
@@ -224,13 +320,15 @@ class EnumerationTests(unittest.TestCase):
     def test_case_paths_are_the_cases_files_that_exist(self) -> None:
         # Kills: owning another case's file (the continuation merge moves exactly these), or
         # leaving one of the case's own behind.
-        for rel in ("c.json", "initial/c.json", "series/c.json", "history/c__2.json",
-                    "history/c__4.json", "history/c__x.json", "cc.json", "history/cc__2.json",
-                    "initial/cc.json"):
+        for rel in ("c.json", "initial/c.json", "series/c__0.json", "series/c__1.json",
+                    "history/c__2.json", "history/c__4.json", "history/c__x.json",
+                    "restart_point/c__3.json", "cc.json", "history/cc__2.json",
+                    "initial/cc.json", "series/cc__0.json", "restart_point/cc__3.json"):
             _write(self.sdir / rel)
         got = sorted(p.relative_to(self.sdir).as_posix() for p in STORE.case_paths(self.sdir, "c"))
         self.assertEqual(got, ["c.json", "history/c__2.json", "history/c__4.json",
-                               "initial/c.json", "series/c.json"])
+                               "initial/c.json", "restart_point/c__3.json", "series/c__0.json",
+                               "series/c__1.json"])
         self.assertEqual(STORE.case_paths(self.sdir, "absent"), [])
 
     def test_all_case_paths_are_every_file_of_the_suffix_at_any_depth(self) -> None:
@@ -259,12 +357,13 @@ class CopyAndMoveTests(unittest.TestCase):
     def test_copy_run_is_selective_and_ordered(self) -> None:
         # Kills: a blind copytree (a debug dump or a nested file promoted as evidence); a
         # changed order of the names returned (they become `raw_artifact_refs`).
-        for rel in ("b.json", "a.json", "initial/a.json", "history/a__2.json", "series/a.json",
-                    "debug.txt", "deep/x.json", "history/note.txt"):
+        for rel in ("b.json", "a.json", "initial/a.json", "history/a__2.json",
+                    "restart_point/a__2.json", "series/a__0.json", "debug.txt", "deep/x.json",
+                    "history/note.txt"):
             _write(self.src / rel)
         copied = STORE.copy_run(self.src, self.dst)
         self.assertEqual(copied, ["a.json", "b.json", "initial/a.json", "history/a__2.json",
-                                  "series/a.json"])
+                                  "restart_point/a__2.json", "series/a__0.json"])
         self.assertEqual(self._tree(self.dst), sorted(copied))
 
     def test_copy_run_removes_an_earlier_attempts_group_files_and_keeps_its_finals(self) -> None:
@@ -274,7 +373,8 @@ class CopyAndMoveTests(unittest.TestCase):
         _write(self.dst / "a.json", {"t": 9})
         _write(self.dst / "history" / "a__99.json")
         _write(self.dst / "initial" / "old.json")
-        _write(self.dst / "series" / "old.json")
+        _write(self.dst / "series" / "old__0.json")
+        _write(self.dst / "restart_point" / "a__99.json")
         _write(self.src / "a.json", {"t": 1})
         _write(self.src / "history" / "a__2.json")
         STORE.copy_run(self.src, self.dst)
@@ -282,21 +382,25 @@ class CopyAndMoveTests(unittest.TestCase):
         self.assertEqual(json.loads((self.dst / "a.json").read_text()), {"t": 1})
 
     def test_copy_run_creates_no_empty_group_directory(self) -> None:
-        # Kills: a harness node's run gaining `initial/` (issue #368: its self-test may refuse
-        # an entry it did not write).
+        # Kills: `copy_run` creating a group directory it copies nothing into (the promoted
+        # tree holds what the run wrote and no more).
         _write(self.src / "a.json")
         STORE.copy_run(self.src, self.dst)
         self.assertEqual(sorted(p.name for p in self.dst.iterdir()), ["a.json"])
 
     def test_move_case_moves_exactly_the_cases_files(self) -> None:
         # Kills: moving a failed sibling continuation's captures with it (`c__x`, `cc`).
-        for rel in ("c.json", "initial/c.json", "series/c.json", "history/c__2.json",
-                    "history/c__x.json", "cc.json", "initial/cc.json"):
+        # Also: leaving a restart point or a later series chunk behind (`case_paths`).
+        for rel in ("c.json", "initial/c.json", "series/c__0.json", "series/c__1.json",
+                    "history/c__2.json", "restart_point/c__2.json", "history/c__x.json",
+                    "cc.json", "initial/cc.json", "restart_point/cc__2.json"):
             _write(self.src / rel)
         self.assertIsNone(STORE.move_case(self.src, self.dst, "c"))
         self.assertEqual(self._tree(self.dst),
-                         ["c.json", "history/c__2.json", "initial/c.json", "series/c.json"])
-        self.assertEqual(self._tree(self.src), ["cc.json", "history/c__x.json", "initial/cc.json"])
+                         ["c.json", "history/c__2.json", "initial/c.json",
+                          "restart_point/c__2.json", "series/c__0.json", "series/c__1.json"])
+        self.assertEqual(self._tree(self.src), ["cc.json", "history/c__x.json", "initial/cc.json",
+                                                "restart_point/cc__2.json"])
 
     def test_move_case_refuses_a_collision_and_moves_nothing(self) -> None:
         # Kills: overwriting a first-pass capture; a partial move before the refusal.
@@ -458,8 +562,7 @@ class CaptureStoreReachTests(unittest.TestCase):
             stub, cs.snapshot_dir(own.root), ["a", "b", "c"], ["state_snapshots"],
             initial_required=True)
         self.assertIn("missing=['c.json', 'initial/c.json']", gap)
-        self.assertEqual(wc.Conductor._run_raw_dirs(stub, None),
-                         cs.run_dirs("theirs", host_rendered=True))
+        self.assertEqual(wc.Conductor._run_raw_dirs(stub, None), cs.run_dirs("theirs"))
         self.assertEqual({n for n, _fn, _a in self.log}, {"theirs"})
         self.assertEqual({fn for _n, fn, _a in self.log}
                          & {"copy_run", "case_ids", "expected_layout", "run_dirs"},
@@ -542,7 +645,8 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
         sub for fmt in registry.backend_ids(cs.AXIS) for sub in cs.store(fmt).run_dirs()})
     #: Every file of a directory by a declared store's suffix.
     _SUFFIX_GLOBS = frozenset(
-        "*" + cs.store(fmt).FORMAT_FACTS["suffix"] for fmt in registry.backend_ids(cs.AXIS))
+        "*" + cs.store(fmt).record_path(Path(), cs.FINAL, "c").suffix
+        for fmt in registry.backend_ids(cs.AXIS))
     #: The declared formats: a capture-path module that names one of these ids reads every
     #: target's run in that format, whatever the target writes.
     _FORMAT_IDS = frozenset(registry.backend_ids(cs.AXIS))

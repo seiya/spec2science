@@ -130,11 +130,10 @@ def _validate_component_generated_surface(repo_root, execution, model_files, vio
         identifier_key=fortran_bundle.identifier_key)
 
 
-def _validate_runner_source_files(execution, runner_files, violations, known_case_ids=None):
+def _validate_runner_source_files(execution, runner_files, violations):
     vps._validate_runner_source_files(
-        execution, runner_files, violations, known_case_ids,
-        bundle=fortran_bundle, source_reading=fortran_source,
-        format_facts=capture_store.store("json").FORMAT_FACTS)
+        execution, runner_files, violations,
+        bundle=fortran_bundle, source_reading=fortran_source)
 
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import install_target_profile
@@ -789,6 +788,8 @@ def _create_minimal_execution_tree(
             "hu": [[0.0, 0.0], [0.0, 0.0]],
             "hv": [[0.0, 0.0], [0.0, 0.0]],
             "ok": 1.0,
+            # every state record carries the committed step (issue #644 P4: the commit's)
+            "step": 0,
             "t": 0.0,
         },
     )
@@ -9777,79 +9778,45 @@ end program shallow_water2d_runner
                 f"correctly-named runner must not be flagged, got: {good}",
             )
 
-    def test_runner_snapshot_filename_must_be_per_case(self) -> None:
-        """D4: a hardcoded raw/state_snapshots/<name>.json literal (e.g.
-        snapshot_0001.json) is flagged at post_generate; a per-case name built from
-        the case_id (trim(case_id)//'.json'), the conductor-authored
-        snapshot_schema.json, and a hardcoded literal that matches a declared
-        case_id are not. The runtime deliverable gate is the deterministic
-        backstop, so this static check stays conservative."""
-        _validate_runner_snapshot_filenames = fortran_source.validate_runner_snapshot_filenames
+    def test_a_runner_naming_the_capture_directory_is_flagged(self) -> None:
+        """A runner writes a capture only through the harness's capture operations, so a
+        statement that names the capture directory (`state_snapshots`) is flagged at
+        post_generate whatever it does with the name — an `open`, an `inquire`, a path kept in a
+        named constant or a variable and opened elsewhere (the shapes a file-open rule missed in
+        the generated runners of the old contract), a message. A comment is not read;
+        `perf.json` and the case file are not under the capture directory."""
         runner = Path("x_runner.f90")
 
-        def run(src: str, case_ids: set[str] | None = None) -> list[str]:
+        def run(src: str) -> list[str]:
             out: list[str] = []
-            _validate_runner_snapshot_filenames(
-                runner, src.lower(), out, case_ids,
-                format_facts=capture_store.store("json").FORMAT_FACTS)
+            fortran_source.validate_runner_snapshot_filenames(runner, src.lower(), out)
             return out
 
-        # Hardcoded sequential name, no per-case construction -> flagged.
-        bad = run(
-            "open(unit=10, file='raw/state_snapshots/snapshot_0001.json', "
-            "status='replace')\n"
-        )
-        self.assertTrue(
-            any("hardcoded snapshot filename" in v and "snapshot_0001.json" in v
-                for v in bad),
-            f"expected a hardcoded-snapshot violation, got: {bad}",
-        )
+        for src in (
+            "open(unit=10, file='raw/state_snapshots/snapshot_0001.json', status='replace')\n",
+            "open(unit=14, file='raw/state_snapshots/l0_pass.json')\n",
+            "open(unit=10, file='raw/state_snapshots/'//trim(case_id)//'.json')\n",
+            "open(unit=13, &\n  file='raw/state_snapshots/c1.json')\n",
+            "inquire(file='raw/state_snapshots/history/'//trim(case_id)//'__1.json', exist=e)\n",
+            "character(len=*), parameter :: snapdir = 'raw/state_snapshots/'\n",
+            "path = 'raw/state_snapshots'//'/'//trim(case_id)//'.json'\n",
+            "call read_file('raw/state_snapshots/'//trim(case_id)//'.json', doc)\n",
+            "write(u, '(a)') 'raw/state_snapshots/snapshot_0001.json'\n",
+            "print *, 'see raw/state_snapshots/'//trim(case_id)\n",
+        ):
+            with self.subTest(src=src):
+                out = run(src)
+                self.assertEqual(1, len(out), out)
+                self.assertIn("capture operations", out[0])
+                self.assertIn("holds no path under the capture directory", out[0])
 
-        # Name built from the case_id argv -> not flagged.
-        self.assertFalse(
-            run("open(unit=10, file='raw/state_snapshots/'//trim(case_id)//'.json')\n"),
-            "per-case snapshot name must not be flagged",
-        )
-
-        # Conductor-authored schema metadata is exempt.
-        self.assertFalse(
-            run("open(unit=11, file='raw/state_snapshots/snapshot_schema.json')\n"),
-            "snapshot_schema.json must be exempt",
-        )
-
-        # A non-snapshot output (diagnostics) is ignored.
-        self.assertFalse(
-            run("open(unit=12, file='diagnostics.json')\n"),
-            "non-snapshot open must be ignored",
-        )
-
-        # The literal in a non-open/non-file= line (e.g. written as content) is
-        # ignored: the open(/file= gating suppresses the false positive.
-        self.assertFalse(
-            run("write(u, '(a)') 'raw/state_snapshots/snapshot_0001.json'\n"),
-            "a snapshot path written as content (not a file= target) must be ignored",
-        )
-
-        # A continuation-split open is merged before matching.
-        self.assertTrue(
-            any("c1.json" in v for v in
-                run("open(unit=13, &\n  file='raw/state_snapshots/c1.json')\n")),
-            "continuation-split hardcoded snapshot must be flagged",
-        )
-
-        # A hardcoded literal whose stem IS a declared case_id is NOT a false
-        # positive (it satisfies the per-case deliverable gate).
-        self.assertFalse(
-            run("open(unit=14, file='raw/state_snapshots/l0_pass.json')\n",
-                {"l0_pass", "l0_xfail"}),
-            "a hardcoded name matching a declared case_id must not be flagged",
-        )
-        # ...but a non-matching hardcoded literal still is, even with case_ids known.
-        self.assertTrue(
-            run("open(unit=14, file='raw/state_snapshots/snapshot_0001.json')\n",
-                {"l0_pass", "l0_xfail"}),
-            "a hardcoded name not matching any case_id must be flagged",
-        )
+        for src in (
+            "open(unit=10, file='perf.json') ! not raw/state_snapshots/c1.json\n",
+            "open(unit=12, file='perf.json', status='replace')\n",
+            "open(unit=12, file=trim(dir)//'/case_inputs/'//trim(case_id)//'.json')\n",
+        ):
+            with self.subTest(src=src):
+                self.assertEqual([], run(src))
 
     def test_detects_missing_plan_step_result_when_orchestration_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15583,16 +15550,19 @@ class SourceGateDispatchTest(unittest.TestCase):
         self.assertTrue(any("missing dependency operation call (dep__*)" in v
                             for v in violations), violations)
 
-    def test_a_hardcoded_snapshot_name_is_reported_through_the_runner_gate(self) -> None:
+    def test_a_runner_naming_the_capture_directory_is_reported_through_the_runner_gate(
+            self) -> None:
+        """The gate calls the scan: a path kept in a variable is flagged through it."""
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             execution, src = self._pipeline(root)
             (src / "p_runner.f90").write_text(
-                "program p_runner\n  open(unit=10, file='raw/state_snapshots/snap_0001.json')\n"
+                "program p_runner\n  path = 'raw/state_snapshots/'//trim(cid)//'.json'\n"
                 "end program p_runner\n")
             violations: list[str] = []
             vps._validate_runner_outputs(root, execution, src, violations)
-        self.assertTrue(any("hardcoded snapshot filename" in v for v in violations), violations)
+        self.assertTrue(any("names the capture directory" in v for v in violations),
+                        violations)
 
 
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
@@ -21236,7 +21206,7 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
         src = _MODEL_OK.replace(
             "module bx_model\n",
             "module bx_model\n  use, intrinsic :: iso_fortran_env, only: dp => real64; "
-            "use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n", 1)
+            "use harness_fortran_cpu_model, only: harness_fortran_cpu__capture_real\n", 1)
         self.assertTrue(any("must not `use` the harness" in v for v in self._run(src)),
                         self._run(src))
 
@@ -21336,14 +21306,14 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
               f"{use}harness_fortran_cpu_mpi__grid_dims, harness_fortran_cpu_mpi__grid_coord\n")
         refused = (
             ("  use harness_fortran_cpu_mpi_model\n", "has no `only:` list"),
-            (f"{use}harness_fortran_cpu_mpi__write_snapshot\n", "__write_snapshot`"),
+            (f"{use}harness_fortran_cpu_mpi__capture_commit\n", "__capture_commit`"),
             (f"{use}harness_fortran_cpu_mpi__gather_r1\n", "__gather_r1`"),
             (f"{use}harness_fortran_cpu_mpi__init\n", "__init`"),
             (f"{use}harness_fortran_cpu_mpi__partition\n", "__partition`"),
             (f"{use}part => harness_fortran_cpu_mpi__partition\n", "__partition`"),
             (f"{use}w => harness_fortran_cpu_mpi__write_perf\n", "__write_perf`"),
-            (f"{use}harness_fortran_cpu_mpi__h_named\n", "__h_named`"),
-            ("  use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n",
+            (f"{use}harness_fortran_cpu_mpi__h_var\n", "__h_var`"),
+            ("  use harness_fortran_cpu_model, only: harness_fortran_cpu__capture_real\n",
              "module harness_fortran_cpu_model is not"))
 
         def run(line: str, where: str, harness: str) -> list[str]:
@@ -21414,16 +21384,21 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
 class DriverEvidencePerArtifactTests(unittest.TestCase):
     """Issue #589 D8, through the whole validator over the shared execution fixture: what the
     host-rendered driver writes is held per artifact. A capture (the final one, `initial/`, a
-    `history/` sample) holds every declared variable and `step`; a `series/` file holds exactly
-    the IR's `step_series` names and the writer's scalar `t`, of one length, one per final
-    capture. A harness's own runner writes no `initial/`, and its snapshot needs no `step`."""
+    `history/` sample) holds every declared variable and `step`; on a node that declares
+    `step_series` its series (`series/<C>__0.json`, the json store's first chunk) holds exactly
+    the IR's `step_series` names and each commit's `t`, every one a list of numbers of one
+    length, one per final capture. Whether the driver wrote the captures is the node's kind
+    (an M3c physics node), not what the directory holds (issue #644 P4): a harness's own run
+    — a node of kind `infrastructure` here — needs no `step`, whatever it wrote."""
 
     _ARRAYS = ("h", "hu", "hv")
     _NAMES = ("step", "h_max", "h_min", "hu_max", "hu_min", "hv_max", "hv_min")
+    _SERIES = "series/snapshot000__0.json"
 
     def _violations(self, change, *, step_series: bool = True, driver: bool = True) -> list[str]:
         """`validate()` over a tree holding one case's whole driver evidence, after
-        `change(snapshots_dir)`. `driver=False` is a harness's own run: the final capture alone."""
+        `change(snapshots_dir)`. `driver=False` is a harness's own run: the node's kind is
+        `infrastructure`, and it wrote its final capture, without `step`, and an empty series."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -21447,7 +21422,9 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
             if step_series:
                 ir_doc["io_contract"]["raw_requirements"]["required_evidence"].append(
                     {"artifact": "step_series", "required": True, "names": list(self._NAMES)})
-                _write_json(ir_path, ir_doc)
+            if not driver:
+                ir_doc["meta"]["spec_kind"] = "infrastructure"
+            _write_json(ir_path, ir_doc)
             snapshots = (workspace / "pipelines" / "problem__shallow_water2d__0.3.0" / _TARGET_ID
                          / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
                          / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots")
@@ -21458,9 +21435,14 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
                 _write_json(final, doc)
                 _write_json(snapshots / "initial" / final.name, {**doc, "step": 0})
                 _write_json(snapshots / "history" / "snapshot000__1.json", {**doc, "step": 1})
-                if step_series:
-                    _write_json(snapshots / "series" / final.name, {
-                        "t": 0.5, **{n: [0.0, 1.0] for n in self._NAMES}})
+            else:
+                del doc["step"]
+                _write_json(final, doc)
+            # every case has a series (issue #644 P4): rows where the node declares one, and
+            # empty lists where it declares none
+            _write_json(snapshots / self._SERIES, {
+                "t": [0.5, 1.0], **{n: [0.0, 1.0] for n in self._NAMES}} if step_series
+                else {"step": [], "t": []})
             change(snapshots)
             with _harness_validated_elsewhere():
                 return validate(repo_root=repo_root, workspace_root="workspace")
@@ -21475,7 +21457,7 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
 
     def _series(self, **changes):
         def change(snapshots: Path) -> None:
-            path = snapshots / "series" / "snapshot000.json"
+            path = snapshots / self._SERIES
             doc = json.loads(path.read_text(encoding="utf-8"))
             for key, value in changes.items():
                 if value is None:
@@ -21507,17 +21489,17 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
             _write_json(ir_path, ir_doc)
             _write_json(snapshots / "snapshot000_cont.json", base)
             _write_json(snapshots / "initial" / "snapshot000_cont.json", {**base, "step": 1})
-            _write_json(snapshots / "series" / "snapshot000_cont.json", {
-                "t": 0.5, **{n: [1.0] for n in self._NAMES}})
+            _write_json(snapshots / "series" / "snapshot000_cont__0.json", {
+                "t": [1.0], **{n: [1.0] for n in self._NAMES}})
         self.assertEqual(self._violations(change), [])
 
         # control: the validator reads them — the continuation's series dropped is named
         def without_series(snapshots: Path) -> None:
             change(snapshots)
-            (snapshots / "series" / "snapshot000_cont.json").unlink()
+            (snapshots / "series" / "snapshot000_cont__0.json").unlink()
         found = self._violations(without_series)
         self.assertEqual(len(found), 1, found)
-        self.assertIn("series/snapshot000_cont.json: missing", found[0])
+        self.assertIn("series/snapshot000_cont__0.json: missing", found[0])
 
     def test_a_capture_missing_a_declared_variable_is_refused_per_artifact(self) -> None:
         for relative in ("snapshot000.json", "initial/snapshot000.json",
@@ -21550,9 +21532,25 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
                     (snapshots / relative).write_text("{broken", encoding="utf-8")), [])
 
     def test_a_harness_s_own_snapshot_without_step_is_admitted(self) -> None:
-        # The polarity's other half: only the driver writes `initial/`, which is how the gate
-        # knows whose capture this is. No `step_series`, no `initial/`, and no `step`.
+        # The polarity's other half: a node of no M3c kind is a harness's own run, and its
+        # capture needs no `step`. No `step_series`, no `initial/`.
         self.assertEqual(self._violations(lambda _s: None, step_series=False, driver=False), [])
+
+    def test_whose_capture_it_is_is_the_node_s_kind_not_an_initial_capture(self) -> None:
+        # Issue #644 P4: a harness self-test may commit an initial record too, and a driver's
+        # run whose initial capture is gone is still the driver's. Kills: deciding by whether
+        # `initial/` holds a record (the deleted `_ir_drives_the_runner`), either way round.
+        def harness_initial(snapshots: Path) -> None:
+            doc = json.loads((snapshots / "snapshot000.json").read_text(encoding="utf-8"))
+            _write_json(snapshots / "initial" / "snapshot000.json", doc)
+        self.assertEqual(self._violations(harness_initial, step_series=False, driver=False), [])
+
+        def driver_without_initial(snapshots: Path) -> None:
+            (snapshots / "initial" / "snapshot000.json").unlink()
+            self._drop("snapshot000.json", "step")(snapshots)
+        v = self._violations(driver_without_initial, step_series=False)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("snapshot000.json: the driver's capture carries no 'step'", v[0])
 
     def test_a_driver_capture_without_step_is_refused_on_a_call_node_too(self) -> None:
         # A one-call node declares no `step_series`, and its driver still counts.
@@ -21580,7 +21578,7 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         v = self._violations(self._series(hv_max=None))
         self.assertEqual(len(v), 1, v)
         self.assertIn("exactly the step_series names", v[0])
-        self.assertIn("series/snapshot000.json", v[0])
+        self.assertIn(self._SERIES, v[0])
 
     def test_a_series_with_a_name_the_ir_does_not_declare_is_refused(self) -> None:
         v = self._violations(self._series(extra=[0.0, 1.0]))
@@ -21590,7 +21588,7 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
     def test_a_series_without_t_is_refused(self) -> None:
         v = self._violations(self._series(t=None))
         self.assertEqual(len(v), 1, v)
-        self.assertIn("a series file holds t", v[0])
+        self.assertIn("a series holds t (each commit's)", v[0])
 
     def test_a_series_of_two_lengths_is_refused(self) -> None:
         v = self._violations(self._series(h_max=[1.0]))
@@ -21598,46 +21596,56 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         self.assertIn("all of one length", v[0])
 
     def test_a_series_name_that_is_no_list_is_refused(self) -> None:
+        # The json store refuses a series member that is no list before the gate reads it.
         v = self._violations(self._series(h_max=1.0))
         self.assertEqual(len(v), 1, v)
-        self.assertIn("every series name is a list", v[0])
+        self.assertIn(f"{self._SERIES}: not an object of lists", v[0])
 
     def test_a_series_name_of_no_numbers_is_refused(self) -> None:
-        # The gate's docstring: "each name a list of numbers of one length".
+        # The gate's docstring: "each a list of numbers of one length".
         v = self._violations(self._series(h_max=["a", "b"]))
         self.assertEqual(len(v), 1, v)
         self.assertIn("every series name is a list", v[0])
 
-    def test_a_series_t_that_is_no_scalar_is_refused(self) -> None:
-        # The gate's docstring: "the writer's scalar `t`".
-        v = self._violations(self._series(t=[0.0, 1.0]))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("a series file holds t", v[0])
+    def test_a_series_t_is_held_to_a_name_s_rules(self) -> None:
+        # `t` is one entry per row, like a name: of the names' length, and numbers alone
+        # (re-expressed from "the writer's scalar `t`", which a per-row `t` replaced).
+        for t in ([0.5], [0.5, "x"], [0.5, True]):
+            with self.subTest(t=t):
+                v = self._violations(self._series(t=t))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("every series name is a list of numbers, all of one length",
+                              v[0])
 
     def test_a_series_file_that_is_no_object_or_no_json_is_refused(self) -> None:
         def as_list(snapshots: Path) -> None:
-            (snapshots / "series" / "snapshot000.json").write_text("[1]", encoding="utf-8")
+            (snapshots / self._SERIES).write_text("[1]", encoding="utf-8")
 
         def as_text(snapshots: Path) -> None:
-            (snapshots / "series" / "snapshot000.json").write_text("{", encoding="utf-8")
-        self.assertTrue(any(x.endswith("series/snapshot000.json: not a JSON object")
+            (snapshots / self._SERIES).write_text("{", encoding="utf-8")
+        self.assertTrue(any(x.endswith(f"{self._SERIES}: not a JSON object")
                             for x in self._violations(as_list)))
-        self.assertTrue(any("series/snapshot000.json: unreadable: " in x
+        self.assertTrue(any(f"{self._SERIES}: unreadable: " in x
                             for x in self._violations(as_text)))
 
-    def test_a_series_file_on_a_node_that_declares_no_step_series_is_refused(self) -> None:
-        def change(snapshots: Path) -> None:
-            _write_json(snapshots / "series" / "snapshot000.json", {"t": 0.5, "step": [1]})
-        v = self._violations(change, step_series=False)
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("a series file on a node that declares no step_series", v[0])
+    def test_a_series_on_a_node_that_declares_no_step_series_is_not_read(self) -> None:
+        # Issue #644 P4 deleted the refusal of a series record on such a node: every case has
+        # a series, an empty one where it committed no row, and no predicate of the node can
+        # name it. Kills: the refusal restored, and a non-declaring node's series read (held to
+        # names it never declared) — a malformed one passes too.
+        for doc in ({"step": [], "t": []}, {"step": [1], "t": [0.5]},
+                    {"t": [0.5], "anything": [1.0, 2.0]}, [1]):
+            with self.subTest(doc=doc):
+                self.assertEqual(self._violations(
+                    lambda snapshots, doc=doc: _write_json(snapshots / self._SERIES, doc),
+                    step_series=False), [])
 
     def test_a_case_with_no_series_file_is_refused(self) -> None:
         def change(snapshots: Path) -> None:
-            (snapshots / "series" / "snapshot000.json").unlink()
+            (snapshots / self._SERIES).unlink()
         v = self._violations(change)
         self.assertEqual(len(v), 1, v)
-        self.assertIn("series/snapshot000.json: missing", v[0])
+        self.assertIn(f"{self._SERIES}: missing", v[0])
 
     def test_the_series_is_not_read_as_a_capture(self) -> None:
         # The other half of the per-artifact split: a series holds no declared variable, and
@@ -23074,7 +23082,7 @@ class ComposingInitPostGenerateTests(unittest.TestCase):
             rules=rules, compiler="gfortran", bin_name=f"{drv.CMP_SUB}_runner",
             cases_default="a1", model_stem=f"{drv.CMP_SUB}_model",
             runner_stem=f"{drv.CMP_SUB}_runner", closure=["harness_fortran_cpu", drv.CMP_MEM],
-            capture_dirs=capture_store.run_dirs("json", host_rendered=True)), encoding="utf-8")
+            capture_dirs=capture_store.run_dirs("json")), encoding="utf-8")
         # The composite's one counted loop is the sequence of sub-steps, which carries a
         # dependence: its plan declines OpenMP, the floor's one exemption.
         (src.parent / "codegen_bundle.json").write_text(json.dumps({"target_lowering_plan": {
@@ -24599,7 +24607,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         # a bundle that followed an older token would be `bundle_capability_unsatisfied`.
         from tools.codegen_bundle import capability_name, harness_provided_capabilities
         provided = harness_provided_capabilities(
-            "infrastructure/harness_fortran_cpu_mpi@0.4.0") or frozenset()
+            "infrastructure/harness_fortran_cpu_mpi@0.5.0") or frozenset()
         token = next(t for t in provided if capability_name(t) == "distributed_state")
         self.assertIn(f"(with {token} in capability_requirements)", v[0])
         # A plan that declines MPI is refused the same (issue #610: the driver distributes
@@ -24650,7 +24658,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(
             model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
             plan={"precision": {}, "state_residency": "host"},
-            node_key="infrastructure/harness_fortran_cpu_mpi@0.4.0"), [])
+            node_key="infrastructure/harness_fortran_cpu_mpi@0.5.0"), [])
 
 
 class ExecutionModeContractCouplingGateTests(unittest.TestCase):

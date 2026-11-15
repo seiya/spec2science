@@ -19,6 +19,7 @@ from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdo
 from pathlib import Path
 from unittest import mock
 
+from tools import codegen_bundle
 from tools import llm_config as lc
 from tools import run_workflow
 from tools import target_profile as tp
@@ -4905,6 +4906,12 @@ class RunWorkflowTests(unittest.TestCase):
 # legitimately contains it.
 _HARNESS_ID = "harness_fortran_cpu"
 _HARNESS_REF = "spec/infrastructure/harness_fortran_cpu"
+#: The runner harness's catalogued version, which a scratch catalog registers: its manifest row
+#: is then the checkout's (`capture_format_json@1`, which the launch gate asks of the target's
+#: harness since issue #644), and so it is in a real subprocess too, where no patch reaches.
+_HARNESS_VERSION = next(
+    nk.rsplit("@", 1)[1] for nk in codegen_bundle.HARNESS_CAPABILITY_MANIFESTS
+    if nk.startswith(f"infrastructure/{_HARNESS_ID}@"))
 
 
 def _seed_target_profile_into(repo_root: Path, *, target_id: str = "fortran_cpu",
@@ -4939,7 +4946,7 @@ def _write_catalog(repo_root: Path, entries: list[dict]) -> None:
     if not any(e.get("spec_kind") == "infrastructure" for e in entries):
         entries = list(entries) + [
             {"spec_kind": "infrastructure", "spec_id": _HARNESS_ID,
-             "spec_version": "0.7.0", "deps_path": f"{_HARNESS_REF}/deps.yaml"},
+             "spec_version": _HARNESS_VERSION, "deps_path": f"{_HARNESS_REF}/deps.yaml"},
         ]
         _write_deps(repo_root, _HARNESS_REF, "infrastructure", _HARNESS_ID)
     lines = ["catalog_version: 0.2.0", "updated_at: 2026-06-18", "specs:"]
@@ -10603,6 +10610,13 @@ class TargetProfileLaunchTests(unittest.TestCase):
                                   constraint=">=0.1.0 <1.0.0")
         from tools.orchestration_runtime import _load_spec_catalog
         _load_spec_catalog.cache_clear()
+        # Each scratch harness writes the `json` captures its target reads: the manifest row the
+        # launch gate asks for it (`capture_format_json@1`, issue #644).
+        rows = mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS, {
+            nk: frozenset({"sync_single_case@1", "capture_format_json@1"})
+            for nk in ("infrastructure/harness_a@0.7.0", "infrastructure/harness_b@0.2.0")})
+        rows.start()
+        self.addCleanup(rows.stop)  # type: ignore[attr-defined]
 
     def _main(self, repo_root: Path, *extra: str,
               until: str = "validate") -> tuple[int, list[dict], list[list[str]]]:

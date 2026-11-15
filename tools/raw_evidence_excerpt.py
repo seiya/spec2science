@@ -49,7 +49,10 @@ from tools import capture_store
 #: 4 (issue #589 PR-1b): `source` is gone with its vocabulary, `step` is the driver's own column
 #: (an ordinary row with no declared shape), each case carries `history_samples` and `series`, and `required_evidence`
 #: looks for `state_history` / `step_series` where the driver writes them.
-RAW_EXCERPT_POLICY_VERSION = 4
+#: 5 (issue #644 P4): a case's `series` is shown on a node that declares `step_series` (every
+#: case has a series record, with no row on a node that commits none), and its `t` is one
+#: entry per row where it was the writer's one scalar.
+RAW_EXCERPT_POLICY_VERSION = 5
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
 RAW_EVIDENCE_ALIASES = {
@@ -110,8 +113,12 @@ def raw_evidence_excerpt(raw_dir: Path, io_contract: dict[str, Any], *,
     return {
         "policy_version": RAW_EXCERPT_POLICY_VERSION,
         "raw_dir_present": raw_dir.is_dir(),
-        "required_evidence": _required_evidence_rows(raw_dir, io_contract, store),
-        "state_snapshots": _state_snapshots(raw_dir, problems, store),
+        "required_evidence": (rows := _required_evidence_rows(raw_dir, io_contract, store)),
+        # A series is shown where the node declares one: every case has a series record, with
+        # no row on a node that commits none, and that one is no evidence of anything.
+        "state_snapshots": _state_snapshots(
+            raw_dir, problems, store,
+            series_declared=any(row["artifact"] == "step_series" for row in rows)),
         "problems": problems,
     }
 
@@ -129,7 +136,8 @@ def _read_json(path: Path, problems: list[str], label: str) -> Any:
     return None
 
 
-def _state_snapshots(raw_dir: Path, problems: list[str], store: Any) -> dict[str, Any]:
+def _state_snapshots(raw_dir: Path, problems: list[str], store: Any, *,
+                     series_declared: bool) -> dict[str, Any]:
     """Each per-case snapshot summarized against `snapshot_schema.json`'s declaration.
 
     The declared shape travels with the summary so the judge can compare them: a snapshot
@@ -173,7 +181,8 @@ def _state_snapshots(raw_dir: Path, problems: list[str], store: Any) -> dict[str
                            time_variable, problems)
             if store.has_record(snapshots_dir, capture_store.INITIAL, case_id) else None)
         case["history_samples"] = len(store.history_steps(snapshots_dir, case_id))
-        case["series"] = _series_summary(store, snapshots_dir, case_id, problems)
+        case["series"] = (_series_summary(store, snapshots_dir, case_id, problems)
+                          if series_declared else None)
         cases.append(case)
     return {
         "present": True,

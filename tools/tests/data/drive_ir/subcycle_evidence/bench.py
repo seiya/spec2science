@@ -7,7 +7,10 @@ member's components and of the harness: those the certified `fortran_cpu` pipeli
 `problem/shallow_water2d_channel@0.3.1` resolved (`../restart_evidence/bench.py` `closure`, every
 resolved run checked `pass`). When P4 ran, the member at `0.4.1` had no certified `fortran_cpu`
 pipeline, so the member model is the hand-written one, as in the restart bench's `chan_hand`
-subject; that default is kept as the pre-R record.
+subject; that default is kept as the pre-R record. The harness of every closure is the
+restart bench's `HAND_HARNESS`, the hand-written model of the current harness spec, in place of
+the certified one: no certified harness has the capture interface the rendered driver calls
+(issue #644 P4a).
 
 Issue #632 P6 V-a (after the billed run R of 2026-11-13 certified this node and its member):
 `--ir certified` reads the IR of R's composite pipeline (`R_PIPE`, its lineage `ir_ref`) in
@@ -70,6 +73,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 
+from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools.backends.language.fortran import runner as f_runner  # noqa: E402
 from tools.backends.language.fortran import source as f_source  # noqa: E402
@@ -155,8 +159,8 @@ def build(work: Path, objs_dir: Path, objs: list[str], ir: dict[str, Any], text:
     (work / "ir").mkdir(parents=True)
     (work / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, work / "ir")
-    for sub in ("initial", "history", "series"):
-        (work / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+    for parts in capture_store.run_dirs("json"):
+        (work / "run").joinpath(*parts).mkdir(parents=True)
     b = work / "b"
     b.mkdir()
     for o in objs:

@@ -29,7 +29,7 @@ from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
-HARNESS = "infrastructure/harness_fortran_cpu@0.10.0"
+HARNESS = "infrastructure/harness_fortran_cpu@0.11.0"
 
 
 def _module_name(path: str) -> str:
@@ -236,7 +236,8 @@ class CapabilityNegotiationTest(unittest.TestCase):
 
     def test_current_harness_satisfies_the_current_bundle(self) -> None:
         provided = cb.harness_provided_capabilities(HARNESS)
-        self.assertEqual(provided, frozenset({"sync_single_case@1"}))
+        # Issue #644: the harness also names the output format its capture operations write.
+        self.assertEqual(provided, frozenset({"sync_single_case@1", "capture_format_json@1"}))
         self.assertEqual(
             cb.unsatisfied_capability_requirements(["sync_single_case@1"], provided), [])
 
@@ -265,17 +266,18 @@ class CapabilityNegotiationTest(unittest.TestCase):
         # harness of the process-parallel target and by no other; the single-process harnesses
         # keep the set they had, so their consumers' negotiation is unchanged.
         distributed = ["sync_single_case@1", "distributed_state@2"]
-        mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.4.0")
+        mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.5.0")
         self.assertEqual(cb.unsatisfied_capability_requirements(distributed, mpi), [])
         # Issue #512: `@2` replaced `@1` (the one-dimensional arrangement); a bundle still
         # asking for `@1` is not satisfied by the two-dimensional harness.
         self.assertEqual(cb.unsatisfied_capability_requirements(
             ["sync_single_case@1", "distributed_state@1"], mpi),
             ["distributed_state@1"])
-        for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.4.0"):
+        for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.5.0"):
             with self.subTest(harness=single):
                 provided = cb.harness_provided_capabilities(single)
-                self.assertEqual(provided, frozenset({"sync_single_case@1"}))
+                self.assertEqual(provided,
+                                 frozenset({"sync_single_case@1", "capture_format_json@1"}))
                 self.assertEqual(
                     cb.unsatisfied_capability_requirements(distributed, provided),
                     ["distributed_state@2"])
@@ -527,22 +529,21 @@ class DeterministicBuildGraphTest(unittest.TestCase):
             host_glue_sources=("adv1d_runner.f90",))
         self.assertEqual(graph["link"]["objects"],
                          self._makefile_link_objects(makefile))
-        # ...and the two renderers' `test:` recipes are one recipe for each value of the
-        # host-rendered-runner flag (issue #368: `initial/` is pre-created exactly when it is set).
+        # ...and the two renderers' `test:` recipes are one recipe, pre-creating the store's
+        # directories (issue #644 P4: on every node, which reversed issue #368's
+        # host-rendered-only `initial/`).
         from tools.backends.build_system.make import control_file
         rules = conductor._control_file_rules(conductor._read_toolchain(refs),
                                               conductor._target_architecture())
         common = dict(rules=rules, compiler="fc", bin_name="b", cases_default="c")
-        for flag in (True, False):
-            with self.subTest(host_rendered=flag):
-                node = control_file.render_node(
-                    **common, model_stem="m", runner_stem="r", closure=(),
-                    capture_dirs=capture_store.run_dirs("json", host_rendered=flag))
-                pure = control_file.render_from_graph(
-                    **common, graph=graph,
-                    capture_dirs=capture_store.run_dirs("json", host_rendered=flag))
-                self.assertEqual(self._test_recipe(node), self._test_recipe(pure))
-                self.assertEqual(flag, "/raw/state_snapshots/initial" in self._test_recipe(node))
+        node = control_file.render_node(
+            **common, model_stem="m", runner_stem="r", closure=(),
+            capture_dirs=capture_store.run_dirs("json"))
+        pure = control_file.render_from_graph(
+            **common, graph=graph, capture_dirs=capture_store.run_dirs("json"))
+        self.assertEqual(self._test_recipe(node), self._test_recipe(pure))
+        for sub in ("initial", "history", "restart_point", "series"):
+            self.assertIn(f"/raw/state_snapshots/{sub}", self._test_recipe(node))
 
     @staticmethod
     def _test_recipe(text: str) -> str:
@@ -2714,10 +2715,10 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         # and its bundle's operation entrypoints must equal it.
         nk = "infrastructure/bx@0.1.0"
         r = self._run(self._bundle(nk, ["bx__parse_cases"]), nk,
-                      ["bx__parse_cases", "bx__emit_real"])
+                      ["bx__parse_cases", "bx__capture_real"])
         self.assertIsNotNone(r)
         self.assertEqual(r[0], "bundle_published_surface_mismatch")
-        self.assertIn("bx__emit_real", r[1])
+        self.assertIn("bx__capture_real", r[1])
 
     def test_l1c_spec_kinds_equal_the_ir_producer_s(self) -> None:
         # The set is DEFINED once in the code and the two readers must agree: a kind the IR
@@ -2857,7 +2858,7 @@ class RunnerRoleTest(unittest.TestCase):
             .render_from_graph(rules=rules, compiler="gfortran",
                                bin_name="harness_fortran_cpu_runner", cases_default="c1",
                                graph=graph,
-                               capture_dirs=capture_store.run_dirs("json", host_rendered=False))
+                               capture_dirs=capture_store.run_dirs("json"))
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp)
             for entry in doc["files"]:
@@ -3154,7 +3155,7 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
 
     def test_l1c_applies_on_the_harness_shape(self) -> None:
         result = self._run(self._harness_doc(), "harness",
-                           ir_published_operations=["harness_fortran_cpu__emit_real"])
+                           ir_published_operations=["harness_fortran_cpu__capture_real"])
         self.assertEqual(result[0], "bundle_published_surface_mismatch")
         # The findings text names the node it is about. It used to open "component <node_key>",
         # which on this shape would tell a repair leaf the wrong thing about its own node — the

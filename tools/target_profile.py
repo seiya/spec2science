@@ -886,7 +886,22 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
             f"{profile.target_id} runs over {harness_nk}; run a harness only for the target "
             f"whose harness it is")
     out += _process_model_violations(profile, harness_nk)
+    if reason is None:
+        out += _capture_format_violations(profile, harness_nk)
     return out
+
+
+def _capture_format_violations(profile: TargetProfile, harness_nk: str) -> list[str]:
+    """The harness must write the format the target's store reads (issue #644 O8): its
+    manifest row names it as `capture_format_<id>@1`. A mismatch certifies nothing — the store
+    finds no record of any case — and without this clause it is found at `Validate.execute`,
+    after Compile, Generate and Build were paid for."""
+    from tools.codegen_bundle import harness_provided_capabilities
+    token = f"capture_format_{profile.output_format}@1"
+    if token in (harness_provided_capabilities(harness_nk) or ()):
+        return []
+    return [f"output.format: target {profile.target_id} reads its captures as "
+            f"{profile.output_format}, and harness {harness_nk} does not provide {token}"]
 
 
 def _process_model_violations(profile: TargetProfile, harness_nk: str) -> list[str]:

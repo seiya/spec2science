@@ -152,11 +152,12 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("static_assert(std::is_same<hm::dp, double>::value,", self.text)
         self.assertIn(f"static_assert(hm::case_id_len == {cpp_runner.CASE_ID_LEN},", self.text)
 
-    def test_each_rank_is_captured_by_its_emitter_from_the_driver_s_own_state(self) -> None:
-        self.assertIn("hm::harness_cpp_gpu__emit_real(st_s)", self.text)
-        self.assertIn("hm::harness_cpp_gpu__emit_array_r1(cv(st_u))", self.text)
+    def test_each_rank_is_captured_by_its_put_from_the_driver_s_own_state(self) -> None:
+        self.assertIn('hm::harness_cpp_gpu__capture_real(group, "s", st_s);', self.text)
+        self.assertIn('hm::harness_cpp_gpu__capture_array_r1(group, "u", cv(st_u));', self.text)
         for rank in (2, 3, 4):
-            self.assertIn(f"hm::harness_cpp_gpu__emit_array_r{rank}(cv(st_a{rank}))", self.text)
+            self.assertIn(f'hm::harness_cpp_gpu__capture_array_r{rank}(group, "a{rank}", '
+                          f'cv(st_a{rank}));', self.text)
             self.assertIn(f"spec2science::Array<double, {rank}> st_a{rank}{{}};", self.text)
         self.assertIn("std::vector<double> st_u{};", self.text)
 
@@ -166,9 +167,11 @@ class RenderShapeTest(unittest.TestCase):
         order = [self.text.index(needle) for needle in (
             "hm::harness_cpp_gpu__read_case(cid, ok);",
             'hm::harness_cpp_gpu__get_array_r2("a2", st_a2);',
-            'write_capture("initial/" + cid);',
+            "hm::harness_cpp_gpu__capture_open(cid, cvars, 0, {}, 0);",
+            'capture_state("initial");',
             f"md::{SMOKE_OP}(",
-            "write_capture(cid);",
+            'capture_state("final");',
+            "hm::harness_cpp_gpu__capture_close();",
             "hm::harness_cpp_gpu__write_perf(")]
         self.assertEqual(sorted(order), order)
         self.assertEqual(1, self.text.count(f"md::{SMOKE_OP}("))
@@ -187,7 +190,7 @@ class RenderShapeTest(unittest.TestCase):
 
     def test_the_writers_run_in_the_fortran_runner_s_order_with_the_target_s_parallelism(
             self) -> None:
-        self.assertLess(self.text.rindex("harness_cpp_gpu__write_snapshot("),
+        self.assertLess(self.text.rindex("harness_cpp_gpu__capture_close("),
                         self.text.index("harness_cpp_gpu__write_perf("))
         cells = ("steps_total,\n      static_cast<int>(std::min<std::int64_t>(cells_total, "
                  "std::numeric_limits<int>::max())),\n      walltime, ")
@@ -202,9 +205,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_the_rendered_runner_passes_the_runner_scans(self) -> None:
         out: list[str] = []
         cpp_source.validate_runner_json_serialization(Path("r.cu"), self.text.lower(), out)
-        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), self.text.lower(), out,
-                                                      known_case_ids={"c0", "c1_xfail"},
-                                                      format_facts=capture_store.store("json").FORMAT_FACTS)
+        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), self.text.lower(), out)
         self.assertEqual([], out)
 
 
@@ -357,14 +358,15 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_ir_drift_in_a_type_s_member_order_is_refused(self) -> None:
         sigs = _harness_signatures()
-        named = next(s for s in sigs if s["symbol"] == "harness_cpp_gpu__h_named")
-        named["signature"]["components"].reverse()
-        with self.assertRaisesRegex(RenderError, "IR signature for 'harness_cpp_gpu__h_named'"):
+        h_var = next(s for s in sigs if s["symbol"] == "harness_cpp_gpu__h_var")
+        h_var["signature"]["components"].reverse()
+        with self.assertRaisesRegex(RenderError, "IR signature for 'harness_cpp_gpu__h_var'"):
             self._pin(signatures=sigs)
 
     def test_an_omitted_symbol_is_refused(self) -> None:
-        sigs = [s for s in _harness_signatures() if s["symbol"] != "harness_cpp_gpu__box"]
-        with self.assertRaisesRegex(RenderError, "omits 'harness_cpp_gpu__box'"):
+        sigs = [s for s in _harness_signatures()
+                if s["symbol"] != "harness_cpp_gpu__capture_commit"]
+        with self.assertRaisesRegex(RenderError, "omits 'harness_cpp_gpu__capture_commit'"):
             self._pin(signatures=sigs)
 
     def test_a_harness_without_the_block_size_is_refused(self) -> None:
@@ -387,18 +389,18 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_source_drift_is_refused(self) -> None:
         drifted = self.source.replace(
-            "void harness_cpp_gpu__write_snapshot(\n    const std::string& case_id,",
-            "void harness_cpp_gpu__write_snapshot(\n    const std::string& name,")
+            "void harness_cpp_gpu__capture_commit(\n    const std::string& group,",
+            "void harness_cpp_gpu__capture_commit(\n    const std::string& name,")
         self.assertNotEqual(drifted, self.source)
         with self.assertRaisesRegex(RenderError, "model source signature for "
-                                                 "'harness_cpp_gpu__write_snapshot'"):
+                                                 "'harness_cpp_gpu__capture_commit'"):
             self._pin(source=drifted)
         with self.assertRaisesRegex(RenderError, "model source omits"):
             self._pin(source="namespace harness_cpp_gpu_model {}\n")
 
-    def test_only_the_emitters_the_node_uses_are_pinned(self) -> None:
+    def test_only_the_puts_the_node_uses_are_pinned(self) -> None:
         sigs = [s for s in _harness_signatures()
-                if s["symbol"] != "harness_cpp_gpu__emit_array_r4"]
+                if s["symbol"] != "harness_cpp_gpu__capture_array_r4"]
         self.ir = _boundary_ir()  # ranks 0 and 2 only
         self._pin(signatures=sigs)
 
@@ -435,19 +437,55 @@ class HarnessPinTest(unittest.TestCase):
             with self.subTest(getter):
                 self._pin(signatures=[s for s in _harness_signatures() if s["symbol"] != symbol])
 
-    def test_the_rank_1_emitter_is_pinned_on_a_loop_for_its_series(self) -> None:
-        symbol = "harness_cpp_gpu__emit_array_r1"
-        cut = [s for s in _harness_signatures() if s["symbol"] != symbol]
+    def test_a_loop_s_series_is_put_by_the_scalar_put_and_pins_no_array_put(self) -> None:
+        """The series is a row of scalars (`capture_real` into `series`): a loop node pins the
+        scalar put, and no array put the state does not hold."""
+        r1 = "harness_cpp_gpu__capture_array_r1"
         self.ir = _boundary_ir()  # no rank-1 state
-        self.assertNotIn("emit_array_r1", cpp_runner._used_harness_ops(self.ir))
-        self._pin(signatures=cut)
         self.ir["drive"]["loop"] = {"n_step": "inputs.n_step", "dt": "inputs.dt",
                                     "t_start": "inputs.t_start", "t_end": "inputs.t_end"}
         self.ir["drive"]["history"] = {"every": "inputs.every"}
-        self.assertIn("emit_array_r1", cpp_runner._used_harness_ops(self.ir))
-        self._pin()
+        used = cpp_runner._used_harness_ops(self.ir)
+        self.assertNotIn("capture_array_r1", used)
+        self.assertIn("capture_real", used)
+        self._pin(signatures=[s for s in _harness_signatures() if s["symbol"] != r1])
+        symbol = "harness_cpp_gpu__capture_real"
         with self.assertRaisesRegex(RenderError, f"omits '{symbol}'"):
-            self._pin(signatures=cut)
+            self._pin(signatures=[s for s in _harness_signatures() if s["symbol"] != symbol])
+
+
+class CaptureOpenRenderTest(unittest.TestCase):
+    """What the driver declares to `capture_open` (issue #644 P4a; the Fortran twin is
+    `test_fortran_runner.CaptureOpenRenderTest`): the json harness does not read `h_var`, so no
+    json run observes it and these rows hold the text."""
+
+    _ENTRY = re.compile(r'\{"(\w+)", \d, \{[^}]*\}, ([^\n]+),\n\s*(true|false)\},')
+
+    def _entries(self, text: str) -> dict[str, tuple[str, str]]:
+        """Each declared variable's `(history_capacity, restart)`, by name."""
+        return {name: (cap, flag) for name, cap, flag in self._ENTRY.findall(text)}
+
+    def test_the_restart_flag_is_set_exactly_for_the_restart_variables(self) -> None:
+        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0))):
+            with self.subTest(label):
+                entries = self._entries(_render(ir, "drv_toy"))
+                restart = pe.restart_variables(ir)
+                self.assertTrue(restart)
+                self.assertEqual({v for v, (_, f) in entries.items() if f == "true"},
+                                 set(restart))
+                self.assertEqual(set(entries), {v["name"] for v in ir["io_contract"][
+                    "raw_requirements"]["required_evidence"][0]["schema"]["variables"]})
+
+    def test_the_history_capacity_is_the_sample_count_on_a_loop_node_and_0_otherwise(
+            self) -> None:
+        """`n_c / every_c` when `every_c > 0`, else 0, on a loop node; 0 on a one-call node. The
+        json harness does not read `h_var`, so no json run observes it: a text row."""
+        loop = self._entries(_render(loop_ir(0), "drv_toy"))
+        self.assertTrue(loop)
+        self.assertEqual({"every_c > 0 ? n_c / every_c : 0"}, {c for c, _ in loop.values()})
+        one = self._entries(_render(call_ir(0), "drv_toy"))
+        self.assertTrue(one)
+        self.assertEqual({"0"}, {c for c, _ in one.values()})
 
 
 def _nvcc_lint(directory: Path, sources: list[str]) -> subprocess.CompletedProcess:
@@ -478,8 +516,8 @@ class NvccSmokeTest(unittest.TestCase):
                             f"{sid}_model.cu", "harness_cpp_gpu_model.cu", "-o", "runner"],
                            cwd=d, capture_output=True, text=True, check=False)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
-        for sub in ("initial", "history", "series"):
-            (d / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+        for parts in capture_store.run_dirs("json"):
+            (d.joinpath(*parts)).mkdir(parents=True)
 
     @staticmethod
     def _run(d: Path, *cases: str, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -531,7 +569,10 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertEqual([[0.0, 1.0], [2.0, 3.0]], initial["a2"])
             self.assertEqual([[9.0, 1.0], [2.0, 3.0]], final["a2"])
             self.assertEqual(1.5, initial["s"])
-            self.assertEqual(1.0, final["step"])
+            self.assertEqual(1, final["step"])
+            # Every case has a series, a one-call node's empty.
+            self.assertEqual({"step": [], "t": []}, capture_store.store("json").read_record(
+                d / "raw/state_snapshots", capture_store.SERIES, "c0"))
             # The refusing case's capture holds what it left, and it committed no step.
             refused = json.loads((d / "raw/state_snapshots/c1_xfail.json").read_text())
             self.assertEqual((0.0, 0.0, 1.5), (refused["ok"], refused["step"], refused["s"]))
@@ -653,7 +694,7 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
         for ir, _sid, text in self._each():
             ops = {f"harness_cpp_gpu__{op}" for op in cpp_runner._used_harness_ops(ir)}
             spelled = set(re.findall(r"harness_cpp_gpu__\w+", text))
-            self.assertEqual(ops | {"harness_cpp_gpu__h_named"}, spelled)
+            self.assertEqual(ops | {"harness_cpp_gpu__h_var"}, spelled)
             # every declared call has an argument list at its use, not just a mention
             for op in ops:
                 self.assertIn(f"{op}(", text)
@@ -662,13 +703,12 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
         for ir, _sid, text in self._each():
             variables = [v["name"] for v in ir["io_contract"]["raw_requirements"][
                 "required_evidence"][0]["schema"]["variables"]]
-            capture = text[text.index("std::vector<Named> capture_state("):
-                           text.index("int main(")]
+            capture = text[text.index("void capture_state("):text.index("int main(")]
             for name in variables:
-                self.assertIn(f'__box("{name}", ', capture)
+                self.assertRegex(capture, rf'__capture_(real|array_r[1-4])\(group, "{name}", ')
                 self.assertIn(f"st_{name}", capture)
-            self.assertEqual(1, text.count('write_capture("initial/" + cid);'))
-            self.assertEqual(1, text.count("write_capture(cid);"))
+            self.assertEqual(1, text.count('capture_state("initial");'))
+            self.assertEqual(1, text.count('capture_state("final");'))
 
     def test_write_perf_is_called_once_after_the_case_loop(self) -> None:
         for _ir, _sid, text in self._each():

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import yaml
 
+from tools import capture_store
 from tools import primary_evidence as pe
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
@@ -301,8 +302,8 @@ def _harness_signatures() -> list[dict]:
     ]
 
 
-# The v3 harness stub source (canonical `type ::` + separate `public ::`), used by
-# the pin test and the gfortran smoke. Only enough body to link + emit outputs.
+# The harness stub source (canonical `type ::` + separate `public ::`) publishing the §5.1
+# surface of `harness_fortran_cpu@0.11.0`, used by the pin tests. Only enough body to resolve.
 _HARNESS_STUB = textwrap.dedent("""\
     module harness_fortran_cpu_model
       use, intrinsic :: iso_fortran_env, only: real64
@@ -311,21 +312,25 @@ _HARNESS_STUB = textwrap.dedent("""\
       private
       integer, parameter :: dp = real64
       integer, parameter :: case_id_len = 64
-      type :: harness_fortran_cpu__h_named
+      type :: harness_fortran_cpu__h_var
         character(len=:), allocatable :: name
-        character(len=:), allocatable :: json
-      end type harness_fortran_cpu__h_named
-      public :: harness_fortran_cpu__h_named
-      public :: harness_fortran_cpu__parse_cases, harness_fortran_cpu__emit_real
-      public :: harness_fortran_cpu__emit_int, harness_fortran_cpu__emit_bool
-      public :: harness_fortran_cpu__emit_array_r1, harness_fortran_cpu__emit_array_r2
-      public :: harness_fortran_cpu__emit_array_r3, harness_fortran_cpu__emit_array_r4
-      public :: harness_fortran_cpu__box, harness_fortran_cpu__write_snapshot
+        integer :: rank
+        integer :: shape(4)
+        integer :: history_capacity
+        logical :: restart
+      end type harness_fortran_cpu__h_var
+      public :: harness_fortran_cpu__h_var
+      public :: harness_fortran_cpu__parse_cases, harness_fortran_cpu__real_token
+      public :: harness_fortran_cpu__capture_open, harness_fortran_cpu__capture_real
+      public :: harness_fortran_cpu__capture_array_r1, harness_fortran_cpu__capture_array_r2
+      public :: harness_fortran_cpu__capture_array_r3, harness_fortran_cpu__capture_array_r4
+      public :: harness_fortran_cpu__capture_commit, harness_fortran_cpu__capture_close
       public :: harness_fortran_cpu__write_perf
       public :: harness_fortran_cpu__read_case, harness_fortran_cpu__get_real
       public :: harness_fortran_cpu__get_int, harness_fortran_cpu__get_bool
       public :: harness_fortran_cpu__get_array_r1, harness_fortran_cpu__get_array_r2
       public :: harness_fortran_cpu__get_array_r3, harness_fortran_cpu__get_array_r4
+      character(len=:), allocatable, save :: open_case
     contains
       subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
         character(len=*), intent(in) :: tokens(:)
@@ -347,94 +352,61 @@ _HARNESS_STUB = textwrap.dedent("""\
         end do
         ok = ncases > 0
       end subroutine harness_fortran_cpu__parse_cases
-      function harness_fortran_cpu__emit_real(x) result(s)
+      function harness_fortran_cpu__real_token(x) result(s)
         real(dp), intent(in) :: x
         character(len=:), allocatable :: s
         character(len=32) :: buf
         write(buf, '(ES24.16E3)') x
         s = trim(adjustl(buf))
-      end function harness_fortran_cpu__emit_real
-      function harness_fortran_cpu__emit_int(i) result(s)
-        integer, intent(in) :: i
-        character(len=:), allocatable :: s
-        character(len=32) :: buf
-        write(buf, '(I0)') i
-        s = trim(adjustl(buf))
-      end function harness_fortran_cpu__emit_int
-      function harness_fortran_cpu__emit_bool(b) result(s)
-        logical, intent(in) :: b
-        character(len=:), allocatable :: s
-        if (b) then
-          s = 'true'
-        else
-          s = 'false'
-        end if
-      end function harness_fortran_cpu__emit_bool
-      function harness_fortran_cpu__emit_array_r1(a) result(s)
-        real(dp), intent(in) :: a(:)
-        character(len=:), allocatable :: s
-        integer :: i
-        s = '['
-        do i = 1, size(a)
-          if (i > 1) s = s // ', '
-          s = s // harness_fortran_cpu__emit_real(a(i))
-        end do
-        s = s // ']'
-      end function harness_fortran_cpu__emit_array_r1
-      function harness_fortran_cpu__emit_array_r2(a) result(s)
-        real(dp), intent(in) :: a(:,:)
-        character(len=:), allocatable :: s
-        integer :: i
-        s = '['
-        do i = 1, size(a, 1)
-          if (i > 1) s = s // ', '
-          s = s // harness_fortran_cpu__emit_array_r1(a(i, :))
-        end do
-        s = s // ']'
-      end function harness_fortran_cpu__emit_array_r2
-      function harness_fortran_cpu__emit_array_r3(a) result(s)
-        real(dp), intent(in) :: a(:,:,:)
-        character(len=:), allocatable :: s
-        integer :: i
-        s = '['
-        do i = 1, size(a, 1)
-          if (i > 1) s = s // ', '
-          s = s // harness_fortran_cpu__emit_array_r2(a(i, :, :))
-        end do
-        s = s // ']'
-      end function harness_fortran_cpu__emit_array_r3
-      function harness_fortran_cpu__emit_array_r4(a) result(s)
-        real(dp), intent(in) :: a(:,:,:,:)
-        character(len=:), allocatable :: s
-        integer :: i
-        s = '['
-        do i = 1, size(a, 1)
-          if (i > 1) s = s // ', '
-          s = s // harness_fortran_cpu__emit_array_r3(a(i, :, :, :))
-        end do
-        s = s // ']'
-      end function harness_fortran_cpu__emit_array_r4
-      function harness_fortran_cpu__box(name, json) result(nv)
-        character(len=*), intent(in) :: name
-        character(len=*), intent(in) :: json
-        type(harness_fortran_cpu__h_named) :: nv
-        nv%name = name
-        nv%json = json
-      end function harness_fortran_cpu__box
-      subroutine harness_fortran_cpu__write_snapshot(case_id, values, time)
+      end function harness_fortran_cpu__real_token
+      subroutine harness_fortran_cpu__capture_open(case_id, vars, restart_point_capacity, &
+          series_names, series_capacity)
         character(len=*), intent(in) :: case_id
-        type(harness_fortran_cpu__h_named), intent(in) :: values(:)
-        real(dp), intent(in) :: time
-        integer :: u, k
-        open(newunit=u, file='raw/state_snapshots/'//trim(case_id)//'.json', status='replace')
-        write(u, '(A)') '{'
-        do k = 1, size(values)
-          write(u, '(A)') '  "'//trim(values(k)%name)//'": '//values(k)%json//','
-        end do
-        write(u, '(A)') '  "t": '//harness_fortran_cpu__emit_real(time)
-        write(u, '(A)') '}'
-        close(u)
-      end subroutine harness_fortran_cpu__write_snapshot
+        type(harness_fortran_cpu__h_var), intent(in) :: vars(:)
+        integer, intent(in) :: restart_point_capacity
+        character(len=*), intent(in) :: series_names(:)
+        integer, intent(in) :: series_capacity
+        open_case = trim(case_id)
+      end subroutine harness_fortran_cpu__capture_open
+      subroutine harness_fortran_cpu__capture_real(group, name, x)
+        character(len=*), intent(in) :: group
+        character(len=*), intent(in) :: name
+        real(dp), intent(in) :: x
+        write(*, '(A)') group//' '//name//' '//harness_fortran_cpu__real_token(x)
+      end subroutine harness_fortran_cpu__capture_real
+      subroutine harness_fortran_cpu__capture_array_r1(group, name, a)
+        character(len=*), intent(in) :: group
+        character(len=*), intent(in) :: name
+        real(dp), intent(in) :: a(:)
+        write(*, '(A, I0)') group//' '//name//' ', size(a)
+      end subroutine harness_fortran_cpu__capture_array_r1
+      subroutine harness_fortran_cpu__capture_array_r2(group, name, a)
+        character(len=*), intent(in) :: group
+        character(len=*), intent(in) :: name
+        real(dp), intent(in) :: a(:,:)
+        write(*, '(A, I0)') group//' '//name//' ', size(a)
+      end subroutine harness_fortran_cpu__capture_array_r2
+      subroutine harness_fortran_cpu__capture_array_r3(group, name, a)
+        character(len=*), intent(in) :: group
+        character(len=*), intent(in) :: name
+        real(dp), intent(in) :: a(:,:,:)
+        write(*, '(A, I0)') group//' '//name//' ', size(a)
+      end subroutine harness_fortran_cpu__capture_array_r3
+      subroutine harness_fortran_cpu__capture_array_r4(group, name, a)
+        character(len=*), intent(in) :: group
+        character(len=*), intent(in) :: name
+        real(dp), intent(in) :: a(:,:,:,:)
+        write(*, '(A, I0)') group//' '//name//' ', size(a)
+      end subroutine harness_fortran_cpu__capture_array_r4
+      subroutine harness_fortran_cpu__capture_commit(group, step, t)
+        character(len=*), intent(in) :: group
+        integer, intent(in) :: step
+        real(dp), intent(in) :: t
+        write(*, '(A, I0, A)') group//' ', step, ' '//harness_fortran_cpu__real_token(t)
+      end subroutine harness_fortran_cpu__capture_commit
+      subroutine harness_fortran_cpu__capture_close()
+        if (allocated(open_case)) deallocate(open_case)
+      end subroutine harness_fortran_cpu__capture_close
       subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, &
           walltime_sec, mpi_ranks, gpu_devices)
     !$  use omp_lib, only: omp_get_max_threads
@@ -449,9 +421,9 @@ _HARNESS_STUB = textwrap.dedent("""\
         threads_per_rank = 1
     !$  threads_per_rank = omp_get_max_threads()
         open(newunit=u, file='perf.json', status='replace')
-        write(u, '(A)') '{ "case_id": "'//trim(case_id)//'", "target": "'//trim(target)// &
-          '", "steps": '//harness_fortran_cpu__emit_int(steps)//', "parallelism": '// &
-          '{ "threads_per_rank": '//harness_fortran_cpu__emit_int(threads_per_rank)//' } }'
+        write(u, '(A, I0, A, I0, A)') '{ "case_id": "'//trim(case_id)//'", "target": "'// &
+          trim(target)//'", "steps": ', steps, ', "parallelism": { "threads_per_rank": ', &
+          threads_per_rank, ' } }'
         close(u)
       end subroutine harness_fortran_cpu__write_perf
       subroutine harness_fortran_cpu__read_case(case_id, ok)
@@ -497,7 +469,7 @@ _HARNESS_STUB = textwrap.dedent("""\
     end module harness_fortran_cpu_model
     """)
 
-# The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.10.0` §3.2: it obtains the thread count
+# The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.11.0` §3.2: it obtains the thread count
 # itself) and the eight-argument one the distributed harness publishes and `harness_fortran_cpu`
 # published up to `0.7.0` (its caller passes the count). `_EIGHT_ARG_HARNESS_STUB` is the stub
 # with the second in place of the first.
@@ -541,11 +513,11 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("use harness_fortran_cpu_model, only:", self.txt)
         self.assertIn(f"use {BOUNDARY_SID}_model, only: &\n    {BOUNDARY_OP}\n", self.txt)
         self.assertNotIn("_checks", self.txt)
-        # only the emitters for the ranks in use are imported (r2 + scalar; not r1/r3/r4)
-        self.assertIn("harness_fortran_cpu__emit_array_r2", self.txt)
-        self.assertIn("harness_fortran_cpu__emit_real", self.txt)
-        self.assertNotIn("emit_array_r1", self.txt)
-        self.assertNotIn("emit_array_r3", self.txt)
+        # only the puts for the ranks in use are imported (r2 + scalar; not r1/r3/r4)
+        self.assertIn("harness_fortran_cpu__capture_array_r2", self.txt)
+        self.assertIn("harness_fortran_cpu__capture_real", self.txt)
+        self.assertNotIn("capture_array_r1", self.txt)
+        self.assertNotIn("capture_array_r3", self.txt)
         # likewise the readers: what the case file holds for this IR, no other rank's
         self.assertIn("harness_fortran_cpu__get_array_r2", self.txt)
         self.assertIn("harness_fortran_cpu__get_real", self.txt)
@@ -562,25 +534,29 @@ class RenderShapeTest(unittest.TestCase):
             self.txt)
         self.assertEqual(self.txt.count(f"call {BOUNDARY_OP}("), 1)
 
-    def test_a_captured_value_is_the_drivers_own_variable_read_by_the_emitter(self) -> None:
-        # No generated procedure sits between a state and its emitter, so nothing can filter,
+    def test_a_captured_value_is_the_drivers_own_variable_read_by_the_put(self) -> None:
+        # No generated procedure sits between a state and its put, so nothing can filter,
         # compute or rewrite a captured value on its way out (Z6 fixture (b),
         # `zero_base_architecture.md:253`, whose retired getter names stay absent).
         for gone in ("get_scalar", "get_r1", "get_r2", "get_r3", "get_r4",
                      "gfound", "r2buf", "sval", "sb_"):
             self.assertNotIn(gone, self.txt)
         self.assertIn(
-            "    out(1) = harness_fortran_cpu__box('field_ghost', &\n"
-            "      harness_fortran_cpu__emit_array_r2(st_field_ghost))", self.txt)
+            "    call harness_fortran_cpu__capture_array_r2(group, &\n"
+            "      'field_ghost', &\n      st_field_ghost)", self.txt)
         self.assertIn(
-            "harness_fortran_cpu__box('max_abs_deviation', &\n"
-            "      harness_fortran_cpu__emit_real(st_max_abs_deviation))", self.txt)
-        # EVERY declared variable, and `step`, is captured for EVERY case — the snapshot is the
-        # full state: one capture body, no per-case select.
-        self.assertIn("    allocate(out(6))", self.txt)
-        self.assertIn("    out(6) = harness_fortran_cpu__box('step', &", self.txt)
+            "    call harness_fortran_cpu__capture_real(group, &\n"
+            "      'max_abs_deviation', &\n      st_max_abs_deviation)", self.txt)
+        # EVERY declared variable is put, and the record committed with `step` and `t`, for
+        # EVERY case — the snapshot is the full state: one capture body, no per-case select.
+        capture = self.txt[self.txt.index("  subroutine capture_state("):
+                           self.txt.index("  end subroutine capture_state")]
+        self.assertEqual(len(re.findall(r"call harness_fortran_cpu__capture_(?:real|array_r\d)\(",
+                                        capture)), 5)
+        self.assertTrue(capture.rstrip().endswith(
+            "call harness_fortran_cpu__capture_commit(group, step_c, t_c)"))
         self.assertNotIn("select case (cid)", self.txt)
-        self.assertEqual(self.txt.count("harness_fortran_cpu__box('guard_fired', &"), 1)
+        self.assertEqual(self.txt.count("      'guard_fired', &\n      st_guard_fired)"), 1)
 
     def test_a_case_with_several_entries_selects_on_the_case_id(self) -> None:
         # The list form of `drive.step`: the select appears, each case to its entry, and a case no
@@ -607,26 +583,28 @@ class RenderShapeTest(unittest.TestCase):
         schema["variables"].append({"name": "orphan_r1", "shape_expr": "[7]"})
         txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("  real(dp), allocatable :: st_orphan_r1(:)", txt)
-        self.assertIn("    harness_fortran_cpu__emit_array_r1, &", txt)
-        self.assertIn("    allocate(out(7))", txt)
-        self.assertIn("harness_fortran_cpu__emit_array_r1(st_orphan_r1))", txt)
+        self.assertIn("    harness_fortran_cpu__capture_array_r1, &", txt)
+        self.assertIn(f"  type({HARNESS}__h_var) :: cvars(6)", txt)
+        self.assertIn("    cvars(6)%name = 'orphan_r1'\n", txt)
+        self.assertIn("    call harness_fortran_cpu__capture_array_r1(group, &\n"
+                      "      'orphan_r1', &\n      st_orphan_r1)", txt)
         self.assertIn("call harness_fortran_cpu__get_array_r1('orphan_r1', &\n      st_orphan_r1)",
                       txt)
 
     def test_the_captures_bracket_the_call_and_the_case_file_is_read_before_either(self) -> None:
         # The capture contract: the case file read whole, the initial capture on what it held,
-        # the operation, the final capture on what it left; `initial/` snapshots go under the
-        # sub-directory. What each capture then holds is `test_driver_render`'s.
+        # the operation, the final capture on what it left, and the case's output closed after
+        # it. What each capture then holds is `test_driver_render`'s.
         body = self.txt[self.txt.index("  do ci = 1, ncases"):
                         self.txt.index("  if (walltime <= 0.0_dp)")]
         order = [
             "call harness_fortran_cpu__read_case(cid, ok)",
             "call harness_fortran_cpu__get_array_r2('field_ghost', &",
-            "call capture_state(vals)",
-            "call harness_fortran_cpu__write_snapshot('initial/'//cid, vals, t_c)",
+            "call harness_fortran_cpu__capture_open(cid, &",
+            "call capture_state('initial')",
             f"call {BOUNDARY_OP}( &",
-            "call capture_state(vals)",
-            "call harness_fortran_cpu__write_snapshot(cid, vals, t_c)",
+            "call capture_state('final')",
+            "call harness_fortran_cpu__capture_close()",
         ]
         pos = -1
         for needle in order:
@@ -634,7 +612,8 @@ class RenderShapeTest(unittest.TestCase):
             self.assertGreater(nxt, pos, needle)
             pos = nxt
         self.assertEqual(body.count("call capture_state("), 2)
-        self.assertEqual(body.count("write_snapshot("), 2)
+        self.assertEqual(body.count("capture_open("), 1)
+        self.assertEqual(body.count("capture_close("), 1)
         # no procedure runs between the operation returning and the final capture
         tail = body[body.index(f"call {BOUNDARY_OP}("):body.rindex("call capture_state(")]
         self.assertEqual(re.findall(r"call (\w+)\(", tail),
@@ -643,7 +622,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_terminal_writer(self) -> None:
         self.assertEqual(1, self.txt.count("call harness_fortran_cpu__write_perf("))
         # perf parallelism: mpi=1, gpu=0, and no thread count — the harness's writer obtains
-        # the count the run is given itself (`harness_fortran_cpu@0.10.0` §3.2, issue #512:
+        # the count the run is given itself (`harness_fortran_cpu@0.11.0` §3.2, issue #512:
         # Validate runs the binary at several counts, so the profile's is the wrong one for
         # every sweep shape).
         self.assertIn("    steps_total, int(min(cells_total, int(huge(0), int64))), walltime, 1, 0)\n",
@@ -701,10 +680,10 @@ class PerfParallelismRenderTest(unittest.TestCase):
         # to write 0 for every class.
         self.assertIn(perf_line % 1, other_txt)
         self.assertIn("'gpu', &", other_txt)
-        # rank-1 snapshot var -> the driver's `st_u` + emit_array_r1
+        # rank-1 snapshot var -> the driver's `st_u` + capture_array_r1
         self.assertIn("  real(dp), allocatable :: st_u(:)", txt)
-        self.assertIn("harness_fortran_cpu__emit_array_r1(st_u))", txt)
-        self.assertNotIn("emit_array_r2", txt)
+        self.assertIn("call harness_fortran_cpu__capture_array_r1(group, &\n      'u', &\n      st_u)", txt)
+        self.assertNotIn("capture_array_r2", txt)
 
 
 class RenderErrorMatrixTest(unittest.TestCase):
@@ -1051,7 +1030,7 @@ class DerivedNameLengthTest(unittest.TestCase):
         from tools.backends.language.fortran import bundle
 
         ir = _boundary_ir()
-        long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__write_snapshot") + 1)
+        long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__capture_commit") + 1)
         with self.assertRaises(RenderError) as ctx:
             render_runner(ir, BOUNDARY_SID, long_harness, target=_TARGET_PROFILE.doc)
         # `identity=True`: a harness id is node identity, so the compile.static mirror excludes
@@ -1186,8 +1165,8 @@ class HarnessPinTest(unittest.TestCase):
         self.assertIn("harness_fortran_cpu, harness_fortran_cpu_mpi", str(cm.exception))
 
     def test_embedded_interface_carrying_a_prototype_is_a_renderer_bug(self) -> None:
-        # The pinned harness surface is 13 operations and 5 types and no interface PROTOTYPE
-        # (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`); the stanza splitter reads prototypes into
+        # The pinned harness surface is §5.1's operations and its one type, and no interface
+        # PROTOTYPE (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`); the stanza splitter reads prototypes into
         # a dict of their own since issue #266, and the pin refuses a non-empty one as a
         # renderer bug rather than letting a prototype ride along unpinned.
         from tools.backends.language.fortran import runner as fortran_runner
@@ -1204,7 +1183,7 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_a_certified_harness_whose_writer_takes_the_thread_count_fails_the_pin(self) -> None:
         """Issue #512: the single-process runner calls the seven-argument `__write_perf` of
-        `harness_fortran_cpu@0.10.0` §3.2, whose writer obtains the thread count itself, so a
+        `harness_fortran_cpu@0.11.0` §3.2, whose writer obtains the thread count itself, so a
         certified harness whose writer still takes `threads_per_rank` — a `0.7.0` one — is
         refused before Build, in its IR signatures and in its model source alike, naming the
         writer. The pinned interface is the distributed harness's block but for that argument."""
@@ -1232,8 +1211,8 @@ class HarnessPinTest(unittest.TestCase):
     def test_ir_signature_drift(self) -> None:
         bad = copy.deepcopy(self.sigs)
         for e in bad:
-            if e["symbol"].endswith("__write_snapshot"):
-                time_arg = next(a for a in e["signature"]["args"] if a["name"] == "time")
+            if e["symbol"].endswith("__capture_commit"):
+                time_arg = next(a for a in e["signature"]["args"] if a["name"] == "t")
                 time_arg["name"] = "tstamp"
         with self.assertRaises(RenderError):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
@@ -1269,50 +1248,52 @@ class HarnessPinTest(unittest.TestCase):
         # Issue #343: the pin compares a type layout the way the Generate gate does
         # (`signatures.type_layout_drift`), so a harness the gate certifies with `type, public :: t` must
         # not stop every dependent's render here; `private` still differs.
-        header = "type :: harness_fortran_cpu__h_named"
+        header = "type :: harness_fortran_cpu__h_var"
         self.assertIn(header, self.src)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
-                           self.src.replace(header, "type, public :: harness_fortran_cpu__h_named"))
+                           self.src.replace(header, "type, public :: harness_fortran_cpu__h_var"))
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
-                header, "type, private :: harness_fortran_cpu__h_named"))
-        self.assertIn("harness_fortran_cpu__h_named", str(cm.exception))
+                header, "type, private :: harness_fortran_cpu__h_var"))
+        self.assertIn("harness_fortran_cpu__h_var", str(cm.exception))
 
     def test_an_abi_identical_type_spelling_passes_the_pin_and_a_second_definition_does_not(
             self) -> None:
         # Issue #430 PR-2: the pin reads a type the way the Generate gate does — its one
         # module-level definition in the harness model module, components compared as declared —
         # so a `::`-less header and an unnamed `end type` must not stop a dependent's render, while
-        # a second definition of a pinned type name, or a drifted component, must. (`h_named` is
-        # the one type the runner builds since issue #582.)
-        component = "character(len=:), allocatable :: json\n"
-        header = "type :: harness_fortran_cpu__h_named\n"
-        end = "end type harness_fortran_cpu__h_named\n"
+        # a second definition of a pinned type name, or a drifted component, must. (`h_var` is
+        # the one type the runner builds since issue #644 P4a; `h_named` was before it.)
+        component = "logical :: restart\n"
+        header = "type :: harness_fortran_cpu__h_var\n"
+        end = "end type harness_fortran_cpu__h_var\n"
         for needle in (component, header, end):
             self.assertIn(needle, self.src)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
-            header, "type harness_fortran_cpu__h_named\n", 1).replace(
+            header, "type harness_fortran_cpu__h_var\n", 1).replace(
             end, "end type\n", 1))
         helper = ("  subroutine harness_fortran_cpu__decoy()\n"
-                  "    type :: harness_fortran_cpu__h_named\n"
+                  "    type :: harness_fortran_cpu__h_var\n"
                   "      integer :: k\n"
-                  "    end type harness_fortran_cpu__h_named\n"
+                  "    end type harness_fortran_cpu__h_var\n"
                   "  end subroutine harness_fortran_cpu__decoy\n")
         tail = "end module harness_fortran_cpu_model"
         self.assertIn(tail, self.src)
         for label, cue, source in (
                 ("second definition", "differs from the pinned interface", self.src.replace(tail, helper + tail, 1)),
                 ("drifted component", "differs from the pinned interface", self.src.replace(
-                    component, "character(len=:), pointer :: json\n", 1)),
-                ("not defined at all", "omits 'harness_fortran_cpu__h_named'", self.src.replace(
-                    "harness_fortran_cpu__h_named\n", "harness_fortran_cpu__h_named_x\n")),
+                    component, "integer :: restart\n", 1)),
+                ("not defined at all", "omits 'harness_fortran_cpu__h_var'", self.src.replace(
+                    "harness_fortran_cpu__h_var\n", "harness_fortran_cpu__h_var_x\n")),
                 # Defined once, but only inside a procedure: count 1, no module-level definition.
-                ("defined only outside module level", "omits 'harness_fortran_cpu__h_named'", self.src.replace(
-                    "type :: harness_fortran_cpu__h_named\n", "type :: hx_unused_rename\n", 1
-                ).replace("end type harness_fortran_cpu__h_named\n",
+                ("defined only outside module level", "omits 'harness_fortran_cpu__h_var'", self.src.replace(
+                    "type :: harness_fortran_cpu__h_var\n", "type :: hx_unused_rename\n", 1
+                ).replace("end type harness_fortran_cpu__h_var\n",
                           "end type hx_unused_rename\n", 1).replace(
                     tail, helper.replace("integer :: k", "character(len=:), allocatable :: name\n"
-                                         "      character(len=:), allocatable :: json") + tail, 1))):
+                                         "      integer :: rank\n      integer :: shape(4)\n"
+                                         "      integer :: history_capacity\n"
+                                         "      logical :: restart") + tail, 1))):
             with self.subTest(label), self.assertRaises(RenderError) as cm:
                 assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, source)
             self.assertIn(cue, str(cm.exception))
@@ -1321,38 +1302,40 @@ class HarnessPinTest(unittest.TestCase):
         # Issue #430: the pin reads a procedure the way the Generate gate does — by what its
         # definition declares — so the O1 / O2 spellings the gate now certifies (a `dimension(:)`
         # attribute, a `kind=` selector) must not stop every dependent node's render here.
+        # `x` of the pinned `capture_real` (the unpinned `real_token` has a dummy `x` as well).
         o1 = "real(dp), intent(in) :: a(:)\n"
-        o2 = "real(dp), intent(in) :: x\n"
-        self.assertIn(o1, self.src)
-        self.assertIn(o2, self.src)
+        o2 = "character(len=*), intent(in) :: name\n    real(dp), intent(in) :: x\n"
+        self.assertEqual(self.src.count(o1), 1)
+        self.assertEqual(self.src.count(o2), 1)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
             o1, "real(dp), dimension(:), intent(in) :: a\n", 1).replace(
-            o2, "real(kind=dp), intent(in) :: x\n", 1))
+            o2, "character(len=*), intent(in) :: name\n    real(kind=dp), intent(in) :: x\n", 1))
 
     def test_an_attribute_statement_on_a_pinned_dummy_fails_the_pin(self) -> None:
         # The membership comparison this replaced accepted `optional :: x` beside the pinned
         # declaration; the renderer then emits a call whose actual the harness may ignore.
-        decl = "    real(dp), intent(in) :: x\n"
-        self.assertIn(decl, self.src)
+        decl = "    character(len=*), intent(in) :: name\n    real(dp), intent(in) :: x\n"
+        self.assertEqual(self.src.count(decl), 1)
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
                 decl, decl + "    optional :: x\n", 1))
-        self.assertIn("harness_fortran_cpu__emit_real", str(cm.exception))
+        self.assertIn("harness_fortran_cpu__capture_real", str(cm.exception))
 
     def test_a_local_type_shadowing_a_pinned_type_fails_the_pin(self) -> None:
         # Issue #430 round 1: a published procedure defining its own type under the name a dummy
         # is pinned to makes that dummy's type the local one. The pin passes the definition's
         # local types to `surface_drift` as the gate does.
-        header = "subroutine harness_fortran_cpu__write_snapshot("
+        header = "subroutine harness_fortran_cpu__capture_open("
         self.assertIn(header, self.src)
         start = self.src.index(header)
-        body = self.src.index("\n", start) + 1
-        shadowed = (self.src[:body] + "    type :: HARNESS_FORTRAN_CPU__H_NAMED\n"
-                    "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_NAMED\n"
+        body = self.src.index("series_names, series_capacity)\n", start)
+        body = self.src.index("\n", body) + 1
+        shadowed = (self.src[:body] + "    type :: HARNESS_FORTRAN_CPU__H_VAR\n"
+                    "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_VAR\n"
                     + self.src[body:])
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, shadowed)
-        self.assertIn("harness_fortran_cpu__write_snapshot", str(cm.exception))
+        self.assertIn("harness_fortran_cpu__capture_open", str(cm.exception))
 
     def test_an_unresolvable_certified_source_is_a_render_error(self) -> None:
         wedged = self.src.replace(
@@ -1429,7 +1412,7 @@ class HarnessPinTest(unittest.TestCase):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src)
 
     def test_missing_symbol_in_ir(self) -> None:
-        pruned = [e for e in self.sigs if not e["symbol"].endswith("__box")]
+        pruned = [e for e in self.sigs if not e["symbol"].endswith("__capture_commit")]
         with self.assertRaises(RenderError):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, pruned, self.src)
 
@@ -1442,7 +1425,7 @@ class HarnessPinTest(unittest.TestCase):
         # so they must NOT seed a bogus "" key that later reads as per-symbol drift.
         for sigs in ([], None, "not-a-list", 42, [{"symbol": "x"}],
                      [{"symbol": " ", "signature": {}}],
-                     [{"symbol": "harness_fortran_cpu__box", "signature": {}}]):
+                     [{"symbol": "harness_fortran_cpu__capture_commit", "signature": {}}]):
             with self.assertRaises(RenderError) as cm:
                 assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, sigs, self.src)
             self.assertIn("no usable public_api.signatures", str(cm.exception))
@@ -1459,10 +1442,10 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_type_component_reorder_drift(self) -> None:
         # Derived-type components are compared as an ORDERED list (component layout is ABI);
-        # reordering the two components of h_named must be caught as drift.
+        # reversing the components of h_var must be caught as drift.
         bad = copy.deepcopy(self.sigs)
         for e in bad:
-            if e["symbol"].endswith("__h_named"):
+            if e["symbol"].endswith("__h_var"):
                 e["signature"]["components"].reverse()
         with self.assertRaises(RenderError):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
@@ -1478,8 +1461,8 @@ class HarnessPinTest(unittest.TestCase):
         # against), so the two sides need one observer each.
         reordered = self.src.replace(
             "    character(len=:), allocatable :: name\n"
-            "    character(len=:), allocatable :: json\n",
-            "    character(len=:), allocatable :: json\n"
+            "    integer :: rank\n",
+            "    integer :: rank\n"
             "    character(len=:), allocatable :: name\n")
         self.assertNotEqual(reordered, self.src, "the reorder did not apply to the stub")
         with self.assertRaises(RenderError) as cm:
@@ -1541,21 +1524,38 @@ class HarnessPinTest(unittest.TestCase):
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self._without(
             self.src, *(f"harness_fortran_cpu__{g}" for g in unused)))
 
-    def test_the_rank_1_emitter_is_pinned_on_a_loop_for_its_series(self) -> None:
-        # No rank-1 state in `_boundary_ir`: the rank-1 emitter is the series' on a loop node, and
-        # nothing's on a one-call node.
-        symbol = "harness_fortran_cpu__emit_array_r1"
-        self.assertNotIn("emit_array_r1", _used_harness_ops(self.ir))
+    def test_the_scalar_put_is_pinned_on_a_loop_for_its_series(self) -> None:
+        # A node that captures no scalar state: the scalar put is the series' on a loop node (each
+        # row's extremes are put one scalar at a time), and nothing's on a one-call node.
+        def scalarless(ir: dict) -> dict:
+            schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+            schema["variables"] = [v for v in schema["variables"] if v["shape_expr"] != "scalar"]
+            return ir
+        symbol = "harness_fortran_cpu__capture_real"
+        one_call, looped = scalarless(call_ir(0)), scalarless(loop_ir(0))
+        self.assertNotIn("capture_real", _used_harness_ops(one_call))
         cut = self._without(self.src, symbol)
-        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, cut)
+        assert_harness_pin(one_call, "drv_toy", HARNESS, self.sigs, cut)
+        self.assertIn("capture_real", _used_harness_ops(looped))
+        assert_harness_pin(looped, "drv_toy", HARNESS, self.sigs, self.src)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(looped, "drv_toy", HARNESS, self.sigs, cut)
+        self.assertIn(f"omits {symbol!r}", str(cm.exception))
+
+    def test_the_rank_1_put_is_pinned_only_for_a_rank_1_state(self) -> None:
+        # No rank-1 state in `_boundary_ir`: the series no longer takes a rank-1 put (its rows are
+        # scalars), so a loop over the same state does not pin it either.
+        symbol = "harness_fortran_cpu__capture_array_r1"
+        cut = self._without(self.src, symbol)
         looped = copy.deepcopy(self.ir)
         looped["drive"]["loop"] = {"n_step": "inputs.n_step", "dt": "inputs.dt",
                                    "t_start": "inputs.t_start", "t_end": "inputs.t_end"}
         looped["drive"]["history"] = {"every": "inputs.every"}
-        self.assertIn("emit_array_r1", _used_harness_ops(looped))
-        assert_harness_pin(looped, BOUNDARY_SID, HARNESS, self.sigs, self.src)
+        for ir in (self.ir, looped):
+            self.assertNotIn("capture_array_r1", _used_harness_ops(ir))
+            assert_harness_pin(ir, BOUNDARY_SID, HARNESS, self.sigs, cut)
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(looped, BOUNDARY_SID, HARNESS, self.sigs, cut)
+            assert_harness_pin(call_ir(0), "drv_toy", HARNESS, self.sigs, cut)
         self.assertIn(f"omits {symbol!r}", str(cm.exception))
 
     def test_the_rendered_runner_calls_nothing_of_the_harness_the_pin_does_not_ask(self) -> None:
@@ -1568,7 +1568,7 @@ class HarnessPinTest(unittest.TestCase):
                                ("procedure", procedure_ir(), "drv_toy")):
             with self.subTest(label):
                 txt = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc)
-                named = set(re.findall(r"harness_fortran_cpu__(\w+)", txt)) - {"h_named"}
+                named = set(re.findall(r"harness_fortran_cpu__(\w+)", txt)) - {"h_var"}
                 self.assertEqual(named, set(_used_harness_ops(ir)))
 
     def test_the_distributed_form_calls_nothing_of_the_harness_the_pin_does_not_ask(self) -> None:
@@ -1585,8 +1585,85 @@ class HarnessPinTest(unittest.TestCase):
         for label, ir, sid in shapes:
             with self.subTest(label):
                 txt = render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)
-                named = set(re.findall(r"harness_fortran_cpu_mpi__(\w+)", txt)) - {"h_named"}
+                named = set(re.findall(r"harness_fortran_cpu_mpi__(\w+)", txt)) - {"h_var"}
                 self.assertEqual(named, set(_used_harness_ops(ir, distributed=True)))
+
+
+class CaptureOpenRenderTest(unittest.TestCase):
+    """What the driver declares to `capture_open` (issue #644 P4a): the json store reads none of
+    it, so no run observes it and these rows hold the text."""
+
+    @staticmethod
+    def _flags(text: str) -> dict[str, str]:
+        """Each declared variable's `restart` flag, by name."""
+        names = dict(re.findall(r"cvars\((\d+)\)%name = '(\w+)'", text))
+        return {names[k]: v for k, v in re.findall(r"cvars\((\d+)\)%restart = (\.\w+\.)", text)}
+
+    def test_the_series_names_leave_out_step_and_a_case_holds_only_its_own_rows(self) -> None:
+        # `step` is the commit's, not a name; a continuation case commits only the rows after
+        # its restart step, and a one-call node none.
+        loop = render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertIn("  character(len=5), parameter :: series_names(4) = &\n"
+                      "    [character(len=5) :: &\n"
+                      "    'u_min', &\n    'u_max', &\n    'w_min', &\n    'w_max' &\n    ]\n",
+                      loop)
+        self.assertNotIn("'step'", loop)
+        self.assertIn(f"call {HARNESS}__capture_open(cid, &\n"
+                      "      cvars, 0, series_names, max(n_c - step0, 0))", loop)
+        one = render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertIn("  character(len=1), parameter :: series_names(0) = &\n", one)
+        self.assertIn(f"call {HARNESS}__capture_open(cid, &\n"
+                      "      cvars, 0, series_names, 0)", one)
+
+    def test_the_restart_flag_is_set_exactly_for_the_restart_variables(self) -> None:
+        from tools.tests.test_driver_render import MPI_FIXTURES, _mpi_runner_text
+        for label, ir, text in (
+                ("loop", loop_ir(0), render_runner(loop_ir(0), "drv_toy", HARNESS,
+                                                   target=_TARGET_PROFILE.doc)),
+                ("init", init_ir(0), render_runner(init_ir(0), "drv_toy", HARNESS,
+                                                   target=_TARGET_PROFILE.doc)),
+                ("distributed", MPI_FIXTURES["fx_loop"](), _mpi_runner_text("fx_loop"))):
+            with self.subTest(label):
+                flags = self._flags(text)
+                restart = pe.restart_variables(ir)
+                self.assertTrue(restart)
+                self.assertEqual({v for v, f in flags.items() if f == ".true."}, set(restart))
+                self.assertEqual(set(flags), {v["name"] for v in ir["io_contract"][
+                    "raw_requirements"]["required_evidence"][0]["schema"]["variables"]})
+
+    def test_the_history_capacity_is_the_sample_count_on_a_loop_node_and_0_otherwise(
+            self) -> None:
+        """`n_c / every_c` when `every_c > 0`, else 0, on a loop node (the serial and the
+        distributed form); 0 on a one-call node. The json harness does not read `h_var`, so no
+        json run observes it: a text row."""
+        from tools.tests.test_driver_render import _mpi_runner_text
+
+        def capacities(text: str) -> set[str]:
+            return set(re.findall(r"cvars\(\d+\)%history_capacity = (.+)\n", text))
+
+        loop_capacity = {"merge(n_c / max(every_c, 1), 0, every_c > 0)"}
+        self.assertEqual(loop_capacity, capacities(
+            render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
+        self.assertEqual(loop_capacity, capacities(_mpi_runner_text("fx_loop")))
+        self.assertEqual({"0"}, capacities(
+            render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
+
+    def test_the_distributed_form_declares_the_global_extents(self) -> None:
+        # A partitioned state the kernel writes is held on each rank as its own block; the
+        # capture holds it gathered, so its declared extents are the global cell counts, not the
+        # block's. A partitioned state read from the case file is declared by its global copy.
+        from tools.tests.test_driver_render import _mpi_runner_text
+        prob = _mpi_runner_text("fx_prob")
+        self.assertIn("    cvars(1)%name = 'h'\n", prob)
+        self.assertIn("    cvars(1)%shape(1:2) = [dnc1, dnc2]\n", prob)
+        loop = _mpi_runner_text("fx_loop")
+        self.assertIn("    cvars(5)%name = 'stage_q1'\n", loop)
+        self.assertIn("    cvars(5)%shape(1:3) = [size(st_stage_q1, 1), dnc1, dnc2]\n", loop)
+        self.assertIn("    cvars(1)%name = 'u'\n", loop)
+        self.assertIn("    cvars(1)%shape(1:3) = shape(gl_u)\n", loop)
+        # the serial form declares the state's own extents
+        serial = render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertIn("    cvars(1)%shape(1:1) = shape(st_u)\n", serial)
 
 
 class DeclaredLintRuleHoldTest(unittest.TestCase):
@@ -1702,8 +1779,8 @@ def _build_and_run(d: Path, ir: dict, sid: str, model: str, flags: list[str] | N
         objects.append(f"{stem}.o")
     subprocess.run(["gfortran", *flags, *objects, "-o", "runner"], cwd=d, check=True,
                    capture_output=True)
-    for sub in ("initial", "history", "series"):
-        (d / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    for parts in capture_store.run_dirs("json"):
+        d.joinpath(*parts).mkdir(parents=True, exist_ok=True)
     return _rerun(d, ir, env)
 
 
@@ -1927,17 +2004,23 @@ def _distributed_ir() -> dict:
 class DistributedHarnessBoundTest(unittest.TestCase):
     def test_every_distributed_operation_name_is_bounded(self) -> None:
         """`_check_identifier_lengths` refuses a harness id whose longest name would not fit, the
-        distributed operations included: one of them is longer than any plumbing name, and
-        while `write_metrics_basis` was published that bound came by accident."""
+        distributed operations included: one of them is as long as the longest plumbing name
+        (`capture_array_r4`, issue #644 P4a), and while `write_metrics_basis` was published that
+        bound came by accident. Each of the longest is bounded: with the others' checks gone,
+        the refusal still names it."""
         from tools.backends.language.fortran import runner as fortran_runner
-        longest = "exchange_halo_r1"
-        self.assertEqual(max((*fortran_runner._HARNESS_CORE_OPS,
-                              *fortran_runner._DISTRIBUTED_RUNNER_OPS,
-                              *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS), key=len), longest)
+        names = (*fortran_runner._HARNESS_CORE_OPS, *fortran_runner._DISTRIBUTED_RUNNER_OPS,
+                 *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS)
+        width = max(map(len, names))
+        self.assertEqual(sorted({n for n in names if len(n) == width}),
+                         ["capture_array_r4", "exchange_halo_r1", "exchange_halo_r2"])
         limit = fortran_runner.bundle.IDENTIFIER_MAX
-        fits = "h" * (limit - len(longest) - 2)
+        fits = "h" * (limit - width - 2)
         fortran_runner._check_identifier_lengths("bx", fits)
-        with self.assertRaisesRegex(fortran_runner.RenderError, "exchange_halo_r1"):
+        with self.assertRaisesRegex(fortran_runner.RenderError, "capture_array_r4"):
+            fortran_runner._check_identifier_lengths("bx", fits + "h")
+        with mock.patch.object(fortran_runner, "_HARNESS_CORE_OPS", ()), \
+                self.assertRaisesRegex(fortran_runner.RenderError, "exchange_halo_r1"):
             fortran_runner._check_identifier_lengths("bx", fits + "h")
 
     def test_the_distributed_form_is_in_the_compile_mirror(self) -> None:
@@ -2110,12 +2193,11 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
     def test_every_imported_harness_and_model_name_is_used(self) -> None:
         for _ir, sid, harness, text in self._each():
             imported, after = self._use_block(text, f"{harness}_model")
-            self.assertIn(f"{harness}__h_named", imported)
+            self.assertIn(f"{harness}__h_var", imported)
             for name in imported:
                 self.assertRegex(after, rf"\b{name}\b", name)
-            # the types the runner no longer builds are not imported, though the pinned harness
-            # still publishes them until the harness PR
-            self.assertEqual([n for n in imported if "__h_" in n], [f"{harness}__h_named"])
+            # the types the runner no longer builds are not imported
+            self.assertEqual([n for n in imported if "__h_" in n], [f"{harness}__h_var"])
             operations, after = self._use_block(text, f"{sid}_model")
             self.assertTrue(operations)
             for name in operations:
@@ -2127,12 +2209,12 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
                 "required_evidence"][0]["schema"]["variables"]]
             capture = text[text.index("  subroutine capture_state("):
                            text.index("  end subroutine capture_state")]
-            self.assertIn(f"allocate(out({len(variables) + 1}))", capture)
-            for name in variables:
-                self.assertRegex(capture, rf"__box\(\s*&?\s*'{name}'", name)
-                self.assertIn(f"st_{name}", capture)
-            self.assertIn(f"call {harness}__write_snapshot('initial/'//cid, vals, t_c)", text)
-            self.assertIn(f"call {harness}__write_snapshot(cid, vals, t_c)", text)
+            puts = re.findall(rf"call {harness}__capture_(?:real|array_r\d)\(group, &\n"
+                              r"\s*'(\w+)', &\n\s*st_(\w+)\)", capture)
+            self.assertEqual(sorted(puts), sorted((name, name) for name in variables))
+            self.assertIn(f"call {harness}__capture_commit(group, step_c, t_c)", capture)
+            self.assertIn("call capture_state('initial')", text)
+            self.assertIn("call capture_state('final')", text)
 
     def test_write_perf_is_called_once_after_the_case_loop(self) -> None:
         for _ir, _sid, harness, text in self._each():

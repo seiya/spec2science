@@ -8,10 +8,10 @@ It takes a compiled IR plus the target/harness spec ids and returns the text of
 ``<spec_id>_runner.f90`` — the deterministic driver of the physics node (issue #589): per case it
 reads the host-written case file through the certified harness (``harness_fortran_cpu``), allocates
 the state, calls the operations the node's model publishes, owns the time loop on a ``loop`` node,
-and writes every capture THROUGH the harness's plumbing. Because the harness's interface owns the
-JSON envelope assembly (§3 / §5.1 of the harness controlled_spec), this renderer holds **no
-serialization knowledge**: it calls the writers — it never formats a JSON token, and it judges
-nothing (the host's predicates over the captures do, issue #582).
+and writes every capture THROUGH the harness's capture interface. Because the harness owns the
+output format (§3.2 / §5.1 of the harness controlled_spec), this renderer holds **no knowledge
+of it**: it names a capture group and a value — it never spells a file name or a token, and it
+judges nothing (the host's predicates over the captures do, issue #582).
 
 Split of authorship on an M3c node:
 - ``<spec_id>_model.f90`` — the physics kernel + its published operations   (LLM leaf)
@@ -110,10 +110,11 @@ def max_rendered_line() -> int:
 # The harness symbols this template calls (pinned by assert_harness_pin against
 # the certified harness IR). Emitters are added per-rank on demand.
 _HARNESS_TYPES = (
-    "h_named",
+    "h_var",
 )
 _HARNESS_CORE_OPS = (
-    "parse_cases", "box", "write_snapshot", "write_perf", "read_case", "get_array_r4",
+    "parse_cases", "capture_open", "capture_real", "capture_array_r4", "capture_commit",
+    "capture_close", "write_perf", "read_case", "get_array_r4",
 )
 
 #: The width of one command-line token of the rendered driver: the spec path is one, and a longer
@@ -210,7 +211,7 @@ def _threads(target: dict[str, Any]) -> int:
     variant's perf record writes it (a launcher target runs one thread per rank, so every
     shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
     writes the one the run's shared-memory runtime gives the program, obtained at run time
-    (`harness_fortran_cpu@0.10.0` §3.2, issue #512)."""
+    (`harness_fortran_cpu@0.11.0` §3.2, issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -266,14 +267,20 @@ def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[
     (`_distributed_ops`), which the program `use`s by the same list."""
     schema, _ = _snapshot_schema(ir)
     plan = runner_ir.driver_plan(ir, schema)
-    ops = ["parse_cases", "read_case", *plan.getters, "emit_real"]
-    ranks = set(plan.array_ranks) | ({1} if plan.loop else set())
-    ops += [f"emit_array_r{r}" for r in sorted(ranks)]
-    ops += ["box", "write_snapshot", "write_perf"]
+    ops = ["parse_cases", "read_case", *plan.getters, *_capture_ops(plan), "write_perf"]
     if distributed:
         dist = _distribution(ir, schema, plan, None, _DRY_RUN_TARGET)
         ops += _distributed_ops(plan, dist)
     return ops
+
+
+def _capture_ops(plan: runner_ir.DriverPlan) -> list[str]:
+    """The capture operations the driver of ``plan`` calls: the scalar put only where a state
+    is a scalar or a series is written, the array puts of the ranks the state holds."""
+    scalar = plan.loop or any(rank == 0 for rank in plan.variables.values())
+    return ["capture_open", *(["capture_real"] if scalar else []),
+            *(f"capture_array_r{r}" for r in plan.array_ranks),
+            "capture_commit", "capture_close"]
 
 
 def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
@@ -289,8 +296,8 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
-    # The distributed operations are bounded with the plumbing: `exchange_halo_r1` is longer than
-    # any plumbing name, and a consumer's model calls it.
+    # The distributed operations are bounded with the plumbing: `exchange_halo_r1` is as long as
+    # the longest plumbing name (`capture_array_r4`), and a consumer's model calls it.
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS, *_DISTRIBUTED_RUNNER_OPS,
                 *PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
         name = _hname(harness_spec_id, sym)
@@ -751,13 +758,10 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
                     H: Any, target_class: str, devices: int, dist: _Dist | None = None) -> None:
     from_module = {v.local for v in plan.procedure_hosts}
     records = set(plan.record_states)
-    emit_ops = ["emit_real"] + [f"emit_array_r{r}" for r in plan.array_ranks]
-    if plan.loop and 1 not in plan.array_ranks:
-        emit_ops.insert(1, "emit_array_r1")
     harness_syms = [
         *[H(t) for t in _HARNESS_TYPES], H("parse_cases"), H("read_case"),
-        *[H(g) for g in plan.getters], *[H(op) for op in emit_ops],
-        H("box"), H("write_snapshot"), H("write_perf")]
+        *[H(g) for g in plan.getters], *[H(op) for op in _capture_ops(plan)],
+        H("write_perf")]
     if dist is not None:
         harness_syms += [H(op) for op in _distributed_ops(plan, dist)]
     operations = list(dict.fromkeys(
@@ -768,11 +772,11 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("! Deterministic driver rendered by the host from the node's IR (issue #589). Per case it")
     a("! reads the host-written case file, allocates the state, calls the published operations,")
     a("! owns the time loop on a loop node, and writes every capture THROUGH the certified")
-    a(f"! {harness_spec_id} plumbing, which owns all JSON assembly.")
+    a(f"! {harness_spec_id} plumbing, which owns the output format.")
     if dist is not None:
         a("! The program runs as several ranks (issue #610): every rank reads the whole case; on a")
         a("! case the replication table distributes it calls the operations on its own block, the")
-        a("! partitioned state is gathered onto rank 0 at each capture, and rank 0 writes.")
+        a("! partitioned state is gathered onto rank 0 at each capture, and rank 0 captures.")
     a(f"program {spec_id}_runner")
     a("  use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit")
     if plan.work_vars or plan.loop:
@@ -814,14 +818,22 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("  character(len=token_len), allocatable :: tokens(:)")
     a("  character(len=case_id_len), allocatable :: case_ids(:)")
     a("  character(len=:), allocatable :: cid")
-    a(f"  type({H('h_named')}), allocatable :: vals(:)")
+    a(f"  type({H('h_var')}) :: cvars({len(plan.variables)})")
+    # The series the case commits, without `step`: the commit carries it.
+    series = plan.series_names[1:]
+    width = max((len(name) for name in series), default=1)
+    a(f"  character(len={width}), parameter :: series_names({len(series)}) = &")
+    a(f"    [character(len={width}) :: &")
+    for k, name in enumerate(series):
+        a(f"    '{_flit(name)}'{', &' if k < len(series) - 1 else ' &'}")
+    a("    ]")
     if plan.list_form:
         a("  integer :: entry_no")
     if plan.loop:
-        a("  integer :: n, n_c, every_c, n_done, step0")
+        a("  integer :: n, n_c, every_c, step0")
         a("  real(dp) :: dt_c, t_start_c")
-        a("  real(dp), allocatable :: se(:, :)")
-        a("  character(len=24) :: step_text")
+        if dist is not None and any(v in plan.written for v in plan.arrays):
+            a("  real(dp) :: f_min, f_max")
     for var, rank in plan.variables.items():
         if var in records:
             continue
@@ -949,34 +961,21 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("")
     a("contains")
     a("")
-    a("  ! Every declared state variable, `t` (the writer's) and `step`: the same set at every")
-    a("  ! capture point of every case.")
-    a("  subroutine capture_state(out)")
-    a(f"    type({H('h_named')}), allocatable, intent(out) :: out(:)")
+    a("  ! One record of `group`: every declared state variable, closed with the committed")
+    a("  ! `step` and `t` — the same set at every capture point of every case.")
+    a("  subroutine capture_state(group)")
+    a("    character(len=*), intent(in) :: group")
     if dist is None:
-        a(f"    allocate(out({len(plan.variables) + 1}))")
-        for k, (var, rank) in enumerate(plan.variables.items(), start=1):
-            a(f"    out({k}) = {H('box')}('{_flit(var)}', &")
-            a(f"      {H('emit_real') if rank == 0 else H(f'emit_array_r{rank}')}({_ST}{var}))")
-        a(f"    out({len(plan.variables) + 1}) = {H('box')}('step', &")
-        a(f"      {H('emit_real')}(real(step_c, dp)))")
+        for var, rank in plan.variables.items():
+            put = H("capture_real") if rank == 0 else H(f"capture_array_r{rank}")
+            a(f"    call {put}(group, &")
+            a(f"      '{_flit(var)}', &")
+            a(f"      {_ST}{var})")
+        a(f"    call {H('capture_commit')}(group, step_c, t_c)")
     else:
         _render_distributed_capture(a, plan, dist, H)
     a("  end subroutine capture_state")
     if plan.loop:
-        a("")
-        a("  ! The committed steps `step0 + 1 .. n_done` of one series column; the empty list is")
-        a("  ! this glue's own token,")
-        a("  ! since no emitter contract covers a zero-length array.")
-        a("  function series_json(column) result(s)")
-        a("    integer, intent(in) :: column")
-        a("    character(len=:), allocatable :: s")
-        a("    if (n_done == step0) then")
-        a("      s = '[]'")
-        a("    else")
-        a(f"      s = {H('emit_array_r1')}(se(step0 + 1:n_done, column))")
-        a("    end if")
-        a("  end function series_json")
         if dist is None:
             local_ranks, reduced_ranks = plan.array_ranks, ()
         else:
@@ -1045,17 +1044,16 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
 
 def _render_distributed_capture(a: Any, plan: runner_ir.DriverPlan, dist: _Dist, H: Any) -> None:
     """`capture_state` of the distributed form (B10): every rank takes part in each gather of a
-    partitioned array the driver or the kernel writes (a collective), and rank 0 boxes. A
+    partitioned array the driver or the kernel writes (a collective), and rank 0 captures. A
     replicated case gathers nothing (a gather of a whole array on every rank does not tile);
-    an array nothing writes is boxed from the global copy every rank read; a scalar is rank
+    an array nothing writes is captured from the global copy every rank read; a scalar is rank
     0's."""
     gathered_ranks = sorted({plan.variables[v] for v in dist.gathered})
     for r in gathered_ranks:
         a(f"    real(dp), allocatable :: g_r{r}({_colons(r)})")
-    a(f"    allocate(out({len(plan.variables) + 1}))")
-    for k, (var, rank) in enumerate(plan.variables.items(), start=1):
-        emit = H("emit_real") if rank == 0 else H(f"emit_array_r{rank}")
-        box = f"out({k}) = {H('box')}('{_flit(var)}', &"
+    for var, rank in plan.variables.items():
+        put = H("capture_real") if rank == 0 else H(f"capture_array_r{rank}")
+        call = f"if (rank == 0) call {put}(group, &"
         if var in dist.gathered:
             layout = dist.layouts[var]
             slots: list[str] = []
@@ -1070,21 +1068,23 @@ def _render_distributed_capture(a: Any, plan: runner_ir.DriverPlan, dist: _Dist,
             if len(dist.axes) == 1:
                 slots += ["0", "1", "1", "1"]
             a("    if (replicated) then")
-            a(f"      if (rank == 0) {box}")
-            a(f"        {emit}({_ST}{var}))")
+            a(f"      {call}")
+            a(f"        '{_flit(var)}', &")
+            a(f"        {_ST}{var})")
             a("    else")
             a(f"      call {H(f'gather_r{rank}')}({_ST}{var}, &")
             a(f"        {', '.join(slots[:4])}, &")
             a(f"        {', '.join(slots[4:])}, g_r{rank})")
-            a(f"      if (rank == 0) {box}")
-            a(f"        {emit}(g_r{rank}))")
+            a(f"      {call}")
+            a(f"        '{_flit(var)}', &")
+            a(f"        g_r{rank})")
             a("    end if")
             continue
         source = f"{_GL}{var}" if var in dist.layouts else f"{_ST}{var}"
-        a(f"    if (rank == 0) {box}")
-        a(f"      {emit}({source}))")
-    a(f"    if (rank == 0) out({len(plan.variables) + 1}) = {H('box')}('step', &")
-    a(f"      {H('emit_real')}(real(step_c, dp)))")
+        a(f"    {call}")
+        a(f"      '{_flit(var)}', &")
+        a(f"      {source})")
+    a(f"    if (rank == 0) call {H('capture_commit')}(group, step_c, t_c)")
 
 
 def _render_partition(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
@@ -1235,11 +1235,9 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
             a(f"{ind}if (case_refused) n_c = 0")
     if plan.loop:
         _render_restart(a, plan, entry, H, ind, dist)
-    write = f"{ind}if (rank == 0) " if dist is not None else ind
-    a(f"{ind}! --- the initial capture (raw/state_snapshots/initial/<case_id>.json) ---")
-    a(f"{ind}call capture_state(vals)")
-    a(f"{write}call {H('write_snapshot')}('initial/'//cid, vals, t_c)")
-    a(f"{ind}deallocate(vals)")
+    _render_capture_open(a, plan, entry, H, ind, dist)
+    a(f"{ind}! --- the initial capture ---")
+    a(f"{ind}call capture_state('initial')")
     if plan.loop:
         _render_loop(a, plan, entry, H, ind, dist)
     else:
@@ -1248,30 +1246,53 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         _render_call(a, entry.step, ind + "  ", timed=True, dist=dist)
         a(f"{ind}  if ({_LG}{entry.step.result_state}) step_c = 1")
         a(f"{ind}end if")
-    a(f"{ind}! --- the final capture (raw/state_snapshots/<case_id>.json) ---")
-    a(f"{ind}call capture_state(vals)")
-    a(f"{write}call {H('write_snapshot')}(cid, vals, t_c)")
-    a(f"{ind}deallocate(vals)")
-    if plan.loop:
-        names = plan.series_names
-        inner = ind
-        if dist is not None:
-            a(f"{ind}if (rank == 0) then")
-            inner = ind + "  "
-        a(f"{inner}allocate(vals({len(names)}))")
-        for col, name in enumerate(names, start=1):
-            a(f"{inner}vals({col}) = {H('box')}('{_flit(name)}', series_json({col}))")
-        a(f"{inner}call {H('write_snapshot')}('series/'//cid, vals, t_c)")
-        a(f"{inner}deallocate(vals)")
-        if dist is not None:
-            a(f"{ind}end if")
-        a(f"{ind}deallocate(se)")
+    a(f"{ind}! --- the final capture, and the end of the case's output ---")
+    a(f"{ind}call capture_state('final')")
+    a(f"{ind}{'if (rank == 0) ' if dist is not None else ''}call {H('capture_close')}()")
     if dist is not None:
         # The GLOBAL extents (B10), in the entry that ran the case: a sum of the ranks' blocks
         # would count a replicated case once per rank, and a rank's own block is not the case's
         # largest array.
         _render_cells_total(a, [_global_size(v, entry, dist) for v in plan.arrays], ind,
                             "(step_c - step0)" if plan.loop else "step_c")
+
+
+def _global_shape(var: str, entry: runner_ir.EntryPlan, dist: _Dist | None) -> str:
+    """The extents of state ``var`` as the captures hold it, an integer array expression: its
+    own on the single-process form and for a state every rank holds whole; on the distributed
+    form the GLOBAL ones, read as `_global_size` reads the element count."""
+    layout = dist.layouts.get(var) if dist is not None else None
+    if layout is None:
+        return f"shape({_ST}{var})"
+    if var in entry.from_file:
+        return f"shape({_GL}{var})"
+    return "[" + ", ".join(
+        f"size({_ST}{var}, {i})" if dim is None
+        else f"dnc{dim[0] + 1}{' + 1' if dim[1] == 'face' else ''}"
+        for i, dim in enumerate(layout, start=1)) + "]"
+
+
+def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
+                         ind: str, dist: _Dist | None = None) -> None:
+    """The start of the case's output: what the harness's format may need defined before the
+    first record — each state variable's name, rank and extents, the number of samples it may
+    hold, whether a restart point holds it — and the series' names and row count. No restart
+    point is committed (a restart point is a history sample), so its capacity is 0."""
+    a(f"{ind}! --- the case's output: its variables and the records it may hold ---")
+    restart = set(plan.restart_vars)
+    samples = "merge(n_c / max(every_c, 1), 0, every_c > 0)" if plan.loop else "0"
+    for k, (var, rank) in enumerate(plan.variables.items(), start=1):
+        a(f"{ind}cvars({k})%name = '{_flit(var)}'")
+        a(f"{ind}cvars({k})%rank = {rank}")
+        a(f"{ind}cvars({k})%shape = 0")
+        if rank:
+            for line in _wrap(f"cvars({k})%shape(1:{rank}) = {_global_shape(var, entry, dist)}"):
+                a(f"{ind}{line}")
+        a(f"{ind}cvars({k})%history_capacity = {samples}")
+        a(f"{ind}cvars({k})%restart = {'.true.' if var in restart else '.false.'}")
+    rows = "max(n_c - step0, 0)" if plan.loop else "0"
+    a(f"{ind}{'if (rank == 0) ' if dist is not None else ''}call {H('capture_open')}(cid, &")
+    a(f"{ind}  cvars, 0, series_names, {rows})")
 
 
 def _render_restart(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
@@ -1320,8 +1341,6 @@ def _render_restart(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPl
 
 def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
                  ind: str, dist: _Dist | None = None) -> None:
-    a(f"{ind}n_done = step0")
-    a(f"{ind}allocate(se(step0 + 1:max(n_c, step0), {len(plan.series_names)}))")
     a(f"{ind}do n = step0 + 1, n_c")
     in1 = ind + "  "
     for var in entry.work_copy:
@@ -1330,38 +1349,37 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
         a(f"{in1}{_WK}{var} = ieee_value(1.0_dp, ieee_quiet_nan)")
     _render_call(a, entry.step, in1, timed=True, dist=dist)
     a(f"{in1}if (.not. {_LG}{entry.step.result_state}) exit")
-    a(f"{in1}! --- committed: the state, step, t, the series entry, the sample ---")
+    a(f"{in1}! --- committed: the state, step, t, the series row, the sample ---")
     for var in (*entry.work_copy, *entry.work_nan):
         a(f"{in1}{_ST}{var} = {_WK}{var}")
     a(f"{in1}step_c = n")
     a(f"{in1}t_c = t_start_c + real(n, dp) * dt_c")
-    a(f"{in1}n_done = n")
-    a(f"{in1}se(n, 1) = real(n, dp)")
-    col = 2
+    root = "if (rank == 0) " if dist is not None else ""
+    put = H("capture_real")
     for var in plan.arrays:
         rank = plan.variables[var]
+        lo, hi = f"'{_flit(var)}_min'", f"'{_flit(var)}_max'"
         if dist is not None and var in plan.written:
             # B9: a written array's extremes over the owned positions, reduced over the ranks.
             owned = _owned(dist.layouts[var]) if var in dist.layouts else _colons(rank)
             a(f"{in1}call dfold_r{rank}({_ST}{var}({owned}), &")
-            a(f"{in1}  se(n, {col}), se(n, {col + 1}))")
+            a(f"{in1}  f_min, f_max)")
+            a(f"{in1}{root}call {put}('series', &")
+            a(f"{in1}  {lo}, f_min)")
+            a(f"{in1}{root}call {put}('series', &")
+            a(f"{in1}  {hi}, f_max)")
         else:
             # An array nothing writes: its global copy, the same on every rank and every grid.
             source = f"{_GL}{var}" if dist is not None and var in dist.layouts else f"{_ST}{var}"
-            a(f"{in1}se(n, {col}) = fold_min_r{rank}({source})")
-            a(f"{in1}se(n, {col + 1}) = fold_max_r{rank}({source})")
-        col += 2
+            a(f"{in1}{root}call {put}('series', &")
+            a(f"{in1}  {lo}, &")
+            a(f"{in1}  fold_min_r{rank}({source}))")
+            a(f"{in1}{root}call {put}('series', &")
+            a(f"{in1}  {hi}, &")
+            a(f"{in1}  fold_max_r{rank}({source}))")
+    a(f"{in1}{root}call {H('capture_commit')}('series', n, t_c)")
     a(f"{in1}if (every_c > 0) then")
-    a(f"{in1}  if (mod(n, every_c) == 0) then")
-    a(f"{in1}    write(step_text, '(I0)') n")
-    a(f"{in1}    call capture_state(vals)")
-    if dist is not None:
-        a(f"{in1}    if (rank == 0) call {H('write_snapshot')}( &")
-    else:
-        a(f"{in1}    call {H('write_snapshot')}( &")
-    a(f"{in1}      'history/'//cid//'__'//trim(step_text), vals, t_c)")
-    a(f"{in1}    deallocate(vals)")
-    a(f"{in1}  end if")
+    a(f"{in1}  if (mod(n, every_c) == 0) call capture_state('history')")
     a(f"{in1}end if")
     a(f"{ind}end do")
 
@@ -1390,10 +1408,13 @@ DISTRIBUTED_HARNESS_SPEC_ID = "harness_fortran_cpu_mpi"
 # the pin it is compared with and the render template must be updated together (the pin message
 # says so).
 _HARNESS_V3_INTERFACE = """\
-type :: harness_fortran_cpu__h_named
+type :: harness_fortran_cpu__h_var
   character(len=:), allocatable :: name
-  character(len=:), allocatable :: json
-end type harness_fortran_cpu__h_named
+  integer :: rank
+  integer :: shape(4)
+  integer :: history_capacity
+  logical :: restart
+end type harness_fortran_cpu__h_var
 
 subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
   character(len=*), intent(in) :: tokens(:)
@@ -1403,52 +1424,57 @@ subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, o
   logical, intent(out) :: ok
 end subroutine harness_fortran_cpu__parse_cases
 
-function harness_fortran_cpu__emit_real(x) result(s)
+function harness_fortran_cpu__real_token(x) result(s)
   real(dp), intent(in) :: x
   character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_real
+end function harness_fortran_cpu__real_token
 
-function harness_fortran_cpu__emit_int(i) result(s)
-  integer, intent(in) :: i
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_int
-
-function harness_fortran_cpu__emit_bool(b) result(s)
-  logical, intent(in) :: b
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_bool
-
-function harness_fortran_cpu__emit_array_r1(a) result(s)
-  real(dp), intent(in) :: a(:)
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_array_r1
-
-function harness_fortran_cpu__emit_array_r2(a) result(s)
-  real(dp), intent(in) :: a(:,:)
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_array_r2
-
-function harness_fortran_cpu__emit_array_r3(a) result(s)
-  real(dp), intent(in) :: a(:,:,:)
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_array_r3
-
-function harness_fortran_cpu__emit_array_r4(a) result(s)
-  real(dp), intent(in) :: a(:,:,:,:)
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__emit_array_r4
-
-function harness_fortran_cpu__box(name, json) result(nv)
-  character(len=*), intent(in) :: name
-  character(len=*), intent(in) :: json
-  type(harness_fortran_cpu__h_named) :: nv
-end function harness_fortran_cpu__box
-
-subroutine harness_fortran_cpu__write_snapshot(case_id, values, time)
+subroutine harness_fortran_cpu__capture_open(case_id, vars, restart_point_capacity, series_names, series_capacity)
   character(len=*), intent(in) :: case_id
-  type(harness_fortran_cpu__h_named), intent(in) :: values(:)
-  real(dp), intent(in) :: time
-end subroutine harness_fortran_cpu__write_snapshot
+  type(harness_fortran_cpu__h_var), intent(in) :: vars(:)
+  integer, intent(in) :: restart_point_capacity
+  character(len=*), intent(in) :: series_names(:)
+  integer, intent(in) :: series_capacity
+end subroutine harness_fortran_cpu__capture_open
+
+subroutine harness_fortran_cpu__capture_real(group, name, x)
+  character(len=*), intent(in) :: group
+  character(len=*), intent(in) :: name
+  real(dp), intent(in) :: x
+end subroutine harness_fortran_cpu__capture_real
+
+subroutine harness_fortran_cpu__capture_array_r1(group, name, a)
+  character(len=*), intent(in) :: group
+  character(len=*), intent(in) :: name
+  real(dp), intent(in) :: a(:)
+end subroutine harness_fortran_cpu__capture_array_r1
+
+subroutine harness_fortran_cpu__capture_array_r2(group, name, a)
+  character(len=*), intent(in) :: group
+  character(len=*), intent(in) :: name
+  real(dp), intent(in) :: a(:,:)
+end subroutine harness_fortran_cpu__capture_array_r2
+
+subroutine harness_fortran_cpu__capture_array_r3(group, name, a)
+  character(len=*), intent(in) :: group
+  character(len=*), intent(in) :: name
+  real(dp), intent(in) :: a(:,:,:)
+end subroutine harness_fortran_cpu__capture_array_r3
+
+subroutine harness_fortran_cpu__capture_array_r4(group, name, a)
+  character(len=*), intent(in) :: group
+  character(len=*), intent(in) :: name
+  real(dp), intent(in) :: a(:,:,:,:)
+end subroutine harness_fortran_cpu__capture_array_r4
+
+subroutine harness_fortran_cpu__capture_commit(group, step, t)
+  character(len=*), intent(in) :: group
+  integer, intent(in) :: step
+  real(dp), intent(in) :: t
+end subroutine harness_fortran_cpu__capture_commit
+
+subroutine harness_fortran_cpu__capture_close()
+end subroutine harness_fortran_cpu__capture_close
 
 subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
   character(len=*), intent(in) :: case_id
@@ -1514,7 +1540,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
     f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
 )
 
-# Verbatim copy of `harness_fortran_cpu_mpi@0.4.0` §5.1's distributed-state operations (§3.3),
+# Verbatim copy of `harness_fortran_cpu_mpi@0.5.0` §5.1's distributed-state operations (§3.3),
 # as the language backend renders them. That harness's §5.1 is `_HARNESS_V3_INTERFACE` under its
 # own `<spec_id>__` names followed by this block (its §5 says so), so its pinned interface is
 # composed below rather than copied twice.
@@ -1639,7 +1665,7 @@ end function harness_fortran_cpu_mpi__reduce_sum_int
 """
 
 
-# `harness_fortran_cpu@0.10.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
+# `harness_fortran_cpu@0.11.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
 # renders it: the stanza of `_HARNESS_V3_INTERFACE` without the `threads_per_rank` argument,
 # because that harness's writer obtains the thread count itself, at run time. Its §5.1 is
 # `_HARNESS_V3_INTERFACE` with this stanza in place of that one; the distributed harness keeps

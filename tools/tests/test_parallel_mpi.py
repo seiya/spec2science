@@ -260,7 +260,7 @@ class PromptFragmentTests(unittest.TestCase):
             self.assertIn("GLOBAL index", text)
         self.assertNotIn('"model": "none"', producer)
         self.assertIn("receives the BLOCK's count", producer)
-        self.assertIn("the partition, the writers, the emitters, the gathers", producer)
+        self.assertIn("the partition, the writers, the capture operations, the gathers", producer)
         self.assertIn("decides a wall by `__grid_coord`", reviewer)
         self.assertIn("partitions again", reviewer)
         # Round 1 of PR-B2: a sum over the ranks counts a cell once per rank holding it (a

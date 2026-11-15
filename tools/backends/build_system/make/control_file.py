@@ -103,9 +103,8 @@ def _capture_dirs(capture_dirs: Iterable[Sequence[str]]) -> str:
     """The directories the `test` recipe pre-creates in the run directory before the runner
     runs, as the `mkdir -p` operands: each of ``capture_dirs`` (path parts below the run
     directory) under `$(RUNDIR)`. Which directories those are is the host's answer
-    (`tools/capture_store.run_dirs`: the capture directory alone for a hand-authored runner,
-    the target's capture store's own directories below it for the runner the host renders,
-    `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3), the same one `Validate.execute` creates for
+    (`tools/capture_store.run_dirs`: the target's capture store's directories below the
+    capture directory, `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3), the same one `Validate.execute` creates for
     the run. ONE helper so the two renderers cannot drift."""
     return " ".join("$(RUNDIR)/" + "/".join(parts) for parts in capture_dirs)
 

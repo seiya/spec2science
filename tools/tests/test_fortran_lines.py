@@ -664,7 +664,7 @@ class ModelHarnessIsolationScanTests(unittest.TestCase):
         self.assertEqual([], self._scan("    call report('verdict.json')"))
 
     def test_the_model_side_harness_use_is_refused_in_every_form(self) -> None:
-        for body in ("    use harness_fortran_cpu_model, only: harness_fortran_cpu__box",
+        for body in ("    use harness_fortran_cpu_model, only: harness_fortran_cpu__capture_real",
                      "    use :: harness_x", "    use, non_intrinsic :: harness_x",
                      "    use iso_c_binding; use harness_x", "    USE HARNESS_X",
                      "    u&\n    &se harness_x"):
@@ -683,7 +683,7 @@ class ModelHarnessIsolationScanTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual([], self._scan(body, allowed_harness_uses=allowed))
         for body, cue in (("    use harness_d_model", "no `only:` list"),
-                          ("    use harness_d_model, only: harness_d__box", "not one of them"),
+                          ("    use harness_d_model, only: harness_d__capture_real", "not one of them"),
                           ("    use harness_d_model, only: harness_d__partition, x", "not one of them"),
                           ("    use harness_other_model, only: harness_d__partition",
                            "is not a harness module a physics source may use")):

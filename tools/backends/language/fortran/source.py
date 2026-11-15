@@ -1993,72 +1993,39 @@ def validate_runner_json_serialization(
 
 
 
-def _runner_snapshot_literal(suffix: str) -> re.Pattern[str]:
-    """A whole-path snapshot data filename embedded in a single string literal:
-    ``state_snapshots/<name><suffix>``, ``suffix`` being the capture file suffix of the run's
-    output format (`FORMAT_FACTS`, handed in by the validator). The per-case contract requires
-    the runner to BUILD the name from the case_id it receives on argv (e.g.
-    ``'raw/state_snapshots/'//trim(case_id)//'<suffix>'``), which keeps the suffix in a
-    SEPARATE literal so this pattern does not match. A fixed/sequential literal
-    (``snapshot_0001<suffix>``, a combined file) does match. The character class
-    excludes quotes so a match never crosses a string-literal boundary."""
-    return re.compile(r"state_snapshots/([^/'\"]+)" + re.escape(suffix))
-
-
-
 def validate_runner_snapshot_filenames(
     runner_file: Path,
     text: str,
     violations: list[str],
-    known_case_ids: set[str] | None = None,
-    *,
-    format_facts: Mapping[str, Any],
 ) -> None:
-    """Flag a hardcoded ``raw/state_snapshots/<name><suffix>`` filename in the runner,
-    ``<suffix>`` being ``format_facts["suffix"]`` — the capture file suffix of the run's output
-    format (the capture store's `FORMAT_FACTS`; ``.json`` in the examples below).
+    """Flag a statement of the runner that names the capture directory (``state_snapshots``).
 
-    ``Validate.execute``'s deliverable gate requires exactly one
-    ``raw/state_snapshots/<case_id>.json`` per ``case.test_case_set[].case_id``
-    (``workflow_conductor.build_launch_request``), so the runner must build the
-    snapshot path from the ``case_id`` it receives on argv (``--cases <spec>
-    <case_id>...``) rather than emitting a fixed/sequential name. This best-effort
-    static check catches the common failure: a whole-path string literal carrying
-    ``state_snapshots/<name>.json`` with no per-case concatenation — e.g.
-    ``snapshot_0001.json``. A correctly-built name (``trim(case_id)//'.json'``)
-    keeps ``.json`` in a separate literal and is not flagged; the runtime
-    deliverable gate is the deterministic backstop for constructions this static
-    parse cannot resolve. ``snapshot_schema.json`` (conductor-authored metadata)
-    is exempt. When ``known_case_ids`` is given, a hardcoded literal whose stem IS
-    a declared case_id is NOT flagged — it satisfies the deliverable gate, so
-    flagging it would be a false positive (case-insensitive: ``text`` is the
-    already-lowercased runner source and case_ids are lowercase by convention).
+    A runner writes a capture only through the harness's published capture operations
+    (``capture_open`` / ``capture_real`` / ``capture_array_rN`` / ``capture_commit`` /
+    ``capture_close``); it holds no capture file name and creates, lists and reads nothing
+    under the capture directory (the harness's controlled spec §3.2). The scan reads every
+    runner, the host-rendered driver included; the one a leaf authors is a harness self-test's
+    entry, and a self-test that writes or reads the capture files itself certifies nothing
+    about the capture operations a consumer relies on.
+
+    The rule is the name, not the statement kind: a path held in a variable or a named
+    constant, handed to a helper or opened directly all spell it, and a rule on file-opening
+    statements alone saw a third of the ways the generated runners of the old contract reached
+    the directory (issue #644 P4a review round 2). So a message that names the directory is
+    refused too; a comment is not read. A name assembled from pieces (`'state_snap'//'shots'`)
+    is not seen: this is the ordinary spelling's rule. ``text`` is the lowercased runner
+    source. ``perf.json`` and the case files are not under the capture directory.
     """
-    case_id_stems = (
-        {cid.lower() for cid in known_case_ids} if known_case_ids else set()
-    )
-    suffix = str(format_facts["suffix"])
-    pattern = _runner_snapshot_literal(suffix)
     for lineno, line in iter_logical_lines(text):
-        if "state_snapshots/" not in line:
+        if "state_snapshots" not in line:
             continue
-        # Scope to file-opening statements so a snapshot path written as JSON
-        # *content* (not an output target) is never mistaken for a filename.
-        if "file=" not in line and not re.search(r"\bopen\s*\(", line):
-            continue
-        for match in pattern.finditer(line):
-            name = match.group(1)
-            if name == "snapshot_schema" or name in case_id_stems:
-                continue
-            violations.append(
-                f"{runner_file}:{lineno}: hardcoded snapshot filename "
-                f"'state_snapshots/{name}{suffix}' — write one "
-                f"raw/state_snapshots/<case_id>{suffix} per case, building the name "
-                f"from the case_id received on argv (e.g. trim(case_id)//'{suffix}'); "
-                "a fixed/sequential name fails Validate.execute's per-case "
-                "deliverable gate (phase_02_generate.md / phase_04_validate.md §43)"
-            )
-
+        violations.append(
+            f"{runner_file}:{lineno}: the runner names the capture directory (state_snapshots) — "
+            "commit the case's record through the harness's capture operations (capture_open, "
+            "capture_real / capture_array_rN, capture_commit, capture_close); a runner holds no "
+            "path under the capture directory, in a file name, a variable or a message "
+            "(phase_02_generate.md)"
+        )
 
 
 def statements(text: str) -> list[str]:

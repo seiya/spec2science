@@ -50,15 +50,24 @@ _RUNNER = textwrap.dedent('''\
         seen_inputs[c] = open(path).read() if os.path.exists(path) else None
     seen_dirs = sorted(os.listdir("raw/state_snapshots")) if os.path.isdir(
         "raw/state_snapshots") else []
-    os.makedirs("raw/state_snapshots", exist_ok=True)
+    # The quality check's run comes from this file's own control file, which creates nothing.
+    os.makedirs("raw/state_snapshots/series", exist_ok=True)
     for c in cases:
-        json.dump({"v": 0.0, "t": 1.0}, open("raw/state_snapshots/" + c + ".json", "w"))
-        # The host-rendered driver's other captures (issue #589), when a row asks for them.
+        json.dump({"v": 0.0, "step": 1, "t": 1.0},
+                  open("raw/state_snapshots/" + c + ".json", "w"))
+        # Every case's series chunk 0, on every node, loop or not (issue #644 P4), unless a row
+        # about a missing series withholds it.
+        if not os.environ.get("NO_SERIES"):
+            json.dump({"step": [], "t": []},
+                      open("raw/state_snapshots/series/" + c + "__0.json", "w"))
+        # The host-rendered driver's other captures (issue #589), when a row asks for them: a
+        # state record, or a series chunk of lists (issue #644 P4).
         if os.environ.get("DRIVER_FILES"):
             for name in os.environ["DRIVER_FILES"].split(","):
                 sub, _, stem = name.partition(":")
-                json.dump({"v": 0.0, "t": 1.0},
-                          open("raw/state_snapshots/" + sub + "/" + c + stem + ".json", "w"))
+                doc = ({"step": [1], "t": [1.0]} if sub == "series"
+                       else {"v": 0.0, "step": 1, "t": 1.0})
+                json.dump(doc, open("raw/state_snapshots/" + sub + "/" + c + stem + ".json", "w"))
     # An honest harness reports the thread count the run was launched with (issue #512).
     threads = os.environ.get("OMP_NUM_THREADS")
     json.dump({} if threads is None else {"parallelism": {"threads_per_rank": int(threads)}},
@@ -265,10 +274,11 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         # The quality check ran the same runner in its own directory, and its output came back.
         qc_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "qc_run"
         self.assertEqual(json.loads((qc_tmp / "argv.json").read_text())["cwd"], f"{job}/qc_run")
-        # The job directory carries `raw/state_snapshots/` and, the runner being the node's own
-        # (the IR names no host-rendered kind), no `initial/` (issue #368).
-        self.assertTrue((run_tmp / "raw" / "state_snapshots").is_dir())
-        self.assertFalse((run_tmp / "raw" / "state_snapshots" / "initial").exists())
+        # The job directory carries the store's directories below `raw/state_snapshots/`, the
+        # runner being the node's own (the IR names no host-rendered kind) or not: every runner
+        # writes through the harness (issue #644 P4, reversing issue #368's rule).
+        for sub in ("initial", "history", "restart_point", "series"):
+            self.assertTrue((run_tmp / "raw" / "state_snapshots" / sub).is_dir(), sub)
         # Promoted from the collected run directory, as the local path promotes its own.
         self.assertTrue((n.node_dir / "raw" / "state_snapshots" / "c_alpha.json").is_file())
         self.assertEqual(json.loads((n.node_dir / "quality_check.json").read_text())["status"],
@@ -440,13 +450,13 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         return requests[0]
 
-    def test_the_job_pre_creates_each_capture_dir_only_for_a_host_rendered_runner(self) -> None:
+    def test_the_job_pre_creates_each_capture_dir_for_a_host_rendered_runner(self) -> None:
         # What is on disk is what the job script's `mkdir -p` made at the site: the collected
-        # run directory comes home as is. The host-rendered runner opens a file in each of
-        # `initial/`, `history/`, `series/` relatively, so its job directory carries them, for the
-        # run, every sweep shape and the checked one (issue #368, issue #589).
+        # run directory comes home as is. The harness opens a file in each of the store's
+        # directories relatively, so the job directory carries them, for the run, every sweep
+        # shape and the checked one (issue #589, issue #644 P4).
         n = self.n
-        subs = ("initial", "history", "series")
+        subs = ("initial", "history", "restart_point", "series")
         with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
             request = self._job_request(n)
         tmp = n.repo / "workspace" / "tmp" / "arid-1"
@@ -462,18 +472,24 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                              sorted(subs), prefix)
         self.assertEqual(len(request.dirs), 2 + (1 + len(shapes)) * len(subs))
 
-    def test_a_harness_s_own_job_pre_creates_none_of_them(self) -> None:
+    def test_a_harness_s_own_job_pre_creates_them_too(self) -> None:
+        # Issue #644 P4 reversed issue #368's rule (a node whose runner is its own got the bare
+        # capture directory alone): a harness self-test writes through its own capture
+        # interface, which creates no directory, so its job carries the same set.
         n = self.n
+        subs = ("initial", "history", "restart_point", "series")
         request = self._job_request(n)
         tmp = n.repo / "workspace" / "tmp" / "arid-1"
         shapes = [*(s.label for s in n.target.sweep_shapes), "checked"]
         self.assertEqual(
             sorted(request.dirs),
-            sorted(["run/raw/state_snapshots", "qc_run", "build",
-                    *(f"sweep/{label}/raw/state_snapshots" for label in shapes)]))
+            sorted(["qc_run", "build",
+                    *(f"{prefix}/raw/state_snapshots/{sub}"
+                      for prefix in ("run", *(f"sweep/{label}" for label in shapes))
+                      for sub in subs)]))
         for prefix in ("run", *(f"sweep/{label}" for label in shapes)):
             self.assertEqual(json.loads((tmp / prefix / "argv.json").read_text())["snapshot_dirs"],
-                             [], prefix)
+                             sorted(subs), prefix)
 
     def test_the_job_ships_each_case_file_the_run_then_reads(self) -> None:
         n = self.n
@@ -880,7 +896,7 @@ class DriverEvidencePromotionTests(unittest.TestCase):
             stale = n.node_dir / "raw" / "state_snapshots" / "history" / "c_alpha__9.json"
             stale.parent.mkdir(parents=True)
             stale.write_text("{}", encoding="utf-8")
-            out = self._driver(n, "initial:,history:__1,series:")
+            out = self._driver(n, "initial:,history:__1,series:__0")
             self.assertEqual(out["returncode"], 0, out)
             self.assertFalse(stale.exists())
             self.assertTrue((stale.parent / "c_alpha__1.json").is_file())
@@ -888,13 +904,13 @@ class DriverEvidencePromotionTests(unittest.TestCase):
     def test_history_and_series_are_promoted_flat_and_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, step_series=True)
-            out = self._driver(n, "initial:,history:__1,history:__3,series:")
+            out = self._driver(n, "initial:,history:__1,history:__3,series:__0")
             self.assertEqual(out["returncode"], 0, out)
             snapshots = n.node_dir / "raw" / "state_snapshots"
             expected = ["initial/c_alpha.json", "history/c_alpha__1.json",
-                        "history/c_alpha__3.json", "series/c_alpha.json",
+                        "history/c_alpha__3.json", "series/c_alpha__0.json",
                         "initial/c_beta.json", "history/c_beta__1.json",
-                        "history/c_beta__3.json", "series/c_beta.json"]
+                        "history/c_beta__3.json", "series/c_beta__0.json"]
             for rel in expected:
                 with self.subTest(rel=rel):
                     self.assertTrue((snapshots / rel).is_file())
@@ -904,31 +920,40 @@ class DriverEvidencePromotionTests(unittest.TestCase):
                 self.assertIn(f"{node_ref}/raw/state_snapshots/{rel}", refs)
 
     def test_a_harness_s_own_runner_leaves_no_empty_directory(self) -> None:
+        # The run directory carries the store's directories for every node (issue #644 P4,
+        # reversing issue #368's rule); promotion copies files, so the node holds only the
+        # directory a file was written in: every case's series chunk 0.
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, step_series=False)
             out = n.execute()
             self.assertEqual(out["returncode"], 0, out)
             snapshots = n.node_dir / "raw" / "state_snapshots"
-            for tree in (snapshots, n.repo / "workspace" / "tmp" / "arid-1" / "run" / "raw"
-                         / "state_snapshots"):
-                self.assertEqual([p.name for p in tree.iterdir() if p.is_dir()], [], tree)
+            self.assertEqual([p.name for p in snapshots.iterdir() if p.is_dir()], ["series"],
+                             snapshots)
+            self.assertEqual(sorted(p.name for p in (snapshots / "series").iterdir()),
+                             ["c_alpha__0.json", "c_beta__0.json"])
+            run = n.repo / "workspace" / "tmp" / "arid-1" / "run" / "raw" / "state_snapshots"
+            self.assertEqual(sorted(p.name for p in run.iterdir() if p.is_dir()),
+                             ["history", "initial", "restart_point", "series"], run)
 
     def test_a_driver_that_wrote_no_sample_leaves_no_empty_directory_in_the_node(self) -> None:
-        # The run directory carries all three (the runner needs them); promotion copies files.
+        # The run directory carries every group directory (the runner needs them); promotion copies files.
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, step_series=False)
             self._driver(n, "initial:")
             snapshots = n.node_dir / "raw" / "state_snapshots"
-            self.assertEqual([p.name for p in snapshots.iterdir() if p.is_dir()], ["initial"])
+            self.assertEqual(sorted(p.name for p in snapshots.iterdir() if p.is_dir()),
+                             ["initial", "series"])
 
     def test_the_deliverable_gap_names_a_missing_series_on_a_step_series_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, step_series=True)
-            out = self._driver(n, "initial:")
+            with mock.patch.dict(os.environ, {"NO_SERIES": "1"}):
+                out = self._driver(n, "initial:")
             self.assertIn("snapshot deliverable mismatch", out["stderr"])
-            self.assertIn("series/c_alpha.json", out["stderr"])
-            self.assertIn("series/c_beta.json", out["stderr"])
-            self.assertIn("one raw/state_snapshots/series/<case_id>.json", out["stderr"])
+            self.assertIn("series/c_alpha__0.json", out["stderr"])
+            self.assertIn("series/c_beta__0.json", out["stderr"])
+            self.assertIn("one raw/state_snapshots/series/<case_id>__0.json", out["stderr"])
 
     def test_the_deliverable_gap_does_not_ask_for_a_series_on_a_node_without_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -943,7 +968,7 @@ class DriverEvidencePromotionTests(unittest.TestCase):
             n = self._node(tmp, step_series=True)
 
             def after(snapshots: Path) -> None:
-                (snapshots / "series" / "c_beta.json").unlink()
+                (snapshots / "series" / "c_beta__0.json").unlink()
 
             real = wc.Conductor._promote_run_evidence
 
@@ -952,8 +977,8 @@ class DriverEvidencePromotionTests(unittest.TestCase):
                 return real(self_, run_tmp, node_dir, artifacts)
 
             with mock.patch.object(wc.Conductor, "_promote_run_evidence", drop):
-                out = self._driver(n, "initial:,series:")
-            self.assertIn("missing=['series/c_beta.json']", out["stderr"])
+                out = self._driver(n, "initial:,series:__0")
+            self.assertIn("missing=['series/c_beta__0.json']", out["stderr"])
 
 
 #: A loop driver in miniature (issue #632): the toy loop of `test_driver_render.loop_ir` (`u += dt`,
@@ -980,21 +1005,21 @@ _LOOP_RUNNER = textwrap.dedent('''\
         k0 = 0 if ignore else d["restart.step"]
         if k0 > 0:
             u, w = list(d["restart.u"]), list(d["restart.w"])
-        cap = lambda k: {"u": u, "w": w, "ok": ok, "step": float(k), "t": t0 + k * dt}
+        cap = lambda k: {"u": u, "w": w, "ok": ok, "step": k, "t": t0 + k * dt}
         dump("initial/" + c, cap(k0))
-        series = {"step": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
+        series = {"step": [], "t": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
         scale = (int(os.environ.get("OMP_NUM_THREADS") or 1)
                  if os.environ.get("STEP_BY_THREADS") else 1)
         for k in range(k0 + 1, n + 1):
             u = [x + dt * scale for x in u]
             w, ok = list(u), 1.0
-            for name, col in (("step", [float(k)]), ("u_min", [min(u)]), ("u_max", [max(u)]),
-                              ("w_min", [min(w)]), ("w_max", [max(w)])):
+            for name, col in (("step", [k]), ("t", [t0 + k * dt]), ("u_min", [min(u)]),
+                              ("u_max", [max(u)]), ("w_min", [min(w)]), ("w_max", [max(w)])):
                 series[name] += col
             if every and k % every == 0:
                 dump("history/" + c + "__" + str(k), cap(k))
         dump(c, cap(n))
-        dump("series/" + c, {**series, "t": t0 + n * dt})
+        dump("series/" + c + "__0", series)
         steps += n - k0
         if k0 == 0 and os.environ.get("FAIL_BASE_THREADS") == os.environ.get("OMP_NUM_THREADS"):
             sys.exit(5)
@@ -1219,7 +1244,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertIn("did not start at step 2", row["start_check"])
             # round 3 (D2 F2): its own cause INSTEAD of the generic rename remedy, and the
             # same failure category (the route is unchanged)
-            self.assertNotIn("Name each snapshot exactly", out["stderr"])
+            self.assertNotIn("Commit each case's record", out["stderr"])
             self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
             self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
 
@@ -1238,7 +1263,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             out = self._execute(n, IGNORE_RESTART_CASE="m0_cont2")
             snaps = n.node_dir / "raw" / "state_snapshots"
             self.assertTrue((snaps / "m0_cont.json").is_file())
-            for rel in ("m0_cont2.json", "initial/m0_cont2.json", "series/m0_cont2.json"):
+            for rel in ("m0_cont2.json", "initial/m0_cont2.json", "series/m0_cont2__0.json"):
                 self.assertFalse((snaps / rel).exists(), rel)
             self.assertEqual(list((snaps / "history").glob("m0_cont2__*")), [])
             self.assertIn("continuation 'm0_cont2' has no captures", out["stderr"])
@@ -1291,16 +1316,17 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             shape = Path(tmp) / "shape"
             rdir = shape / "restart"
             src = rdir / "raw" / "state_snapshots"
-            names = ["c.json", "initial/c.json", "series/c.json", "history/c__3.json",
+            names = ["c.json", "initial/c.json", "series/c__0.json", "history/c__3.json",
+                     "series/c__1.json", "restart_point/c__3.json",
                      "c__x.json", "initial/c__x.json", "history/c__x__3.json",
-                     "history/c__3b.json"]
+                     "history/c__3b.json", "series/c__x__0.json", "restart_point/c__x__3.json"]
             for rel in names:
                 (src / rel).parent.mkdir(parents=True, exist_ok=True)
                 (src / rel).write_text("{}")
             self.assertIsNone(wc.Conductor._merge_continuation_captures(rdir, shape, "c", "json"))
             dst = shape / "raw" / "state_snapshots"
             moved = sorted(str(p.relative_to(dst)) for p in dst.rglob("*.json"))
-            self.assertEqual(moved, sorted(names[:4]))
+            self.assertEqual(moved, sorted(names[:6]))
             # the existing-name refusal: the next continuation's final capture collides
             (src / "d.json").write_text("{}")
             (src / "initial" / "d.json").write_text("{}")

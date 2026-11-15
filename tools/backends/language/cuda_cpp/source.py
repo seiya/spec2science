@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -458,49 +458,25 @@ def validate_runner_json_serialization(
             "manipulator `std::hexfloat` — hexadecimal floating point is not a JSON number")
 
 
-def _snapshot_literal(suffix: str) -> re.Pattern[str]:
-    """`state_snapshots/<name><suffix>` inside one literal, ``suffix`` the capture file suffix
-    of the run's output format (`FORMAT_FACTS`, handed in by the validator)."""
-    return re.compile(r"state_snapshots/([^/'\"]+)" + re.escape(suffix))
-
-
-_FILE_OPEN_RE = re.compile(r"\bofstream\b|\bfopen\s*\(|\.\s*open\s*\(|\bfreopen\s*\(")
 
 
 def validate_runner_snapshot_filenames(
     runner_file: Path,
     text: str,
     violations: list[str],
-    known_case_ids: set[str] | None = None,
-    *,
-    format_facts: Mapping[str, Any],
 ) -> None:
-    """Flag a hardcoded `raw/state_snapshots/<name><suffix>` literal on a line that opens a
-    file, `<suffix>` being `format_facts["suffix"]` (the capture file suffix of the run's output
-    format, the capture store's `FORMAT_FACTS`):
-    the runner must build each snapshot's name from the case id it received on argv. A literal
-    whose stem is a declared case id, and `snapshot_schema`, are exempt (the Fortran scan's
-    rules; `text` is lowercased by the validator)."""
-    case_id_stems = {cid.lower() for cid in known_case_ids} if known_case_ids else set()
-    suffix = str(format_facts["suffix"])
-    pattern = _snapshot_literal(suffix)
-    code_lines = cpp_lines.mask(text).split("\n")
+    """Flag a string literal of the runner that names the capture directory (`state_snapshots`):
+    a runner writes a capture only through the harness's capture operations and holds no path
+    under the capture directory, in a file name, a variable or a message (the Fortran scan's
+    rule and reason). A comment is not read. `text` is lowercased by the validator."""
     for lineno, literal in cpp_lines.literals(text):
-        if "state_snapshots/" not in literal:
+        if "state_snapshots" not in literal:
             continue
-        if not _FILE_OPEN_RE.search(code_lines[lineno - 1]):
-            continue
-        for match in pattern.finditer(literal):
-            name = match.group(1)
-            if name == "snapshot_schema" or name in case_id_stems:
-                continue
-            violations.append(
-                f"{runner_file}:{lineno}: hardcoded snapshot filename "
-                f"'state_snapshots/{name}{suffix}' — write one "
-                f"raw/state_snapshots/<case_id>{suffix} "
-                "per case, building the name from the case_id received on argv "
-                f"(`\"raw/state_snapshots/\" + case_id + \"{suffix}\"`); a fixed/sequential name "
-                "fails Validate.execute's per-case deliverable gate")
+        violations.append(
+            f"{runner_file}:{lineno}: the runner names the capture directory (state_snapshots) — "
+            "commit the case's record through the harness's capture operations (capture_open, "
+            "capture_real / capture_array_rN, capture_commit, capture_close); a runner holds no "
+            "path under the capture directory, in a file name, a variable or a message")
 
 
 # --- the parallel presence floor's loop count ---------------------------------------------------

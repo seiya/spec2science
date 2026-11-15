@@ -39,6 +39,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(REPO))
 
+from tools import capture_store  # noqa: E402
 from tools import external_library as xl  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools import validate_pipeline_semantics as vps  # noqa: E402
@@ -90,8 +91,8 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
     (work / "ir").mkdir()
     (work / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, work / "ir")
-    for sub in ("initial", "history", "series"):
-        (work / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+    for parts in capture_store.run_dirs("json"):
+        (work / "run").joinpath(*parts).mkdir(parents=True)
     sid = ir["meta"]["spec_id"]
     (work / "runner.f90").write_text(f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU))
     objs = []

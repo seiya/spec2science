@@ -620,8 +620,8 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # Categories the table above routes to Generate that a HOST-RENDERED-runner node (M3c, see
 # `_conductor_authors_runner`) cannot repair there. On such a node the leaf authors only
 # the model; the runner is rendered by the
-# conductor from the IR (`host_render.render_runner`), which emits the per-case
-# `__write_snapshot` call for every `case.test_case_set[].case_id`. A missing per-case snapshot
+# conductor from the IR (`host_render.render_runner`), which commits the per-case
+# `final` record for every `case.test_case_set[].case_id`. A missing per-case snapshot
 # file is therefore decided entirely by the IR + the renderer — regenerating the model cannot
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
 # attempt that provably cannot converge (the C1/C2 "regenerating one side can't fix the other"
@@ -5791,7 +5791,11 @@ class Conductor:
     def _runner_output_contract_with_binding(self, contract_text: str) -> str:
         """`RUNNER_OUTPUT_CONTRACT.md` whole, followed by the target language's runner-output
         binding (the writer rules its JSON tokens follow; issue #289, R4-b PR-2 moved them out of
-        the neutral document). The binding is read through `prompt_fragments`, and every failure
+        the neutral document) and by the capture layout of the target's output format (which
+        file holds a record of each capture group; issue #644 P4a moved it out of the neutral
+        document, and a harness producer is seeded no `controlled_spec.md`, so this is where the
+        layout its model must write reaches it). The binding is read through
+        `prompt_fragments` and the layout through the format's capture store, and every failure
         RAISES a named `RuntimeError` for the reason `_generate_rules_text` gives."""
         language = self.target.toolchain["language"]
         try:
@@ -5804,7 +5808,14 @@ class Conductor:
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
                 f"pure_runner_output_binding_missing: language {language!r}: {exc}") from exc
-        return f"{contract_text.rstrip()}\n\n{binding}"
+        try:
+            layout = str(capture_store.store(
+                self.target.output_format).capture_layout_document())
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"pure_capture_layout_missing: output format "
+                f"{self.target.output_format!r}: {exc}") from exc
+        return f"{contract_text.rstrip()}\n\n{binding.rstrip()}\n\n{layout}"
 
     def _language_facts(self) -> Any:
         """The target language's `bundle_facts` module: the names the host gives its files."""
@@ -10439,7 +10450,7 @@ class Conductor:
             return ()
         # strip() so the case_id identity is the SAME across the runner argv
         # (--cases), the expected per-case capture deliverable
-        # path, and the validator's _case_ids_for_execution exemption set.
+        # path.
         #
         # This case_id becomes a FILESYSTEM PATH — the runner writes a file named after it under
         # the run's capture directory — so a `/` or `..` would let the run write outside
@@ -12955,7 +12966,8 @@ class Conductor:
                 # captures, and what the host-rendered driver writes beside them (issue #255,
                 # issue #589) — the initial capture, the samples and the series. An earlier
                 # attempt's sample or series is removed, so it is not read as this run's; a
-                # harness node's own runner writes none of them, and no empty directory is made.
+                # directory the run left empty is not made (a harness self-test's run leaves
+                # each case's rowless series and nothing else beside its final records).
                 snaps_ref = f"{node_ref}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}"
                 for name in capture_store.store(self.target.output_format).copy_run(
                         capture_store.snapshot_dir(run_tmp), sdst):
@@ -13012,8 +13024,7 @@ class Conductor:
 
         Validate.execute's deliverable gate (build_launch_request) requires one final
         capture per case, in the file the target's capture store names for it
-        (`expected_layout`). A hand-authored runner names its files
-        freely, so a fixed/sequential name or a combined file
+        (`expected_layout`). A harness whose capture operations name a file otherwise
         leaves the expected one absent and the deliverable gate fails
         with no recorded cause. This returns an actionable message (expected vs
         written vs missing) so the failure routes to Generate with a clear reason
@@ -13058,9 +13069,11 @@ class Conductor:
                "runner's capture before the first call)" if initial_required else "")
             + (f" and one {snaps}/{layout[capture_store.SERIES]}" if series_required else "")
             + f". expected={expected}; runner wrote={sorted(present)}; "
-            f"missing={missing}. Name each snapshot exactly {layout[capture_store.FINAL]}, built "
-            "from the case_id passed via --cases (e.g. trim(case_id)//"
-            f"'{store.FORMAT_FACTS['suffix']}'). "
+            f"missing={missing}. Commit each case's record through the harness's capture "
+            "operations, under the case_id passed via --cases: the harness names the file, "
+            "and a runner holds no path under the capture directory. Where the runner already "
+            "commits it (an infrastructure node authors the harness model too), the model's "
+            "capture operations name the file otherwise than the capture layout states. "
             "Canonical: phase_02_generate.md / phase_04_validate.md §43."
         )
 
@@ -13368,12 +13381,11 @@ class Conductor:
 
     def _run_raw_dirs(self, refs: NodeRefs) -> tuple[tuple[str, ...], ...]:
         """The directories created under a run's working directory before the binary runs, each
-        as its path parts (`capture_store.run_dirs`): the capture directory for every runner,
-        and the target's capture store's own directories below it only for the runner the host
-        renders (see `_execute_inproc`). One answer, read by `Validate.execute`, its remote job,
-        a `workshop leaf`'s wrapper `run` and the build control file's `test` recipe."""
-        return capture_store.run_dirs(self.target.output_format,
-                                      host_rendered=self._conductor_authors_runner(refs))
+        as its path parts (`capture_store.run_dirs`): the target's capture store's directories
+        below the capture directory, for every node. One answer, read by `Validate.execute`,
+        its remote job, a `workshop leaf`'s wrapper `run` and the build control file's `test`
+        recipe."""
+        return capture_store.run_dirs(self.target.output_format)
 
     def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
@@ -13572,10 +13584,8 @@ class Conductor:
 
         # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
         # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3; `_run_raw_dirs`): the capture
-        # directory for every runner, and the capture store's directories below it only for the
-        # runner the host renders, which opens a file there and fails without it. A hand-authored runner writes none of
-        # them, and its strict fan-out self-test (`case_fanout`) refuses an entry it did not write
-        # (issue #368). The build control file's quality-check recipe pre-creates the same set
+        # store's directories below the capture directory, for every node — the harness opens a
+        # file there and fails without it. The build control file's quality-check recipe pre-creates the same set
         # (`capture_dirs`, this same answer), so the run and the quality check see one directory set.
         authors_runner = self._conductor_authors_runner(refs)
         run_raw_dirs = self._run_raw_dirs(refs)
@@ -14048,12 +14058,12 @@ class Conductor:
             raw_refs.append(schema_ref)
         # Per-case snapshot deliverable check (build_launch_request requires one final
         # capture per case). Compute a clear diagnostic
-        # here so a misnamed/combined snapshot fails with an actionable cause rather
+        # here so a case with no record fails with an actionable cause rather
         # than the opaque determine_substep_status deliverable-presence fail. Read
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
-        # A continuation's absent captures are the second pass's, not a misnamed file (issue
+        # A continuation's absent captures are the second pass's, not an uncommitted record (issue
         # #632): each is reported with its own cause INSTEAD of the deliverable gap's generic
-        # remedy, which tells Generate to rename snapshot files; the gap is still computed over
+        # remedy, which tells Generate to commit the record; the gap is still computed over
         # every other case.
         cont_missing = {cid: why for cid, why in restart_causes.get("run", {}).items()}
         cont_missing.update({cid: "the second pass did not run (the first pass failed)"

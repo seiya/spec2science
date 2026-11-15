@@ -16252,9 +16252,10 @@ class WriteRunnerTest(unittest.TestCase):
         import yaml as _yaml
         source = _HARNESS_STUB
         if tamper_source:
+            pinned = "subroutine harness_fortran_cpu__capture_real(group, name, x)"
+            self.assertIn(pinned, source)
             source = source.replace(
-                "function harness_fortran_cpu__box(name, json) result(nv)",
-                "function harness_fortran_cpu__box(key, json) result(nv)")
+                pinned, "subroutine harness_fortran_cpu__capture_real(group, key, x)")
         sigs = _harness_signatures() if signatures is None else signatures
         pub = {} if no_public_api_signatures else {"signatures": sigs}
         refs = certify_node(
@@ -16560,14 +16561,17 @@ class WriteRunnerTest(unittest.TestCase):
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
             self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ)", text)
 
-    def test_makefile_test_recipe_pre_creates_the_captures_only_for_a_host_rendered_runner(
+    def test_makefile_test_recipe_pre_creates_the_store_s_directories_on_every_node(
             self) -> None:
-        # Issue #368, issue #589: the `test:` recipe pre-creates the three directories the
-        # host-rendered runner opens a file in (`initial/`, `history/`, `series/`), and never on
-        # a node whose runner is its own (a strict fan-out self-test refuses an entry it did not
-        # write). Both conductor writers: the IR-shaped one and the bundle-derived one.
+        # Issue #644 P4 (reversing issue #368's rule, which gave a node whose runner is its own
+        # the bare capture directory alone): the `test:` recipe pre-creates the json store's four
+        # directories (`initial/`, `history/`, `restart_point/`, `series/`) on EVERY node, since
+        # every runner — a harness self-test's included — writes through the harness's capture
+        # interface, which opens each file relatively and creates no directory. Both conductor
+        # writers: the IR-shaped one and the bundle-derived one.
         initial = ("\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial "
                    "$(RUNDIR)/raw/state_snapshots/history "
+                   "$(RUNDIR)/raw/state_snapshots/restart_point "
                    "$(RUNDIR)/raw/state_snapshots/series\n")
         bare = "\tmkdir -p $(RUNDIR)/raw/state_snapshots\n"
         graph = {"compile_units": [], "link": {"objects": []}}
@@ -16590,8 +16594,8 @@ class WriteRunnerTest(unittest.TestCase):
                     encoding="utf-8")
                 from_graph = c._render_leaf_makefile_from_graph(refs, graph)
                 for rendered in (node, from_graph):
-                    self.assertEqual(initial in rendered, authored)
-                    self.assertEqual(bare in rendered, not authored)
+                    self.assertIn(initial, rendered)
+                    self.assertNotIn(bare, rendered)
 
     def test_build_launch_request_lists_no_source_for_either_shape(self) -> None:
         # generate.generate is a pure leaf on every shape: it authors nothing, so neither the
@@ -19039,7 +19043,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_snapshot_gap_on_host_rendered_runner_reopens_compile(self) -> None:
         """M3c: `src/<spec_id>_runner.f90` is host-rendered from the IR, and it emits the
-        per-case `__write_snapshot` for every declared case. A missing per-case snapshot file
+        per-case final capture for every declared case. A missing per-case snapshot file
         therefore cannot be fixed by regenerating the leaf's model/checks — attribute it to the
         IR and reopen Compile rather than burning a Generate attempt that cannot converge."""
         import tempfile
@@ -19644,13 +19648,13 @@ class DeterministicBuildTest(unittest.TestCase):
                     self.assertIn("initial/c_alpha.json", meta["failure_excerpt"])
                 else:
                     self.assertNotEqual(meta.get("failure_category"), "snapshot_deliverable_gap")
-                # the in-process execute pre-creates the directory the host-rendered runner
-                # opens `initial/<case_id>.json` in (the binary runs directly here, not through
-                # the Makefile's `mkdir -p`; without it the rendered runner's open fails with
-                # rc 2), and never for a runner of the node's own: a hand-authored runner's
-                # strict fan-out self-test refuses an entry it did not write (issue #368)
-                self.assertEqual(
-                    authored, (run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
+                # the in-process execute pre-creates the store's directories the harness opens
+                # each capture in (the binary runs directly here, not through the Makefile's
+                # `mkdir -p`; without them the harness's open fails) for EVERY node, a runner of
+                # the node's own included (issue #644 P4 reversed issue #368's host-rendered-only
+                # rule)
+                for sub in ("initial", "history", "restart_point", "series"):
+                    self.assertTrue((run_tmp / "raw" / "state_snapshots" / sub).is_dir(), sub)
 
     def test_execute_inproc_category_precedence_when_inputs_fail_together(self) -> None:
         # The categories differ only in report quality (all three route to generate/reuse), so the
@@ -25947,7 +25951,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
 
     SID = "boundary_x"
     DEP = "component/dep_a@0.1.0"
-    HARNESS = "infrastructure/harness_cpp_gpu@0.4.0"
+    HARNESS = "infrastructure/harness_cpp_gpu@0.5.0"
 
     def _conductor(self, repo: Path, target: str = "cpp_gpu") -> _FakeConductor:
         from tools import target_profile as tp

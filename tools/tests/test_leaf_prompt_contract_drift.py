@@ -1181,6 +1181,11 @@ PINNED: dict[str, str] = {
     "leaf-98": "1aaadcc256f0eef57948967780e84af0cb28debe21d6641ba099bfc993fe8de1",
     # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
     "leaf-99": "eeca1f9e837ec78e2adca277bfcf735c99f9b6cdd8818dc5dd078b4cc5845d95",
+    # leaf-100 (issue #644 P4a): the harness templates, the judge template and the runner-output
+    # contract state the capture interface; the Fortran runner-output binding gains the
+    # trailing-blank rule; a new member, `capture_layout_document`, is the output format's
+    # capture layout seeded after the contract in the harness trees.
+    "leaf-100": "a3ba868a7e70a224f818081f96379b635347c3b6dff190ddd8072158ff1a7924",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1247,6 +1252,12 @@ PINNED_READER: dict[str, str] = {
     "validate-judge-7": "d15e1b969fb6b3ddbf5062fc9938ac6ab95907b12b58a736090eb59334cf4c7b",
     # validate-judge-8: the judge reads the `## External libraries` block of DEPENDENCIES.md (issue #644 P1).
     "validate-judge-8": "bda4693f18f623c24da88bf8a8b2101c0cfe50524cfc1713b9ef909732c059c3",
+    # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section, the
+    # harness reviewer's rules, the Fortran binding and the new `capture_layout_document` member.
+    "generate-verify-11": "6ac8c9e4c2e6f360541b8d9e6ac3218807da61c1ef55aec7dcab25546564f279",
+    # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
+    # groups and operations) and the judge template's wording of a case's series.
+    "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1380,6 +1391,13 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
                 "language", language, "prompt_fragments").runner_output_document()
             for language in _prompt_languages()
         },
+        # ... and the capture layout of each declared output format, seeded after both (issue
+        # #644 P4a): where a harness model's capture operations put each record.
+        "capture_layout_document": {
+            fmt: _registry.capability_module(
+                "output_format", fmt, "capture_store").capture_layout_document()
+            for fmt in _registry.backend_ids("output_format")
+        },
         # The fixed text of `DEPENDENCIES.md` as a generate and a judge leaf read it, per language
         # that reads a dependency's interface (issue #574): rendered over a payload whose every
         # varying field is this tuple's constant, so only the renderer's words can move it.
@@ -1470,6 +1488,7 @@ READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
         "generate_verify_severity_rubric_section",
         "runner_output_contract_document",
         "runner_output_binding_document",
+        "capture_layout_document",
         "dependency_facts_render",
         "external_library_facts_render",
     },

@@ -1763,7 +1763,10 @@ def _validate_raw_evidence(
             state_keys = _state_record_files(store, snapshots_dir)
             state_paths = [path for path, *_key in state_keys]
             _validate_series_files(repo_root, execution, snapshots_dir, store, violations)
-            driver_wrote_snapshots = _ir_drives_the_runner(store, snapshots_dir)
+            # Whether the host-rendered driver wrote the captures is the node's own fact (its
+            # kind and toolchain), not what the directory holds: a harness self-test may
+            # commit an initial record too.
+            driver_wrote_snapshots = _execution_m3c_language(repo_root, execution) is not None
             if driver_wrote_snapshots:
                 _validate_driver_step_key(
                     _decoded_state_records(store, snapshots_dir, state_keys), violations)
@@ -1968,14 +1971,6 @@ def _execution_output_format(repo_root: Path, execution: NodeExecution) -> str:
     return target.output_format if target is not None else DEFAULT_OUTPUT_FORMAT
 
 
-def _capture_format_facts(repo_root: Path, execution: NodeExecution) -> Mapping[str, Any]:
-    """The facts of the run's output format a language backend's runner-output scans build
-    their patterns from (the capture store's `FORMAT_FACTS`)."""
-    facts: Mapping[str, Any] = capture_store.store(
-        _execution_output_format(repo_root, execution)).FORMAT_FACTS
-    return facts
-
-
 def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, int | None]]:
     """`(group, case_id, step)` of every state record the store finds: per case with a final
     capture, the final one, the initial one when there is one, and each sample."""
@@ -2010,12 +2005,6 @@ def _decoded_state_records(store: Any, snapshots_dir: Path,
             continue
 
 
-def _ir_drives_the_runner(store: Any, snapshots_dir: Path) -> bool:
-    """Whether the host-rendered driver ran: only it writes an initial capture; a harness
-    self-test does not (`RUNNER_OUTPUT_CONTRACT.md` §3)."""
-    return bool(store.case_ids(snapshots_dir, capture_store.INITIAL))
-
-
 def _validate_driver_step_key(captures: Iterable[tuple[Path, dict[str, Any]]],
                               violations: list[str]) -> None:
     """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
@@ -2026,10 +2015,12 @@ def _validate_driver_step_key(captures: Iterable[tuple[Path, dict[str, Any]]],
 
 def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_dir: Path,
                            store: Any, violations: list[str]) -> None:
-    """The series records (issue #589 D8): exactly the `step_series` names and the writer's
-    scalar `t`, each name a list of numbers of one length, and one record per final capture. A
-    record on a node that declares no series is refused too. `step_series` is declared iff
-    `drive.loop` is (`primary_evidence.drive_violations` (h))."""
+    """The series records (issue #589 D8) of a node that declares `step_series`: exactly its
+    names and the commits' `t`, each a list of numbers of one length, and one record per final
+    capture. `step_series` is declared iff `drive.loop` is (`primary_evidence.drive_violations`
+    (h)). On a node that declares none the records are not read: every case has a series, an
+    empty one where the case committed no row (the harness's `capture_close`, issue #644 P4),
+    and no predicate of such a node can name it."""
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     entries = raw_requirements.get("required_evidence") if isinstance(
         raw_requirements, dict) else None
@@ -2041,8 +2032,6 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
 
     series_ids = list(store.case_ids(snapshots_dir, capture_store.SERIES))
     if entry is None:
-        for path in sorted(series_path(c) for c in series_ids):
-            violations.append(f"{path}: a series file on a node that declares no step_series")
         return
     names = entry.get("names")
     expected = {n for n in (names if isinstance(names, list) else []) if isinstance(n, str)}
@@ -2057,13 +2046,12 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
             violations.append(f"{path}: {exc.reason}")
             continue
         got = set(data) - {"t"}
-        if isinstance(data.get("t"), bool) or not isinstance(data.get("t"), (int, float)) \
-                or got != expected:
+        if "t" not in data or got != expected:
             violations.append(
-                f"{path}: holds {sorted(data)}; a series file holds t (the writer's scalar) and "
+                f"{path}: holds {sorted(data)}; a series holds t (each commit's) and "
                 f"exactly the step_series names {sorted(expected)}")
             continue
-        columns = [data[n] for n in got]
+        columns = [data[n] for n in (*got, "t")]
         if any(not isinstance(c, list) or any(
                 isinstance(x, bool) or not isinstance(x, (int, float)) for x in c)
                for c in columns) or len({len(c) for c in columns}) > 1:
@@ -2990,13 +2978,11 @@ def _validate_generate_outputs_for_generation(
             expected_runner = bundle.runner_basename(runner_spec_id)
     host_runner_files = [p for p in runner_files if p.name == expected_runner]
     leaf_runner_files = [p for p in runner_files if p.name != expected_runner]
-    known_case_ids = _case_ids_for_execution(repo_root, execution)
     if host_runner_files:
         host_runner_violations: list[str] = []
         _validate_runner_source_files(
             execution, host_runner_files, host_runner_violations,
-            known_case_ids=known_case_ids, bundle=bundle, source_reading=source_reading,
-            format_facts=_capture_format_facts(repo_root, execution),
+            bundle=bundle, source_reading=source_reading,
         )
         violations.extend(
             _as_host_authored(v, "tools/host_render.render_runner, via "
@@ -3004,9 +2990,8 @@ def _validate_generate_outputs_for_generation(
             for v in host_runner_violations)
     if leaf_runner_files:
         _validate_runner_source_files(
-            execution, leaf_runner_files, violations, known_case_ids=known_case_ids,
+            execution, leaf_runner_files, violations,
             bundle=bundle, source_reading=source_reading,
-            format_facts=_capture_format_facts(repo_root, execution),
         )
     if is_m3c:
         pipeline_target = _pipeline_target(repo_root, execution.pipeline_dir)
@@ -4622,32 +4607,6 @@ def _parse_canonical_interface_from_controlled_spec(
     if not op_stanzas and not type_stanzas:
         return ({}, {}, {}, "§5.1 canonical interface block parsed 0 signatures")
     return (op_stanzas, type_stanzas, iface_stanzas, None)
-
-
-def _case_ids_for_execution(repo_root: Path, execution: NodeExecution) -> set[str]:
-    """All declared ``case.test_case_set[].case_id`` for the execution's IR.
-
-    Used by the post_generate snapshot-filename check to avoid a false positive on
-    a hardcoded capture file name that legitimately
-    matches a declared case (it satisfies the deliverable gate). Unlike
-    ``_case_id_to_test_id`` this includes cases whose ``test_id`` is null.
-    """
-    data = _ir_document_for_execution(repo_root, execution)
-    if not isinstance(data, dict):
-        return set()
-    case_section = data.get("case")
-    if not isinstance(case_section, dict):
-        return set()
-    test_case_set = case_section.get("test_case_set")
-    if not isinstance(test_case_set, list):
-        return set()
-    return {
-        item["case_id"].strip()
-        for item in test_case_set
-        if isinstance(item, dict)
-        and isinstance(item.get("case_id"), str)
-        and item["case_id"].strip()
-    }
 
 
 @lru_cache(maxsize=1)
@@ -6732,16 +6691,13 @@ def _validate_runner_source_files(
     execution: NodeExecution,
     runner_files: list[Path],
     violations: list[str],
-    known_case_ids: set[str] | None = None,
     *,
     bundle: Any,
     source_reading: Any,
-    format_facts: Mapping[str, Any],
 ) -> None:
     """The deterministic runner backstops over `runner_files`: the name, the forbidden judge
-    artifacts, and the target language's JSON-serialization and snapshot-filename scans. The
-    second scan builds its pattern from `format_facts`, the facts of the run's output format
-    (`_capture_format_facts`).
+    artifacts, and the target language's JSON-serialization and capture-directory scans (the
+    second refuses a statement that names the capture directory, outside a comment).
 
     The runner's name is the target language's `bundle_facts.runner_basename` — ONE spelling,
     shared with the conductor (`Conductor._runner_basename`) and with every reader in this module
@@ -6780,14 +6736,11 @@ def _validate_runner_source_files(
             runner_file=runner_file,
             text=text,
             violations=violations,
-            known_case_ids=known_case_ids,
-            format_facts=format_facts,
         )
 
 
 def _validate_runner_outputs(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str],
-    known_case_ids: set[str] | None = None,
 ) -> None:
     # A language missing either reader was already refused by `_validate_generate_outputs` on
     # this same src_dir — hence the discarded sink.
@@ -6800,9 +6753,8 @@ def _validate_runner_outputs(
     if not runner_files:
         return
     _validate_runner_source_files(
-        execution, runner_files, violations, known_case_ids=known_case_ids,
+        execution, runner_files, violations,
         bundle=bundle, source_reading=source_reading,
-        format_facts=_capture_format_facts(repo_root, execution),
     )
 
 
@@ -11827,9 +11779,7 @@ def _validate_impl(
                 repo_root, execution, in_scope_src_dir, violations
             )
             _validate_runner_outputs(
-                repo_root, execution, in_scope_src_dir, violations,
-                known_case_ids=_case_ids_for_execution(repo_root, execution),
-            )
+                repo_root, execution, in_scope_src_dir, violations)
         _validate_run_program_inputs(repo_root, execution, violations)
         # Per execution, not per source: each run carries its own trace (issue #307).
         if in_scope_src_dir is not None:

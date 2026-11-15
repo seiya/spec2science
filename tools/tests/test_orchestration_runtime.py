@@ -21682,7 +21682,7 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
         node = next(p.rsplit("/raw/state_snapshots/", 1)[0] for p in base["allowed_output_paths"]
                     if "/raw/state_snapshots/" in p)
         added = [f"{node}/raw/state_snapshots/history/l0_still_water__1.json",
-                 f"{node}/raw/state_snapshots/series/l0_still_water.json"]
+                 f"{node}/raw/state_snapshots/series/l0_still_water__0.json"]
         for label, paths in (("as recorded", base["allowed_output_paths"]),
                              ("with them", [*base["allowed_output_paths"], *added])):
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
@@ -21694,14 +21694,15 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
         base = self._recorded()
         node = next(p.rsplit("/raw/state_snapshots/", 1)[0] for p in base["allowed_output_paths"]
                     if "/raw/state_snapshots/" in p)
-        for rel in ("raw/state_snapshots/history/c__1.json", "raw/state_snapshots/series/c.json"):
+        for rel in ("raw/state_snapshots/history/c__1.json",
+                    "raw/state_snapshots/series/c__0.json"):
             with self.subTest(rel=rel):
                 payload = dict(base, allowed_output_paths=[*base["allowed_output_paths"],
                                                            f"{node}/{rel}"])
                 ort._validate_launch_request_payload(payload)
                 self.assertIn(f"{node}/{rel}",
                               ort._allowed_output_paths_for_launch(request_payload=payload))
-        for rel in ("history/c__1.json", "series/c.json"):
+        for rel in ("history/c__1.json", "series/c__0.json"):
             with self.subTest(rel=rel), self.assertRaisesRegex(
                     ValueError, "outside phase contract outputs"):
                 ort._allowed_output_paths_for_launch(request_payload=dict(
@@ -21803,7 +21804,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # invocation of its own and its series covers the steps it ran, which the judge, handed
         # §3, otherwise reads as a defect of the run. Measured 15523 with `wc -c` (15590 after
         # review round 3).
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15600,
+        # Raised 15600->15900 (issue #644 P4a): §3 states the captures as the harness's capture
+        # interface (groups, the commit's `step` and `t`, the format-owned layout) and that the
+        # host creates the format's directories on every node. Measured 15868 at d3aa4639.
+        # Raised 15900->16900 in the same change (review round 3): §3 also states what each
+        # capture operation does — a harness producer is seeded no controlled spec, and without
+        # it the operations' behaviour reached that leaf only through the IR. Measured 16834.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 16900,
         # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
         # Measured 39235 and 30421 at this commit.
         "docs/backends/language/fortran/GENERATE_RULES.md": 40000,
@@ -21811,7 +21818,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
         # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727; 5742 after the
         # #315 follow-up scoped the no-stop sentence to the emitter.
-        "docs/backends/language/fortran/RUNNER_OUTPUT.md": 5900,
+        # Raised 5900->6200 (issue #644 P4a, review round 3): the trailing-blank rule of a capture
+        # operation's name arguments, which reached the harness producer only through the IR.
+        # Measured 6119.
+        "docs/backends/language/fortran/RUNNER_OUTPUT.md": 6200,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,

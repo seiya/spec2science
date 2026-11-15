@@ -12,7 +12,10 @@ Run from the repository root:
 Subjects (each over the CERTIFIED sources of its closure, resolved through the lineage of the
 pipeline named below — `resolved_dependencies`, recursively for a `problem` member, the source
 being `<pipeline_ref>/source/<that pipeline's lineage source_id>/src/<sid>_model.f90`; the run
-prints every path and the aggregate verdict each resolved run recorded):
+prints every path and the aggregate verdict each resolved run recorded). The harness alone is
+the hand-written model of the current harness spec (`HAND_HARNESS`), in place of the certified
+one the lineage resolves: no certified harness has the capture interface the rendered driver
+calls (issue #644 P4a).
 
 * `rot` — the GENERATED `problem/shallow_water2d_rotating@0.1.0` model of run R-S
   (`workspace/pipelines/problem__shallow_water2d_rotating__0.1.0/fortran_cpu/
@@ -133,6 +136,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 
+from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools import verdict_evaluator  # noqa: E402
 from tools.backends.language.fortran import runner as f_runner  # noqa: E402
@@ -156,6 +160,10 @@ apply_patches, failed_records = _P1.apply_patches, _P1.failed_records
 FLAGS = ["-std=f2008", "-O2", "-fopenmp"]
 THREADS = "1"
 PR3 = HERE.parent / "pr3_evidence"
+#: The harness linked in place of the certified one (issue #644 P4a): every certified harness
+#: predates the capture interface the rendered driver calls, so the hand-written model of the
+#: current harness spec stands in for it until one is certified.
+HAND_HARNESS = REPO / "tools/tests/data/driver_e2e/harness_fortran_cpu_model.f90"
 PIPES = {
     "rot": REPO / "workspace/pipelines/problem__shallow_water2d_rotating__0.1.0/fortran_cpu/"
                   "shallow-water2d-rotating_20261112_001",
@@ -209,8 +217,10 @@ def closure(pipe: Path, top: bool = True) -> list[tuple[str, Path]]:
             raise SystemExit(f"{dep['node_key']}: resolved run verdict {verdict}")
         if dep["node_key"].startswith("infrastructure/"):
             if top:
-                harness.append((dep["node_key"], _source(dpipe)))
-                print(f"  {dep['node_key']}: {_source(dpipe).relative_to(REPO)} [{verdict}]{note}")
+                harness.append((dep["node_key"], HAND_HARNESS))
+                print(f"  {dep['node_key']}: {HAND_HARNESS.relative_to(REPO)} (hand-written, in "
+                      f"place of the certified {_source(dpipe).relative_to(REPO)} [{verdict}]"
+                      f"{note})")
             continue
         if dep["node_key"].startswith("problem/"):
             out += closure(dpipe, top=False)
@@ -318,8 +328,8 @@ def _edit_files(kind: str, shape_dir: Path):
             if kind == "step_zero":
                 doc["restart.step"] = 0
             elif kind == "initial_state":
-                init = json.loads((Path(sdir) / "raw" / "state_snapshots" / "initial"
-                                   / f"{f.base}.json").read_text())
+                init = capture_store.store("json").read_record(
+                    capture_store.snapshot_dir(Path(sdir)), capture_store.INITIAL, f.base)
                 for var in pe.restart_variables(ir):
                     doc[f"restart.{var}"] = init[var]
             else:
@@ -353,8 +363,8 @@ def run_row(job: dict[str, Any]) -> dict[str, Any]:
         (work / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
         pe.write_case_inputs(ir, work / "ir")
         run = work / "run"
-        for sub in ("initial", "history", "series"):
-            (run / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+        for parts in capture_store.run_dirs("json"):
+            run.joinpath(*parts).mkdir(parents=True)
         env = {**os.environ, "OMP_NUM_THREADS": THREADS}
         ids = pe.base_case_ids(ir)
         p1 = subprocess.run([str(work / "bin"), "--cases", str(work / "ir" / "spec.ir.yaml"),

@@ -312,26 +312,30 @@ class DriftDiscriminationTest(unittest.TestCase):
 
     def test_rank_change_is_detected(self) -> None:
         def m(s):
-            proc = next(p for p in s["procedures"] if p["name"].endswith("emit_array_r1"))
-            proc["args"][0]["rank"] = 2  # was 1
+            proc = next(p for p in s["procedures"] if p["name"].endswith("capture_array_r1"))
+            arg = next(a for a in proc["args"] if a["name"] == "a")
+            self.assertEqual(arg["rank"], 1)
+            arg["rank"] = 2
         self.assertNotEqual(self.base, self._index_after(m))
 
     def test_type_change_is_detected(self) -> None:
         def m(s):
-            proc = next(p for p in s["procedures"] if p["name"].endswith("emit_int"))
-            proc["args"][0]["spec"]["type"] = "real"  # was integer
+            proc = next(p for p in s["procedures"] if p["name"].endswith("capture_commit"))
+            arg = next(a for a in proc["args"] if a["name"] == "step")
+            self.assertEqual(arg["spec"]["type"], "integer")
+            arg["spec"]["type"] = "real"
         self.assertNotEqual(self.base, self._index_after(m))
 
     def test_component_reorder_is_detected_for_types(self) -> None:
         # A derived type's component LAYOUT is part of the §5 compatibility contract; a reorder
         # changes the ordered rendering (the type gate compares ordered lists, not sets).
         def m(s):
-            t = next(t for t in s["types"] if t["name"].endswith("h_named"))
+            t = next(t for t in s["types"] if t["name"].endswith("h_var"))
             t["components"].reverse()
         rendered = render_signatures_to_fortran(self._mutated(m))
         # The normalized *set* is order-insensitive, so assert on the ordered rendered lines.
-        base_lines = _type_lines(render_signatures_to_fortran(self.struct), "h_named")
-        drift_lines = _type_lines(rendered, "h_named")
+        base_lines = _type_lines(render_signatures_to_fortran(self.struct), "h_var")
+        drift_lines = _type_lines(rendered, "h_var")
         self.assertNotEqual(base_lines, drift_lines)
 
     def _mutated(self, mutate) -> dict:
