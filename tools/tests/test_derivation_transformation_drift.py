@@ -1338,7 +1338,7 @@ PINNED_RENDER: dict[str, str] = {
     # Issue #644 Part 3 P3 re-pinned render-20 in place (the `test` recipe's directories are the capture store's, handed to the renderer (`capture_dirs`); the rendered bytes are unchanged).
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "render-20@b3282e9b": "9beddb37541b9193256787b04d308b31a230aebb066edc8b9add7fe605ca0665",
-    "render-20": "af65181643ad0e6e0370f63df5540db6aab6651872ea8da9fafb46c14d738588",
+    "render-20": "3494cec7b3e9336f81d0e9df348114f92e5a2757066a298419bbd6c0b5b61ec6",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:

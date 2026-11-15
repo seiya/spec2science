@@ -6295,7 +6295,6 @@ class Conductor:
         # this profile field plus a run_syntax_check adapter); unset keeps the language's default.
         # A parallel backend's compiler wrapper replaces both (issue #316).
         compiler = build_compiler(tc)
-        authors_runner = self._conductor_authors_runner(refs)
         # CASES default baked from the IR; Validate.execute overrides CASES/SPEC via the env so
         # `make test` invokes the runner identically to run_program (`--cases <spec>
         # <case_id>...`). The runner does not read the spec, and it reads `case_inputs/` beside the
