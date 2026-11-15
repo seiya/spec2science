@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 import yaml
 
+from tools import capture_store
 from tools import primary_evidence as pe
 from tools import runner_ir, verdict_evaluator
 from tools.backends.language.cuda_cpp import header as cpp_header
@@ -237,6 +238,7 @@ class Run:
         self.dir = directory
         self.proc = proc
         self.snapshots = directory / "run" / "raw" / "state_snapshots"
+        self.captures = pe._Captures.of(directory / "run", "json")
 
     def snapshot(self, name: str) -> dict[str, Any]:
         return json.loads((self.snapshots / f"{name}.json").read_text())
@@ -295,7 +297,8 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
     and one line per continuation that was not (no restart point, a non-zero exit, a failed
     start check, a refused merge); both are empty on an IR without a continuation."""
     from tools.workflow_conductor import Conductor
-    files, refused = pe.write_continuation_inputs(ir, shape_dir)
+    files, refused = pe.write_continuation_inputs(
+        ir, shape_dir, pe.restart_point_reader(shape_dir, "json"))
     problems = [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
     if not files:
         return [], problems
@@ -309,8 +312,8 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
                               cwd=rdir, capture_output=True, text=True, timeout=3000,
                               check=False, env=env)
         why = (f"second-pass rc={proc.returncode}: {proc.stderr[-400:]}" if proc.returncode
-               else pe.continuation_start_violation(ir, rdir, cf)
-               or Conductor._merge_continuation_captures(rdir, shape_dir, cf.case_id))
+               else pe.continuation_start_violation(ir, rdir, cf, "json")
+               or Conductor._merge_continuation_captures(rdir, shape_dir, cf.case_id, "json"))
         if why:
             problems.append(f"{cf.case_id}: {why}")
         else:
@@ -469,7 +472,7 @@ class _DriverBehaviour:
 
     def test_the_series_holds_one_entry_per_committed_step_of_every_array(self) -> None:
         run = self._run(loop_ir(0))
-        env = pe._load_series(run.snapshots, "m0")
+        env = pe._load_series(run.captures, "m0")
         self.assertEqual(sorted(env), sorted(["step", "u_min", "u_max", "w_min", "w_max"]))
         self.assertEqual(env["step"].tolist(), [1.0, 2.0, 3.0, 4.0])
         self.assertEqual(env["u_min"].tolist(), [1.25, 1.5, 1.75, 2.0])
@@ -482,7 +485,7 @@ class _DriverBehaviour:
         self.assertEqual(final["step"], 2.0)
         self.assertEqual(final["t"], 1.5)
         self.assertEqual(final["u"], [1.5, 2.5, 3.5])
-        self.assertEqual(pe._load_series(run.snapshots, "m1")["step"].tolist(), [1.0, 2.0])
+        self.assertEqual(pe._load_series(run.captures, "m1")["step"].tolist(), [1.0, 2.0])
         self.assertEqual(run.perf()["steps"], 2)
 
     def test_a_refusal_at_the_first_step_leaves_the_initial_state_byte_equal(self) -> None:
@@ -492,7 +495,7 @@ class _DriverBehaviour:
         self.assertEqual(final["w"], initial["w"])
         self.assertEqual(final["step"], 0.0)
         self.assertEqual(final["t"], initial["t"])
-        self.assertEqual(pe._load_series(run.snapshots, "m3")["step"].tolist(), [])
+        self.assertEqual(pe._load_series(run.captures, "m3")["step"].tolist(), [])
 
     def test_a_never_assigned_result_reads_zero(self) -> None:
         run = self._run(loop_ir(3))
@@ -588,7 +591,7 @@ class _DriverBehaviour:
         self.assertNotEqual(doc["w"][0], doc["w"][0])
         self.assertEqual(doc["w"][1:], [3.0, 4.0])
         with self.assertRaises(pe.PrimaryEvidenceError):
-            pe._load_capture(run.snapshots / "m2.json", {"w": ["nx"]}, "t")
+            pe._load_capture(run.captures, capture_store.FINAL, "m2", None, {"w": ["nx"]}, "t")
 
     def test_the_fold_carries_a_committed_nan_into_the_series_and_the_loader_refuses_it(self) -> None:
         run = self._run(loop_ir(4))
@@ -597,7 +600,7 @@ class _DriverBehaviour:
         self.assertNotEqual(doc["u_min"][1], doc["u_min"][1])
         self.assertNotEqual(doc["u_max"][1], doc["u_max"][1])
         with self.assertRaises(pe.PrimaryEvidenceError):
-            pe._load_series(run.snapshots, "m4")
+            pe._load_series(run.captures, "m4")
 
     def test_a_refused_init_leaves_finite_captures_and_runs_no_step(self) -> None:
         run = self._run(init_ir(10))
@@ -607,7 +610,7 @@ class _DriverBehaviour:
         self.assertEqual(final["step"], 0.0)
         self.assertEqual(final["ok"], 0.0)
         self.assertEqual(final["w"], [-5.0, -5.0, -5.0])
-        self.assertEqual(pe._load_series(run.snapshots, "m10")["step"].tolist(), [])
+        self.assertEqual(pe._load_series(run.captures, "m10")["step"].tolist(), [])
 
     def test_init_writes_the_loop_scalars_the_driver_runs_by(self) -> None:
         run = self._run(init_ir(0))
@@ -807,7 +810,8 @@ class _DriverBehaviour:
         """The second pass over ``run``'s directory, as `Validate.execute` lays it out: the real
         continuation writer reads the first pass's samples, and each continuation runs the same
         binary in a process of its own under `run/restart/`, on the one case."""
-        files, refused = pe.write_continuation_inputs(ir, run.dir / "run")
+        files, refused = pe.write_continuation_inputs(
+            ir, run.dir / "run", pe.restart_point_reader(run.dir / "run", "json"))
         rdir = run.dir / "run" / pe.RESTART_DIRNAME
         for sub in ("initial", "history", "series"):
             (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
@@ -842,7 +846,7 @@ class _DriverBehaviour:
         files, refused, rdir = self._continue(run, ir)
         self.assertEqual(refused, {})
         self.assertEqual([(f.case_id, f.base, f.step) for f in files], [(cid, base, step)])
-        self.assertIsNone(pe.continuation_start_violation(ir, rdir, files[0]))
+        self.assertIsNone(pe.continuation_start_violation(ir, rdir, files[0], "json"))
         snaps = rdir / "raw" / "state_snapshots"
         full = run.snapshot(base)
         second = json.loads((snaps / f"{cid}.json").read_text())
@@ -936,7 +940,8 @@ class _DriverBehaviour:
         ir = self._with_continuation(loop_ir(0, every=1), "m0", 2)
         run = type(self).build_and_run(Path(self._tmp.name), ir)
         self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
-        files, _refused = pe.write_continuation_inputs(ir, run.dir / "run")
+        files, _refused = pe.write_continuation_inputs(
+            ir, run.dir / "run", pe.restart_point_reader(run.dir / "run", "json"))
         cf = files[0]
         rdir = run.dir / "run" / pe.RESTART_DIRNAME
         base_case = json.loads((run.dir / "ir" / "case_inputs" / "m0.json").read_text())
@@ -955,10 +960,11 @@ class _DriverBehaviour:
                                       check=False,
                                       env={**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "64"})
                 self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
-                why = pe.continuation_start_violation(ir, rdir, cf)
+                why = pe.continuation_start_violation(ir, rdir, cf, "json")
                 self.assertIsNotNone(why)
                 self.assertIn("did not start at step 2", why)
-                pe.write_continuation_inputs(ir, run.dir / "run")   # restore the file
+                pe.write_continuation_inputs(   # restore the file
+                    ir, run.dir / "run", pe.restart_point_reader(run.dir / "run", "json"))
 
     def test_a_driver_rendered_without_the_restart_read_fails_the_start_check(self) -> None:
         """The instrument control the plan names first: a renderer branch that omits the read
@@ -979,7 +985,7 @@ class _DriverBehaviour:
         second = json.loads((rdir / "raw" / "state_snapshots" / f"{cf.case_id}.json").read_text())
         self.assertEqual(second["u"], run.snapshot("m0")["u"])
         # ... and the start check alone refuses it
-        why = pe.continuation_start_violation(ir, rdir, cf)
+        why = pe.continuation_start_violation(ir, rdir, cf, "json")
         self.assertIsNotNone(why)
         self.assertIn("did not start at step 2", why)
 
@@ -1228,7 +1234,7 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
             self.assertEqual(sorted(run_second_pass(run, ir)),
                              sorted(c["case_id"] for c in ir["case"]["test_case_set"]
                                     if pe.RESTART_CASE_KEY in c))
-            records = pe.evaluate_primary_predicates(ir, Path(tmp) / "run")
+            records = pe.evaluate_primary_predicates(ir, Path(tmp) / "run", output_format="json")
             verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
             expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
             self.assertEqual({t["test_id"]: t["status"] for t in verdict["per_test"]}, expected)
@@ -1386,7 +1392,7 @@ def render_rotating_makefile(closure: list[str]) -> str:
     return control_file.render_node(
         rules=rules, compiler="gfortran", bin_name=f"{ROTATING}_runner", cases_default="c",
         model_stem=f"{ROTATING}_model", runner_stem=f"{ROTATING}_runner", closure=closure,
-        initial_capture_dir=True)
+        capture_dirs=capture_store.run_dirs("json", host_rendered=True))
 
 
 class ProblemOverProblemEndToEndTest(unittest.TestCase):
@@ -2624,7 +2630,7 @@ class MpiBuild:
                 proc.wait()
 
     def verdict(self, run: MpiRun) -> dict[str, str]:
-        records = pe.evaluate_primary_predicates(self.ir, run.dir)
+        records = pe.evaluate_primary_predicates(self.ir, run.dir, output_format="json")
         verdict = verdict_evaluator.evaluate_verdict(self.ir["io_contract"]["tests"], records)
         return {t["test_id"]: t["status"] for t in verdict["per_test"]}
 
@@ -2735,7 +2741,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 with self.subTest(sid=sid, base=base, grid=grid):
                     run = build.run(grid, cases=[base], timeout=60)
                     self.assertEqual(run.rc, 0, run.stderr[-2000:])
-                    files, refused = pe.write_continuation_inputs(ir, run.dir)
+                    files, refused = pe.write_continuation_inputs(
+                        ir, run.dir, pe.restart_point_reader(run.dir, "json"))
                     self.assertEqual(refused, {})
                     rdir = run.dir / pe.RESTART_DIRNAME
                     (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
@@ -2749,7 +2756,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                     (second.tmp / "bin").symlink_to(build.tmp / "bin")
                     cont = second.run(grid, cases=[cid], timeout=60)
                     self.assertEqual(cont.rc, 0, cont.stderr[-2000:])
-                    self.assertIsNone(pe.continuation_start_violation(ir, cont.dir, files[0]))
+                    self.assertIsNone(pe.continuation_start_violation(ir, cont.dir, files[0],
+                                                                      "json"))
                     got = cont.snapshots()[f"{cid}.json"]
                     want = run.snapshots()[f"{base}.json"]
                     for var in [*names, "step", "t"]:
@@ -3209,7 +3217,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                         self.assertTrue(np.isfinite(np.asarray(snaps[key]["h"], float)).all(),
                                         key)
                     with self.assertRaises(pe.PrimaryEvidenceError):
-                        pe._load_series(run.dir / "raw" / "state_snapshots", cid)
+                        pe._load_series(pe._Captures.of(run.dir, "json"), cid)
 
     def test_the_interior_upper_face_is_in_no_record(self) -> None:
         """B10's documented limit: each shared face is taken from the right neighbour's first

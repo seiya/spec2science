@@ -135,7 +135,7 @@ def case_ids(ir: dict[str, Any]) -> list[str]:
     if not out:
         raise RenderError("IR case.test_case_set is empty (no cases to run)")
     # A case_id is concatenated straight into the per-case snapshot PATH by the harness
-    # (`raw/state_snapshots/<case_id>.json`), so an id containing `/` or `..` traverses out of
+    # (a file named after it under `raw/state_snapshots/`), so an id containing `/` or `..` traverses out of
     # the run directory and the (cleanly compiling) runner writes an arbitrary file. A renderer's
     # literal escaping only bars non-printable-ASCII and the length gate only bounds size, so
     # both let `../evil` through. Restrict the id to a filesystem-safe token.
@@ -143,8 +143,8 @@ def case_ids(ir: dict[str, Any]) -> list[str]:
     if unsafe:
         raise RenderError(
             f"case_id(s) {unsafe} are not safe tokens; a case_id is concatenated into the "
-            "per-case snapshot path (raw/state_snapshots/<case_id>.json) and reaches the "
-            "runner's argv, so it must match [A-Za-z0-9._][A-Za-z0-9._-]* with no '..' "
+            "per-case snapshot path (a file named after it under raw/state_snapshots/) and "
+            "reaches the runner's argv, so it must match [A-Za-z0-9._][A-Za-z0-9._-]* with no '..' "
             "(a leading '-' would be read as an option; anything else escapes the run "
             "directory at runtime)")
     # Duplicate case_ids would render two identical case labels in the runner, a hard compile

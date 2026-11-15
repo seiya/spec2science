@@ -281,7 +281,8 @@ class EvaluationTest(unittest.TestCase):
         self.cases = [_case("a", shift=0.25), _case("b")]
 
     def _eval(self, preds: list[dict], **kw) -> list[dict]:
-        return pe.evaluate_primary_predicates(_ir(preds, cases=self.cases, **kw), self.run.root)
+        return pe.evaluate_primary_predicates(_ir(preds, cases=self.cases, **kw), self.run.root,
+                                              output_format="json")
 
     def test_reference_predicates_pass_and_carry_values(self) -> None:
         out = self._eval([MASS, HMIN, SYM])
@@ -298,13 +299,16 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(self._eval([MASS, HMIN, SYM]), self._eval([MASS, HMIN, SYM]))
 
     def test_no_primary_predicates_is_empty(self) -> None:
-        self.assertEqual(pe.evaluate_primary_predicates(_ir(None), self.run.root), [])
-        self.assertEqual(pe.evaluate_primary_predicates(_ir([]), self.run.root), [])
+        self.assertEqual(pe.evaluate_primary_predicates(_ir(None), self.run.root,
+                                                        output_format="json"), [])
+        self.assertEqual(pe.evaluate_primary_predicates(_ir([]), self.run.root,
+                                                        output_format="json"), [])
         # an IR with no primary predicates AND no snapshot entry (metrics_basis evidence only)
         # is evaluated to nothing, not refused
         ir = _ir(None)
         del ir["io_contract"]["raw_requirements"]
-        self.assertEqual(pe.evaluate_primary_predicates(ir, self.run.root), [])
+        self.assertEqual(pe.evaluate_primary_predicates(ir, self.run.root,
+                                                        output_format="json"), [])
 
     def test_physics_fail_names_the_case_and_stops(self) -> None:
         strict = {**HMIN, "value": {"per_case": {"a": 0.5, "b": 2.0}}}
@@ -325,7 +329,7 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(pe.validate_primary_predicate_schema(
             [pred], case_ids={"a", "b"}, test_ids=["t_mass", "t_sym"],
             schema=pe.snapshot_schema(ir), cases={c["case_id"]: c for c in cases}), [])
-        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertTrue(rec["satisfied"], rec)
         self.assertEqual([e["case"] for e in rec["evaluated"]], ["a"])
         self.assertAlmostEqual(rec["evaluated"][0]["value"], 2.0 * float(self.h.max()))
@@ -340,7 +344,8 @@ class EvaluationTest(unittest.TestCase):
         [rec] = self._eval([pred], coordinates=coords)
         self.assertTrue(rec["satisfied"], rec)
         env = pe.load_case_env(self.run.root, self.cases[1],
-                               pe.snapshot_schema(_ir([], coordinates=coords)))
+                               pe.snapshot_schema(_ir([], coordinates=coords)),
+                               output_format="json")
         # expanded to the STATE's shape, so a reference built from a coordinate reduces over
         # the state's cells (round 2: `norm2(h_ref)` over an (nx, 1) field was sqrt(ny) short)
         self.assertEqual(env.coordinates["x"].shape, (NX, NY))
@@ -380,7 +385,7 @@ class EvaluationTest(unittest.TestCase):
         because it runs with no capture (issue #607)."""
         values = {"b": unittest.mock.Mock(derived=derived)}
         with unittest.mock.patch.object(pe, "_evaluate_cases", return_value=values):
-            [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+            [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         return rec
 
     def test_a_derived_field_of_one_coordinate_reduces_over_every_cell(self) -> None:
@@ -400,7 +405,7 @@ class EvaluationTest(unittest.TestCase):
         whole = np.arange(float(NX * NY)).reshape(NX, NY)
         env = pe.load_case_env(self.run.root, self.cases[1],
                                pe.snapshot_schema(self._derived_ir("final.s", 0.0)),
-                               {"x": x, "w": whole, "dt": 0.5})
+                               {"x": x, "w": whole, "dt": 0.5}, output_format="json")
         self.assertEqual(env.derived.get()["x"].shape, (NX, NY))
         np.testing.assert_array_equal(env.derived.get()["x"][:, NY - 1], x[:, 0])
         np.testing.assert_array_equal(env.derived.get()["w"], whole)
@@ -410,7 +415,7 @@ class EvaluationTest(unittest.TestCase):
         """`None` is how `_sampled_value` says a case has no `derived` table to read; wrapping it
         would turn that named evaluation error into an `AttributeError` on first read."""
         schema = pe.snapshot_schema(self._derived_ir("final.s", 0.0))
-        env = pe.load_case_env(self.run.root, self.cases[1], schema)
+        env = pe.load_case_env(self.run.root, self.cases[1], schema, output_format="json")
         self.assertIsNone(env.derived)
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "has no derived to read"):
             pe._sampled_value(env, "derived", "f")
@@ -434,7 +439,7 @@ class EvaluationTest(unittest.TestCase):
             self.assertEqual(rec["kind"], "structural", (shape, rec))
             env = pe.load_case_env(self.run.root, self.cases[1],
                                    pe.snapshot_schema(self._derived_ir("final.s", 0.0)),
-                                   {"f": np.ones(shape)})
+                                   {"f": np.ones(shape)}, output_format="json")
             self.assertEqual(env.derived.get()["f"].shape, shape)
 
     def test_a_derived_field_keeps_extent_1_when_the_state_has_no_one_shape(self) -> None:
@@ -460,7 +465,7 @@ class EvaluationTest(unittest.TestCase):
              "expr": "maxabs(final.h - final.h)", "op": "eq", "value": 0.0})
         with unittest.mock.patch.object(pe, "_evaluate_cases",
                                          side_effect=pe.PrimaryEvidenceError("derived broke")):
-            first, second = pe.evaluate_primary_predicates(ir, self.run.root)
+            first, second = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertEqual(first["kind"], "structural", first)
         self.assertIn("derived broke", first["evaluated"][-1]["error"])
         self.assertEqual(second["kind"], "pass", second)
@@ -477,14 +482,15 @@ class EvaluationTest(unittest.TestCase):
             doc = json.loads(path.read_text())
             doc["w"] = [[1.0] * 2] * NX
             path.write_text(json.dumps(doc))
-        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertEqual(rec["kind"], "structural")
         self.assertIn("extent-1 axis", rec["evaluated"][-1]["error"])
-        env = pe.load_case_env(self.run.root, self.cases[1], pe.snapshot_schema(ir))
+        env = pe.load_case_env(self.run.root, self.cases[1], pe.snapshot_schema(ir),
+                               output_format="json")
         self.assertEqual(env.coordinates["x"].shape, (NX, 1))
         # paired with a state array first, it evaluates
         ir["io_contract"]["predicates"] = [self._one("norm2(x + 0 * final.h)")]
-        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertTrue(rec["satisfied"], rec)
 
     def test_a_state_with_no_cell_loads_only_from_the_driver(self) -> None:
@@ -499,14 +505,14 @@ class EvaluationTest(unittest.TestCase):
         schema = {"variables": [{"name": "h", "shape_expr": "[nx, ny, nz]"},
                                 {"name": "s", "shape_expr": "scalar"}],
                   "time_variable": "t", "time_shape_expr": "scalar"}
-        env = pe.load_case_env(run.root, _case("z"), schema, empty_state=True)
+        env = pe.load_case_env(run.root, _case("z"), schema, empty_state=True, output_format="json")
         self.assertEqual(env.final["h"].size, 0)
         self.assertEqual(env.final["s"], 0.0)
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "has rank 2"):
-            pe.load_case_env(run.root, _case("z"), schema)
+            pe.load_case_env(run.root, _case("z"), schema, output_format="json")
         schema["variables"][0]["shape_expr"] = "[nx, ny]"
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "has no elements"):
-            pe.load_case_env(run.root, _case("z"), schema)
+            pe.load_case_env(run.root, _case("z"), schema, output_format="json")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "empty array"):
             pe._reducible("max", np.zeros((4, 0)))
 
@@ -520,7 +526,7 @@ class EvaluationTest(unittest.TestCase):
         ir = _ir([{"test_id": "t", "quantity": "q", "target_cases": ["c"], "per_case": True,
                    "expr": "max(abs(final.h)) + norm2(final.h) + sum(final.h) + mean(final.h) - 3.0",
                    "op": "eq", "value": 9.0}], cases=[_case("c")])
-        [rec] = pe.evaluate_primary_predicates(ir, run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         self.assertEqual(rec["kind"], "pass", rec)
         self.assertEqual(rec["evaluated"][0]["value"], 9.0)
 
@@ -567,7 +573,7 @@ class EvaluationTest(unittest.TestCase):
             doc = json.loads(path.read_text())
             doc["v"] = [1.0] * NY
             path.write_text(json.dumps(doc))
-        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertEqual(rec["kind"], "structural")
         self.assertIn("rank 2 and 1", rec["evaluated"][-1]["error"])
 
@@ -683,30 +689,30 @@ class EvaluationTest(unittest.TestCase):
                 "expr": "sum(at('b').final.h * xc) / nc - sum(final.h * x) / inputs.grid.nx",
                 "op": "le", "value": 10.0, "case": "a"}
         [rec] = pe.evaluate_primary_predicates(_ir([pred], coordinates=coords, cases=cases),
-                                               self.run.root)
+                                               self.run.root, output_format="json")
         self.assertTrue(rec["satisfied"], rec)
         self.assertEqual(rec["target_cases"], ["a", "b"])
         bad = {**pred, "expr": "at('b').zeta + final.s"}
         [rec] = pe.evaluate_primary_predicates(_ir([bad], coordinates=coords, cases=cases),
-                                               self.run.root)
+                                               self.run.root, output_format="json")
         self.assertIn("not a coordinate of that case", rec["evaluated"][-1]["error"])
         # the coarse state against the fine state: named as a shape mismatch, not a numpy raise
         bad = {**pred, "expr": "sum(at('b').final.h - final.h)"}
         [rec] = pe.evaluate_primary_predicates(_ir([bad], coordinates=coords, cases=cases),
-                                               self.run.root)
+                                               self.run.root, output_format="json")
         self.assertIn("do not pair", rec["evaluated"][-1]["error"])
         # the OTHER case's inputs are what `at('b').inputs` reads (round 2 census: the earlier
         # threshold straddled neither value)
         exact = {**pred, "bind": {}, "expr": "inputs.grid.nx - at('b').inputs.grid.nx + 0 * final.s",
                  "op": "eq", "value": float(NX)}
         [rec] = pe.evaluate_primary_predicates(_ir([exact], coordinates=coords, cases=cases),
-                                               self.run.root)
+                                               self.run.root, output_format="json")
         self.assertTrue(rec["satisfied"], rec)
         self.assertEqual(rec["evaluated"][0]["value"], float(NX))
         # a bind may not shadow a coordinate (the lookup order is binds first)
         shadow = {**pred, "bind": {"x": "1"}, "expr": "sum(x) + final.s"}
         [rec] = pe.evaluate_primary_predicates(_ir([shadow], coordinates=coords, cases=cases),
-                                               self.run.root)
+                                               self.run.root, output_format="json")
         self.assertIn("shadows a grammar name", rec["evaluated"][-1]["error"])
 
     def test_roll_shift_must_be_integer_and_per_axis(self) -> None:
@@ -1004,12 +1010,12 @@ class EvaluationTest(unittest.TestCase):
         ir = _ir([self._one("final.s")], cases=self.cases)
         ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"][0] \
             ["shape_expr"] = "[n, n]"
-        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertEqual(rec["kind"], "structural")
         self.assertIn("unequal extents", rec["evaluated"][-1]["error"])
         ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"][0] \
             ["shape_expr"] = f"[{NX}, 3]"
-        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         self.assertIn("!= declared 3", rec["evaluated"][-1]["error"])
 
     def test_coordinate_defects_are_structural(self) -> None:
@@ -1053,7 +1059,7 @@ class EvaluationTest(unittest.TestCase):
         ir = _ir([HMIN])
         del ir["io_contract"]["raw_requirements"]
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state_snapshots"):
-            pe.evaluate_primary_predicates(ir, self.run.root)
+            pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
         # a target case outside test_case_set is met per case, so it is a structural RECORD
         self._structural({**HMIN, "target_cases": ["a", "zz"]}, "not in case.test_case_set")
 
@@ -1093,7 +1099,7 @@ class VerdictIntegrationTest(unittest.TestCase):
         self.tests = self.ir["io_contract"]["tests"]
 
     def _records(self) -> list[dict]:
-        return pe.evaluate_primary_predicates(self.ir, self.run.root)
+        return pe.evaluate_primary_predicates(self.ir, self.run.root, output_format="json")
 
     def _verdict(self) -> dict:
         return evaluate_verdict(self.tests, self._records(), run_id="r", node_key="n")
@@ -2163,17 +2169,18 @@ class CliTest(unittest.TestCase):
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([MASS, HMIN])))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = pe.main(["--ir", str(ir_dir), "--run", str(run.root)])
+            rc = pe.main(["--ir", str(ir_dir), "--run", str(run.root), "--target", "fortran_cpu"])
         self.assertEqual(rc, 0)
         records = json.loads(out.getvalue())
         self.assertEqual([r["quantity"] for r in records], ["mass_drift_rel", "h_min"])
         run.write_state("a", h, h * 0.5)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_dir / "spec.ir.yaml"),
-                                      "--run", str(run.root)]), 1)
+                                      "--run", str(run.root), "--target", "fortran_cpu"]), 1)
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([{**HMIN, "op": "includes"}])))
         with contextlib.redirect_stdout(out):
-            self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root)]), 2)
+            self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root),
+                                      "--target", "fortran_cpu"]), 2)
         # round 4: an unreadable IR (a YAML list, malformed YAML, a missing file) and a run
         # directory without captures are exit 2 with a JSON error, never the exit code of
         # "a predicate is unsatisfied" and never a traceback
@@ -2181,13 +2188,15 @@ class CliTest(unittest.TestCase):
             (ir_dir / "spec.ir.yaml").write_text(text)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root)]), 2)
+                self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root),
+                                          "--target", "fortran_cpu"]), 2)
             self.assertIn("error", json.loads(out.getvalue()))
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([MASS, HMIN])))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_dir / "missing.yaml"),
-                                      "--run", str(run.root)]), 2)
-            self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root / "nope")]), 2)
+                                      "--run", str(run.root), "--target", "fortran_cpu"]), 2)
+            self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root / "nope"),
+                                      "--target", "fortran_cpu"]), 2)
 
 
 # ------------------------------------------------------------------ cross-target (issue #324)
@@ -2201,7 +2210,8 @@ CROSS = {"test_id": "t_mass", "quantity": "cross_target_state_agreement",
 def _comparand(run: _RunDir, target_id: str) -> pe.ComparandEvidence:
     return pe.ComparandEvidence(target_id=target_id, pipeline_ref=f"p/{target_id}",
                                 run_id="run_20260928_001", run_dir=run.root,
-                                evidence=pe.comparand_evidence_sha256(run.root))
+                                evidence=pe.comparand_evidence_sha256(run.root, "json"),
+                                output_format="json")
 
 
 class CrossTargetGrammarTest(unittest.TestCase):
@@ -2226,7 +2236,8 @@ class CrossTargetGrammarTest(unittest.TestCase):
         run = _RunDir()
         self.addCleanup(run.cleanup)
         run.write_state("a", _field(), _field())
-        env = pe.load_case_env(run.root, _case("a"), pe.snapshot_schema(_ir(None)))
+        env = pe.load_case_env(run.root, _case("a"), pe.snapshot_schema(_ir(None)),
+                               output_format="json")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "shadows a grammar name"):
             pe.evaluate_binds({"comparand": "final.s"}, env, {})
         coords = [{"name": "comparand", "axis": 0, "count": 8, "length": 1.0,
@@ -2256,23 +2267,23 @@ class ComparandEvidenceHashTest(unittest.TestCase):
         self.run.write_state("a", _field(1), _field(2))
 
     def test_hash_is_over_the_captures_only(self) -> None:
-        h0 = pe.comparand_evidence_sha256(self.run.root)
+        h0 = pe.comparand_evidence_sha256(self.run.root, "json")
         self.assertTrue(h0.startswith("sha256:"))
-        self.assertEqual(pe.comparand_evidence_sha256(self.run.root), h0)
+        self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
         # the host-authored schema file is not a capture
         (self.run.sdir / pe.SNAPSHOT_SCHEMA_FILENAME).write_text('{"x": 1}')
-        self.assertEqual(pe.comparand_evidence_sha256(self.run.root), h0)
+        self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
         # a byte of a final capture, of an initial capture, and a file's NAME each move it
         final = self.run.sdir / "a.json"
         final.write_text(final.read_text() + " ")
-        h1 = pe.comparand_evidence_sha256(self.run.root)
+        h1 = pe.comparand_evidence_sha256(self.run.root, "json")
         self.assertNotEqual(h1, h0)
         init = self.run.sdir / "initial" / "a.json"
         init.write_text(init.read_text() + " ")
-        h2 = pe.comparand_evidence_sha256(self.run.root)
+        h2 = pe.comparand_evidence_sha256(self.run.root, "json")
         self.assertNotEqual(h2, h1)
         final.rename(self.run.sdir / "b.json")
-        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root), h2)
+        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h2)
 
     def test_file_boundaries_are_framed(self) -> None:
         """Two captures `a.json` = `1` and `b.json` = `2` concatenate, unframed, to the same
@@ -2285,17 +2296,17 @@ class ComparandEvidenceHashTest(unittest.TestCase):
         (self.run.sdir / "a.json").write_text("1")
         (self.run.sdir / "b.json").write_text("2")
         (other.sdir / "a.json").write_text("1b.json2")
-        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root),
-                            pe.comparand_evidence_sha256(other.root))
+        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root, "json"),
+                            pe.comparand_evidence_sha256(other.root, "json"))
 
     def test_no_capture_raises(self) -> None:
         for path in (self.run.sdir / "a.json", self.run.sdir / "initial" / "a.json"):
             path.unlink()
         (self.run.sdir / pe.SNAPSHOT_SCHEMA_FILENAME).write_text("{}")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(self.run.root)
+            pe.comparand_evidence_sha256(self.run.root, "json")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(self.run.root / "missing")
+            pe.comparand_evidence_sha256(self.run.root / "missing", "json")
 
 
 class CrossTargetEvaluationTest(unittest.TestCase):
@@ -2315,7 +2326,7 @@ class CrossTargetEvaluationTest(unittest.TestCase):
     def _eval(self, preds: list[dict], comparands: list[str]) -> list[dict]:
         return pe.evaluate_primary_predicates(
             _ir(preds), self.runs["own"].root,
-            comparands=[_comparand(self.runs[t], t) for t in comparands])
+            comparands=[_comparand(self.runs[t], t) for t in comparands], output_format="json")
 
     def test_two_comparands_by_two_cases(self) -> None:
         [mass, cross] = self._eval([MASS, CROSS], ["gpu", "mpi"])
@@ -2385,7 +2396,8 @@ class CrossTargetEvaluationTest(unittest.TestCase):
         self.assertEqual(mass["kind"], "pass")
 
     def test_a_comparand_read_needs_a_bound_comparand(self) -> None:
-        env = pe.load_case_env(self.runs["own"].root, _case("a"), pe.snapshot_schema(_ir(None)))
+        env = pe.load_case_env(self.runs["own"].root, _case("a"), pe.snapshot_schema(_ir(None)),
+                               output_format="json")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no comparand is bound"):
             pe.evaluate(pe.parse_expr("sum(comparand.final.h)"), env)
 
@@ -2444,7 +2456,8 @@ class CrossTargetVerdictTest(unittest.TestCase):
         ir = _ir(preds)
         return ir, pe.evaluate_primary_predicates(
             ir, self.runs["own"].root,
-            comparands=[_comparand(self.runs[t], t) for t in comparands], **kw)
+            comparands=[_comparand(self.runs[t], t) for t in comparands], **kw,
+            output_format="json")
 
     def _verdict(self, preds: list[dict], comparands: list[str]):
         ir, primary = self._primary(preds, comparands)
@@ -2469,7 +2482,8 @@ class CrossTargetVerdictTest(unittest.TestCase):
         for name, kind in (("own", "pass"), ("mpi", "physics"), ("gpu", "structural")):
             with self.subTest(kind=kind):
                 primary = pe.evaluate_primary_predicates(
-                    ir, self.runs["own"].root, comparands=[_comparand(self.runs[name], name)])
+                    ir, self.runs["own"].root, comparands=[_comparand(self.runs[name], name)],
+                    output_format="json")
                 cross = [r for r in primary if r["quantity"] == "cross_target_state_agreement"]
                 self.assertEqual(cross[0]["kind"], kind)
                 with self.assertRaisesRegex(PredicateError, "evaluated cross-target"):
@@ -2541,20 +2555,24 @@ class CrossTargetCliTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                          "--comparand", f"gpu={runs['gpu'].root}"])
+                          "--target", "fortran_cpu",
+                          "--comparand", f"cpp_gpu={runs['gpu'].root}"])
         self.assertEqual(rc, 0)
         cross = json.loads(out.getvalue())[1]
-        self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
+        self.assertEqual([c["target_id"] for c in cross["comparands"]], ["cpp_gpu"])
         self.assertEqual(cross["comparands"][0]["evidence"],
-                         pe.comparand_evidence_sha256(runs["gpu"].root))
+                         pe.comparand_evidence_sha256(runs["gpu"].root, "json"))
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root)]), 0)
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                                      "--comparand", "gpu"]), 2)
+                                      "--target", "fortran_cpu"]), 0)
+            self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
+                                      "--target", "fortran_cpu",
+                                      "--comparand", "cpp_gpu"]), 2)
         runs["gpu"].write_state("a", _field(), _field() * 2)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                                      "--comparand", f"gpu={runs['gpu'].root}"]), 1)
+                                      "--target", "fortran_cpu",
+                                      "--comparand", f"cpp_gpu={runs['gpu'].root}"]), 1)
 
 
 # ------------------------------------------------------------------------- grammar 6 / drive
@@ -2955,18 +2973,18 @@ class StateReadsTest(unittest.TestCase):
                 run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
                           final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
             ir = _toy()
-            self.assertEqual([r["kind"] for r in pe.evaluate_primary_predicates(ir, run.root)],
-                             ["pass", "pass"])
+            self.assertEqual([r["kind"] for r in pe.evaluate_primary_predicates(
+                ir, run.root, output_format="json")], ["pass", "pass"])
             ir["io_contract"]["predicates"].append(dict(ir["io_contract"]["predicates"][1]))
             with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                         r"predicates\[2\]: reads no captured state"):
-                pe.evaluate_primary_predicates(ir, run.root)
+                pe.evaluate_primary_predicates(ir, run.root, output_format="json")
             # R3-1: the closure's text under another quantity is not exempt either
             ir = _toy()
             ir["io_contract"]["predicates"][1]["quantity"] = "mass"
             with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                         r"predicates\[1\]: reads no captured state"):
-                pe.evaluate_primary_predicates(ir, run.root)
+                pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         finally:
             run.cleanup()
 
@@ -3043,7 +3061,7 @@ class DriverCounterReadsTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                             pe.PrimaryEvidenceError,
                             r"predicates\[0\]: reads no captured state the kernel produced"):
-                        pe.evaluate_primary_predicates(ir, run.root)
+                        pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         finally:
             run.cleanup()
 
@@ -3102,7 +3120,7 @@ class ClosureExemptionTest(unittest.TestCase):
                 h = [1.0] * n
                 run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
                           final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
-            return pe.evaluate_primary_predicates(ir, run.root)
+            return pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         finally:
             run.cleanup()
 
@@ -3368,7 +3386,7 @@ class ResultFlagFormTest(unittest.TestCase):
         self.assertEqual([m.split(":")[0] for m in v], [f"predicates[{idx}]"], v)
         with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                     re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
-            pe.evaluate_primary_predicates(ir, Path("/nonexistent-run-dir"))
+            pe.evaluate_primary_predicates(ir, Path("/nonexistent-run-dir"), output_format="json")
 
     @staticmethod
     def _rus_xfail(expr: str = "final.ok", value: float = 0, quantity: str = "ok") -> dict:
@@ -3422,13 +3440,13 @@ class ResultFlagFormTest(unittest.TestCase):
                   final={"U": u, "S": s75, "guard_pass": 1.0, "t": 0.0, "step": 1})
         with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                     re.escape(f"predicates[{j}]: {self._NO_STATE}")):
-            pe.evaluate_primary_predicates(ir, run.root)
+            pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         # the honest predicate on the same captures fails the test
         honest = _coriolis()
         honest["io_contract"]["predicates"] = [p for p in honest["io_contract"]["predicates"]
                                                if p["test_id"] == tid]
         honest["io_contract"]["tests"] = ir["io_contract"]["tests"]
-        records = pe.evaluate_primary_predicates(honest, run.root)
+        records = pe.evaluate_primary_predicates(honest, run.root, output_format="json")
         doc = evaluate_verdict(honest["io_contract"]["tests"], records)
         self.assertEqual(doc["per_test"][0]["status"], "fail")
 
@@ -3449,7 +3467,7 @@ class ResultFlagFormTest(unittest.TestCase):
                                         "non-logical variable an operation writes"), v)
         self.assertTrue(v[0].endswith(f"kernel state). {form}"), v)
         with self.assertRaises(pe.PrimaryEvidenceError) as caught:
-            pe.evaluate_primary_predicates(rus, Path("/nonexistent-run-dir"))
+            pe.evaluate_primary_predicates(rus, Path("/nonexistent-run-dir"), output_format="json")
         self.assertTrue(str(caught.exception).startswith(
             f"predicates[0]: {self._NO_STATE} (final.<written non-logical var>"), caught.exception)
         self.assertTrue(str(caught.exception).endswith(f"reaches. {form}"), caught.exception)
@@ -3545,7 +3563,8 @@ class ResultFlagFormTest(unittest.TestCase):
         self.assertEqual(pe.cases_read(pred, pe.state_reads(ir)), set())
         # the evaluator stamps no case, and the verdict re-check refuses the records
         ir = self._ncomp_ir(1)
-        records = pe.evaluate_primary_predicates(ir, self._ncomp_run(1.0).root)
+        records = pe.evaluate_primary_predicates(ir, self._ncomp_run(1.0).root,
+                                                 output_format="json")
         self.assertEqual(records[0]["cases_read"], [])
         with self.assertRaisesRegex(PredicateError, re.escape(
                 f"no record of test {self._NCOMP!r} values the captured state of target case(s) "
@@ -3561,7 +3580,7 @@ class ResultFlagFormTest(unittest.TestCase):
                                  {"l0_ncomp2"})
                 for guard_pass, status in ((0.0, "xfail"), (1.0, "fail")):
                     records = pe.evaluate_primary_predicates(
-                        ir, self._ncomp_run(guard_pass).root)
+                        ir, self._ncomp_run(guard_pass).root, output_format="json")
                     self.assertEqual(records[0]["cases_read"], ["l0_ncomp2"])
                     self.assertEqual(evaluate_verdict(ir["io_contract"]["tests"],
                                                       records)["per_test"][0]["status"], status)
@@ -3588,7 +3607,7 @@ class ResultFlagFormTest(unittest.TestCase):
                  for n, toks in pe.schema_variables(pe.snapshot_schema(ir)).items()}
         run.write("s_a", initial={**state, "t": 0.0, "step": 0},
                   final={**state, "guard_pass": 1.0, "converged": 0.0, "t": 0.0, "step": 0})
-        records = pe.evaluate_primary_predicates(ir, run.root)
+        records = pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         self.assertEqual({r["quantity"]: r["cases_read"] for r in records},
                          {"guard_pass": [], "converged": ["s_a"]})
         self.assertEqual(evaluate_verdict(ir["io_contract"]["tests"], records)["per_test"][0]
@@ -3930,10 +3949,10 @@ class ResultFlagFormTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                             pe.PrimaryEvidenceError,
                             re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
-                        pe.evaluate_primary_predicates(ir, run.root)
+                        pe.evaluate_primary_predicates(ir, run.root, output_format="json")
                     continue
                 self.assertEqual(refused, [])
-                record = pe.evaluate_primary_predicates(ir, run.root)[idx]
+                record = pe.evaluate_primary_predicates(ir, run.root, output_format="json")[idx]
                 self.assertEqual(record["expr"], ir["io_contract"]["predicates"][idx]["expr"])
                 self.assertEqual(record["cases_read"], values)
 
@@ -3970,7 +3989,7 @@ class ResultFlagFormTest(unittest.TestCase):
                 capture = json.loads((run.sdir / "s_a.json").read_text())
                 capture.update(guard_pass=guard, converged=0.0)
                 run.write("s_a", initial=capture, final=capture)
-                records = pe.evaluate_primary_predicates(ir, run.root)
+                records = pe.evaluate_primary_predicates(ir, run.root, output_format="json")
                 doc = evaluate_verdict(io["tests"], records)
                 self.assertEqual(doc["per_test"][0]["status"], want)
 
@@ -4007,7 +4026,7 @@ class LazyLoaderTest(unittest.TestCase):
             {"test_id": "t_run", "quantity": quantity, "target_cases": ["a", "b"],
              "per_case": True, "expr": expr, "op": "le", "value": 1e9},
             ir["io_contract"]["predicates"][1]]
-        return pe.evaluate_primary_predicates(ir, self.run.root)
+        return pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
 
     def _series(self, cid: str, doc: dict) -> None:
         (self.run.sdir / "series").mkdir(exist_ok=True)
@@ -4059,7 +4078,7 @@ class LazyLoaderTest(unittest.TestCase):
                     {"h": [float(k)] * n, "ok": 1.0, "t": 0.1 * k, "step": k}))
         (hdir / "a__x__3.json").write_text("{}")   # not a sample of case a
         env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
-                               pe.snapshot_schema(self.ir))
+                               pe.snapshot_schema(self.ir), output_format="json")
         hist = env.history.get()
         np.testing.assert_array_equal(hist["step"], [2.0, 10.0])   # 10 after 2, not before
         self.assertEqual(hist["h"].shape, (2, 4))
@@ -4077,7 +4096,7 @@ class LazyLoaderTest(unittest.TestCase):
 
     def test_no_sample_is_an_empty_history(self) -> None:
         env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
-                               pe.snapshot_schema(self.ir))
+                               pe.snapshot_schema(self.ir), output_format="json")
         hist = env.history.get()
         self.assertEqual(hist["h"].shape, (0, 4))
         self.assertEqual(hist["t"].shape, (0,))
@@ -4864,9 +4883,11 @@ class ScalarPairingTest(unittest.TestCase):
             tests = solo["io_contract"]["tests"]
             with self.assertRaisesRegex(PredicateError, r"reads the one-call scalar final\.a_x "
                                                         r"in \['a'\] and no OTHER record"):
-                evaluate_verdict(tests, pe.evaluate_primary_predicates(solo, run.root))
+                evaluate_verdict(tests, pe.evaluate_primary_predicates(solo, run.root,
+                                                                       output_format="json"))
             self.assertEqual(evaluate_verdict(
-                tests, pe.evaluate_primary_predicates(_rus(), run.root))["self_verdict"], "pass")
+                tests, pe.evaluate_primary_predicates(
+                    _rus(), run.root, output_format="json"))["self_verdict"], "pass")
         finally:
             run.cleanup()
 
@@ -4887,13 +4908,13 @@ class ScalarPairingTest(unittest.TestCase):
                       final={"q": [0.125, 0.375, 0.625, 0.875], "F": [0.5] * 4, "a_x": 0.5,
                              "ok": 1.0, "t": 0.0, "step": 1})
             rus = _rus()
-            recs = pe.evaluate_primary_predicates(rus, run.root)
+            recs = pe.evaluate_primary_predicates(rus, run.root, output_format="json")
             self.assertEqual(recs[2]["scalar_pairing"],
                              {"a_x": {"scalar": ["a"], "paired": ["a"]}})
             self.assertEqual(recs[0]["scalar_pairing"], {})
             tests = rus["io_contract"]["tests"]
             self.assertEqual(evaluate_verdict(tests, recs)["self_verdict"], "pass")
-            alone = pe.evaluate_primary_predicates(_rus_alone(), run.root)
+            alone = pe.evaluate_primary_predicates(_rus_alone(), run.root, output_format="json")
             self.assertEqual(alone[2]["scalar_pairing"],
                              {"a_x": {"scalar": ["a"], "paired": []}})
             with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
@@ -4907,7 +4928,7 @@ class ScalarPairingTest(unittest.TestCase):
                  "per_case": True, "expr": "abs(final.a_x - comparand.final.a_x)", "op": "le",
                  "value": 1e-12})
             self.assertEqual(pe.scalar_pairing_violations(cross), [])
-            recs = pe.evaluate_primary_predicates(cross, run.root)
+            recs = pe.evaluate_primary_predicates(cross, run.root, output_format="json")
             self.assertEqual((recs[4]["kind"], recs[4]["scalar_pairing"]),
                              ("no_comparand", {"a_x": {"scalar": ["a"], "paired": []}}))
             self.assertEqual(evaluate_verdict(tests, recs)["self_verdict"], "pass")
@@ -5317,7 +5338,7 @@ class ListFormCasesTest(unittest.TestCase):
                     pe.PrimaryEvidenceError,
                     rf"predicates\[{idx}\]: reads no captured state the kernel produced in "
                     r"case\(s\) \['q_a'\], which its scope evaluates"):
-                pe.evaluate_primary_predicates(ir, run.root)
+                pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         finally:
             run.cleanup()
 
@@ -6085,7 +6106,8 @@ class ContinuationGateTest(unittest.TestCase):
         ir = _continuation_ir()
         with tempfile.TemporaryDirectory() as tmp:
             self._sample(Path(tmp))
-            files, refused = pe.write_continuation_inputs(ir, Path(tmp))
+            files, refused = pe.write_continuation_inputs(
+                ir, Path(tmp), pe.restart_point_reader(Path(tmp), "json"))
             self.assertEqual(refused, {})
             (cf,) = files
             self.assertEqual((cf.case_id, cf.base, cf.step), ("m0_cont", "m0", 2))
@@ -6111,7 +6133,8 @@ class ContinuationGateTest(unittest.TestCase):
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
                 if edit is not None:
                     self._sample(Path(tmp), **edit)
-                files, refused = pe.write_continuation_inputs(_continuation_ir(), Path(tmp))
+                files, refused = pe.write_continuation_inputs(
+                    _continuation_ir(), Path(tmp), pe.restart_point_reader(Path(tmp), "json"))
                 self.assertEqual(files, [])
                 self.assertIn(want, refused["m0_cont"])
                 self.assertFalse((Path(tmp) / "restart" / "case_inputs" / "m0_cont.json").exists())
@@ -6121,7 +6144,7 @@ class ContinuationGateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sample = self._sample(root)
-            (cf,), _ = pe.write_continuation_inputs(ir, root)
+            (cf,), _ = pe.write_continuation_inputs(ir, root, pe.restart_point_reader(root, "json"))
             initial = root / "restart" / "raw" / "state_snapshots" / "initial" / "m0_cont.json"
             initial.parent.mkdir(parents=True)
             good = {**json.loads(sample.read_text()), "ok": 0.0}
@@ -6134,10 +6157,11 @@ class ContinuationGateTest(unittest.TestCase):
                 with self.subTest(label):
                     doc = {k: v for k, v in {**good, **edit}.items() if v is not None}
                     initial.write_text(json.dumps(doc))
-                    got = pe.continuation_start_violation(ir, root / "restart", cf)
+                    got = pe.continuation_start_violation(ir, root / "restart", cf, "json")
                     if want is None:
                         self.assertIsNone(got)
                     else:
                         self.assertIn(want, got)
             initial.unlink()
-            self.assertIn("unreadable", pe.continuation_start_violation(ir, root / "restart", cf))
+            self.assertIn("unreadable",
+                          pe.continuation_start_violation(ir, root / "restart", cf, "json"))

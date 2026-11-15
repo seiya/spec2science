@@ -239,7 +239,7 @@ def execute(work: Path, ir: dict[str, Any], threads: int = 4) -> subprocess.Comp
 
 
 def judge(ir: dict[str, Any], work: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    records = pe.evaluate_primary_predicates(ir, work / "run")
+    records = pe.evaluate_primary_predicates(ir, work / "run", output_format="json")
     verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
     return verdict, [dict(r) for r in records]
 

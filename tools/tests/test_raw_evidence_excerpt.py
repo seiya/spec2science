@@ -76,7 +76,8 @@ class _SnapshotRow:
 
     def _row(self, value, variable="h", contract=None) -> dict:
         self.raw.write("state_snapshots/case_a.json", {variable: value})
-        excerpt = rex.raw_evidence_excerpt(self.raw.path, contract or _contract())
+        excerpt = rex.raw_evidence_excerpt(self.raw.path, contract or _contract(),
+                                           output_format="json")
         return next(r for r in excerpt["state_snapshots"]["cases"][0]["variables"]
                     if r["name"] == variable)
 
@@ -86,11 +87,12 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(_SnapshotRow, unittest.TestCase
         self.raw = _RawDir(self)
 
     def _excerpt(self, contract=None) -> dict:
-        return rex.raw_evidence_excerpt(self.raw.path, contract or _contract())
+        return rex.raw_evidence_excerpt(self.raw.path, contract or _contract(),
+                                        output_format="json")
 
     def test_absent_raw_directory(self):
         missing = self.raw.path.parent / "no_such_raw"
-        result = rex.raw_evidence_excerpt(missing, _contract())
+        result = rex.raw_evidence_excerpt(missing, _contract(), output_format="json")
         self.assertFalse(result["raw_dir_present"])
         self.assertEqual(result["state_snapshots"],
                          {"present": False, "schema": None, "cases": []})
@@ -121,7 +123,8 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(_SnapshotRow, unittest.TestCase
     def test_unparseable_snapshot(self):
         self.raw.write("state_snapshots/case_a.json", "{not json")
         problems = self._excerpt()["problems"]
-        self.assertTrue(any("not parseable as JSON" in p for p in problems))
+        self.assertTrue(any(p.startswith("raw/state_snapshots/case_a.json: unreadable: ")
+                            for p in problems))
 
     def test_snapshot_that_is_not_an_object(self):
         self.raw.write("state_snapshots/case_a.json", [1, 2])
@@ -262,7 +265,8 @@ class StateSnapshotsTest(unittest.TestCase):
         self.raw = _RawDir(self)
 
     def _snapshots(self) -> dict:
-        return rex.raw_evidence_excerpt(self.raw.path, _contract())["state_snapshots"]
+        return rex.raw_evidence_excerpt(self.raw.path, _contract(),
+                                        output_format="json")["state_snapshots"]
 
     def test_cases_are_ordered(self):
         for name in ("case_c", "case_a", "case_b"):
@@ -336,7 +340,7 @@ class StateSnapshotsTest(unittest.TestCase):
         self.assertIsNone(cases["case_b"]["initial"])
         # an unreadable initial capture is a problem the excerpt names
         self.raw.write("state_snapshots/initial/case_b.json", "{broken")
-        excerpt = rex.raw_evidence_excerpt(self.raw.path, _contract())
+        excerpt = rex.raw_evidence_excerpt(self.raw.path, _contract(), output_format="json")
         b = next(c for c in excerpt["state_snapshots"]["cases"] if c["case_id"] == "case_b")
         self.assertFalse(b["initial"]["read"])
         self.assertTrue(any("initial/case_b.json" in p for p in excerpt["problems"]),
@@ -357,7 +361,8 @@ class StateSnapshotsTest(unittest.TestCase):
         contract = _contract(raw_requirements={"required_evidence": [
             {"artifact": "state_snapshots", "required": True, "schema": {"variables": [
                 {"name": "h", "shape_expr": "[nx, ny]", "source": "reported"}]}}]})
-        snapshots = rex.raw_evidence_excerpt(self.raw.path, contract)["state_snapshots"]
+        snapshots = rex.raw_evidence_excerpt(self.raw.path, contract,
+                                             output_format="json")["state_snapshots"]
         self.assertEqual(snapshots["schema"]["declared_variables"], [
             {"name": "cfl_run_max", "shape_expr": "scalar"},
             {"name": "h", "shape_expr": "[nx, ny]"}])
@@ -417,7 +422,8 @@ class StateSnapshotsTest(unittest.TestCase):
                 self.raw.write("state_snapshots/series/case_a.json", text)
                 self.assertIsNone(self._case()["series"])
         self.raw.write("state_snapshots/series/case_a.json", "{")
-        problems = rex.raw_evidence_excerpt(self.raw.path, _contract())["problems"]
+        problems = rex.raw_evidence_excerpt(self.raw.path, _contract(),
+                                            output_format="json")["problems"]
         self.assertTrue(any("raw/state_snapshots/series/case_a.json" in p for p in problems),
                         problems)
 
@@ -442,7 +448,7 @@ class RequiredEvidenceTest(unittest.TestCase):
 
     def _rows(self, contract=None) -> list[dict]:
         return rex.raw_evidence_excerpt(
-            self.raw.path, contract or _contract())["required_evidence"]
+            self.raw.path, contract or _contract(), output_format="json")["required_evidence"]
 
     def test_presence_of_each_declared_artifact(self):
         rows = {row["artifact"]: row for row in self._rows()}
@@ -477,7 +483,7 @@ class RequiredEvidenceTest(unittest.TestCase):
 
     def test_the_driver_s_artifacts_are_looked_for_where_it_writes_them(self):
         """Issue #589: `state_history` and `step_series` sit under `state_snapshots/`
-        (`_EVIDENCE_DIRS`), so a row reading `raw/<artifact>` would answer false for every run."""
+        (`_EVIDENCE_GROUPS`), so a row reading `raw/<artifact>` would answer false for every run."""
         self.assertEqual(self._drive_rows(), {"state_snapshots": False, "state_history": False,
                                               "step_series": False})
         self.raw.write("state_snapshots/case_a.json", {"h": [[1.0]]})
@@ -511,7 +517,7 @@ class ExcerptIsBoundedTest(unittest.TestCase):
         # array rows left the window, also when a recorded run still holds the file.
         raw = _RawDir(self)
         raw.write("metrics_basis.json", {"per_test": []})
-        self.assertEqual(set(rex.raw_evidence_excerpt(raw.path, _contract())),
+        self.assertEqual(set(rex.raw_evidence_excerpt(raw.path, _contract(), output_format="json")),
                          {"policy_version", "raw_dir_present", "required_evidence",
                           "state_snapshots", "problems"})
 
@@ -531,7 +537,8 @@ class ExcerptIsBoundedTest(unittest.TestCase):
                                {"h": array, "hu": array, "hv": array, "dx": 0.5, "t": 1.0})
                      for case in ("case_a", "case_b")]
 
-        rendered = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract()), indent=2)
+        rendered = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract(),
+                                                       output_format="json"), indent=2)
 
         source_bytes = sum(p.stat().st_size for p in snapshots)
         self.assertGreater(source_bytes, 500_000)
@@ -564,16 +571,16 @@ class ExcerptIsBoundedTest(unittest.TestCase):
         raw = _RawDir(self)
         raw.write("state_snapshots/case_a.json", {"h": [[math.inf]], "t": 0.0})
         raw.write("state_snapshots/case_b.json", '{"h": [[NaN, 1.0]], "t": 0.0}')
-        first = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract()),
+        first = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract(), output_format="json"),
                            allow_nan=False, sort_keys=False)
-        second = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract()),
+        second = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract(), output_format="json"),
                             allow_nan=False, sort_keys=False)
         self.assertEqual(first, second)
 
     def test_policy_version_is_stamped(self):
         raw = _RawDir(self)
         self.assertEqual(
-            rex.raw_evidence_excerpt(raw.path, _contract())["policy_version"],
+            rex.raw_evidence_excerpt(raw.path, _contract(), output_format="json")["policy_version"],
             rex.RAW_EXCERPT_POLICY_VERSION)
         self.assertIsInstance(rex.RAW_EXCERPT_POLICY_VERSION, int)
         # 2 since Z6 (issue #255): the window gained each case's `initial` capture. 3 since

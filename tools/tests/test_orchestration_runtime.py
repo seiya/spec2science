@@ -2100,7 +2100,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 req = wc.build_launch_request(
                     refs, step="validate", substep="execute", orchestration_id="o",
                     orchestration_agent_run_id="a", child_agent_run_id="c", agent_model="m",
-                    workflow_mode="dev", case_ids=("c_alpha",), device_trace=traced)
+                    workflow_mode="dev", case_ids=("c_alpha",), device_trace=traced,
+                    output_format="json")
                 outs = _allowed_output_paths_for_launch(request_payload=req)
                 summary = f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"
                 self.assertEqual(summary in outs, traced)
@@ -21717,7 +21718,8 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
             orchestration_agent_run_id=base["parent_agent_run_id"],
             child_agent_run_id=base["agent_run_id"], agent_model=base["agent_model"],
             workflow_mode=base["workflow_mode"], case_ids=("c_a",), runner_host_authored=True,
-            evidence_artifacts=("state_snapshots", "state_history", "step_series"))
+            evidence_artifacts=("state_snapshots", "state_history", "step_series"),
+            output_format="json")
         ort._validate_launch_request_payload(built)
         listed = ort._allowed_output_paths_for_launch(request_payload=built)
         self.assertTrue(any(p.endswith("/raw/state_snapshots/initial/c_a.json") for p in listed))
@@ -29742,7 +29744,7 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual((comp.target_id, comp.run_id, comp.pipeline_ref),
                          (self.b.target_id, "run_20260102_002", b["pipeline_ref"]))
         self.assertEqual(comp.run_dir, newest)
-        self.assertEqual(comp.evidence, comparand_evidence_sha256(newest))
+        self.assertEqual(comp.evidence, comparand_evidence_sha256(newest, "json"))
 
     def test_each_eligibility_clause_excludes_the_newest_run(self) -> None:
         good = {"self_verdict": "pass"}
@@ -30289,7 +30291,7 @@ class CrossTargetAgreementTests(unittest.TestCase):
 
         def evaluator_raises(a: dict, b: dict) -> Any:
             return mock.patch("tools.primary_evidence.evaluate_primary_predicates",
-                              side_effect=ZeroDivisionError("boom"))
+                              autospec=True, side_effect=ZeroDivisionError("boom"))
 
         rows = (("a declared target that does not load", broken_profile, "broken_t"),
                 ("a comparand run without captures", comparand_without_captures,

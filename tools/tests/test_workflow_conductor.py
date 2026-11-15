@@ -318,6 +318,7 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
         dependency_surface=tuple(req.get("dependency_surface", ())),
         exemplar=req.get("exemplar"),
         warm_resume=bool(req.get("warm_resume")),
+        output_format="json",
         pure_leaf=req.get("leaf_mode") == "workshop",
         pure_context=req.get("pure_context"),
         pure_shape=req.get("pure_shape", ""),
@@ -14981,7 +14982,7 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
             orchestration_agent_run_id="parent", child_agent_run_id="child",
             agent_model="opus", workflow_mode="dev",
             case_ids=("l0_pass",) if step == "validate" else (),
-            resolved_dependencies=deps)
+            resolved_dependencies=deps, output_format="json")
 
     def test_judge_includes_when_present(self) -> None:
         req = self._build("validate", "judge", (self.DEP,))
@@ -18341,7 +18342,7 @@ class DeterministicBuildTest(unittest.TestCase):
             run_id="run_1", source_binary_id="bin_1")
         kw = dict(step="validate", substep="execute", orchestration_id="o",
                   orchestration_agent_run_id="a", child_agent_run_id="c", agent_model="m",
-                  workflow_mode="dev", case_ids=("c_alpha",))
+                  workflow_mode="dev", case_ids=("c_alpha",), output_format="json")
         traced = wc.build_launch_request(refs, device_trace=True, **kw)["allowed_output_paths"]
         bare = wc.build_launch_request(refs, **kw)["allowed_output_paths"]
         self.assertEqual(set(traced) - set(bare), {f"{refs.run_node_dir()}/kernel_trace.csv"})
@@ -19294,7 +19295,8 @@ class DeterministicBuildTest(unittest.TestCase):
              mock.patch.object(wc.subprocess, "run", fake_subprocess_run), \
              mock.patch.object(wc.Conductor, "_ir_unevaluable",
                                staticmethod(wc.Conductor._ir_unevaluable if ir_evaluable is None
-                                            else (lambda *_a: not ir_evaluable))):
+                                            else (lambda _ir, _run_dir, _output_format:
+                                                  not ir_evaluable))):
             _record_build_site(c.repo_root, refs)
             result = c._execute_inproc(refs, "child-1")
 
@@ -23307,7 +23309,8 @@ class ExecutePromoterTest(unittest.TestCase):
             run_id="run_20260101_001", source_binary_id="bin_20260101_001")
         common = dict(step="validate", substep="execute", orchestration_id="o",
                       orchestration_agent_run_id="p", child_agent_run_id="c",
-                      agent_model="m", workflow_mode="dev", case_ids=("a", "b"))
+                      agent_model="m", workflow_mode="dev", case_ids=("a", "b"),
+                      output_format="json")
         snap = wc.build_launch_request(refs, evidence_artifacts=("state_snapshots",), **common)
         snap_outs = snap["allowed_output_paths"]
         self.assertTrue(any("/raw/state_snapshots/a.json" in p for p in snap_outs))
@@ -23495,8 +23498,8 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         ir = self._ir() if ir is None else ir
         status = wc.Conductor._author_quality_check(
             self.node, "Q", "make_test", ir=ir, reference_dir=self.ref,
-            shape_runs=runs, launcher=launcher, block_imposed=block_imposed,
-            threads_checked=threads_checked)
+            shape_runs=runs, launcher=launcher, output_format="json",
+            block_imposed=block_imposed, threads_checked=threads_checked)
         return status, json.loads((self.node / "quality_check.json").read_text())
 
     def _runs(self, *dirs: Path, ok=(True, True), ids=("R", "S"),
@@ -23565,14 +23568,14 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                 ir = self._ir(cross=False)
                 mutate(ir["io_contract"])
                 run = self._run_dir(f"run_{abs(hash(label))}", self.h)
-                verdict = wc.Conductor._shape_verdict(ir, run)
+                verdict = wc.Conductor._shape_verdict(ir, run, "json")
                 if verdict is not None:   # a shape the evaluator reads as a structural record
                     self.assertIn("fail", verdict["per_test"].values())
-                self.assertIn(wc.Conductor._ir_unevaluable(ir, run), (True, False))
+                self.assertIn(wc.Conductor._ir_unevaluable(ir, run, "json"), (True, False))
         ir = self._ir(cross=False)
         ir["io_contract"]["tests"][0]["target_cases"] = 5
         run = self._run_dir("run_tc5", self.h)
-        self.assertIsNone(wc.Conductor._shape_verdict(ir, run))
+        self.assertIsNone(wc.Conductor._shape_verdict(ir, run, "json"))
         status, doc = self._author(self._runs(run, run), ir=ir)
         self.assertEqual(status, "fail")
         self.assertFalse(doc["shapes"][0]["verdict_available"])
@@ -25543,7 +25546,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
             with self.subTest(perf=perf_body), tempfile.TemporaryDirectory() as td:
                 # the row's IR declares no test; what it pins is the gate's perf.json refusal
                 with mock.patch.object(wc.Conductor, "_ir_unevaluable",
-                                       staticmethod(lambda *_a: False)):
+                                       staticmethod(lambda _ir, _run_dir, _output_format: False)):
                     result, meta = self._execute_with_real_gate(Path(td), perf_body)
                 self.assertEqual(result["returncode"], 0)
                 self.assertEqual(meta["failure_category"], "post_execute_violation")

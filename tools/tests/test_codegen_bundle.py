@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
+from tools import capture_store
 from tools import codegen_bundle as cb
 from tools import workflow_conductor as wc
 from tools.backends import registry as backend_registry
@@ -536,9 +537,10 @@ class DeterministicBuildGraphTest(unittest.TestCase):
             with self.subTest(initial_capture_dir=flag):
                 node = control_file.render_node(
                     **common, model_stem="m", runner_stem="r", closure=(),
-                    initial_capture_dir=flag)
+                    capture_dirs=capture_store.run_dirs("json", host_rendered=flag))
                 pure = control_file.render_from_graph(
-                    **common, graph=graph, initial_capture_dir=flag)
+                    **common, graph=graph,
+                    capture_dirs=capture_store.run_dirs("json", host_rendered=flag))
                 self.assertEqual(self._test_recipe(node), self._test_recipe(pure))
                 self.assertEqual(flag, "/raw/state_snapshots/initial" in self._test_recipe(node))
 
@@ -2854,7 +2856,8 @@ class RunnerRoleTest(unittest.TestCase):
         makefile = registry.capability_module("build_system", "make", "control_file") \
             .render_from_graph(rules=rules, compiler="gfortran",
                                bin_name="harness_fortran_cpu_runner", cases_default="c1",
-                               graph=graph)
+                               graph=graph,
+                               capture_dirs=capture_store.run_dirs("json", host_rendered=False))
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp)
             for entry in doc["files"]:

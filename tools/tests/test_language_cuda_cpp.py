@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 from typing import ClassVar
 
+from tools import capture_store
 from tools.backends import registry
 from tools.backends.compiler.nvcc import syntax as nvcc_syntax
 from tools.backends.language.cuda_cpp import bundle as cpp_bundle
@@ -426,7 +427,8 @@ class RoundOneWitnessTests(unittest.TestCase):
     def test_the_snapshot_schema_name_is_exempt(self) -> None:
         out: list[str] = []
         cpp_source.validate_runner_snapshot_filenames(
-            Path("r.cu"), 'std::ofstream f("raw/state_snapshots/snapshot_schema.json");\n', out)
+            Path("r.cu"), 'std::ofstream f("raw/state_snapshots/snapshot_schema.json");\n', out,
+            format_facts=capture_store.store("json").FORMAT_FACTS)
         self.assertEqual([], out)
 
     def test_the_compiler_version_is_the_first_versioned_line(self) -> None:
@@ -1067,7 +1069,8 @@ class SourceGateTests(unittest.TestCase):
                 'std::ofstream h("raw/state_snapshots/case_a.json");\n'
                 'std::string doc = "raw/state_snapshots/other.json";\n')
         out: list[str] = []
-        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), text, out, {"case_a"})
+        cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), text, out, {"case_a"},
+                                                      format_facts=capture_store.store("json").FORMAT_FACTS)
         self.assertEqual(1, len(out), out)
         self.assertIn("snap_0001", out[0])
 
@@ -3308,7 +3311,9 @@ class RealDriverTests(unittest.TestCase):
                 standard="c++17", parallel_backend="cuda", architecture="sm_90")
             makefile = registry.capability_module("build_system", "make", "control_file") \
                 .render_from_graph(rules=rules, compiler="nvcc", bin_name="h_runner",
-                                   cases_default="c1", graph=graph)
+                                   cases_default="c1", graph=graph,
+                                   capture_dirs=capture_store.run_dirs("json",
+                                                                       host_rendered=False))
             (src / "Makefile").write_text(makefile)
             build = subprocess.run(["make", "OBJDIR=../obj", "BINDIR=../bin", "all"], cwd=src,
                                    capture_output=True, text=True, check=False, timeout=600)

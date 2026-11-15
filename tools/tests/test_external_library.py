@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from tools import capture_store
 from tools import external_library as xl
 from tools.backends import registry
 from tools.backends.build_system.make import control_file as make_control_file
@@ -553,7 +554,8 @@ class BuildAndRunTests(_Fixture):
         (src / "Makefile").write_text(make_control_file.render_node(
             rules=fortran_rules.rules(standard="f2008", parallel_backend="openmp"),
             compiler="gfortran", bin_name="r_runner", cases_default="c", model_stem="m_model",
-            runner_stem="r_runner", closure=[]))
+            runner_stem="r_runner", closure=[],
+            capture_dirs=capture_store.run_dirs("json", host_rendered=False)))
         from tools.build_runtime import tool_compile_project
         result = tool_compile_project({
             "project_dir": str(src), "language": "fortran", "build_system": "make",
@@ -632,7 +634,8 @@ class ControlFileAndSyntaxTests(_Fixture):
             rules=fortran_rules.rules(standard="f2008", parallel_backend="openmp"),
             compiler="gfortran", bin_name="x", cases_default="c",
             graph={"compile_units": [{"source": "bundle:m.f90", "object": "m.o"}],
-                   "link": {"objects": ["m.o"]}})
+                   "link": {"objects": ["m.o"]}},
+            capture_dirs=capture_store.run_dirs("json", host_rendered=False))
         lines = text.splitlines()
         self.assertIn("LIBINC  ?=", lines)
         self.assertIn("LIBS    ?=", lines)
@@ -641,7 +644,8 @@ class ControlFileAndSyntaxTests(_Fixture):
         node = make_control_file.render_node(
             rules=fortran_rules.rules(standard="f2008", parallel_backend="openmp"),
             compiler="gfortran", bin_name="x", cases_default="c", model_stem="m",
-            runner_stem="r", closure=[]).splitlines()
+            runner_stem="r", closure=[],
+            capture_dirs=capture_store.run_dirs("json", host_rendered=False)).splitlines()
         self.assertIn("LIBINC  ?=", node)
         self.assertIn("LIBS    ?=", node)
 

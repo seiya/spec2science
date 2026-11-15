@@ -163,7 +163,7 @@ def main() -> int:
     try:
         run(ir, Path(a.model).resolve(), [Path(d).resolve() for d in a.dep], base, a.mutate,
             libraries(a.library))
-        records = pe.evaluate_primary_predicates(ir, base / "run")
+        records = pe.evaluate_primary_predicates(ir, base / "run", output_format="json")
         verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
         expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
         got = {t["test_id"]: t["status"] for t in verdict["per_test"]}

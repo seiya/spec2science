@@ -34,6 +34,7 @@ try:
     from tools import host_execution
     # The bounds-checked build's seam (issue #589 PR-0): the `checked` row's expected shape and
     # the variables its build had to be handed.
+    from tools import capture_store
     from tools import checked_build
     from tools import leaf_netns
     from tools.meta_contracts import (
@@ -43,7 +44,8 @@ try:
     )
     # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
     # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
-    # The module is stdlib-only and imports nothing back, so this introduces no cycle.
+    # The module imports only the capture store seam (the registry beneath it, stdlib-only)
+    # and nothing back, so this introduces no cycle.
     from tools.raw_evidence_excerpt import (
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
@@ -82,6 +84,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools import host_execution
     # The bounds-checked build's seam (issue #589 PR-0): the `checked` row's expected shape and
     # the variables its build had to be handed.
+    from tools import capture_store
     from tools import checked_build
     from tools import leaf_netns
     from tools.meta_contracts import (
@@ -91,7 +94,8 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     )
     # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
     # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
-    # The module is stdlib-only and imports nothing back, so this introduces no cycle.
+    # The module imports only the capture store seam (the registry beneath it, stdlib-only)
+    # and nothing back, so this introduces no cycle.
     from tools.raw_evidence_excerpt import (
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
@@ -118,7 +122,7 @@ PLACEHOLDER_TEXT_PATTERNS = (
     '"placeholder"',
 )
 
-SNAPSHOT_SCHEMA_FILE = "snapshot_schema.json"
+SNAPSHOT_SCHEMA_FILE = capture_store.SNAPSHOT_SCHEMA_FILENAME
 FORBIDDEN_RUNNER_OUTPUTS = (
     "verdict.json",
     "aggregate_verdict.json",
@@ -1733,29 +1737,32 @@ def _validate_raw_evidence(
         execution.node_dir / "perf.json",
         execution.node_dir / "quality_check.json",
     ]
+    snapshots_dir = capture_store.snapshot_dir(execution.node_dir)
     if state_snapshot_required or "state_snapshots" in required_raw_evidence:
-        required.append(execution.node_dir / "raw" / "state_snapshots")
+        required.append(snapshots_dir)
     for path in required:
         if not path.exists():
             violations.append(f"{path}: missing")
 
-    snapshots_dir = execution.node_dir / "raw" / "state_snapshots"
     if snapshots_dir.exists() and snapshots_dir.is_dir():
         files = sorted(p for p in snapshots_dir.rglob("*") if p.is_file())
         if not files:
             violations.append(f"{snapshots_dir}: empty directory")
         else:
             schema_path = snapshots_dir / SNAPSHOT_SCHEMA_FILE
-            # Per artifact (issue #589 D8): a capture — a final one, `initial/`, or a `history/`
-            # sample — holds every declared variable; a `series/` file holds exactly the names
-            # the IR's `step_series` entry declares, which `_validate_series_files` reads.
-            series_dir = snapshots_dir / "series"
-            snapshot_data_files = [p for p in files
-                                   if p != schema_path and p.parent != series_dir]
-            _validate_series_files(repo_root, execution, snapshots_dir, violations)
-            driver_wrote_snapshots = _ir_drives_the_runner(repo_root, execution)
+            # Per artifact (issue #589 D8): a state record — a case's final or initial capture,
+            # or one of its samples — holds every declared variable; a series record holds
+            # exactly the names the IR's `step_series` entry declares, which
+            # `_validate_series_files` reads. The records are those the capture store of the
+            # run's output format finds (issue #644), and one it cannot decode is a violation.
+            # A file the store places in no case is read by no reader and is not judged here.
+            store = capture_store.store(_execution_output_format(repo_root, execution))
+            state_paths, state_records, undecodable = _state_records(store, snapshots_dir)
+            _validate_series_files(repo_root, execution, snapshots_dir, store, violations)
+            driver_wrote_snapshots = _ir_drives_the_runner(store, snapshots_dir)
             if driver_wrote_snapshots:
-                _validate_driver_step_key(snapshot_data_files, violations)
+                _validate_driver_step_key(state_records, violations)
+            violations.extend(undecodable)
             for snapshot in files:
                 text = snapshot.read_text(encoding="utf-8", errors="ignore")
                 compact = text.replace(" ", "").replace("\n", "")
@@ -1833,7 +1840,7 @@ def _validate_raw_evidence(
                             f"{schema_path}: time_variable must be non-empty string"
                         )
 
-                    if not snapshot_data_files:
+                    if not state_paths:
                         violations.append(
                             f"{snapshots_dir}: snapshot data file missing"
                         )
@@ -1843,15 +1850,8 @@ def _validate_raw_evidence(
                         # Every declared variable in every snapshot of every node (issue
                         # #582, D7): a host-rendered runner emits each one for each case, and a
                         # harness self-test emits a shape-valid placeholder on its guard case.
-                        for snapshot in snapshot_data_files:
-                            if snapshot.suffix.lower() != ".json":
-                                continue
-                            try:
-                                data = _read_json(snapshot)
-                            except json.JSONDecodeError:
-                                continue
-                            if not isinstance(data, dict):
-                                continue
+                        # (an undecodable record is already a violation, `_state_records`)
+                        for snapshot, data in state_records:
                             keys = set(data.keys())
                             missing_state = sorted(name for name in state_variables if name not in keys)
                             if missing_state:
@@ -1951,57 +1951,103 @@ def _validate_raw_evidence(
             violations.append(f"{quality_path}:status must be pass")
 
 
-def _ir_drives_the_runner(repo_root: Path, execution: NodeExecution) -> bool:
-    """Whether the host-rendered driver ran: only it writes `initial/`; a harness self-test does
-    not (`RUNNER_OUTPUT_CONTRACT.md` §3)."""
-    initial = execution.node_dir / "raw" / "state_snapshots" / "initial"
-    return initial.is_dir() and any(initial.glob("*.json"))
+def _execution_output_format(repo_root: Path, execution: NodeExecution) -> str:
+    """The output format the run's captures are read in: that of the target the pipeline path
+    names (`_pipeline_target`), the store of the target that wrote them. A path that names no
+    target is a pipeline from before target profiles, and one whose profile does not load has
+    no stated format: both read as the profile default. That fails no check open — a
+    directory written in another format holds no record this store finds, so the required
+    evidence is missing (`snapshot data file missing`)."""
+    from tools.target_profile import DEFAULT_OUTPUT_FORMAT
+    target = _pipeline_target(repo_root, execution.pipeline_dir)
+    return target.output_format if target is not None else DEFAULT_OUTPUT_FORMAT
 
 
-def _validate_driver_step_key(captures: list[Path], violations: list[str]) -> None:
-    """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
-    for capture in captures:
-        if capture.suffix.lower() != ".json":
-            continue
+def _capture_format_facts(repo_root: Path, execution: NodeExecution) -> Mapping[str, Any]:
+    """The facts of the run's output format a language backend's runner-output scans build
+    their patterns from (the capture store's `FORMAT_FACTS`)."""
+    facts: Mapping[str, Any] = capture_store.store(
+        _execution_output_format(repo_root, execution)).FORMAT_FACTS
+    return facts
+
+
+def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, int | None]]:
+    """`(group, case_id, step)` of every state record the store finds: per case with a final
+    capture, the final one, the initial one when there is one, and each sample."""
+    keys: list[tuple[str, str, int | None]] = []
+    for case_id in store.case_ids(snapshots_dir):
+        keys.append((capture_store.FINAL, case_id, None))
+        if store.has_record(snapshots_dir, capture_store.INITIAL, case_id):
+            keys.append((capture_store.INITIAL, case_id, None))
+        keys += [(capture_store.HISTORY, case_id, step)
+                 for step in store.history_steps(snapshots_dir, case_id)]
+    return keys
+
+
+def _state_records(store: Any, snapshots_dir: Path
+                   ) -> tuple[list[Path], list[tuple[Path, dict[str, Any]]], list[str]]:
+    """(the file of every state record the store finds, `(file, members)` of those it decodes,
+    one violation per record it cannot decode), each in file order. Until issue #644 a capture
+    that did not parse was passed over by the shape checks; the verdict's reader refused it."""
+    paths: list[Path] = []
+    records: list[tuple[Path, dict[str, Any]]] = []
+    undecodable: list[tuple[Path, str]] = []
+    for group, case_id, step in _state_record_keys(store, snapshots_dir):
+        path = Path(store.record_path(snapshots_dir, group, case_id, step))
+        paths.append(path)
         try:
-            data = _read_json(capture)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict) and "step" not in data:
-            violations.append(f"{capture}: the driver's capture carries no 'step'")
+            records.append((path, dict(store.read_record(snapshots_dir, group, case_id, step))))
+        except capture_store.CaptureError as exc:
+            undecodable.append((path, exc.reason))
+    return (sorted(paths), sorted(records, key=lambda item: item[0]),
+            [f"{path}: {reason}" for path, reason in sorted(undecodable)])
+
+
+def _ir_drives_the_runner(store: Any, snapshots_dir: Path) -> bool:
+    """Whether the host-rendered driver ran: only it writes an initial capture; a harness
+    self-test does not (`RUNNER_OUTPUT_CONTRACT.md` §3)."""
+    return bool(store.case_ids(snapshots_dir, capture_store.INITIAL))
+
+
+def _validate_driver_step_key(captures: list[tuple[Path, dict[str, Any]]],
+                              violations: list[str]) -> None:
+    """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
+    for path, data in captures:
+        if "step" not in data:
+            violations.append(f"{path}: the driver's capture carries no 'step'")
 
 
 def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_dir: Path,
-                           violations: list[str]) -> None:
-    """`series/<case_id>.json` (issue #589 D8): exactly the `step_series` names and the writer's
-    scalar `t`, each name a list of numbers of one length, and one file per final capture. A
-    file on a node that declares no series is refused too. `step_series` is declared iff
+                           store: Any, violations: list[str]) -> None:
+    """The series records (issue #589 D8): exactly the `step_series` names and the writer's
+    scalar `t`, each name a list of numbers of one length, and one record per final capture. A
+    record on a node that declares no series is refused too. `step_series` is declared iff
     `drive.loop` is (`primary_evidence.drive_violations` (h))."""
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     entries = raw_requirements.get("required_evidence") if isinstance(
         raw_requirements, dict) else None
     entry = next((e for e in (entries if isinstance(entries, list) else [])
                   if isinstance(e, dict) and e.get("artifact") == "step_series"), None)
-    series_dir = snapshots_dir / "series"
-    files = sorted(series_dir.glob("*.json")) if series_dir.is_dir() else []
+
+    def series_path(case_id: str) -> Path:
+        return Path(store.record_path(snapshots_dir, capture_store.SERIES, case_id))
+
+    series_ids = list(store.case_ids(snapshots_dir, capture_store.SERIES))
     if entry is None:
-        for path in files:
+        for path in sorted(series_path(c) for c in series_ids):
             violations.append(f"{path}: a series file on a node that declares no step_series")
         return
     names = entry.get("names")
     expected = {n for n in (names if isinstance(names, list) else []) if isinstance(n, str)}
-    finals = {p.name for p in snapshots_dir.glob("*.json") if p.name != SNAPSHOT_SCHEMA_FILE}
-    for name in sorted(finals - {p.name for p in files}):
-        violations.append(f"{series_dir / name}: missing: the case has a final capture, and "
+    finals = set(store.case_ids(snapshots_dir))
+    for path in sorted(series_path(c) for c in finals - set(series_ids)):
+        violations.append(f"{path}: missing: the case has a final capture, and "
                           "step_series is declared")
-    for path in files:
+    for path, case_id in sorted((series_path(c), c) for c in series_ids):
         try:
-            data = _read_json(path)
-        except json.JSONDecodeError:
-            violations.append(f"{path}: invalid json")
-            continue
-        if not isinstance(data, dict):
-            violations.append(f"{path}: must be json object")
+            data = dict(store.read_record(snapshots_dir, capture_store.SERIES, case_id))
+        except capture_store.CaptureError as exc:
+            violations.append(f"{path}: {exc.reason}")
             continue
         got = set(data) - {"t"}
         if isinstance(data.get("t"), bool) or not isinstance(data.get("t"), (int, float)) \
@@ -2439,15 +2485,11 @@ def _validate_harness_reported_block(repo_root: Path, execution: NodeExecution, 
         return  # the launch gate refuses a target whose harness does not resolve
     if execution.node_key != harness_nk:
         return
-    snap_dir = execution.node_dir / "raw" / "state_snapshots"
+    snap_dir = capture_store.snapshot_dir(execution.node_dir)
     name = HARNESS_BLOCK_SNAPSHOT_VARIABLE
     seen = 0
-    for path in sorted(snap_dir.glob("*.json")) if snap_dir.is_dir() else []:
-        try:
-            doc = _read_json(path)
-        except (OSError, json.JSONDecodeError):
-            continue  # the snapshot gate reports an unreadable capture
-        if not isinstance(doc, dict) or name not in doc:
+    for path, doc in _final_records(target, snap_dir):
+        if name not in doc:
             continue
         seen += 1
         reported = doc.get(name)
@@ -2462,6 +2504,21 @@ def _validate_harness_reported_block(repo_root: Path, execution: NodeExecution, 
             f"{snap_dir}: no case snapshot of the harness self-test captures the block size it "
             f"reports ({name}), so the block the run was launched with is tied to nothing the "
             f"self-test judged")
+
+
+def _final_records(target: Any, snap_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """`(file, members)` of every final capture the target's capture store finds and decodes,
+    by file. An undecodable one is left out: the snapshot gate reports it
+    (`_state_records`)."""
+    store = capture_store.store(target.output_format)
+    out: list[tuple[Path, dict[str, Any]]] = []
+    for case_id in store.case_ids(snap_dir):
+        try:
+            doc = dict(store.read_record(snap_dir, capture_store.FINAL, case_id))
+        except capture_store.CaptureError:
+            continue
+        out.append((Path(store.record_path(snap_dir, capture_store.FINAL, case_id)), doc))
+    return sorted(out, key=lambda item: item[0])
 
 
 def _validate_harness_reported_grid(repo_root: Path, execution: NodeExecution, target: Any,
@@ -2484,15 +2541,11 @@ def _validate_harness_reported_grid(repo_root: Path, execution: NodeExecution, t
         return  # the launch gate refuses a target whose harness does not resolve
     if execution.node_key != harness_nk:
         return
-    snap_dir = execution.node_dir / "raw" / "state_snapshots"
+    snap_dir = capture_store.snapshot_dir(execution.node_dir)
     first, second = HARNESS_GRID_SNAPSHOT_VARIABLES
     seen = 0
-    for path in sorted(snap_dir.glob("*.json")) if snap_dir.is_dir() else []:
-        try:
-            doc = _read_json(path)
-        except (OSError, json.JSONDecodeError):
-            continue  # the snapshot gate reports an unreadable capture
-        if not isinstance(doc, dict) or (first not in doc and second not in doc):
+    for path, doc in _final_records(target, snap_dir):
+        if first not in doc and second not in doc:
             continue
         seen += 1
         reported = [doc.get(first), doc.get(second)]
@@ -2937,6 +2990,7 @@ def _validate_generate_outputs_for_generation(
         _validate_runner_source_files(
             execution, host_runner_files, host_runner_violations,
             known_case_ids=known_case_ids, bundle=bundle, source_reading=source_reading,
+            format_facts=_capture_format_facts(repo_root, execution),
         )
         violations.extend(
             _as_host_authored(v, "tools/host_render.render_runner, via "
@@ -2946,6 +3000,7 @@ def _validate_generate_outputs_for_generation(
         _validate_runner_source_files(
             execution, leaf_runner_files, violations, known_case_ids=known_case_ids,
             bundle=bundle, source_reading=source_reading,
+            format_facts=_capture_format_facts(repo_root, execution),
         )
     if is_m3c:
         pipeline_target = _pipeline_target(repo_root, execution.pipeline_dir)
@@ -4567,7 +4622,7 @@ def _case_ids_for_execution(repo_root: Path, execution: NodeExecution) -> set[st
     """All declared ``case.test_case_set[].case_id`` for the execution's IR.
 
     Used by the post_generate snapshot-filename check to avoid a false positive on
-    a hardcoded ``raw/state_snapshots/<case_id>.json`` literal that legitimately
+    a hardcoded capture file name that legitimately
     matches a declared case (it satisfies the deliverable gate). Unlike
     ``_case_id_to_test_id`` this includes cases whose ``test_id`` is null.
     """
@@ -6675,9 +6730,12 @@ def _validate_runner_source_files(
     *,
     bundle: Any,
     source_reading: Any,
+    format_facts: Mapping[str, Any],
 ) -> None:
     """The deterministic runner backstops over `runner_files`: the name, the forbidden judge
-    artifacts, and the target language's JSON-serialization and snapshot-filename scans.
+    artifacts, and the target language's JSON-serialization and snapshot-filename scans. The
+    second scan builds its pattern from `format_facts`, the facts of the run's output format
+    (`_capture_format_facts`).
 
     The runner's name is the target language's `bundle_facts.runner_basename` — ONE spelling,
     shared with the conductor (`Conductor._runner_basename`) and with every reader in this module
@@ -6717,6 +6775,7 @@ def _validate_runner_source_files(
             text=text,
             violations=violations,
             known_case_ids=known_case_ids,
+            format_facts=format_facts,
         )
 
 
@@ -6737,6 +6796,7 @@ def _validate_runner_outputs(
     _validate_runner_source_files(
         execution, runner_files, violations, known_case_ids=known_case_ids,
         bundle=bundle, source_reading=source_reading,
+        format_facts=_capture_format_facts(repo_root, execution),
     )
 
 
@@ -8923,7 +8983,8 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
     node kinds, not only the M3c host-rendered ones.
 
     A case_id becomes a PATH at runtime: every node's runner writes its per-case snapshot to
-    ``raw/state_snapshots/<case_id>.json`` (the argv the conductor's ``read_case_ids`` builds), so
+    a file named after it under ``raw/state_snapshots/`` (the argv the conductor's
+    ``read_case_ids`` builds), so
     a case_id like ``../../evil`` makes the (honest, cleanly-compiling) runner write OUTSIDE the
     run directory. The M3c renderer's ``_case_ids`` gate bounds only the literals IT embeds, so it
     covers host-rendered nodes; a non-M3c leaf-authored runner has no such gate. This spec-input
@@ -8959,7 +9020,8 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
         violations.append(
             f"{derived_path}: case.test_case_set has case_id(s) {sorted(set(unsafe))} that are "
             "not safe tokens; a case_id is concatenated into the per-case snapshot path "
-            "(raw/state_snapshots/<case_id>.json) and reaches the runner's argv, so it must "
+            "(a file named after it under raw/state_snapshots/) and reaches the runner's argv, "
+            "so it must "
             "match [A-Za-z0-9._][A-Za-z0-9._-]* with no '..' (a leading '-' would be read as "
             "an option; anything else makes the run write outside its directory)")
 

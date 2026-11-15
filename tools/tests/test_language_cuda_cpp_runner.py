@@ -25,6 +25,7 @@ from pathlib import Path
 
 import yaml
 
+from tools import capture_store
 from tools import primary_evidence as pe
 from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import runner as cpp_runner
@@ -202,7 +203,8 @@ class RenderShapeTest(unittest.TestCase):
         out: list[str] = []
         cpp_source.validate_runner_json_serialization(Path("r.cu"), self.text.lower(), out)
         cpp_source.validate_runner_snapshot_filenames(Path("r.cu"), self.text.lower(), out,
-                                                      known_case_ids={"c0", "c1_xfail"})
+                                                      known_case_ids={"c0", "c1_xfail"},
+                                                      format_facts=capture_store.store("json").FORMAT_FACTS)
         self.assertEqual([], out)
 
 

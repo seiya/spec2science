@@ -250,6 +250,18 @@ together with the bundle's `target_lowering_plan.parallelization`.
     (`spec/libraries/<library_id>.yaml`) and the site's directories are data the neutral core
     carries as opaque tokens (`tools/external_library.py`); the binding is
     `docs/backends/compiler/<compiler>/TOOLCHAIN.md`.
+  - **A run's captures are found and decoded by the `capture store` of the target that wrote
+    them** (issue #644): the `output_format` axis value is the target profile's `output.format`
+    (`json` when absent), and its `capture_store` holds which files under `raw/state_snapshots/`
+    are a case's records and how one is decoded. `Validate.execute`, the verdict's reader, the
+    post-execute gate, the judge's excerpt, the cross-target agreement and
+    `tools/run_configuration.py` reach it through `tools/capture_store.py` and spell no capture
+    file name, suffix or group directory of their own; a comparand's run is read through the
+    comparand target's store, whatever the asking target writes. The build control file's
+    `test` recipe is handed the directories to create, and a language's runner-output scan the
+    format's facts (`FORMAT_FACTS`), so neither backend names another axis' layout. What the
+    host writes itself — `snapshot_schema.json`, the case files, and the harness-written
+    `perf.json` — is JSON on every target and is not the store's.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that

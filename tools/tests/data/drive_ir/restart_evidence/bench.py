@@ -311,8 +311,8 @@ def _edit_files(kind: str, shape_dir: Path):
     writer wrote."""
     real = pe.write_continuation_inputs
 
-    def wrapped(ir: dict[str, Any], sdir: Path):
-        files, refused = real(ir, sdir)
+    def wrapped(ir: dict[str, Any], sdir: Path, read: Any):
+        files, refused = real(ir, sdir, read)
         for f in files:
             doc = json.loads(f.path.read_text())
             if kind == "step_zero":
@@ -374,7 +374,7 @@ def run_row(job: dict[str, Any]) -> dict[str, Any]:
         finally:
             if real is not None:
                 pe.write_continuation_inputs = real
-        records = pe.evaluate_primary_predicates(ir, run)
+        records = pe.evaluate_primary_predicates(ir, run, output_format="json")
         verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
         expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
         got = {t["test_id"]: t["status"] for t in verdict["per_test"]}

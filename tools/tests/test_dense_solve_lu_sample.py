@@ -95,7 +95,8 @@ class DenseSolveLuSampleTest(unittest.TestCase):
                                _mutations(mutant_id) if mutant_id else [], self.resolved)
             except SystemExit as exc:   # the bench's way of reporting a build or run failure
                 self.fail(f"{mutant_id or 'the unmutated model'}: {exc}")
-            records = pe.evaluate_primary_predicates(self.ir, Path(td) / "run")
+            records = pe.evaluate_primary_predicates(self.ir, Path(td) / "run",
+                                                     output_format="json")
         verdict = verdict_evaluator.evaluate_verdict(self.ir["io_contract"]["tests"], records)
         got = {t["test_id"]: t["status"] for t in verdict["per_test"]}
         return {tid for tid, outcome in self.expected.items() if got.get(tid) != outcome}
