@@ -523,8 +523,9 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
     a `*.json` glob in a module on the capture path. What it does not see: a name computed at
     run time, and a reader that never names the directory at all — `CaptureStoreReachTests`
     is the row for those. A fourth rule, over the capture-path modules: none names a declared
-    format by its id — the format is the target's, and with one declared member a literal reads
-    the same as the right answer in every other test."""
+    format by its id in a call argument, an assignment or a parameter default — the format is
+    the target's, and with one declared member a literal reads the same as the right answer in
+    every other test."""
 
     #: The neutral modules that read or place captures (the glob rule applies to these alone:
     #: other modules glob JSON of their own).
@@ -583,11 +584,20 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
                     and isinstance(node.args[0], ast.Constant) \
                     and str(node.args[0].value).rsplit("/", 1)[-1] == "*.json":
                 found.append((node.lineno, "a JSON glob on the capture path"))
-            # a format named by its id where the code wants the target's (`target.output_format`)
-            if globs and isinstance(node, ast.Constant) and id(node) not in docstrings \
-                    and id(node) not in in_fstring and isinstance(node.value, str) \
-                    and node.value in NeutralCaptureLiteralTests._FORMAT_IDS:
-                found.append((node.lineno, f"the format {node.value!r} is named by its id"))
+            # a format named by its id where the code wants the target's
+            # (`target.output_format`): handed to a call, or bound to a name. A comparison, a
+            # list element or a mapping value that happens to equal an id is none.
+            handed: list[ast.expr | None] = []
+            if isinstance(node, ast.Call):
+                handed = [*node.args, *(kw.value for kw in node.keywords)]
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                handed = [node.value]
+            elif isinstance(node, ast.arguments):
+                handed = [*node.defaults, *node.kw_defaults]
+            for value in handed if globs else ():
+                if isinstance(value, ast.Constant) \
+                        and value.value in NeutralCaptureLiteralTests._FORMAT_IDS:
+                    found.append((value.lineno, f"the format {value.value!r} is named by its id"))
         return [f"{rel}:{lineno}: {what}" for lineno, what in sorted(set(found))]
 
     def test_the_instrument_sees_each_spelling(self) -> None:
@@ -610,10 +620,15 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
             '    h = read(run, "json")\n'
             '    i = read(run, output_format="json")\n'
             '    fmt = "json"\n'
-            '    ok6 = f"a json file of {run}"\n'), globs=True)
+            '    ok6 = f"a json file of {run}"\n'
+            '    ok7 = fmt == "json"\n'
+            '    ok8 = launch(["tool", "--output-format", "json"])\n'
+            '    ok9 = {"type": "json"}\n'
+            'def g(run, fmt="json"):\n'
+            '    pass\n'), globs=True)
         self.assertEqual([f.split(": ", 1)[0] for f in seen],
                          ["x.py:3", "x.py:4", "x.py:5", "x.py:6", "x.py:7", "x.py:8",
-                          "x.py:14", "x.py:15", "x.py:16"], seen)
+                          "x.py:14", "x.py:15", "x.py:16", "x.py:21"], seen)
         # the glob rule is the capture-path modules' alone
         self.assertEqual(self._findings("x.py", 'x = d.glob("*.json")\n', globs=False), [])
 
