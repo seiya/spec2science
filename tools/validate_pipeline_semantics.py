@@ -1754,15 +1754,15 @@ def _validate_raw_evidence(
             # or one of its samples — holds every declared variable; a series record holds
             # exactly the names the IR's `step_series` entry declares, which
             # `_validate_series_files` reads. The records are those the capture store of the
-            # run's output format finds (issue #644), and one it cannot decode is a violation.
-            # A file the store places in no case is read by no reader and is not judged here.
+            # run's output format finds (issue #644); one it cannot decode is passed over
+            # here, as before, and refused by the verdict's reader. A file the store places in
+            # no case is read by no reader and is not judged here.
             store = capture_store.store(_execution_output_format(repo_root, execution))
-            state_paths, state_records, undecodable = _state_records(store, snapshots_dir)
+            state_paths, state_records = _state_records(store, snapshots_dir)
             _validate_series_files(repo_root, execution, snapshots_dir, store, violations)
             driver_wrote_snapshots = _ir_drives_the_runner(store, snapshots_dir)
             if driver_wrote_snapshots:
                 _validate_driver_step_key(state_records, violations)
-            violations.extend(undecodable)
             for snapshot in files:
                 text = snapshot.read_text(encoding="utf-8", errors="ignore")
                 compact = text.replace(" ", "").replace("\n", "")
@@ -1985,22 +1985,20 @@ def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, 
 
 
 def _state_records(store: Any, snapshots_dir: Path
-                   ) -> tuple[list[Path], list[tuple[Path, dict[str, Any]]], list[str]]:
-    """(the file of every state record the store finds, `(file, members)` of those it decodes,
-    one violation per record it cannot decode), each in file order. Until issue #644 a capture
-    that did not parse was passed over by the shape checks; the verdict's reader refused it."""
+                   ) -> tuple[list[Path], list[tuple[Path, dict[str, Any]]]]:
+    """(the file of every state record the store finds, `(file, members)` of those it
+    decodes), each in file order. A record that does not decode is passed over by the shape
+    checks; the verdict's reader refuses it."""
     paths: list[Path] = []
     records: list[tuple[Path, dict[str, Any]]] = []
-    undecodable: list[tuple[Path, str]] = []
     for group, case_id, step in _state_record_keys(store, snapshots_dir):
         path = Path(store.record_path(snapshots_dir, group, case_id, step))
         paths.append(path)
         try:
             records.append((path, dict(store.read_record(snapshots_dir, group, case_id, step))))
-        except capture_store.CaptureError as exc:
-            undecodable.append((path, exc.reason))
-    return (sorted(paths), sorted(records, key=lambda item: item[0]),
-            [f"{path}: {reason}" for path, reason in sorted(undecodable)])
+        except capture_store.CaptureError:
+            continue
+    return sorted(paths), sorted(records, key=lambda item: item[0])
 
 
 def _ir_drives_the_runner(store: Any, snapshots_dir: Path) -> bool:
