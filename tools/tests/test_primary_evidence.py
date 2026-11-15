@@ -44,6 +44,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from tools import capture_store
 from tools import primary_evidence as pe
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
@@ -2271,7 +2272,7 @@ class ComparandEvidenceHashTest(unittest.TestCase):
         self.assertTrue(h0.startswith("sha256:"))
         self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
         # the host-authored schema file is not a capture
-        (self.run.sdir / pe.SNAPSHOT_SCHEMA_FILENAME).write_text('{"x": 1}')
+        (self.run.sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text('{"x": 1}')
         self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
         # a byte of a final capture, of an initial capture, and a file's NAME each move it
         final = self.run.sdir / "a.json"
@@ -2302,7 +2303,7 @@ class ComparandEvidenceHashTest(unittest.TestCase):
     def test_no_capture_raises(self) -> None:
         for path in (self.run.sdir / "a.json", self.run.sdir / "initial" / "a.json"):
             path.unlink()
-        (self.run.sdir / pe.SNAPSHOT_SCHEMA_FILENAME).write_text("{}")
+        (self.run.sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text("{}")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
             pe.comparand_evidence_sha256(self.run.root, "json")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):

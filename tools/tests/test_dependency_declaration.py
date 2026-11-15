@@ -639,9 +639,8 @@ def _launch_probed_modules() -> tuple[tuple[str, str], ...]:
             found += registry.capability_module(
                 "language", language, "source_reading").REQUIRED_PYTHON_MODULES
     for output_format in registry.backend_ids("output_format"):
-        if registry.provides("output_format", output_format, "capture_store"):
-            found += registry.capability_module(
-                "output_format", output_format, "capture_store").REQUIRED_PYTHON_MODULES
+        found += registry.capability_module(
+            "output_format", output_format, "capture_store").REQUIRED_PYTHON_MODULES
     return tuple(dict.fromkeys(found))
 
 

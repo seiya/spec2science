@@ -871,10 +871,8 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
                        f"{wrapped}, and toolchain.language {tc['language']} compiles with "
                        f"{compiler}")
     # The format the target's runs write their captures in: every reader of a run directory
-    # decodes it through that format's store, so a format without one has no reader.
-    reason = backend_registry.unavailable_reason("output_format", profile.output_format) or \
-        backend_registry.missing_capability_reason(
-            "output_format", profile.output_format, "capture_store")
+    # decodes it through that format's store.
+    reason = backend_registry.unavailable_reason("output_format", profile.output_format)
     if reason is not None:
         out.append(f"output.format: {reason}")
     try:

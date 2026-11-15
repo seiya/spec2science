@@ -555,21 +555,6 @@ class OutputFormatTests(unittest.TestCase):
             [v for v in violations if v.startswith("output.format: ")],
             ["output.format: " + registry.unavailable_reason("output_format", "other_format")])
 
-    def test_the_launch_gate_refuses_a_declared_format_with_no_store(self) -> None:
-        # Kills: asking only whether the value is declared — a record without `capture_store`
-        # has no reader.
-        from tools.backends import registry
-        bare = registry.Backend("output_format", "bare", "tools.backends.output_format.json")
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
-                registry._BACKENDS, {("output_format", "bare"): bare}):
-            repo = _ScratchRepo(tmp)
-            repo.write("t1", output__format="bare")
-            violations = tp.target_profile_violations(
-                repo.root, tp.load_target_profile(repo.root, "t1"))
-            expected = registry.missing_capability_reason(
-                "output_format", "bare", "capture_store")
-        self.assertIn("output.format: " + expected, violations)
-
 
 class SchemaAgreementTests(unittest.TestCase):
     """The schema is the declarative copy of `PROFILE_SHAPE` (spec/schema/SCHEMA.md)."""

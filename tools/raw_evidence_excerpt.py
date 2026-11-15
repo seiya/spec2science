@@ -195,8 +195,6 @@ def _record(store: Any, snapshots_dir: Path, group: str, case_id: str,
     except capture_store.CaptureError as exc:
         rel = store.record_path(snapshots_dir, group, case_id).relative_to(snapshots_dir)
         problems.append(f"{_SNAPSHOTS_LABEL}/{rel.as_posix()}: {exc.reason}")
-    except OSError as exc:
-        problems.append(f"{_SNAPSHOTS_LABEL}: unreadable ({type(exc).__name__})")
     return None
 
 

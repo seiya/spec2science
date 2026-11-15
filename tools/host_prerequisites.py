@@ -507,11 +507,9 @@ def required_python_modules(selection: dict[str, str]) -> tuple[tuple[str, str],
     declared = list(backend_registry.capability_module(
         "language", language, "source_reading").REQUIRED_PYTHON_MODULES)
     for output_format in backend_registry.backend_ids("output_format"):
-        if backend_registry.provides("output_format", output_format, "capture_store"):
-            declared += backend_registry.capability_module(
-                "output_format", output_format, "capture_store").REQUIRED_PYTHON_MODULES
-    return tuple(dict.fromkeys(
-        (str(module_name), str(distribution)) for module_name, distribution in declared))
+        declared += backend_registry.capability_module(
+            "output_format", output_format, "capture_store").REQUIRED_PYTHON_MODULES
+    return tuple((str(module_name), str(distribution)) for module_name, distribution in declared)
 
 
 def missing_host_executables(

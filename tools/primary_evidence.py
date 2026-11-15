@@ -858,12 +858,6 @@ class CrossTargetAgreement(NamedTuple):
                 "records": list(self.records), "own_run": self.own_run, "error": self.error}
 
 
-#: The host-authored file in a run's capture directory that is not a capture: the snapshot
-#: schema the conductor writes from the IR. Excluded from the comparand evidence hash — it is
-#: not state the comparand's kernel produced.
-SNAPSHOT_SCHEMA_FILENAME = capture_store.SNAPSHOT_SCHEMA_FILENAME
-
-
 def comparand_evidence_sha256(run_dir: Path, output_format: str) -> str:
     """The identity of a comparand run's captures: sha256 over every capture file the store of
     ``output_format`` (the format of the target that wrote ``run_dir``) finds under the run's
@@ -5143,9 +5137,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", default=None, metavar="TARGET_ID",
                         help="the target whose run wrote --run: its profile says which output "
                              "format the captures are read in. Default: the target segment of "
-                             "--run when it lies under a pipeline tree")
-    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1],
-                        help="the repository holding the target profiles (default: this one)")
+                             "--run when it lies under a pipeline tree, else the profile "
+                             "default format")
     parser.add_argument("--comparand", action="append", default=[], metavar="TARGET_ID=RUN_DIR",
                         help="bind another target's run node directory as a comparand of the "
                              "cross-target predicates (repeatable; the host's own selection is "
@@ -5155,16 +5148,16 @@ def main(argv: list[str] | None = None) -> int:
 
     def written_as(target_id: str | None, run: Path) -> str:
         """The output format of the target that wrote ``run``: the named target's, else the
-        one the pipeline path names. Never guessed from the directory's content."""
-        from tools.target_profile import (TargetProfileError, load_target_profile,
-                                          pipeline_target_id)
+        one the pipeline path names, else — a directory outside a pipeline tree — the profile
+        default. Never guessed from the directory's content."""
+        from tools.target_profile import (DEFAULT_OUTPUT_FORMAT, TargetProfileError,
+                                          load_target_profile, pipeline_target_id)
         target_id = target_id or pipeline_target_id(str(Path(run).resolve()))
         if not target_id:
-            raise PrimaryEvidenceError(
-                f"{run}: not under a pipeline tree, so nothing says which target wrote it; "
-                "name it with --target")
+            return DEFAULT_OUTPUT_FORMAT
         try:
-            return load_target_profile(args.repo_root, target_id).output_format
+            return load_target_profile(Path(__file__).resolve().parents[1],
+                                       target_id).output_format
         except TargetProfileError as exc:
             raise PrimaryEvidenceError(f"target {target_id!r}: {exc}") from None
 
