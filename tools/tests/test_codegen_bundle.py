@@ -534,7 +534,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
                                               conductor._target_architecture())
         common = dict(rules=rules, compiler="fc", bin_name="b", cases_default="c")
         for flag in (True, False):
-            with self.subTest(initial_capture_dir=flag):
+            with self.subTest(host_rendered=flag):
                 node = control_file.render_node(
                     **common, model_stem="m", runner_stem="r", closure=(),
                     capture_dirs=capture_store.run_dirs("json", host_rendered=flag))

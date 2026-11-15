@@ -520,12 +520,12 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
     every neutral `tools/*.py` but the seam, read by `ast` (docstrings and comments are not
     code): a string that continues the capture directory with a file or group name, a path
     built with `/` or `joinpath` from the capture directory's name or a group directory's, and
-    a `*.json` glob in a module on the capture path. What it does not see: a name computed at
-    run time, and a reader that never names the directory at all — `CaptureStoreReachTests`
-    is the row for those. A fourth rule, over the capture-path modules: none names a declared
+    a glob by a store's suffix in a module on the capture path — the directories and suffixes
+    of every declared store. What it does not see: a name computed at run time, and a reader
+    that never names the directory at all — `CaptureStoreReachTests` is the row for those. A fourth rule, over the capture-path modules: none names a declared
     format by its id in a call argument, an assignment or a parameter default — the format is
     the target's, and with one declared member a literal reads the same as the right answer in
-    every other test."""
+    every other test. A returned literal is not seen."""
 
     #: The neutral modules that read or place captures (the glob rule applies to these alone:
     #: other modules glob JSON of their own).
@@ -537,7 +537,12 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
         "tools/remote_execution.py", "tools/host_render.py"})
     #: `state_snapshots/` followed by a name: a file or a group below the capture directory.
     _CONTINUED = __import__("re").compile(r"state_snapshots/[A-Za-z0-9_<{*$]")
-    _PATH_PARTS = frozenset({"state_snapshots", "initial", "history", "series"})
+    #: The capture directory's name and every declared store's directories below it.
+    _PATH_PARTS = frozenset({cs.SNAPSHOT_DIR_PARTS[-1]} | {
+        sub for fmt in registry.backend_ids(cs.AXIS) for sub in cs.store(fmt).run_dirs()})
+    #: Every file of a directory by a declared store's suffix.
+    _SUFFIX_GLOBS = frozenset(
+        "*" + cs.store(fmt).FORMAT_FACTS["suffix"] for fmt in registry.backend_ids(cs.AXIS))
     #: The declared formats: a capture-path module that names one of these ids reads every
     #: target's run in that format, whatever the target writes.
     _FORMAT_IDS = frozenset(registry.backend_ids(cs.AXIS))
@@ -582,8 +587,9 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
             if globs and isinstance(node, ast.Call) \
                     and getattr(node.func, "attr", "") in ("glob", "rglob") and node.args \
                     and isinstance(node.args[0], ast.Constant) \
-                    and str(node.args[0].value).rsplit("/", 1)[-1] == "*.json":
-                found.append((node.lineno, "a JSON glob on the capture path"))
+                    and str(node.args[0].value).rsplit("/", 1)[-1] in \
+                    NeutralCaptureLiteralTests._SUFFIX_GLOBS:
+                found.append((node.lineno, "a capture-suffix glob on the capture path"))
             # a format named by its id where the code wants the target's
             # (`target.output_format`): handed to a call, or bound to a name. A comparison, a
             # list element or a mapping value that happens to equal an id is none.

@@ -10,9 +10,9 @@ Layout, `<C>` a case id and `<k>` a committed step in decimal digits:
 * `history/<C>__<k>.json` — its sample at step `<k>`;
 * `series/<C>.json` — its per-step series.
 
-A record is the object's members as `json` decodes them: a number, nested lists of numbers, or
-whatever else the writer put there — the readers judge the values (rank, extents, finiteness,
-non-numbers), this module only finds and decodes. A nested list cannot spell the extents after
+A record is the object's members as `json` decodes them — the value domain every store
+returns (`tools/capture_store.py`). The readers judge the values (rank, extents, finiteness,
+non-numbers); this module only finds and decodes. A nested list cannot spell the extents after
 a zero one, so a zero-size array reads back as the lists its writer closed.
 
 Every file is written once by the run; nothing here writes a record.

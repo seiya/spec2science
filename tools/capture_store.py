@@ -18,6 +18,15 @@ The store that reads a directory is the store of the target whose run WROTE it: 
 that target's `output_format` (`TargetProfile.output_format`), never a format guessed from the
 directory's content.
 
+What a store is: a module with `FORMAT_FACTS` (its `suffix`, read by the language backends'
+runner-output scans), `REQUIRED_PYTHON_MODULES`, and the functions the readers call —
+`run_dirs`, `record_path`, `has_record`, `read_record`, `case_ids`, `history_steps`,
+`case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`, `expected_layout`
+(`tools/backends/output_format/json/store.py` states each). One record is one file. A record's
+members are returned as JSON spells them — a number, a boolean, a string, nested lists of
+those — whatever the format holds on disk: the neutral readers judge rank, extents and
+finiteness on lists and refuse any other value as a non-number.
+
 Imports only the registry, so every reader can import it.
 """
 

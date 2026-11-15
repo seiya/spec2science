@@ -2255,9 +2255,7 @@ class RegistryConsistencyTests(unittest.TestCase):
                       "capture_store"}
         # `capture_store` joined them with issue #644 (Part 3 P3): `tools/capture_store.py`
         # asks `capability_module` for the store of the target whose run wrote a capture
-        # directory, for every reader of one, and the launch gate
-        # (`target_profile.target_profile_violations`) asks `missing_capability_reason` of the
-        # profile's `output.format`.
+        # directory, for every reader of one.
         # `library_flags` and `library_binary` joined them with issue #644 (Part 3 P1):
         # `tools/external_library.py` asks the target compiler's record
         # (`missing_capability_reason`) and `capability_module` for both, to resolve and link a

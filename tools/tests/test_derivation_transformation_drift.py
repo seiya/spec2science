@@ -1338,7 +1338,7 @@ PINNED_RENDER: dict[str, str] = {
     # Issue #644 Part 3 P3 re-pinned render-20 in place (the `test` recipe's directories are the capture store's, handed to the renderer (`capture_dirs`); the rendered bytes are unchanged).
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "render-20@b3282e9b": "9beddb37541b9193256787b04d308b31a230aebb066edc8b9add7fe605ca0665",
-    "render-20": "78f0062875ad70dc3b2ce25f9d18cfaf56d2bc29ee3b2bfe63569198af7129a9",
+    "render-20": "4edbfa8ac1b3d99c893a3b1e8250ffde561a41dfcf0f03171337c1a33c95dcfa",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
@@ -2011,7 +2011,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # Issue #644 Part 3 P3 re-pinned execute-19 in place (the run's captures are placed, promoted and read through the capture store; no run output changes).
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "execute-19@b3282e9b": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
-    "execute-19": "c886afe75414597f69f745eeac1b195eeb14cc77cc6bddd3da1cd5a2c4624690",
+    "execute-19": "cc250ea6cc74b1b3783ca96ec5fb5d3d34ba63ffa0e7ef6c5b8399cbec4a6d85",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2222,7 +2222,7 @@ PINNED_VERDICT: dict[str, str] = {
     # Issue #644 Part 3 P3 re-pinned verdict-17 in place (the predicates' captures are read through the capture store; no verdict changes).
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "verdict-17@b3282e9b": "1c567db76c7df37709810a3807c9e8d529d8298b48b66c198103622a0949b4a2",
-    "verdict-17": "ef3b5e0f6bbcb34cb1ccb1467e99f45971d377e5188ac39abc3720d94f2ecd0e",
+    "verdict-17": "d23dd1ffdd2a71d52e0fc5747ab210330304b5ee1f9d7ee4317491f229aebb6c",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 
