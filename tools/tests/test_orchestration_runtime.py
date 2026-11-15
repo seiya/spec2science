@@ -29746,6 +29746,27 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual(comp.run_dir, newest)
         self.assertEqual(comp.evidence, comparand_evidence_sha256(newest, "json"))
 
+    def test_a_comparand_run_is_read_in_the_format_its_own_target_writes(self) -> None:
+        # Kills: reading the other target's run through the ASKING target's format (issue #644
+        # P3) — with one declared format both spell the same store, so the other target's
+        # profile is given a format of its own and the reader is watched.
+        import dataclasses
+        b = self._seed_b()
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
+        real_load = ort.load_target_profile
+
+        def load(repo_root: Path, tid: str) -> Any:
+            prof = real_load(repo_root, tid)
+            return dataclasses.replace(prof, doc={**prof.doc, "output": {"format": "theirs"}})
+
+        asked: list[str] = []
+        with mock.patch.object(ort, "load_target_profile", side_effect=load), \
+                mock.patch("tools.primary_evidence.comparand_evidence_sha256",
+                           side_effect=lambda _d, fmt: asked.append(fmt) or "sha"):
+            [comp] = self._resolve()
+        self.assertEqual((asked, comp.output_format, _TP.output_format),
+                         (["theirs"], "theirs", "json"))
+
     def test_each_eligibility_clause_excludes_the_newest_run(self) -> None:
         good = {"self_verdict": "pass"}
         rows = [

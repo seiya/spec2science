@@ -14498,7 +14498,7 @@ class Conductor:
             # `validate` too: execute's deliverable set depends on whether the runner is the
             # host-rendered glue (which writes the initial captures) — Z6, issue #255 — and on
             # the files the target's capture store names for a case.
-            output_format=self.target.output_format if phase == "validate" else "",
+            output_format=self.target.output_format,
             runner_host_authored=(
                 phase in ("generate", "validate") and self._conductor_authors_runner(refs)),
             device_trace=(phase == "validate" and self._traces_execution()),

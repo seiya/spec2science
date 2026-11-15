@@ -522,7 +522,9 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
     built with `/` or `joinpath` from the capture directory's name or a group directory's, and
     a `*.json` glob in a module on the capture path. What it does not see: a name computed at
     run time, and a reader that never names the directory at all — `CaptureStoreReachTests`
-    is the row for those."""
+    is the row for those. A fourth rule, over the capture-path modules: none names a declared
+    format by its id — the format is the target's, and with one declared member a literal reads
+    the same as the right answer in every other test."""
 
     #: The neutral modules that read or place captures (the glob rule applies to these alone:
     #: other modules glob JSON of their own).
@@ -535,6 +537,9 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
     #: `state_snapshots/` followed by a name: a file or a group below the capture directory.
     _CONTINUED = __import__("re").compile(r"state_snapshots/[A-Za-z0-9_<{*$]")
     _PATH_PARTS = frozenset({"state_snapshots", "initial", "history", "series"})
+    #: The declared formats: a capture-path module that names one of these ids reads every
+    #: target's run in that format, whatever the target writes.
+    _FORMAT_IDS = frozenset(registry.backend_ids(cs.AXIS))
 
     @staticmethod
     def _findings(rel: str, source: str, *, globs: bool) -> list[str]:
@@ -578,6 +583,11 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
                     and isinstance(node.args[0], ast.Constant) \
                     and str(node.args[0].value).rsplit("/", 1)[-1] == "*.json":
                 found.append((node.lineno, "a JSON glob on the capture path"))
+            # a format named by its id where the code wants the target's (`target.output_format`)
+            if globs and isinstance(node, ast.Constant) and id(node) not in docstrings \
+                    and id(node) not in in_fstring and isinstance(node.value, str) \
+                    and node.value in NeutralCaptureLiteralTests._FORMAT_IDS:
+                found.append((node.lineno, f"the format {node.value!r} is named by its id"))
         return [f"{rel}:{lineno}: {what}" for lineno, what in sorted(set(found))]
 
     def test_the_instrument_sees_each_spelling(self) -> None:
@@ -596,9 +606,14 @@ class NeutralCaptureLiteralTests(unittest.TestCase):
             '    ok2 = "state_snapshots" in run\n'
             '    ok3 = "under raw/state_snapshots/)"\n'
             '    ok4 = run / "case_inputs" / f"{cid}.json"\n'
-            '    ok5 = sdir.glob("*/step_result.json")\n'), globs=True)
+            '    ok5 = sdir.glob("*/step_result.json")\n'
+            '    h = read(run, "json")\n'
+            '    i = read(run, output_format="json")\n'
+            '    fmt = "json"\n'
+            '    ok6 = f"a json file of {run}"\n'), globs=True)
         self.assertEqual([f.split(": ", 1)[0] for f in seen],
-                         ["x.py:3", "x.py:4", "x.py:5", "x.py:6", "x.py:7", "x.py:8"], seen)
+                         ["x.py:3", "x.py:4", "x.py:5", "x.py:6", "x.py:7", "x.py:8",
+                          "x.py:14", "x.py:15", "x.py:16"], seen)
         # the glob rule is the capture-path modules' alone
         self.assertEqual(self._findings("x.py", 'x = d.glob("*.json")\n', globs=False), [])
 
