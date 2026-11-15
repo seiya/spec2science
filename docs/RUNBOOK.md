@@ -58,7 +58,9 @@ launch instead. The check has two halves: `numpy` is refused for every run (`too
 `REQUIRED_PYTHON_MODULES`), and the `tree-sitter` pair only for a target whose language reads its
 sources through it — each language backend declares its own (`source_reading`
 `REQUIRED_PYTHON_MODULES`), and the check runs once the target is resolved, so a run for a language
-that declares none requires neither.
+that declares none requires neither. The modules an output format's capture store declares
+(`capture_store` `REQUIRED_PYTHON_MODULES`; none for `json`) are checked with it, every declared
+format's for every target.
 
 (`PyYAML` is listed here because a run needs it, but it is not a member of
 `REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`

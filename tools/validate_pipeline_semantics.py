@@ -1285,7 +1285,9 @@ def _pipeline_target(repo_root: Path, pipeline_dir: Path) -> TargetProfile | Non
     """The target profile the pipeline at `pipeline_dir` was built for, from its store
     coordinate (`target_profile.load_pipeline_target`); None when the path names no target or
     the profile does not load. A caller that turns None into "not applicable" fails its check
-    OPEN, so every caller here reports None as a violation of its own or passes it to one."""
+    OPEN, so every caller here reports None as a violation of its own or passes it to one —
+    but `_execution_output_format`, which reads None as the default format and says why that
+    fails no check open."""
     try:
         rel = pipeline_dir.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
