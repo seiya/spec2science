@@ -135,7 +135,7 @@ io_contract:
             - {name: x, axis: 0, count: inputs.grid.nx, length: inputs.grid.L_x, placement: cell_center}
       - artifact: "state_history"     # declared iff `drive.loop` is: the full state (every schema variable, `t`, `step`) every `drive.history.every` committed steps, one `history` record per sampled step; no schema of its own (the state_snapshots one)
       - artifact: "step_series"       # declared iff `drive.loop` is: one row of the case's series per committed step
-        names: ["step", "<v>_min", "<v>_max", ...]   # EXACTLY {step} ∪ {<v>_min, <v>_max for every ARRAY schema variable} (gate (h)); the host-rendered driver folds each extremum over the committed state, a non-finite cell folding to a non-finite entry the host refuses. `t` is not a name of this list and not a grammar name: the harness writer adds the scalar `t`, the time of the last committed state, to the file
+        names: ["step", "<v>_min", "<v>_max", ...]   # EXACTLY {step} ∪ {<v>_min, <v>_max for every ARRAY schema variable} (gate (h)); the host-rendered driver folds each extremum over the committed state, a non-finite cell folding to a non-finite entry the host refuses. `t` is not a name of this list and not a grammar name: every row of the series carries its own `t`, the time its commit was given
   semantic_dependency:
     required_sources: ["<var1>", "<var2>", ...]   # a non-empty string array
   tests:

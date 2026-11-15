@@ -25,6 +25,7 @@ from pathlib import Path
 
 import yaml
 
+from tools import capture_store
 from tools import primary_evidence as pe
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
@@ -1778,8 +1779,8 @@ def _build_and_run(d: Path, ir: dict, sid: str, model: str, flags: list[str] | N
         objects.append(f"{stem}.o")
     subprocess.run(["gfortran", *flags, *objects, "-o", "runner"], cwd=d, check=True,
                    capture_output=True)
-    for sub in ("initial", "history", "series"):
-        (d / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    for parts in capture_store.run_dirs("json"):
+        d.joinpath(*parts).mkdir(parents=True, exist_ok=True)
     return _rerun(d, ir, env)
 
 

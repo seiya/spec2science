@@ -951,7 +951,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-35: phase_01_compile.md states the `libraries` list of `dependency_surface.json` (issue #644 P1).
     "compile-docs-35": "76b905c10c8b8591e9c3ef0db49362527085370d17524a623c17ddcc3a33f9cd",
     # compile-docs-36 (issue #644 P4a): `phase_01_compile.md` names the capture groups where it named capture files.
-    "compile-docs-36": "09b5ca4c73643c128de0c4a91b2e467936b2354e286bd815d6b344257c262abc",
+    "compile-docs-36": "b21bb5f7d526e5e9a23260e5e11f7beb092b6888d99df38e7709871f01568d2d",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1421,7 +1421,7 @@ PINNED_RENDER: dict[str, str] = {
     # digest `render-12` shipped with at c38a3d8b:
     "render-12@c38a3d8b": "e67d6b26885115087847d3cb1ae58e95657a261335fc00e35716c51dcb0c5d2d",
     # render-21 (issue #644 P4a): the driver renderers write through the harness's capture interface (no file name, no token), and every node's run gets the capture store's directories.
-    "render-21": "1f932dd02b5c2d47d9f15c9263a23907114819e47f1edfa6f26693dededb1c5d",
+    "render-21": "a9f04a6520758140ac05f95e783e1454f30c7c3b07b6c6de7b37db579eaf20d4",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -2018,8 +2018,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # The digest main b3282e9b shipped is kept, so a revert under this version collides.
     "execute-19@b3282e9b": "63c1cbc1721760f2e16b2517dc5d9cd75ac78deee92603ff9d9587bbd465bbed",
     "execute-19": "cc250ea6cc74b1b3783ca96ec5fb5d3d34ba63ffa0e7ef6c5b8399cbec4a6d85",
-    # execute-20 (issue #644 P4a): the json store's restart points and series chunks, the capture directories on every node, the IR-based driver-ran rule.
-    "execute-20": "a5ee88735d315151e5f50545ce0e578f68f5783e218af8f5a66d7ea8a1be26b9",
+    # execute-20 (issue #644 P4a): the json store's restart points and series chunks, the capture
+    # directories on every node (`_run_raw_dirs`, `_execute_inproc`), promotion and the
+    # deliverable gap over the chunked series, and `primary_evidence.py`'s per-row series `t`.
+    "execute-20": "519eb9f0d784cb08762164dc9150520e21357315dcfab38085ae4f1e9a1c7610",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2233,7 +2235,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-17": "d23dd1ffdd2a71d52e0fc5747ab210330304b5ee1f9d7ee4317491f229aebb6c",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
     # verdict-18 (issue #644 P4a): a series is its chunks joined and carries one `t` per row.
-    "verdict-18": "521fa37140b167feb3da68f9826c5e1a5e1cd3fa3cda972e503c6e3e78495203",
+    "verdict-18": "2c1862be224006f9ae7e99ba9c63d9ff20d749d3a5480b46dfbab9483d93b32a",
 }
 
 

@@ -15550,7 +15550,7 @@ class SourceGateDispatchTest(unittest.TestCase):
         self.assertTrue(any("missing dependency operation call (dep__*)" in v
                             for v in violations), violations)
 
-    def test_a_runner_open_of_the_capture_directory_is_reported_through_the_runner_gate(
+    def test_a_runner_naming_the_capture_directory_is_reported_through_the_runner_gate(
             self) -> None:
         """The gate calls the scan: a path kept in a variable is flagged through it."""
         with tempfile.TemporaryDirectory() as t:

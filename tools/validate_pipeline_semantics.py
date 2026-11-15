@@ -6697,7 +6697,7 @@ def _validate_runner_source_files(
 ) -> None:
     """The deterministic runner backstops over `runner_files`: the name, the forbidden judge
     artifacts, and the target language's JSON-serialization and capture-directory scans (the
-    second refuses a file-opening statement that names the capture directory).
+    second refuses a statement that names the capture directory, outside a comment).
 
     The runner's name is the target language's `bundle_facts.runner_basename` — ONE spelling,
     shared with the conductor (`Conductor._runner_basename`) and with every reader in this module

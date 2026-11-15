@@ -37,7 +37,7 @@ from unittest import mock
 
 import yaml
 
-from tools import leaf_netns
+from tools import capture_store, leaf_netns
 from tools import orchestration_runtime as ort
 from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
 from tools import workflow_conductor as wc
@@ -1647,8 +1647,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         shutil.copy(build / "bin", self.paths.staged_bin / "x_runner")
         ctx = dataclasses.replace(
             self.ctx, seed_texts=(("spec.ir.yaml", yaml.safe_dump(ir)),),
-            run_raw_dirs=tuple(("raw", "state_snapshots", sub)
-                               for sub in ("initial", "history", "series")))
+            run_raw_dirs=capture_store.run_dirs("json"))
         ran = self.ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})
         self.assertTrue(ran["ok"], ran)
         snapshots = self.paths.tree / "raw" / "state_snapshots"

@@ -85,3 +85,7 @@ descriptor must not appear at all.
     s = merge('true ', 'false', b) ! literal true/false; never an L descriptor
   end function jbool
   ```
+
+- **A `case_id`, `group`, `name` or series-name argument of a capture operation is its text
+  without trailing blanks.** A caller may pass a blank-padded element of a fixed-width array,
+  so the harness model writes and matches the trimmed text (`trim(name)`), never the padded one.

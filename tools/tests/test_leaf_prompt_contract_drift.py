@@ -1181,8 +1181,11 @@ PINNED: dict[str, str] = {
     "leaf-98": "1aaadcc256f0eef57948967780e84af0cb28debe21d6641ba099bfc993fe8de1",
     # leaf-99: the external-library wording of the generate and compile templates and fragments (issue #644 P1).
     "leaf-99": "eeca1f9e837ec78e2adca277bfcf735c99f9b6cdd8818dc5dd078b4cc5845d95",
-    # leaf-100 (issue #644 P4a): the harness templates and the runner-output contract state the capture interface.
-    "leaf-100": "b67f5b41a0de945401f70cd3ccc3668875732ff55af2df0a7676c99f3a9d1731",
+    # leaf-100 (issue #644 P4a): the harness templates, the judge template and the runner-output
+    # contract state the capture interface; the Fortran runner-output binding gains the
+    # trailing-blank rule; a new member, `capture_layout_document`, is the output format's
+    # capture layout seeded after the contract in the harness trees.
+    "leaf-100": "33063d2cdb92d65651b8ed440baf657f94f533183928b820ef6dfb3e47d70c22",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1249,10 +1252,12 @@ PINNED_READER: dict[str, str] = {
     "validate-judge-7": "d15e1b969fb6b3ddbf5062fc9938ac6ab95907b12b58a736090eb59334cf4c7b",
     # validate-judge-8: the judge reads the `## External libraries` block of DEPENDENCIES.md (issue #644 P1).
     "validate-judge-8": "bda4693f18f623c24da88bf8a8b2101c0cfe50524cfc1713b9ef909732c059c3",
-    # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section and the harness reviewer's rules state the capture interface.
-    "generate-verify-11": "cd63b29febeb73a9a38ebf5a54a6afeff38aea986666a5c56a9182df88c96168",
-    # validate-judge-9 (issue #644 P4a): the runner-output contract's capture section and the harness reviewer's rules state the capture interface.
-    "validate-judge-9": "3f6bc85cfefe6d89ca162354f7aaad76bd4862e8e7c0fc1e3b7c3b90265ece2d",
+    # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section, the
+    # harness reviewer's rules, the Fortran binding and the new `capture_layout_document` member.
+    "generate-verify-11": "3f7bcd4029f99d3c42fd5634892a9518ce7d78dfca2daa76ea22a269d3cd2975",
+    # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
+    # groups and operations) and the judge template's wording of a case's series.
+    "validate-judge-9": "bf52fce369cdfc74ecdc344bbbd96b66f04d7e8a45a8417a7894249e04e28a4a",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

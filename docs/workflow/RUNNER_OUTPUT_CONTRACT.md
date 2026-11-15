@@ -14,14 +14,14 @@
 > authors the build control file and renders the runner for, over that target's harness) the
 > `runner` is **host-rendered**, the **driver** — the leaf authors the model alone, the harness
 > owns the JSON assembly, and the host authors the verdict. A rendered runner calls no writer but
-> the snapshot and performance ones. What it does per case is §3, and what it reads is §6.
+> the capture operations and the performance writer. What it does per case is §3, and what it reads is §6.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
 > governs the runner-authoring one — the `infrastructure` self-test — and
 > `Validate.judge`. Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
 > followed by the target language's runner-output binding (issue #289), in both
 > `harness`-shape `generate` trees, §3 in the judge's. The *authoring* rules below survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
-> snapshot-filename gates in `validate_pipeline_semantics.py`).
+> capture-directory gates in `validate_pipeline_semantics.py`).
 
 The `runner` emits **only** `perf.json` and the `raw/state_snapshots/` captures
 (plus `stdout.log` / `stderr.log`). It must **never** write
@@ -77,6 +77,18 @@ harness's spec states that layout, and the host reads it through the format's ca
 (`docs/backends/output_format/<id>/CAPTURE_LAYOUT.md`). No runner and no rule of this document
 names a capture file. The host creates the format's directories under `raw/state_snapshots/`
 before every run, on every node, and a runner creates and lists none.
+
+**What each operation does**, whatever the format. `capture_open(case_id, vars,
+restart_point_capacity, series_names, series_capacity)` starts a case's output and writes
+nothing; one case is open at a time. `capture_real` and `capture_array_r1..r4(group, name,
+value)` put a value into the open record of `group`; in `series` a value is a scalar and its
+name is one of `series_names`, which never hold `step` or `t`. `capture_commit(group, step, t)`
+closes that record: it holds exactly the values put into `group` since that group's previous
+commit, with `step` and `t`, and a `series` commit closes one row. `capture_close()` ends the
+case's output. A call with no case open (`capture_open`: with one open), with a `group` that is
+none of the five, with an array put into `series`, or with a `series` name outside
+`series_names` stops the program with a non-zero exit status. A non-finite value is written,
+never refused by the harness.
 
 - **`final`** — when `state_snapshots` is required, **exactly one record per case**: the state
   after the case's last call. A case is a `case_id` the runner receives on argv

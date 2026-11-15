@@ -937,7 +937,7 @@ class DriverEvidencePromotionTests(unittest.TestCase):
                              ["history", "initial", "restart_point", "series"], run)
 
     def test_a_driver_that_wrote_no_sample_leaves_no_empty_directory_in_the_node(self) -> None:
-        # The run directory carries all three (the runner needs them); promotion copies files.
+        # The run directory carries every group directory (the runner needs them); promotion copies files.
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, step_series=False)
             self._driver(n, "initial:")

@@ -18,7 +18,8 @@ The store that reads a directory is the store of the target whose run WROTE it: 
 that target's `output_format` (`TargetProfile.output_format`), never a format guessed from the
 directory's content.
 
-What a store is: a module with `REQUIRED_PYTHON_MODULES` and the functions the host calls —
+What a store is: a module with `REQUIRED_PYTHON_MODULES` and these functions, which the host
+calls (`restart_point_steps` by no reader yet: no runner commits a restart point) —
 `run_dirs`, `record_path`, `has_record`, `read_record`, `case_ids`, `history_steps`,
 `restart_point_steps`, `case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`,
 `expected_layout`, and `capture_layout_document`, the layout as a harness's author is told it
