@@ -1611,6 +1611,12 @@ class FortranWrapTest(unittest.TestCase):
         self.assertIn("column limit", render["30"])
 
 
+#: The member `shallow_water2d@0.4.7`'s components, as `CertifiedModelEndToEndTest` links them.
+SW2D_COMPONENTS_047 = ("dynamics_shallow_water_boundary_2d_periodic_copy",
+                       "dynamics_shallow_water_flux_2d_rusanov_p0",
+                       "dynamics_shallow_water_time_update_2d_ssprk2")
+
+
 class CertifiedModelEndToEndTest(unittest.TestCase):
     """The driver over a certified kernel: every test's status is the certified run's, which
     is every test's `expected_outcome` on these two nodes (issue #589 PR-1b's end to end; the
@@ -1618,15 +1624,17 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
     carries a continuation case (issue #632 P2), which `run_second_pass` runs in a process of
     its own as `Validate.execute` does, so its restart test is judged on the certified model."""
 
-    def _verdict(self, ir_path: Path, sid: str, deps: tuple[str, ...]) -> dict[str, Any]:
+    def _verdict(self, ir_path: Path, sid: str, deps: tuple[str, ...],
+                 output_format: str = "json") -> dict[str, Any]:
         ir = load_yaml_fixture(ir_path)
         with tempfile.TemporaryDirectory() as tmp:
-            run = run_fortran(Path(tmp), ir, sid=sid, deps=deps)
+            run = run_fortran(Path(tmp), ir, sid=sid, deps=deps, output_format=output_format)
             self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
             self.assertEqual(sorted(run_second_pass(run, ir)),
                              sorted(c["case_id"] for c in ir["case"]["test_case_set"]
                                     if pe.RESTART_CASE_KEY in c))
-            records = pe.evaluate_primary_predicates(ir, Path(tmp) / "run", output_format="json")
+            records = pe.evaluate_primary_predicates(ir, Path(tmp) / "run",
+                                                     output_format=output_format)
             verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
             expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
             self.assertEqual({t["test_id"]: t["status"] for t in verdict["per_test"]}, expected)
@@ -1646,6 +1654,16 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
                               "dynamics_shallow_water_flux_2d_rusanov_p0",
                               "dynamics_shallow_water_time_update_2d_ssprk2"))
         # the figures the certified run recorded (2026-11-03)
+        self.assertEqual((perf["steps"], perf["cells_updated"]), (9546, 89930752))
+
+    def test_both_over_the_netcdf_harness(self) -> None:
+        """The same two nodes, every case and the continuation, at their expected outcomes over
+        the `netcdf` harness's hand model (issue #644 P5b)."""
+        perf = self._verdict(DRIVE_IR / "coriolis_0.2.0.spec.ir.yaml",
+                             "dynamics_shallow_water_source_2d_coriolis", (), "netcdf")
+        self.assertEqual(perf["steps"], 7)
+        perf = self._verdict(DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml",
+                             "shallow_water2d", SW2D_COMPONENTS_047, "netcdf")
         self.assertEqual((perf["steps"], perf["cells_updated"]), (9546, 89930752))
 
 
@@ -1994,6 +2012,75 @@ class NetcdfHarnessEndToEndTest(unittest.TestCase):
                 self.assertEqual(set(got), set(doc))
                 for name, value in doc.items():
                     np.testing.assert_array_equal(np.asarray(got[name]), np.asarray(value))
+
+
+def every_record_or_why(output_format: str, snap_dir: Path,
+                        case_ids: list[str]) -> dict[str, Any]:
+    """`every_record`, with a record a store does not read as its refusal kind."""
+    store = capture_store.store(output_format)
+    out: dict[str, Any] = {}
+    for cid in case_ids:
+        for group in (capture_store.INITIAL, capture_store.FINAL, capture_store.SERIES):
+            try:
+                out[(cid, group)] = store.read_record(snap_dir, group, cid)
+            except capture_store.CaptureError as exc:
+                out[(cid, group)] = ("unread", exc.absent)
+        for step in store.history_steps(snap_dir, cid):
+            out[(cid, "history", step)] = store.read_record(snap_dir, capture_store.HISTORY,
+                                                            cid, step)
+        for step in store.restart_point_steps(snap_dir, cid):
+            out[(cid, "restart_point", step)] = store.read_record(
+                snap_dir, capture_store.RESTART_POINT, cid, step)
+    return out
+
+
+class NetcdfDriverEdgeCaseTest(unittest.TestCase):
+    """The driver's edge cases over the two Fortran harnesses (issue #644 P5b): no sample
+    (`every = 0`, and one step under a stride of two), a stride per variable with one variable
+    never sampled, an `init` that refuses, and a one-call node. The `netcdf` model
+    defines a variable's `history` group only when the case may sample it, so these are the
+    cases whose files differ most from a run with every group in use. Each record the two stores
+    read is equal, and the post-execute gate's raw-evidence check says the same of both (its
+    list holds the stub quality check's findings on both, and would hold any raw-evidence one).
+    These toy IRs declare no predicate; `CertifiedModelEndToEndTest` judges predicates."""
+
+    VARIANTS = {
+        "every_zero": (lambda: loop_ir(0, 1, every=0), "drv_toy"),
+        "one_step_under_the_stride": (lambda: loop_ir(0, n_step=1, every=2), "drv_toy"),
+        "strides_one_unsampled": (lambda: strides_ir(eu=0), "drv_toy"),
+        "init_refused": (lambda: init_ir(0, 10), "drv_toy"),
+        "one_call": (lambda: call_ir(0, 1), "drv_toy"),
+    }
+
+    def test_each_edge_case_reads_the_same_in_both_formats(self) -> None:
+        from tools.tests.test_netcdf_capture_store import _post_execute
+        for name, (build, sid) in self.VARIANTS.items():
+            with self.subTest(variant=name):
+                ir = build()
+                cases = [c["case_id"] for c in ir["case"]["test_case_set"]]
+                seen = {}
+                for fmt in ("json", "netcdf"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        run = run_fortran(Path(tmp), copy.deepcopy(ir), sid=sid,
+                                          output_format=fmt)
+                        self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+                        seen[fmt] = (
+                            every_record_or_why(fmt, run.snapshots, cases),
+                            pe.evaluate_primary_predicates(ir, Path(tmp) / "run",
+                                                           output_format=fmt),
+                            _post_execute(self, Path(tmp) / "run", ir, fmt))
+                self.assertTrue(seen["json"][0])
+                self.assertEqual(seen["netcdf"][1:], seen["json"][1:])
+                self.assertEqual(set(seen["netcdf"][0]), set(seen["json"][0]))
+                for key, doc in seen["json"][0].items():
+                    got = seen["netcdf"][0][key]
+                    if isinstance(doc, tuple):
+                        self.assertEqual(got, doc, key)
+                        continue
+                    self.assertEqual(set(got), set(doc), key)
+                    for member, value in doc.items():
+                        np.testing.assert_array_equal(np.asarray(got[member]),
+                                                      np.asarray(value), err_msg=str(key))
 
 
 class ComposingModelGateTest(unittest.TestCase):

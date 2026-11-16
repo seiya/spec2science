@@ -7,7 +7,8 @@ netCDF-Fortran binding. Building it takes the library the harness declares
 would locate it: the module file in `INCLUDE_DIR`, the library file through the compiler's own
 search. Running it takes the product's loader overlay (`external_library.loader_env`), because
 the operator's inherited loader path may name another build of the same library first (issue
-#644 E1b; measured on the development host, where it exits 127).
+#644 E1b; on the development host a program using the binding exits 127 without it, with
+`/opt`'s 4.5.2 build first on the inherited loader path, measured 2026-11-16).
 
 The rows that use this FAIL, never skip, on a host without the library (issue #498): CI installs
 it (`.github/workflows/tests.yml`; `docs/DEVELOPMENT.md` §Fresh-machine setup step 6).

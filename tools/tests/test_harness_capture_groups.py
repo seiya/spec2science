@@ -345,8 +345,9 @@ CUDA_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
         ALL),
 }
 
-#: Seeded defects of the `netcdf` hand model (issue #644 P5b): name -> (the text replaced, its
-#: replacement, the predicates that do not hold). Each is a writer a normal run shows: either a
+#: Seeded defects of the `netcdf` hand model (issue #644 P5b; the plan's six, the reversed
+#: dimensions realized as an array written in the other index order): name -> (the text
+#: replaced, its replacement, the predicates that do not hold). Each is a writer a normal run shows: either a
 #: predicate reads what it broke, or the store refuses the case file, which every predicate of
 #: the case then fails on.
 NETCDF_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
@@ -355,6 +356,11 @@ NETCDF_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
         "    call put_values(group, name, 2, reshape(a, [size(a)]), shape(a))",
         "    call put_values(group, name, 2, reshape(transpose(a), [size(a)]), shape(a))",
         {INITIAL, FINAL, HISTORY_A, POINTS}),
+    # no NaN fill value: an unwritten cell reads the library's default fill, a finite number
+    # (the store refuses)
+    "fill_value_omitted": (
+        "    call nc(nf90_def_var_fill(cap_ncid, varid, 0, ieee_value(0.0_dp, ieee_quiet_nan)), &\n"
+        "      & 'fill '//name)\n", "", ALL | {UNREAD}),
     # fill mode off: an unwritten cell reads whatever the disk held (the store refuses)
     "fill_off": (
         "nf90_def_var_fill(cap_ncid, varid, 0, ieee_value",

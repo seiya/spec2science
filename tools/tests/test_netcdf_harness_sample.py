@@ -95,11 +95,37 @@ class NetcdfHarnessSampleTest(unittest.TestCase):
         self.assertEqual(tp.target_profile_violations(REPO, profile, node_key=harness), [])
         json_harness = tp.harness_node_key_for_target(
             REPO, tp.load_target_profile(REPO, "fortran_cpu"))
-        self.assertEqual(tp._capture_format_violations(profile, json_harness), [
+        self.assertEqual(tp._capture_format_violations(profile, json_harness), [(
             f"output.format: target fortran_cpu_netcdf reads its captures as netcdf, and "
-            f"harness {json_harness} does not provide capture_format_netcdf@1"])
+            f"harness {json_harness} does not provide capture_format_netcdf@1")])
         as_json = replace(profile, doc={k: v for k, v in profile.doc.items() if k != "output"})
         self.assertEqual(len(tp._capture_format_violations(as_json, harness)), 1)
+
+    def test_a_consumer_on_the_target_links_the_library_its_harness_declares(self) -> None:
+        """The plan's main shape (§4.3: on a `netcdf` target every node links the I/O library):
+        the closure a run resolves for a physics node on this target holds the harness, so the
+        driver's pre-phase decision and the build key's `libraries` member see the library the
+        node itself does not declare (`run_workflow._library_verdict`,
+        `orchestration_runtime._closure_libraries_member`)."""
+        from tools import orchestration_runtime as ort
+        from tools import run_workflow
+        consumer = "spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis"
+        self.assertEqual(xl.node_library_ids(REPO, consumer), [])
+        ordered, error = run_workflow._resolve_dependency_closure(REPO, consumer, nh.TARGET)
+        self.assertIsNone(error)
+        self.assertEqual(xl.closure_library_ids(REPO, consumer, [n["spec_ref"] for n in ordered]),
+                         [nh.LIBRARY])
+        harness = tp.harness_node_key_for_target(REPO, nh.TARGET)
+        resolver = ort.DerivationResolver(REPO, target=nh.TARGET, comparand=True)
+        member = ort._closure_libraries_member(
+            REPO, "component/dynamics_shallow_water_source_2d_coriolis@0.2.0", [harness],
+            resolver, probe=False)
+        self.assertEqual([m["library_id"] for m in member], [nh.LIBRARY])
+        json_harness = tp.harness_node_key_for_target(
+            REPO, tp.load_target_profile(REPO, "fortran_cpu"))
+        self.assertIsNone(ort._closure_libraries_member(
+            REPO, "component/dynamics_shallow_water_source_2d_coriolis@0.2.0", [json_harness],
+            resolver, probe=False))
 
     def test_the_hand_model_is_clean_under_the_lint_rules_and_the_syntax_stage(self) -> None:
         with tempfile.TemporaryDirectory() as td:

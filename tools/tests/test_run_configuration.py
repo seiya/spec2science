@@ -100,8 +100,8 @@ class NetcdfRunConfigurationTest(unittest.TestCase):
     """`run_configuration` on a target whose captures are `netcdf` (issue #644 P5b): the toy
     loop node's driver built over the `netcdf` harness's hand model, certified for
     `fortran_cpu_netcdf`. The run takes the library directory its Build recorded ahead of the
-    loader path (a run without it loads another build of the library on the development host
-    and exits 127), its record reads the kernel's outcome out of the case file, and that file
+    loader path (without it, a program using the binding loads another build of the library
+    on the development host and exits 127), its record reads the kernel's outcome out of the case file, and that file
     is a restart source at the step it records. A continuation that runs and passes the start
     check is `test_driver_render.NetcdfHarnessEndToEndTest`'s second pass."""
 
