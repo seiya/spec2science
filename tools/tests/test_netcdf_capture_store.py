@@ -51,7 +51,8 @@ def _good_case(sdir: Path, case_id: str = "c", **overrides) -> Path:
         final={"h": H0 + 1, "z": np.zeros((0, 4)), "s": 2.5}, final_step=4, final_t=1.0,
         history={"h": [(0, 0.0, H0), (2, 0.5, H0 + 0.5), (4, 1.0, H0 + 1)],
                  "s": [(0, 0.0, 1.5), (4, 1.0, 2.5)]},
-        restart_vars=["h", "s"], restart_points=[(2, 0.5, {"h": H0 + 0.5, "s": 2.0})],
+        restart_vars=["h", "s"], restart_points=[(2, 0.5, {"h": H0 + 0.5, "s": 2.0}),
+                                                 (4, 1.0, {"h": H0 + 1, "s": 2.5})],
         series_names=["m", "mass"],
         series=[(1, 0.25, {"m": 1.0, "mass": 10.0}), (2, 0.5, {"m": 2.0, "mass": 20.0})])
     kw.update(overrides)
@@ -126,7 +127,7 @@ class ReadTests(_Tmp):
         self.assertTrue(ctx.exception.absent)
 
     def test_restart_points_and_the_series(self) -> None:
-        self.assertEqual(NC.restart_point_steps(self.sdir, "c"), [2])
+        self.assertEqual(NC.restart_point_steps(self.sdir, "c"), [2, 4])
         self.assertEqual(NC.read_record(self.sdir, cs.RESTART_POINT, "c", 2),
                          {"h": (H0 + 0.5).tolist(), "s": 2.0, "step": 2, "t": 0.5})
         self.assertEqual(NC.read_record(self.sdir, cs.SERIES, "c"),
@@ -220,7 +221,12 @@ class RefusalTests(_Tmp):
         "count_short": "history__h__count is 2, and its record dimension history__h__n has "
                        "length 3",
         "final_count_two": "final__count is 2, not 0 or 1",
-        "history_steps_repeat": "is not strictly ascending",
+        "history_steps_repeat": "history__h__step [0, 2, 2] is not strictly ascending",
+        "rp_steps_repeat": "restart_point__step [2, 2] is not strictly ascending",
+        "rp_count_short": "restart_point__count is 1, and its record dimension "
+                          "restart_point__n has length 2",
+        "series_count_short": "series__count is 1, and its record dimension series__n has "
+                              "length 2",
         "not_netcdf": "unreadable",
     }
 

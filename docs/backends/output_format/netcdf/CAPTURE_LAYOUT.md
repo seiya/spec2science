@@ -39,8 +39,8 @@ refuses a variable whose dimensions are not exactly these, in this order.
 - **Counts.** A commit writes its record's values at the next index of its group's record
   dimension (`initial` and `final` hold at most one record and have none), then its `step` and
   `t`, then sets the group's `count` to the records it now holds. A group's `count` equals the
-  length of its record dimension; `initial__count` and `final__count` are 0 or 1. A sampled
-  variable's `history__<v>__step` is strictly ascending.
+  length of its record dimension; `initial__count` and `final__count` are 0 or 1. Each
+  `history__<v>__step` and `restart_point__step` is strictly ascending.
 - **A history record** at step `<k>` is every `history__<v>` whose `history__<v>__step` holds
   `<k>`, and its `history__<v>__t` there is the same for each.
 - **Ending the case's output** writes everything held to disk (`nf90_sync` / `nc_sync`), then

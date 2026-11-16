@@ -27,6 +27,9 @@ DEFECTS = frozenset({
     "count_short",           # a stacked group's count one less than its record dimension
     "final_count_two",       # final__count is 2
     "history_steps_repeat",  # a history variable's step column repeats a step
+    "rp_steps_repeat",       # the restart points' step column repeats a step
+    "rp_count_short",        # restart_point__count one less than its record dimension
+    "series_count_short",    # series__count one less than its record dimension
     "history_t_disagree",    # two variables' history t differ at one step
     "unwritten_cell",        # a final value's last cell is never written (reads its fill)
     "not_netcdf",            # the file is not a netCDF file at all
@@ -150,7 +153,10 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
                 put(ds.variables[f"restart_point{SEP}{var}"], value, i)
             rp_step[i] = step
             rp_t[i] = t
-        ivar(f"restart_point{SEP}count")[...] = len(restart_points)
+        if "rp_steps_repeat" in defects and len(restart_points) >= 2:
+            rp_step[len(restart_points) - 1] = restart_points[-2][0]
+        ivar(f"restart_point{SEP}count")[...] = len(restart_points) - (
+            1 if "rp_count_short" in defects and restart_points else 0)
 
         ds.createDimension(f"series{SEP}n", None)
         s_dim = (f"series{SEP}n",)
@@ -163,7 +169,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
                 ds.variables[f"series{SEP}{name}"][i] = value
             s_step[i] = step
             s_t[i] = t
-        ivar(f"series{SEP}count")[...] = len(series)
+        ivar(f"series{SEP}count")[...] = len(series) - (
+            1 if "series_count_short" in defects and series else 0)
 
         if "no_complete" not in defects:
             done = ds.createVariable("complete", "i4", (), fill_value=0)

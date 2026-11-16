@@ -149,8 +149,8 @@ class _Case:
         n = self.count(group, var)
         return [int(x) for x in self.ds.variables[f"{prefix}{_SEP}step"][:n].tolist()]
 
-    def column(self, name: str, n: int) -> list[Any]:
-        return [_number(x) for x in self.ds.variables[name][:n].tolist()]
+    def column(self, name: str, n: int) -> list[float]:
+        return [float(x) for x in self.ds.variables[name][:n].tolist()]
 
     def value(self, name: str, index: int | None = None) -> Any:
         """A value variable's record, in declared index order (the file holds it reversed)."""
@@ -159,17 +159,8 @@ class _Case:
         import numpy as np
         arr = np.asarray(raw)
         if arr.ndim == 0:
-            return _number(arr.item())
+            return float(arr.item())
         return arr.transpose().tolist()
-
-
-def _number(x: Any) -> Any:
-    """A decoded scalar as `json` would spell it: an `int` for an integer, a `float` else."""
-    if isinstance(x, bool):
-        return x
-    if isinstance(x, int):
-        return x
-    return float(x)
 
 
 def _well_formed(case: _Case) -> None:
@@ -203,10 +194,12 @@ def _well_formed(case: _Case) -> None:
         if length != count:
             raise case.refuse(f"{HISTORY}{_SEP}{var}{_SEP}count is {count}, and its record "
                               f"dimension {dim} has length {length}")
-        steps = case.steps(HISTORY, var)
+    # A sample and a restart point are read by their step: a repeated step names two records.
+    for group, var in [(HISTORY, v) for v in case.history_vars()] + [(RESTART_POINT, None)]:
+        steps = case.steps(group, var)
         if any(b <= a for a, b in zip(steps, steps[1:])):
-            raise case.refuse(f"{HISTORY}{_SEP}{var}{_SEP}step {steps} is not strictly "
-                              "ascending")
+            name = _SEP.join(p for p in (group, var, "step") if p)
+            raise case.refuse(f"{name} {steps} is not strictly ascending")
     for name, var in ds.variables.items():
         want = _expected_dims(name, var.dimensions)
         if want is not None and tuple(var.dimensions) != want:
@@ -290,7 +283,7 @@ def _single(case: _Case, group: str) -> dict[str, Any]:
         raise CaptureError(f"{case.label} ({group})", "absent", absent=True)
     doc = {v: case.value(f"{group}{_SEP}{v}") for v in case.values_of(group)}
     doc["step"] = int(case.scalar(f"{group}{_SEP}step"))
-    doc["t"] = _number(case.scalar(f"{group}{_SEP}t"))
+    doc["t"] = float(case.scalar(f"{group}{_SEP}t"))
     return doc
 
 
@@ -303,7 +296,7 @@ def _history(case: _Case, step: int) -> dict[str, Any]:
         if step in steps:
             i = steps.index(step)
             doc[var] = case.value(f"{HISTORY}{_SEP}{var}", i)
-            times.append(_number(case.ds.variables[f"{HISTORY}{_SEP}{var}{_SEP}t"][i].item()))
+            times.append(float(case.ds.variables[f"{HISTORY}{_SEP}{var}{_SEP}t"][i].item()))
     if not doc:
         raise CaptureError(f"{case.label} ({HISTORY} at step {step})", "absent", absent=True)
     if any(not _same(times[0], t) for t in times[1:]):
@@ -323,12 +316,10 @@ def _restart_point(case: _Case, step: int) -> dict[str, Any]:
     if step not in steps:
         raise CaptureError(f"{case.label} ({RESTART_POINT} at step {step})", "absent",
                            absent=True)
-    if steps.count(step) > 1:
-        raise case.refuse(f"it holds {steps.count(step)} restart points at step {step}")
     i = steps.index(step)
     doc = {v: case.value(f"{RESTART_POINT}{_SEP}{v}", i) for v in case.values_of(RESTART_POINT)}
     doc["step"] = int(step)
-    doc["t"] = _number(case.ds.variables[f"{RESTART_POINT}{_SEP}t"][i].item())
+    doc["t"] = float(case.ds.variables[f"{RESTART_POINT}{_SEP}t"][i].item())
     return doc
 
 
