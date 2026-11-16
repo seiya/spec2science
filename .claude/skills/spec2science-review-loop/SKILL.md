@@ -579,7 +579,7 @@ when a rule does not obviously apply:
    commits went by with the full suite red on `TokenRatchetTests` until the next full run.
    Run the WHOLE suite after every commit — measured 2026-11-11 at `-n 24` on an idle machine:
    about 100 s, the default scheduler being `worksteal` since then (`tools/tests/conftest.py`);
-   serially, as CI runs it, 21 min. **And read its SKIP
+   serially 21 min (CI ran it serially until 2026-11-16 and runs `-n 4` since). **And read its SKIP
    count, not only its failures**: every skip in `tools/tests/` is a missing host tool, and a
    skipped row is code the branch was never run against (issue #424 PR-2: `16 skipped` hid a red
    CUDA build-through row for four commits, until round 2). `-rs` names them; put the tools on PATH or

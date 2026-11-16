@@ -96,8 +96,8 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   `<failure>` / `<error>` (CI's guard, so a subset `pytest.ini`'s `addopts` or a plugin
   selected, and a failure a hook hid from the exit status, read red), then runs the report
   check in the same environment; exit 0 means all of it held. Its
-  docstring lists what it reproduces and what it does not: it runs under xdist by default where
-  CI runs serially (`--jobs 0` for CI's order), and every other host difference — other
+  docstring lists what it reproduces and what it does not: it runs 24 xdist workers by default where
+  CI runs four (`--jobs 4`; `--jobs 0` is the serial order), and every other host difference — other
   compilers on PATH, which MPI comes first, the rest of the environment — is inherited, so green
   means "green without those dependencies and that home", not "green in CI". Prefer it to a
   hand-built PATH: dropping a whole PATH directory to hide a CLI also drops the linters installed

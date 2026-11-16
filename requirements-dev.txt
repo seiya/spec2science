@@ -12,6 +12,9 @@
 -r requirements.txt
 
 pytest
+# The suite's parallel runner: CI runs `-n 4` (`.github/workflows/tests.yml`), a development host
+# as many workers as it has cores for.
+pytest-xdist
 
 fortitude-lint>=0.8,<0.10
 ruff>=0.14,<0.17

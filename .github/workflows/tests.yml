@@ -138,8 +138,15 @@ jobs:
           # runner has fewer cores than CPUs — inferred from that refusal; the log prints no
           # core count.
           OMPI_MCA_rmaps_base_oversubscribe: "1"
+        # `-n 4`: the runner's four CPUs. The suite is run in parallel on the development host
+        # every day (`tools/tests/conftest.py` picks the scheduler), and in this job's shape on
+        # four pinned cores it took 356 s against 1042 s serially (measured 2026-11-16 and
+        # 2026-11-11 on the development host). What this gives up is the serial ORDER: a row that
+        # passes only after another row of its file ran is no longer seen here, and is still seen
+        # by the review loop's mutation check, whose baseline is one serial run. The guard below
+        # reads the report and the collected count, which `-n` changes neither of.
         run: >
-          python3 -m pytest tools/tests/ -q -rs
+          python3 -m pytest tools/tests/ -n 4 -q -rs
           --junitxml="${{ runner.temp }}/pytest-report.xml"
 
       - name: Guard — the suite really ran, all of it, and really passed
