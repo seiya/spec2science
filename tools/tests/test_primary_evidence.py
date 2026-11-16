@@ -1713,6 +1713,15 @@ class SchemaGateTest(unittest.TestCase):
 
 
 class StaticRankTest(unittest.TestCase):
+    def test_a_restart_point_variable_no_record_holds_is_named(self) -> None:
+        """A `restart_point.<v>` the records do not hold is a structural error of the
+        predicate naming it, worded for its root. Kills: `restart_point` missing from
+        `_sampled_value`'s wording table (a `KeyError` out of the evaluator)."""
+        _renv, env = self._envs()
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"restart_point\.v: not in the restart points in case 'a'"):
+            pe.evaluate(pe.parse_expr("max(restart_point.v)"), env)
+
     """`expr_rank` is the Compile-time mirror of `_eval_node` / `_call` / `_shape_compatible`
     over RANKS: its table is pinned by set identity against `FUNCTIONS`, and its answers by
     parity with evaluation — the rank it infers is `np.ndim` of the value, and a refusal it

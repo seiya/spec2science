@@ -2710,7 +2710,7 @@ def point_reads(pred: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
     for ref in entering:
         if ref.kind == "capture":
             key = (str(ref.point), ref.name)
-        elif ref.kind in (_HISTORY, _RESTART_POINT, _SERIES):
+        elif ref.kind in (_HISTORY, _SERIES):
             key = (ref.kind, ref.name)
         else:
             continue

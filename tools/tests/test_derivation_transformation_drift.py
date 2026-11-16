@@ -2036,7 +2036,7 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-20@68692c3c": "519eb9f0d784cb08762164dc9150520e21357315dcfab38085ae4f1e9a1c7610",
     "execute-20": "c461a0027e23fa96f0751a98113d86979099a3d80f6a59a5630e72f249bf92aa",
     # execute-21 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "execute-21": "78b0b5e4f2959205c3ad50a3bebaf8ae92b49963c18536220c7e76df1e4f79de",
+    "execute-21": "a2f03a5c48ecbee6ef87612aed341ad22e2efee30fd9510e2937aa24377104dd",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2261,7 +2261,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-18@68692c3c": "2c1862be224006f9ae7e99ba9c63d9ff20d749d3a5480b46dfbab9483d93b32a",
     "verdict-18": "5693e1d0f751d9d73280632f0b82fcda9736091437e23c6d96df31e02962eaa3",
     # verdict-19 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "verdict-19": "105ecac2b207a1840d7b2f7e99ec593fa0cc75cc57282a102cdfc2d4cc3b55fc",
+    "verdict-19": "b14a4ba4e7051a4c3b3ba6351701adbc4b822dbec469fd74d4ad27773cf2c173",
 }
 
 

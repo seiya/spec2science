@@ -228,6 +228,18 @@ class AgreementWithPrimaryEvidenceTest(unittest.TestCase):
         """Kills a key added to or dropped from one of the two `drive` key lists."""
         self.assertEqual(r.DRIVE_KEYS, pe._DRIVE_KEYS)
 
+    def test_the_render_refuses_a_reserved_snapshot_variable(self) -> None:
+        """`runner_ir.snapshot_schema`, the renderers' reader, refuses a variable with a
+        reserved name or a `__` (issue #644 O13). Kills: the reader left on the three old keys."""
+        for name in ("count", "restart_point", "none", "a__b"):
+            with self.subTest(name=name):
+                ir = copy.deepcopy(_toy())
+                entry = next(e for e in ir["io_contract"]["raw_requirements"]
+                             ["required_evidence"] if e["artifact"] == "state_snapshots")
+                entry["schema"]["variables"].append({"name": name, "shape_expr": "scalar"})
+                with self.assertRaisesRegex(RenderError, f"snapshot variable '{name}' is refused"):
+                    r.snapshot_schema(ir)
+
     def test_the_reserved_names_agree(self) -> None:
         """Kills a word dropped from or added to one reserved set, and the `__` clause dropped
         from one `reserved_name_reason`."""
