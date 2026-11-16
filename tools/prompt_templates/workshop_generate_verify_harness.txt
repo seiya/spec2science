@@ -24,7 +24,7 @@ H8 — serialization: the performance document, and every capture file where tha
 H9 — target lowering: the source honours the Target profile below (`hardware`, `toolchain`, `parallel`, `execution`), and the bundle's `target_lowering_plan` states how it is lowered onto that target and the source does what the plan states, as far as the target language allows; a plan the source does not follow, or an optimization the target forbids, is a fail. Do not demand a parallel construct on work that carries a dependence.
 H10 — dependency consistency: no reference to a node or operation outside `dependency.direct_deps`, and every call into one passes its arguments in the published interface's order and rank.
 
-**Controlled spec (the human-authored behavioral contract you verify the generated source against):**
+**Controlled spec (the human-authored behavioral contract you verify the generated source against. The producer of this bundle was seeded its §1 to §4 and §6 beside the IR, so behavior those sections state is not an addition to the IR, and a source that departs from them is a defect of the sources under review, which a producer re-run resolves, not a defect of an input):**
 In your tree: `controlled_spec.md` (document key `controlled_spec_document`).
 
 **Tests:**

@@ -657,7 +657,8 @@ class PureRenderTests(unittest.TestCase):
         self.assertNotIn("Audusse reconstruction: h_star = max(0, eta - z_b)", prompt)
         # The template's own bytes carry no controlled_spec surface either.
         self.assertNotIn("controlled_spec", composed_pure_template("workshop generate.generate"))
-        # The harness producer is the exception (issue #644 P4b, the operator's decision): it
+        # The harness producer is the exception (issue #644 P4b, an operator decision on its
+        # §3 and §4): it
         # is seeded §1 to §4 and §6 of its own node's spec under a name of its own, and its template
         # names that seed and no slot of the whole document.
         harness = composed_pure_template("workshop generate.generate.harness")

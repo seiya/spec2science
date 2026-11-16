@@ -282,7 +282,7 @@ io_contract:
   #               on shape) is refused until the field is paired with a state array; a captured array's own extents
   #               reduce, one cell included, in the case that captured it; a state with no cell does not
   #   errors      a non-finite intermediate (a division by zero, a literal `1e400` included), an unpaired operand
-  #               extent, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank, a variable the
+  #               extent, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank (an empty array the driver wrote, or of a `zero_extent:` variable, is not asked its rank), a variable the
   #               case's capture does not hold, a flip / transpose axis outside the rank or a coarsen factor that does
   #               not divide (the gate checks ranks, not these values), an `initial.<var>` of a case whose own runner commits no `initial`
   #               record (a harness self-test commits one in the cases its `tests.md` says), a non-finite

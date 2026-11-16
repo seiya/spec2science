@@ -21512,7 +21512,9 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
             with self.subTest(relative=relative):
                 v = self._violations(self._drop(relative, "h"))
                 self.assertEqual(len(v), 1, v)
-                self.assertIn(f"{{'{Path(relative).name}': ['h']}}", v[0])
+                # the record is named with its group's directory, so an initial record and
+                # the final one of a case are two entries (review round 3)
+                self.assertIn(f"{{'{relative}': ['h']}}", v[0])
                 self.assertIn("declared state_variables missing", v[0])
 
     def test_a_sample_and_a_restart_point_hold_the_variables_due_there(self) -> None:
@@ -31282,7 +31284,7 @@ class ZeroExtentLineGateTests(unittest.TestCase):
     def test_a_line_naming_no_zero_extent_variable_is_refused(self) -> None:
         # The other direction of the identity: the line declares a zero extent the schema
         # does not (or names one variable too many). Kills: a one-way comparison
-        # (`set(stated) <= set(declared)`), and an absent line taken for an empty list only.
+        # (`set(declared) <= set(stated)`), and an absent line taken for an empty list only.
         found = self._s(_drive_stage("coriolis", tests_md=_coriolis_tests_md()
                                      + "\nzero_extent: S\n"))
         self.assertEqual(len(found), 1, found)

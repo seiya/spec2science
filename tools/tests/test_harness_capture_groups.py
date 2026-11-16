@@ -12,6 +12,7 @@ judged by its own run and by `generate.verify`.
 from __future__ import annotations
 
 import os
+import copy
 import re
 import shutil
 import subprocess
@@ -238,9 +239,6 @@ DEFECTS: dict[str, tuple[str, str, set[int]]] = {
         ALL),
 }
 
-#: A defect no predicate of a complete run can show (`TODO.md`, the lost series): the rows
-#: committed before a restart point are written at the close, not before the restart point.
-#: The whole series is in its files once the case is closed, so the store reads the same.
 #: Seeded defects of the SELF-TEST over the clean model: a zero-extent variable left out of
 #: the `history` records. The two terms that read the steps of those records are what fails
 #: (review round 1 added them; without these rows the terms could be dropped unnoticed).
@@ -266,6 +264,9 @@ CUDA_SELFTEST_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
         "", {HISTORY_B}),
 }
 
+#: A defect no predicate of a complete run can show (`TODO.md`, the lost series): the rows
+#: committed before a restart point are written at the close, not before the restart point.
+#: The whole series is in its files once the case is closed, so the store reads the same.
 UNJUDGED = ("      if (cap_pending > 0) call cap_write_series()\n", "")
 
 #: The MPI hand model's capture writer is the Fortran one under the MPI harness's names (the
@@ -463,6 +464,38 @@ class CaptureGroupDocumentTests(unittest.TestCase):
             with self.subTest(spec_id=spec_id):
                 self.assertEqual(mine, reference)
                 self.assertEqual(my_padding, padding if "fortran" in spec_id else [])
+
+    def test_the_documents_predicates_pass_the_compile_stage_gates(self) -> None:
+        """The seven expressions of each `tests.md`, with the evidence entries the Compile
+        contract ties to their reads, draw nothing from the predicate schema gate, the
+        quantity gate, the infrastructure half of the drive gate or the case evaluation: a
+        gate that came to refuse one would stop every harness Compile, which `tests.md`
+        gives a leaf no way around. Kills: dropping an evidence entry from `ir()` (the gate
+        refuses the reads of that group, the second half below)."""
+        for spec_id in ("harness_fortran_cpu", "harness_cpp_gpu", "harness_fortran_cpu_mpi"):
+            with self.subTest(spec_id=spec_id):
+                doc = ir(spec_id)
+                cases = pe._cases_by_id(doc)
+                context = pe.predicate_schema_context(doc)
+
+                def findings(document: dict) -> list[str]:
+                    contract = document["io_contract"]
+                    return [
+                        *pe.validate_primary_predicate_schema(
+                            contract["predicates"], case_ids=set(cases), test_ids=[CASE],
+                            schema=pe.snapshot_schema(document), cases=cases,
+                            test_target_cases={CASE: [CASE]},
+                            **pe.predicate_schema_context(document)),
+                        *pe.quantity_violations(contract["tests"], contract["predicates"],
+                                                context["reads"]),
+                        *pe.drive_violations(document, kind="infrastructure")]
+                self.assertEqual(findings(doc), [])
+                self.assertEqual(set(pe.evaluate_case_inputs(doc)), {CASE, OTHER})
+                for artifact in ("state_history", "restart_points", "step_series"):
+                    cut = copy.deepcopy(doc)
+                    entries = cut["io_contract"]["raw_requirements"]["required_evidence"]
+                    entries[:] = [e for e in entries if e["artifact"] != artifact]
+                    self.assertTrue(findings(cut), artifact)
 
     def test_the_sentinels_are_the_values_the_document_states(self) -> None:
         """Every literal `<name> = <value>` of the case's §2 bullet is the fixture's value."""

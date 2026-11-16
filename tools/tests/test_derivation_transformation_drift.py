@@ -955,7 +955,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-37 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "compile-docs-37": "700bc87fbd7537c9efea8c65d19da08b2314f9a71d4bd7072655b3b8ab6dc74d",
     # compile-docs-38 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
-    "compile-docs-38": "6d484d50a7a4259101a203cd49d2f039e3352e61ac8709daf7cc6514b568eb99",
+    "compile-docs-38": "efb48b2c006df4d8a7a3440ac86a9942a143a2b4eebbb2a066c0fd81b6e905a1",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -2040,7 +2040,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # execute-21 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "execute-21": "ba611d7a69b8a38610f0923956160c63aea182c2072247feb108da90e0162bc3",
     # execute-22 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
-    "execute-22": "08c32459a79b85f36ae94e0ca92946a263bdaae8f126f169a36a0968146b1f4b",
+    "execute-22": "9a21a24c41de2da81d30005aa7e6e90677f635fc77cdbeb4a1f93d95cec91710",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2267,7 +2267,7 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-19 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "verdict-19": "ecb0e2db6e8e3d1b3aa280205e9058f89f49ec2f6315b1d5c305e1e2dce58180",
     # verdict-20 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
-    "verdict-20": "6e6ece203707de878abf7cae56135d3e45f2258c71696b7b61fc97bf7ab6dc98",
+    "verdict-20": "33fce73aeb3347208370b46a700b5a1ae000200a2cee845585e20f89cc20d82c",
 }
 
 

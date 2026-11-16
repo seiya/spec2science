@@ -3053,9 +3053,10 @@ class PureHarnessShapeTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as caught:
                     self.c._build_leaf_harness_context(self.refs)
             self.assertIn(reason, str(caught.exception))
-        # §1 to §4 and §6 of the node's own controlled spec (issue #644 P4b, the operator's decision
-        # for a harness producer): from `## 1.` up to `## 5.`, verbatim. Kills: seeding the
-        # whole document, or §3 alone.
+        # §1 to §4 and §6 of the node's own controlled spec (issue #644 P4b; the operator's
+        # decision names §3 and §4, `_harness_controlled_spec_sections` says why the others go
+        # with them): `## 1.` up to `## 5.`, then `## 6.` up to `## 7.`, verbatim. Kills:
+        # seeding the whole document, §3 alone, or dropping §6.
         self.assertEqual(
             ctx["controlled_spec_sections_document"],
             _HARNESS_SPEC_TEXT[_HARNESS_SPEC_TEXT.index("## 1."):

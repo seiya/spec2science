@@ -37,7 +37,7 @@ In your tree: `binary_meta.json` (document key `binary_meta_document`).
 **`source_meta_document` — the generated program the build compiled:**
 In your tree: `source_meta.json` (document key `source_meta_document`).
 
-**`raw_evidence_excerpt_document` — host-computed summary of `raw/` under a stamped policy version; no numeric array is inlined at any size, so these summaries and the verdict document's `basis.predicates[]` values are your whole view of the primary evidence. Each `state_snapshots.cases[]` entry summarizes the case's final capture (after the last committed call) and, under `initial`, the same runner's capture before the first call (`null` on a node whose own runner writes none); a value that claims to be a change over the run is supported only if the two captures differ the way it says:**
+**`raw_evidence_excerpt_document` — host-computed summary of `raw/` under a stamped policy version; no numeric array is inlined at any size, so these summaries and the verdict document's `basis.predicates[]` values are your whole view of the primary evidence. Each `state_snapshots.cases[]` entry summarizes the case's final capture (after the last committed call) and, under `initial`, the same runner's capture before the first call (`null` for a case whose own runner commits none); a value that claims to be a change over the run is supported only if the two captures differ the way it says:**
 In your tree: `raw_evidence_excerpt.json` (document key `raw_evidence_excerpt_document`).
 
 **Dependency facts (host-resolved):** in your tree as `DEPENDENCIES.md` when the host resolved any; no such file means there are none.

@@ -2373,7 +2373,8 @@ def validate_primary_predicate_schema(
     is refused); ``history_strides`` — `drive.history`, variable -> the `inputs` path of its
     stride (None on an IR with no `drive`): a `history.<v>` read of a variable with no stride is
     refused, and so is a predicate whose history reads span two stride inputs (the stacks have
-    different axes); ``restart_point_names`` — the variables a restart point holds (None: no
+    different axes); ``restart_point_names`` — the variables a restart point holds (every schema
+    variable on an IR with no `drive`; None: no
     `restart_points` entry is declared and every `restart_point.*` read is refused);
     ``driven`` — the IR carries `drive`, and every `restart_point.*` read is refused: where a
     restart point falls on the step of a sample or of the final capture, the host-rendered

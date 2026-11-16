@@ -1876,7 +1876,9 @@ def _validate_raw_evidence(
                             missing_state = sorted(name for name in state_variables
                                                    if whole and name not in keys)
                             if missing_state:
-                                missing_state_by_file[snapshot.name] = missing_state
+                                missing_state_by_file[
+                                    snapshot.relative_to(snapshots_dir).as_posix()
+                                ] = missing_state
                             if time_variable not in keys:
                                 missing_time.add(snapshot.name)
 
@@ -2056,10 +2058,11 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
                            driver_wrote: bool = False) -> None:
     """The series records (issue #589 D8) of a node that declares `step_series`: exactly its
     names and the commits' `t`, each a list of numbers of one length, and one record per final
-    capture. `step_series` is declared iff `drive.loop` is (`primary_evidence.drive_violations`
-    (h)). On a node that declares none the records are not read: every case has a series, an
-    empty one where the case committed no row (the harness's `capture_close`, issue #644 P4),
-    and no predicate of such a node can name it. With ``driver_wrote`` (the host-rendered
+    capture. On a node with `drive`, `step_series` is declared iff `drive.loop` is
+    (`primary_evidence.drive_violations` (h)); an `infrastructure` IR declares it when its
+    suite reads the series its own runner commits. On a node that declares none the records
+    are not read: every case has a series, an empty one where the case committed no row (the
+    harness's `capture_close`, issue #644 P4), and no predicate of such a node can name it. With ``driver_wrote`` (the host-rendered
     driver wrote the captures) the `step` column is held to the committed steps."""
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     entries = raw_requirements.get("required_evidence") if isinstance(
@@ -4049,7 +4052,8 @@ def _zero_extent_line_violations(tests_path: Path | None, ir: dict) -> list[str]
     schema, an identity both ways. The variables whose `shape_expr` carries a zero token
     (`primary_evidence.zero_extent_variables`) are exactly the names the line lists, and a
     `tests.md` with no such variable carries no line; at most one line. Both readers of a
-    record admit an empty value of such a variable and of no other, so without the identity
+    record admit an empty value of such a variable (and, beside it, only the state of a
+    host-rendered driver's zero-extent guard case), so without the identity
     the Compile leaf could declare a zero extent the human did not, and the self-test's
     capture of that variable would be judged by nothing. A ``tests_path`` of None is not this
     gate's finding (`_validate_ir_source_refs_tests`)."""

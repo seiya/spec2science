@@ -3274,10 +3274,7 @@ class DriverCounterReadsTest(unittest.TestCase):
                                  # as its history is (issue #644 P4b: read on a node with
                                  # no `drive` alone, the schema gate refusing it on a driven
                                  # one), of one nothing writes (b) not. Kills: dropping the
-                                 # `_RESTART_POINT` branch of `is_state_read` (h False). The
-                                 # `t` / `step` rows pin the answer False; dropping the
-                                 # branch's `_AXIS_MEMBERS` clause does not change it (both
-                                 # are reserved names, in no state set): that mutant survives
+                                 # `_RESTART_POINT` branch of `is_state_read` (h False).
                                  ("restart_point", "h", True), ("restart_point", "b", False),
                                  ("series", "step", False),
                                  ("history", "h", True), ("series", "h_min", True),
@@ -6825,9 +6822,8 @@ class InfrastructureRestartPointTest(unittest.TestCase):
             cases=cases, **ctx)
 
     def test_is_state_read_of_a_restart_point(self) -> None:
-        # Kills: dropping the `_RESTART_POINT` branch (`h` False). The `t` / `step` rows pin
-        # the answer False; the branch's `_AXIS_MEMBERS` clause is not what decides it (both
-        # are reserved names, in no state set), so dropping the clause survives here.
+        # Kills: dropping the `_RESTART_POINT` branch (`h` False). `t` and `step` are reserved
+        # names, in no state set, so they answer False with no clause of their own.
         reads = pe.state_reads(self._infra())
         for name, want in (("h", True), ("s", True), ("t", False), ("step", False)):
             with self.subTest(name=name):

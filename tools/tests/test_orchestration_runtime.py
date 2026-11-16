@@ -22266,7 +22266,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 117700->118900 (issue #644 P4b, the harness side): the three history evidence
         # entries on an `infrastructure` IR, `restart_point.*` read there, and the zero-token
         # rule of gate (s).
-        "docs/workflow/phases/phase_01_compile.md": 118900,
+        # 118900->119050 in review round 3: the wrong-rank line's zero-extent exception.
+        "docs/workflow/phases/phase_01_compile.md": 119050,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
