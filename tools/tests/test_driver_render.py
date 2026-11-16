@@ -668,8 +668,9 @@ class _DriverBehaviour:
 
     def test_the_capacities_handed_to_capture_open_are_the_records_written(self) -> None:
         """What the driver hands `capture_open` (each variable's history capacity, the restart
-        point capacity, the series capacity) equals what the case then commits, read off the
-        captures: on the strided base case, on its continuation from step 5 (the counts are
+        point capacity, the series capacity) is the most the case may commit, and on a case
+        that runs to its end equals what it commits, read off the captures (a case the kernel
+        refuses mid-run commits fewer): on the strided base case, on its continuation from step 5 (the counts are
         of `step0 + 1 .. n_c`: `u` 4, `w` 3, one restart point, 7 rows), and on an `init` node
         whose step count the state holds. Kills a capacity counted from step 1 on a
         continuation, `(n_c - step0) / E` (`u` would read 3), the restart capacity left 0 or
@@ -704,6 +705,16 @@ class _DriverBehaviour:
             got = capacities(run.dir / "run", "m0")
             self.assertEqual(got, {**{v: 3 for v in self._names}, "restart_point": 3,
                                    "series": 3})
+            self.assertEqual(got, written(run.snapshots, "m0"))
+        # a stride of 0 samples nothing and is handed 0, for a history stride and for the
+        # restart stride (kills: the capacity without its `> 0` test, which the `max(E, 1)`
+        # divisor turns into the step count)
+        with tempfile.TemporaryDirectory() as tmp:
+            run = type(self).build_and_run(Path(tmp), strides_ir(eu=0, er=0), harness=harness)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self._names = ("u", "w", "ok")
+            got = capacities(run.dir / "run", "m0")
+            self.assertEqual(got, {"u": 0, "w": 4, "ok": 0, "restart_point": 0, "series": 12})
             self.assertEqual(got, written(run.snapshots, "m0"))
 
     def test_the_series_holds_one_entry_per_committed_step_of_every_array(self) -> None:

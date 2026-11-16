@@ -27,7 +27,7 @@ What it does, in order (each refusal exits 2 before anything runs):
    runs at the local site, one process.
 2. Applies the overrides to the base case and evaluates it with the host's evaluator
    (`primary_evidence.evaluate_case_inputs`), so every refusal a certified case meets (`n_step`,
-   `dt`, the 4-ulp `t_end` rule, `history.every`, the extents) applies here too. Refused: a
+   `dt`, the 4-ulp `t_end` rule, the strides, the extents) applies here too. Refused: a
    `base_case` that is no case of the IR or is a continuation; an override of a path that is
    not a numeric leaf of the base's `inputs`; a type change (an integer leaf given a real, a
    real given an integer, anything given a boolean); an override of an input the case reads
@@ -326,7 +326,7 @@ def evaluate_configuration(ir: dict[str, Any], base: str, overrides: dict[str, A
 def read_input_paths(ir: dict[str, Any], case: dict[str, Any], payload: dict[str, Any]
                      ) -> frozenset[str]:
     """The `inputs.*` paths the base case's evaluation reads by name: each `inputs.<path>` key
-    of its case file (what the drive binds, `history.every`, a procedure's inputs), each
+    of its case file (what the drive binds, the strides, a procedure's inputs), each
     `inputs` name of its `initial_state` and `derived` expressions, and each coordinate's
     `count` / `length` given as `inputs.<path>`. An override of one of them is never refused
     as a no-op, whatever the evaluated values (a `min()` whose other branch binds still reads
@@ -688,17 +688,14 @@ def _kernel_outcome(ir: dict[str, Any], out: Path, base: str,
     return step, None
 
 
-def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any] | None:
+def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any]:
     """What a run that did not reach its end kept, as the target's capture store reads it: the
     steps of its restart points and the rows of its series up to where they stop being
-    readable in order; None when the store cannot be asked (no capture directory)."""
+    readable in order."""
     store = capture_store.store(output_format)
     snaps = capture_store.snapshot_dir(out)
-    try:
-        rows, last = store.read_series_prefix(snaps, base)
-        points = list(store.restart_point_steps(snaps, base))
-    except OSError:
-        return None
+    rows, last = store.read_series_prefix(snaps, base)
+    points = list(store.restart_point_steps(snaps, base))
     return {"restart_points": points,
             "series": {"rows": max((len(v) for v in rows.values()), default=0),
                        "last_step": last}}
@@ -839,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, type=Path,
                     help="a new or empty directory outside workspace/")
     ap.add_argument("--restart-from", type=Path, default=None,
-                    help="a history sample (or final capture) an earlier run of this tool wrote "
+                    help="a restart point (or final capture) an earlier run of this tool wrote "
                          "for the same configuration: continue from it")
     ap.add_argument("--timeout-sec", type=float, default=None,
                     help="kill the run after this many seconds (default: no bound)")

@@ -591,7 +591,7 @@ def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | Non
 
 def _seeded_continuations(ctx: WrapperContext) -> frozenset[str]:
     """The continuation cases of the IR the host SEEDED (issue #632): a case carrying a
-    `restart` key. Each runs only in `Validate.execute`'s second pass, from a history sample of
+    `restart` key. Each runs only in `Validate.execute`'s second pass, from a restart point of
     its base in a process of its own, so this operation runs none of them and the host writes no
     case file for one. Empty when the seed is absent or unreadable (`_write_case_files` reports
     that)."""
@@ -663,7 +663,7 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
     if named:
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings=f"{named} are continuation cases: a continuation runs only in "
-                                "Validate.execute's second pass, from a history sample of its "
+                                "Validate.execute's second pass, from a restart point of its "
                                 "base case in a process of its own; run its base case here")
     if not case_ids:
         # No ids is every case of the case file that is no continuation, as the schema says

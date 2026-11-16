@@ -13310,7 +13310,7 @@ class Conductor:
                 cont = failure.get("continuation")
                 if cont is not None:
                     where += (f", in the second pass: continuation {cont!r}, run in a process of "
-                              "its own from its base's history sample")
+                              "its own from its base's restart point")
                 if "not_run" in failure:
                     lines.append(f"[execute fail: quality_check] {where}: did not run: "
                                  f"{failure['not_run']}")
@@ -13473,7 +13473,7 @@ class Conductor:
         qc_cmd_log = src_dir / "command_log.jsonl"
         case_ids = list(self.read_case_ids(refs))
         # The continuation cases (issue #632) run in a second pass, each in a process of its
-        # own, from a history sample the first pass wrote; the first pass runs the base cases.
+        # own, from a restart point the first pass wrote; the first pass runs the base cases.
         # Every case id still owes its captures (`_snapshot_deliverable_gap` asks for all).
         from tools.primary_evidence import base_case_ids, continuation_cases
         bases = set(base_case_ids(ir))

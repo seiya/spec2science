@@ -781,7 +781,7 @@ class WrapperCallCompositionTests(_LineageCase):
 
     def test_a_continuation_case_is_not_run_here(self) -> None:
         """Issue #632: a continuation case runs only in `Validate.execute`'s second pass, from a
-        history sample of its base, in a process of its own. The default set leaves it out
+        restart point of its base, in a process of its own. The default set leaves it out
         (read from the case file, filtered by the SEEDED IR's continuations), a named one is
         refused with that reason before anything starts, and no case file is written for it."""
         from unittest import mock

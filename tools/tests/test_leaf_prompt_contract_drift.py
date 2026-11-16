@@ -1187,7 +1187,7 @@ PINNED: dict[str, str] = {
     # capture layout seeded after the contract in the harness trees.
     "leaf-100": "a3ba868a7e70a224f818081f96379b635347c3b6dff190ddd8072158ff1a7924",
     # leaf-101 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "leaf-101": "234432f4fc4fb39ff6a7585a435d3ff0c21e9d94ea1ae40df0e816c7a57a321a",
+    "leaf-101": "427472531112e820c4a4b507a573e41f7872ec75fa16f98e37a22866bbc8be37",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same

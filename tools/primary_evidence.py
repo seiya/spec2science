@@ -15,12 +15,12 @@ number. These predicates alone decide a test (issue #582, `tools/verdict_evaluat
 `drive` block and the published operations' §5.1 signatures (`drive_model`), never from a label the
 leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` dummy of `init` or of a
 `step` entry), `initial.<v>` of a variable `init` writes,
-`history.<v>`, `restart_point.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts
-for. `initial.<v>`
+`history.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts for. `initial.<v>`
 of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
 nothing writes (and its history), `final.step` / `final.t` and `history.<v>.t` /
-`history.<v>.step` / `restart_point.t` / `restart_point.step` /
-`series.step` (the driver's counters), a logical `out` state (of `step` or `init`,
+`history.<v>.step` / `series.step` (the driver's counters), every `restart_point.*` (refused
+on a node with `drive`: a restart point holds what a sample or the final capture of its step
+holds, so a difference with one is zero whatever the kernel computed), a logical `out` state (of `step` or `init`,
 per case: a flag, so under a physics quantity it would value that judgment alone — review round
 5, R5-2), `derived.*` and `inputs.*` are not (`predicate_reads_state`); a flag stands only as a
 flag predicate (`fixed_form`). An IR with no `drive` (an
@@ -545,9 +545,9 @@ class StateReads(NamedTuple):
     """Which capture reads value the kernel's state (grammar 6, issue #589): ``final`` — the
     variables whose `final.<v>` counts (those an operation writes, the logical `out` states aside),
     ``initial`` — those whose `initial.<v>` counts (those `init` writes, the logical ones aside).
-    `history.<v>`, `restart_point.<v>` and `series.<v>_min` / `_max` count for a ``final``
-    variable, the driver's counters (`history.<v>.t`, `history.<v>.step`, `restart_point.t`,
-    `restart_point.step`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
+    `history.<v>` and `series.<v>_min` / `_max` count for a ``final``
+    variable, the driver's counters (`history.<v>.t`, `history.<v>.step`, `series.step`)
+    never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
     `<ref>`s gate (l) accepts in `final.step - <ref>` (`_zero_step_refs`: the counterpart of
     `loop.n_step`; None while gate (e) refuses `loop.n_step` itself — the IR is refused there,
     and any ref is then exempt so the refusal is not restated per predicate); ``closure_tests`` — the `test_id`s of the `expected_outcome: pass` tests gate
@@ -602,12 +602,11 @@ def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str],
     names counted at both capture points), IN ``case`` — the case the reference is read in
     (its `at('<case>')` case, else the case being evaluated): on a list-form node a variable
     is kernel state in a case only when an entry that runs that case writes it
-    (`StateReads.sets_for`, R2-2 / R2-3); None asks the node's classes. `history.<v>`,
-    `restart_point.<v>` and `series.<v>_min` / `_max` do when
-    `final.<v>` does — the samples, the restart points and the per-step folds of a variable the
+    (`StateReads.sets_for`, R2-2 / R2-3); None asks the node's classes. `history.<v>` and
+    `series.<v>_min` / `_max` do when
+    `final.<v>` does — the samples and the per-step folds of a variable the
     kernel writes; the
-    DRIVER's counters `history.<v>.t`, `history.<v>.step`, `restart_point.t`,
-    `restart_point.step` and `series.step`, like
+    DRIVER's counters `history.<v>.t`, `history.<v>.step` and `series.step`, like
     `final.t` / `final.step`, never do (review round 2, R2-1: `max(series.step) ge 0` judged
     nothing the kernel produced), and neither does the history of a variable nothing writes
     (host data echoed per sample). A time or step capture, an input, a coordinate, a
@@ -616,10 +615,6 @@ def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str],
         name, member = history_member(ref.name)
         if member is not None:
             return False
-    elif ref.kind == _RESTART_POINT:
-        if ref.name in _AXIS_MEMBERS:
-            return False
-        name = ref.name
     elif ref.kind == _SERIES:
         match = _SERIES_FOLD_RE.match(ref.name)
         if match is None:
@@ -1314,7 +1309,8 @@ def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[s
     committed steps under `v.step` and their times under `v.t` — a history record holds the
     variables due at its step, so each variable has its own axis. A variable no record holds
     (a stride of 0, no stride, or a first step refused) is empty, shaped like its final
-    capture. Which variables a record must hold is the post-execute gate's."""
+    capture. No reader asks which variables a record holds: the host-rendered driver decides
+    it (`runner_ir.driver_plan`)."""
     records = _stepped_records(captures, capture_store.HISTORY,
                                captures.store.history_steps(captures.sdir, case_id), case_id,
                                variables, time_variable, "history sample")
@@ -2006,8 +2002,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
                 f"{loc}: reads no captured state the kernel produced (final.<written non-logical "
-                "var>, initial.<var init writes>, history.<written var>, restart_point.<written "
-                "var>, series.<written var>_"
+                "var>, initial.<var init writes>, history.<written var>, series.<written var>_"
                 f"min|_max) in expr or a bind expr reaches. {FLAG_FORM_STATEMENT}")
         unread = [] if closure else unread_scope_cases(expr_refs, bind_refs, reads, contexts)
         if unread:
@@ -2309,6 +2304,7 @@ def validate_primary_predicate_schema(
     history_declared: bool = False,
     history_strides: dict[str, str] | None = None,
     restart_point_names: frozenset[str] | set[str] | None = None,
+    driven: bool = False,
 ) -> list[str]:
     """The Compile-stage gate over `io_contract.predicates` (present-or-absent; the per-test
     rules over quantities and the one-call scalar pairing are `quantity_violations` and
@@ -2325,7 +2321,11 @@ def validate_primary_predicate_schema(
     stride (None on an IR with no `drive`): a `history.<v>` read of a variable with no stride is
     refused, and so is a predicate whose history reads span two stride inputs (the stacks have
     different axes); ``restart_point_names`` — the variables a restart point holds (None: no
-    `restart_points` entry is declared and every `restart_point.*` read is refused). A schema
+    `restart_points` entry is declared and every `restart_point.*` read is refused);
+    ``driven`` — the IR carries `drive`, and every `restart_point.*` read is refused: the
+    host-rendered driver commits a restart point from the state a sample or the final capture
+    of the same step holds, so `history.<v> - restart_point.<v>` is zero whatever the kernel
+    computed (review round 1 passed it through the reads-state rule on four real suites). A schema
     variable with a reserved name (`reserved_name_reason`) is refused.
 
     Checks each entry's shape (`test_id` ∈ tests.md, `quantity`, `op`, a non-null `value` of
@@ -2528,7 +2528,13 @@ def validate_primary_predicate_schema(
                     elif history_strides is not None:
                         strides_read.setdefault(history_strides[var], set()).add(var)
                 elif ref.kind == _RESTART_POINT:
-                    if restart_point_names is None:
+                    if driven:
+                        v.append(f"{eloc}: restart_point.{ref.name}: a predicate of a node "
+                                 "with `drive` reads no restart point (it holds the state a "
+                                 "sample or the final capture of its step holds, so it judges "
+                                 "nothing of its own; the continuation's judgment is gate "
+                                 "(p)'s `restart.<v>`)")
+                    elif restart_point_names is None:
                         v.append(f"{eloc}: restart_point.{ref.name}: the IR declares no "
                                  "restart_points required_evidence entry")
                     elif ref.name == "t" and not has_time:
@@ -2602,19 +2608,16 @@ def validate_primary_predicate_schema(
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
                      "non-logical variable an operation writes, initial.<v> of one init writes, "
-                     "history.<v> / restart_point.<v> / series.<v>_min|_max of a written v) "
-                     "in expr or a "
+                     "history.<v> / series.<v>_min|_max of a written v) in expr or a "
                      "bind expr reaches: a predicate values the state the kernel produced (the "
                      "host's own initial_state read back, a derived.* value, final.step / "
-                     "final.t, the driver's history.<v>.t / history.<v>.step / "
-                     "restart_point.t / restart_point.step / series.step, "
+                     "final.t, the driver's history.<v>.t / history.<v>.step / series.step, "
                      "and a comparand.<point>.<var> — another target's state — are not "
                      f"this run's kernel state). {FLAG_FORM_STATEMENT}")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
                                                       state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<var> / "
-                     "initial.<var> / history.<var> / restart_point.<var> / "
-                     "series.<var>_min|_max) "
+                     "initial.<var> / history.<var> / series.<var>_min|_max) "
                      "outside a term multiplied by a literal zero, raised to a literal zero, or "
                      "subtracted from itself or added to its own negation (the same expression "
                      "spelled the same): the expression is constant in the captured values "
@@ -3992,7 +3995,7 @@ def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
     `derived` entry evaluated with the predicate grammar (gate (g)'s names), the bound host
     data's shapes, the loop scalars that are host data (`n_step` an integer >= 1; `dt` > 0 and
     the `t_end` check when all four are host data, both but on a case only `xfail` tests target,
-    `_xfail_only_cases`) and `history.every` (an integer >= 0); the
+    `_xfail_only_cases`) and every stride of `drive.history` / `drive.restart_points` (an integer >= 0); the
     object holds `inputs.<path>` for every input the block references, `derived.<name>` for
     every derived entry and `<var>` for every `initial_state` entry. For an IR with none:
     every numeric `inputs.*` leaf. Raises `PrimaryEvidenceError` naming the case and the entry.
@@ -4270,8 +4273,8 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
     raises — `Compile.static` reports that itself through `drive_violations` (c) — and a
     `derived.*` read is then judged against the names the case declares),
     `series_names`, `history_declared`, `history_strides` (`drive.history`; None with no
-    `drive` or a malformed one) and `restart_point_names` (the restart variables when a
-    `restart_points` entry is declared, else None)."""
+    `drive` or a malformed one), `restart_point_names` (the restart variables when a
+    `restart_points` entry is declared, else None) and `driven` (the IR carries `drive`)."""
     try:
         reads: StateReads | None = state_reads(ir)
     except PrimaryEvidenceError:
@@ -4290,7 +4293,8 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
             "series_names": step_series_names(ir),
             "history_declared": "state_history" in entries,
             "history_strides": block.history if block is not None else None,
-            "restart_point_names": points if "restart_points" in entries else None}
+            "restart_point_names": points if "restart_points" in entries else None,
+            "driven": _has_drive(ir)}
 
 
 def _test_entries(ir: dict[str, Any]) -> list[dict[str, Any]]:

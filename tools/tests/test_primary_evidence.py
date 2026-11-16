@@ -2936,10 +2936,25 @@ class Grammar6Test(unittest.TestCase):
         for ok in ("max(history.h)", "min(series.h_min)", "max(smax(history.h)) * derived.dt",
                    "max(history.h.t) + sum(final.h)", "max(history.h.step) + sum(final.h)",
                    # grammar 7: both history variables share one stride input here
-                   "max(smax(history.h)) + max(history.ok)", "max(smax(restart_point.h))",
-                   "max(restart_point.t) + max(restart_point.step) + sum(final.h)"):
+                   "max(smax(history.h)) + max(history.ok)"):
             with self.subTest(ok=ok):
                 self.assertEqual(gate(ok), [])
+        # a restart point is read by a node with no `drive` alone (the infrastructure shape,
+        # `driven=False` with the restart variables given): there each root resolves. The toy
+        # IR carries `drive`, and its context refuses every `restart_point.*` read (the
+        # driver commits a restart point from the state a sample or the final capture of its
+        # step holds). Kills: dropping the `driven` refusal (the first loop), or refusing on
+        # the restart_point root whatever `driven` says (the second)
+        self.assertIs(ctx["driven"], True)
+        for expr in ("max(smax(restart_point.h)) + sum(final.h)",
+                     "max(restart_point.t) + max(restart_point.step) + sum(final.h)"):
+            with self.subTest(driven=expr):
+                v = gate(expr)
+                self.assertTrue(v, v)
+                self.assertTrue(all("a predicate of a node with `drive` reads no restart point"
+                                    in m for m in v), v)
+            with self.subTest(infrastructure=expr):
+                self.assertEqual(gate(expr, driven=False), [])
         # ...and a declared one is not refused a second time (the cascade 9c275119 removed)
         self.assertEqual(gate("sum(final.h) * derived.dt", case_inputs=None), [])
         refused = [
@@ -2959,19 +2974,28 @@ class Grammar6Test(unittest.TestCase):
             ("max(smax(history.h)) + max(history.ok.t)",
              {"history_strides": {"h": "every_h", "ok": "every_ok"}},
              "reads the history of variables sampled at different strides"),
-            # a restart variable the drive names that the schema does not declare is refused
-            # here, not raised as a KeyError by the rank inference. Kills: dropping the
-            # `not in variables` half
+            # the name checks of a restart point hold on a node with no `drive` (the
+            # infrastructure shape, `driven=False`): a restart variable the drive names that
+            # the schema does not declare is refused here, not raised as a KeyError by the
+            # rank inference. Kills: dropping the `not in variables` half
             ("max(smax(restart_point.zz)) + sum(final.h)",
-             {"restart_point_names": frozenset({"h", "zz"})},
+             {"restart_point_names": frozenset({"h", "zz"}), "driven": False},
              "restart_point.zz: 'zz' is not a schema variable a restart point holds"),
             # kills: dropping the restart-variable check, or the no-entry check
-            ("max(restart_point.ok) + sum(final.h)", {},
+            ("max(restart_point.ok) + sum(final.h)", {"driven": False},
              "restart_point.ok: 'ok' is not a schema variable a restart point holds"),
-            ("max(smax(restart_point.h))", {"restart_point_names": None},
+            ("max(smax(restart_point.h)) + sum(final.h)",
+             {"restart_point_names": None, "driven": False},
              "declares no restart_points required_evidence entry"),
+            ("max(restart_point.t) + sum(final.h)",
+             {"restart_point_names": None, "driven": False},
+             "declares no restart_points required_evidence entry"),
+            # ...and on the driven toy each of those reads is refused by the `drive` rule,
+            # whatever the restart variables say
+            ("max(restart_point.ok) + sum(final.h)", {},
+             "restart_point.ok: a predicate of a node with `drive` reads no restart point"),
             ("max(restart_point.t) + sum(final.h)", {"restart_point_names": None},
-             "declares no restart_points required_evidence entry"),
+             "restart_point.t: a predicate of a node with `drive` reads no restart point"),
             ("max(history.h)", {"history_declared": False}, "declares no state_history"),
             ("min(series.q_min)", {}, "series.q_min is not a name of the step_series entry"),
             ("min(series.h_min)", {"series_names": None}, "declares no step_series"),
@@ -2996,25 +3020,28 @@ class Grammar6Test(unittest.TestCase):
     def test_a_time_axis_needs_a_declared_time_variable(self) -> None:
         """`history.<v>.t` and `restart_point.t` are refused at Compile when the schema declares
         no `time_variable` (grammar 6 refused `history.t` there; without this the read passed
-        the gate and failed at evaluation). `.step` needs none. Kills: dropping either
-        `has_time` clause."""
+        the gate and failed at evaluation). `.step` needs none. A restart point is read on a
+        node with no `drive` alone, so its half runs with `driven=False` (the infrastructure
+        shape). Kills: dropping either `has_time` clause."""
         ir = _toy()
         io, cases = ir["io_contract"], pe._cases_by_id(ir)
         schema = dict(pe.snapshot_schema(ir))
         schema.pop("time_variable")
         ctx = pe.predicate_schema_context(ir)
 
-        def gate(expr: str) -> list[str]:
+        def gate(expr: str, **over) -> list[str]:
             return pe.validate_primary_predicate_schema(
                 [{**io["predicates"][0], "expr": expr}], case_ids=set(cases),
-                test_ids=["t_run"], schema=schema, cases=cases, **ctx)
-        for expr, msg in (("max(history.h.t) + sum(final.h)", "a sample carries no time"),
-                          ("max(restart_point.t) + sum(final.h)",
-                           "a restart point carries no time")):
+                test_ids=["t_run"], schema=schema, cases=cases, **{**ctx, **over})
+        for expr, over, msg in (
+                ("max(history.h.t) + sum(final.h)", {}, "a sample carries no time"),
+                ("max(restart_point.t) + sum(final.h)", {"driven": False},
+                 "a restart point carries no time")):
             with self.subTest(expr=expr):
-                self.assertTrue(any(msg in m for m in gate(expr)), gate(expr))
-        self.assertEqual(gate("max(history.h.step) + max(restart_point.step) + sum(final.h)"),
-                         [])
+                v = gate(expr, **over)
+                self.assertTrue(any(msg in m for m in v), v)
+        self.assertEqual(gate("max(history.h.step) + sum(final.h)"), [])
+        self.assertEqual(gate("max(restart_point.step) + sum(final.h)", driven=False), [])
 
     def test_the_context_carries_the_strides_and_the_restart_variables(self) -> None:
         """`predicate_schema_context` (issue #644 P4b): `history_strides` is `drive.history`
@@ -3039,6 +3066,41 @@ class Grammar6Test(unittest.TestCase):
         ctx = pe.predicate_schema_context(broken)
         self.assertIsNone(ctx["history_strides"])
         self.assertEqual(ctx["restart_point_names"], frozenset())
+
+    def test_a_driven_node_reads_no_restart_point(self) -> None:
+        """The review finding's shape: on the toy loop IR, `maxabs(history.h -
+        restart_point.h) le 0` read the same state twice (the host-rendered driver commits a
+        restart point from the state a sample or the final capture of its step holds), so it
+        was satisfied whatever the kernel computed and passed the Compile gate. Under
+        `predicate_schema_context(ir)` it is refused by the `drive` rule — also when the
+        restart-point read sits in a `bind` the `expr` reaches — and with `driven=False` the
+        same entry passes (the refusal is that rule's, not another check's). Kills: dropping
+        the `driven` refusal of `validate_primary_predicate_schema`; `predicate_schema_context`
+        not setting `driven`."""
+        ir = _toy()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        ctx = pe.predicate_schema_context(ir)
+        base = {**io["predicates"][0], "op": "le", "value": 0}
+        for pred in ({**base, "expr": "maxabs(history.h - restart_point.h)"},
+                     {**base, "bind": {"r": "restart_point.h"}, "expr": "maxabs(history.h - r)"}):
+            with self.subTest(pred=pred):
+                kw = dict(case_ids=set(cases), test_ids=["t_run"],
+                          schema=pe.snapshot_schema(ir), cases=cases)
+                v = pe.validate_primary_predicate_schema([pred], **kw, **ctx)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("restart_point.h: a predicate of a node with `drive` reads no "
+                              "restart point", v[0])
+                self.assertEqual(pe.validate_primary_predicate_schema(
+                    [pred], **kw, **{**ctx, "driven": False}), [])
+
+    def test_the_context_says_whether_the_node_is_driven(self) -> None:
+        """`predicate_schema_context` gives `driven` True on an IR with `drive` (the toy) and
+        False on one without (the infrastructure shape, whose restart points a predicate may
+        read). Kills: a context answering `driven` True whatever the IR."""
+        self.assertIs(pe.predicate_schema_context(_toy())["driven"], True)
+        bare = _ir([HMIN])
+        self.assertNotIn("drive", bare)
+        self.assertIs(pe.predicate_schema_context(bare)["driven"], False)
 
 
 class StateReadsTest(unittest.TestCase):
@@ -3067,7 +3129,10 @@ class StateReadsTest(unittest.TestCase):
         # (and their history / series, R2-1) never
         for expr, want in (("max(history.h.t)", False), ("max(history.h.step)", False),
                            ("max(smax(history.h))", True),
-                           ("max(smax(restart_point.h))", True),
+                           # a restart point is never a state read: on a node with `drive`
+                           # it holds what a sample or the final capture of its step holds
+                           # (the schema gate refuses the read there outright)
+                           ("max(smax(restart_point.h))", False),
                            ("max(restart_point.t)", False), ("max(restart_point.step)", False),
                            ("min(series.h_min)", True),
                            ("derived.dt", False), ("inputs.grid.nx", False),
@@ -3177,7 +3242,8 @@ def _toy_with_input_state() -> dict:
 
 class DriverCounterReadsTest(unittest.TestCase):
     """R2-1: the driver's counters — grammar 7's `history.<v>.t`, `history.<v>.step`,
-    `restart_point.t`, `restart_point.step`, and `series.step` — are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
+    `restart_point.t`, `restart_point.step` (as every `restart_point.*` read), and
+    `series.step` — are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
     `cases_read` — and neither are the history and the series folds of a variable nothing
     writes; those of a written variable are."""
 
@@ -3196,7 +3262,10 @@ class DriverCounterReadsTest(unittest.TestCase):
         for kind, name, want in (("history", "h.t", False), ("history", "h.step", False),
                                  ("restart_point", "t", False),
                                  ("restart_point", "step", False),
-                                 ("restart_point", "h", True), ("restart_point", "b", False),
+                                 # a restart point is never a state read, of a written
+                                 # variable (h) or not (b). Kills: restoring the deleted
+                                 # `_RESTART_POINT` branch of `is_state_read`
+                                 ("restart_point", "h", False), ("restart_point", "b", False),
                                  ("series", "step", False),
                                  ("history", "h", True), ("series", "h_min", True),
                                  ("series", "h_max", True), ("history", "b", False),
@@ -3214,9 +3283,21 @@ class DriverCounterReadsTest(unittest.TestCase):
         io, cases = ir["io_contract"], pe._cases_by_id(ir)
         kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
                   cases=cases, **pe.predicate_schema_context(ir))
+        self.assertIs(kw["driven"], True)
         for expr in self._COUNTERS + ("max(smax(history.b))", "min(series.b_min)"):
             with self.subTest(expr=expr):
                 v = pe.validate_primary_predicate_schema([self._pred(expr)], **kw)
+                if expr.startswith("max(restart_point."):
+                    # on this node (it has `drive`) a restart point is refused by the `drive`
+                    # rule as well as by the reads-state rule
+                    self.assertEqual(len(v), 2, v)
+                    self.assertIn("a predicate of a node with `drive` reads no restart point",
+                                  v[0])
+                    self.assertTrue(v[1].startswith(self._MSG), v)
+                    # ...and on a node with no `drive` (the infrastructure shape) the counter
+                    # is refused by the reads-state rule alone
+                    v = pe.validate_primary_predicate_schema(
+                        [self._pred(expr)], **{**kw, "driven": False})
                 self.assertEqual(len(v), 1, v)
                 self.assertTrue(v[0].startswith(self._MSG), v)
                 self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), set())
@@ -3228,20 +3309,22 @@ class DriverCounterReadsTest(unittest.TestCase):
 
     def test_the_schema_gate_s_refusal_names_the_grammar_7_counters(self) -> None:
         """The refusal a repairing leaf reads names the driver's counters as grammar 7 spells
-        them (issue #644 P4b): `history.<v>.t` / `history.<v>.step`, `restart_point.t` /
-        `restart_point.step`, `series.step` — not the removed `history.t` / `history.step`,
-        which the parser now refuses — and `restart_point.<v>` among the state reads (as the
-        evaluator's refusal does). Before grammar 7 this row asserted the text
-        `history.t / history.step / series.step`."""
+        them (issue #644 P4b): `history.<v>.t` / `history.<v>.step`, `series.step` — not the
+        removed `history.t` / `history.step`, which the parser now refuses — and offers no
+        `restart_point` read as a state read (a restart point is never one: on a node with
+        `drive` the gate refuses it outright). Before grammar 7 this row asserted the text
+        `history.t / history.step / series.step`; before the review fix it also asserted
+        `restart_point.t` / `restart_point.step` among the counters and `restart_point.<v>`
+        among the state reads."""
         ir = _toy_with_input_state()
         io, cases = ir["io_contract"], pe._cases_by_id(ir)
         kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
                   cases=cases, **pe.predicate_schema_context(ir))
         (v,) = pe.validate_primary_predicate_schema([self._pred("max(series.step)")], **kw)
         self.assertNotIn("history.t /", v)
-        for name in ("history.<v>.t", "history.<v>.step", "restart_point.t",
-                     "restart_point.step", "series.step", "restart_point.<v>"):
+        for name in ("history.<v>.t", "history.<v>.step", "series.step"):
             self.assertIn(name, v)
+        self.assertNotIn("restart_point", v)
 
     def test_the_evaluator_refuses_each_counter_alone(self) -> None:
         run = _RunDir()
@@ -3533,8 +3616,7 @@ class ClosureExemptionTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, re.escape(
                 "predicates[2]: reads no captured state the kernel produced (final.<written "
                 "non-logical var>, initial.<var init writes>, history.<written var>, "
-                "restart_point.<written var>, series.<written var>_min|_max) in expr or a bind "
-                "expr reaches. "
+                "series.<written var>_min|_max) in expr or a bind expr reaches. "
                 f"{pe.FLAG_FORM_STATEMENT}") + r"\Z"):
             self._evaluate(ir)
 
@@ -4321,14 +4403,29 @@ class LazyLoaderTest(unittest.TestCase):
         """`restart_point.*` (grammar 7) reads the `restart_point` group, not the history: its
         records stacked by step, with `step` and `t`; none is an empty stack shaped like the
         final capture; a record whose step is not its name is refused. Kills: a loader reading
-        the history group for it, or one that skips the step check."""
-        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
-                               pe.snapshot_schema(self.ir), output_format="json")
+        the history group for it, or one that skips the step check.
+
+        The toy IR carries `drive`, where no predicate reads a restart point (the schema gate
+        refuses it), so the loader is read through `CaseEnv` and `evaluate` (the evaluator a
+        node with no `drive` will reach). Past the gate, `evaluate_primary_predicates` refuses
+        an entry whose only read is a restart point by its whole-entry reads-no-state message,
+        before any record is loaded (a restart point is no state read); an entry that ALSO
+        reads kernel state is evaluated — the evaluator holds no `drive` rule of its own."""
+        case_a = self.ir["case"]["test_case_set"][0]
+        load = lambda: pe.load_case_env(  # noqa: E731
+            self.run.root, case_a, pe.snapshot_schema(self.ir), output_format="json")
+        ev = lambda e, env: pe.evaluate(pe.parse_expr(e), env)  # noqa: E731
+        env = load()
         points = env.restart_point.get()
         self.assertEqual(points["h"].shape, (0, 4))
         self.assertEqual(points["step"].shape, (0,))
         self.assertEqual(points["t"].shape, (0,))
-        self.assertEqual(self._eval("max(smax(restart_point.h))")[0]["kind"], "structural")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "reduction over an empty array"):
+            ev("max(smax(restart_point.h))", env)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"predicates\[0\]: reads no captured state the kernel "
+                                    r"produced"):
+            self._eval("max(smax(restart_point.h))")
         hdir = self.run.sdir / "history"
         hdir.mkdir()
         rdir = self.run.sdir / "restart_point"
@@ -4339,20 +4436,46 @@ class LazyLoaderTest(unittest.TestCase):
             for k in (5, 10):
                 (rdir / f"{cid}__{k}.json").write_text(json.dumps(
                     {"h": [float(k)] * n, "t": 0.1 * k, "step": k}))
-        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
-                               pe.snapshot_schema(self.ir), output_format="json")
+        env = load()
         points = env.restart_point.get()
         self.assertEqual(points["h"].shape, (2, 4))
         np.testing.assert_array_equal(points["step"], [5.0, 10.0])
         np.testing.assert_array_equal(points["t"], [0.5, 1.0])
         self.assertNotIn("ok", points)        # a member no restart point holds is left out
-        rec = self._eval("max(smax(restart_point.h)) + 0 * max(restart_point.step)")[0]
+        self.assertEqual(ev("max(smax(restart_point.h)) + 0 * max(restart_point.step)", env),
+                         10.0)
+        # past the gate, with a kernel-state read beside it, the evaluator reads the restart
+        # points (case a: max 10 + the sum of its final h, 4 + (0.5 + 1.5 + 2.5 + 3.5) / 4)
+        rec = self._eval("max(smax(restart_point.h)) + sum(final.h)")[0]
         self.assertEqual(rec["kind"], "pass")
-        self.assertEqual(rec["evaluated"][0]["value"], 10.0)
+        self.assertAlmostEqual(rec["evaluated"][0]["value"], 16.0)
         (rdir / "a__5.json").write_text(json.dumps({"h": [5.0] * 4, "t": 0.5, "step": 6}))
-        rec = self._eval("max(smax(restart_point.h))")[0]
-        self.assertIn("restart point", rec["evaluated"][0]["error"])
-        self.assertIn("carries step 6.0, not the committed step 5", rec["evaluated"][0]["error"])
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"restart point .*carries step 6\.0, not the committed "
+                                    r"step 5"):
+            ev("max(smax(restart_point.h))", load())
+
+    def test_a_restart_variable_one_record_lacks_is_not_stacked(self) -> None:
+        """`_load_restart_points` stacks a variable only when EVERY restart point of the case
+        holds it: one record lacking `ok` leaves `ok` out of the table (unlike the history,
+        which stacks per variable), so a read of it fails at evaluation as no restart-point
+        name. Kills: stacking only the records that hold the variable (`ok` would be a stack
+        of one), the reviewer's surviving mutant."""
+        rdir = self.run.sdir / "restart_point"
+        rdir.mkdir()
+        (rdir / "a__5.json").write_text(json.dumps(
+            {"h": [5.0] * 4, "ok": 1.0, "t": 0.5, "step": 5}))
+        (rdir / "a__10.json").write_text(json.dumps({"h": [10.0] * 4, "t": 1.0, "step": 10}))
+        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
+                               pe.snapshot_schema(self.ir), output_format="json")
+        points = env.restart_point.get()
+        self.assertEqual(points["h"].shape, (2, 4))
+        np.testing.assert_array_equal(points["step"], [5.0, 10.0])
+        self.assertNotIn("ok", points)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"restart_point\.ok: not in the restart points in case "
+                                    r"'a'"):
+            pe.evaluate(pe.parse_expr("max(restart_point.ok)"), env)
 
     def test_a_sample_whose_step_is_not_its_name_is_refused(self) -> None:
         hdir = self.run.sdir / "history"

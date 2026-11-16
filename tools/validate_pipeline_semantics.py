@@ -133,7 +133,7 @@ FORBIDDEN_RUNNER_OUTPUTS = (
 LLM_REVIEW_FILENAME = "semantic_review.json"
 RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
-    # Issue #589: the driver's samples of the whole state every `drive.history.every` committed
+    # Issue #589: the driver's samples of the variables `drive.history` names, each at its stride of committed
     # steps, and its per-step series (`names`). Each is declared iff `drive.loop` / `drive.history`
     # is (`primary_evidence.drive_violations` (h)); neither carries a `schema`. Admission is
     # `raw_evidence_excerpt.RAW_EVIDENCE_ALIASES`, which carries the same two names.
