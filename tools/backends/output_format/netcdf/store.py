@@ -19,11 +19,15 @@ the NaN every `double` variable's `_FillValue` must be: the neutral readers' fin
 then refuses it.
 
 What is refused beyond a file that does not open or is not complete — each a defect a writer
-can make that would otherwise read as a valid record: a `double` variable whose `_FillValue` is
-not NaN; a group whose `count` is not the length of its record dimension (or, for `initial` and
-`final`, is not 0 or 1); a variable whose dimensions are not the layout's names in the layout's
-order (an array written with its dimensions unreversed among them); a history variable whose
-steps are not strictly ascending, or whose times disagree at one step between variables.
+can make that would otherwise read as a valid record: a variable of another type than the
+layout's (a single-precision or integer value reads an unwritten cell as a finite fill, a real
+`step` truncates onto another step); a `double` variable whose fill in effect is not NaN (the
+attribute alone is not enough: a file written in no-fill mode keeps it and reads an unwritten
+cell as whatever the disk held); a group whose `count` is not the length of its record
+dimension (or, for `initial` and `final`, is not 0 or 1); a variable whose dimensions are not
+the layout's names in the layout's order (an array written with its dimensions unreversed among
+them); a history variable's or the restart points' steps not strictly ascending; history
+variables whose times disagree at one step.
 
 Every reader opens the file per call; nothing is cached, so a file replaced between two calls
 is read as it is now. `netCDF4` is imported where a file is opened, never at import: the host's
@@ -33,7 +37,6 @@ startup check reads `REQUIRED_PYTHON_MODULES` from this module on a host that ma
 from __future__ import annotations
 
 import math
-import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
@@ -70,8 +73,6 @@ _COMPLETE_VALUE = 1
 _SINGLE = (INITIAL, FINAL)
 #: The roles a group's own variables take beside its values.
 _ROLES = ("step", "t", "count")
-#: A spatial dimension's name: `<v>__d<k>`.
-_SPATIAL = re.compile(r"(?P<var>.+)__d(?P<axis>[1-9][0-9]*)")
 
 #: This format's capture layout as a harness's author reads it: seeded after the runner-output
 #: contract wherever that document is seeded whole.
@@ -165,14 +166,30 @@ class _Case:
 
 def _well_formed(case: _Case) -> None:
     """Refuse what makes the file's records ambiguous or a missing cell read as a value
-    (module docstring): fill values, counts, dimension names and order, history steps."""
+    (module docstring): types, dimension names and order, fill values, counts, steps."""
     import numpy as np
     ds = case.ds
     for name, var in ds.variables.items():
-        if var.dtype == np.float64:
-            fill = getattr(var, "_FillValue", None)
-            if fill is None or not (isinstance(fill, (float, np.floating)) and math.isnan(fill)):
-                raise case.refuse(f"variable {name} has _FillValue {fill!r}, not NaN")
+        layout = _layout(name, var.dimensions)
+        if layout is None:
+            continue
+        want_dims, want_type = layout
+        # A value, `t` or a series column of another type reads an unwritten cell as that
+        # type's finite fill, and a `step` of a real type is truncated onto another step.
+        if var.dtype != np.dtype(want_type):
+            raise case.refuse(f"variable {name} is of type {var.dtype}, the layout "
+                              f"{np.dtype(want_type)}")
+        if tuple(var.dimensions) != want_dims:
+            raise case.refuse(f"variable {name} has dimensions {tuple(var.dimensions)}, the "
+                              f"layout {want_dims}")
+        if want_type == "f8":
+            # The fill in effect, not the attribute: a file written in no-fill mode keeps the
+            # attribute and reads an unwritten cell as whatever the disk held.
+            fill = var.get_fill_value()
+            fill = None if fill is None else float(fill)
+            if fill is None or not math.isnan(fill):
+                raise case.refuse(f"variable {name} fills unwritten cells with {fill!r}, "
+                                  "not NaN")
     record_dims = {RESTART_POINT: f"{RESTART_POINT}{_SEP}n", SERIES: f"{SERIES}{_SEP}n"}
     for group in (INITIAL, FINAL, RESTART_POINT, SERIES):
         if f"{group}{_SEP}count" not in ds.variables:
@@ -200,38 +217,35 @@ def _well_formed(case: _Case) -> None:
         if any(b <= a for a, b in zip(steps, steps[1:])):
             name = _SEP.join(p for p in (group, var, "step") if p)
             raise case.refuse(f"{name} {steps} is not strictly ascending")
-    for name, var in ds.variables.items():
-        want = _expected_dims(name, var.dimensions)
-        if want is not None and tuple(var.dimensions) != want:
-            raise case.refuse(f"variable {name} has dimensions {tuple(var.dimensions)}, the "
-                              f"layout {want}")
 
 
-def _expected_dims(name: str, dims: tuple[str, ...]) -> tuple[str, ...] | None:
-    """The dimensions the layout gives ``name`` — a value's spatial rank taken from the
-    dimensions it was written with — or None for a name outside the layout, which no reader
-    takes."""
+def _layout(name: str, dims: tuple[str, ...]) -> tuple[tuple[str, ...], str] | None:
+    """The dimensions and the type the layout gives ``name`` — a value's spatial rank taken
+    from the dimensions it was written with — or None for a name outside the layout, which no
+    reader takes. A `step`, a `count` and `complete` are `i4`; everything else `f8`."""
     parts = name.split(_SEP)
     group = parts[0]
     if name == _COMPLETE:
-        return ()
+        return (), "i4"
     if group == HISTORY and len(parts) == 2:
         lead, var = (f"{HISTORY}{_SEP}{parts[1]}{_SEP}n",), parts[1]
     elif group == HISTORY and len(parts) == 3 and parts[2] in _ROLES:
-        return () if parts[2] == "count" else (f"{HISTORY}{_SEP}{parts[1]}{_SEP}n",)
+        role = parts[2]
+        return ((() if role == "count" else (f"{HISTORY}{_SEP}{parts[1]}{_SEP}n",)),
+                "f8" if role == "t" else "i4")
     elif len(parts) != 2 or group not in (INITIAL, FINAL, RESTART_POINT, SERIES):
         return None
-    elif parts[1] == "count" or (group in _SINGLE and parts[1] in _ROLES):
-        return ()
+    elif parts[1] in _ROLES:
+        role = parts[1]
+        stacked = () if group in _SINGLE or role == "count" else (f"{group}{_SEP}n",)
+        return stacked, "f8" if role == "t" else "i4"
     elif group == SERIES:
-        return (f"{SERIES}{_SEP}n",)
-    elif group == RESTART_POINT and parts[1] in _ROLES:
-        return (f"{RESTART_POINT}{_SEP}n",)
+        return (f"{SERIES}{_SEP}n",), "f8"
     else:
         lead = (f"{RESTART_POINT}{_SEP}n",) if group == RESTART_POINT else ()
         var = parts[1]
     rank = max(len(dims) - len(lead), 0)
-    return (*lead, *(f"{var}{_SEP}d{k}" for k in range(rank, 0, -1)))
+    return (*lead, *(f"{var}{_SEP}d{k}" for k in range(rank, 0, -1))), "f8"
 
 
 @contextmanager
@@ -299,15 +313,11 @@ def _history(case: _Case, step: int) -> dict[str, Any]:
             times.append(float(case.ds.variables[f"{HISTORY}{_SEP}{var}{_SEP}t"][i].item()))
     if not doc:
         raise CaptureError(f"{case.label} ({HISTORY} at step {step})", "absent", absent=True)
-    if any(not _same(times[0], t) for t in times[1:]):
+    if any(t != times[0] for t in times[1:]):
         raise case.refuse(f"its history variables at step {step} carry different t {times}")
     doc["step"] = int(step)
     doc["t"] = times[0]
     return doc
-
-
-def _same(a: float, b: float) -> bool:
-    return a == b or (math.isnan(a) and math.isnan(b))
 
 
 @_with_record

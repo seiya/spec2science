@@ -127,9 +127,19 @@ class ReadTests(_Tmp):
         self.assertTrue(ctx.exception.absent)
 
     def test_restart_points_and_the_series(self) -> None:
+        # Kills: a restart point's values or `t` read at another index than its step's.
         self.assertEqual(NC.restart_point_steps(self.sdir, "c"), [2, 4])
         self.assertEqual(NC.read_record(self.sdir, cs.RESTART_POINT, "c", 2),
                          {"h": (H0 + 0.5).tolist(), "s": 2.0, "step": 2, "t": 0.5})
+        self.assertEqual(NC.read_record(self.sdir, cs.RESTART_POINT, "c", 4),
+                         {"h": (H0 + 1).tolist(), "s": 2.5, "step": 4, "t": 1.0})
+        with self.assertRaises(CaptureError) as ctx:
+            NC.read_record(self.sdir, cs.RESTART_POINT, "c", 3)
+        self.assertTrue(ctx.exception.absent)
+        self.assertTrue(NC.has_record(self.sdir, cs.RESTART_POINT, "c", 4))
+        self.assertFalse(NC.has_record(self.sdir, cs.RESTART_POINT, "c", 3))
+        self.assertTrue(NC.has_record(self.sdir, cs.HISTORY, "c", 2))
+        self.assertFalse(NC.has_record(self.sdir, cs.HISTORY, "c", 3))
         self.assertEqual(NC.read_record(self.sdir, cs.SERIES, "c"),
                          {"m": [1.0, 2.0], "mass": [10.0, 20.0], "step": [1, 2],
                           "t": [0.25, 0.5]})
@@ -216,8 +226,20 @@ class RefusalTests(_Tmp):
         "complete_two": "incomplete: complete is 2",
         "no_complete": "incomplete: complete is None",
         "dims_unreversed": "has dimensions ('h__d1', 'h__d2'), the layout ('h__d2', 'h__d1')",
-        "fill_not_nan": "_FillValue 0.0, not NaN",
-        "no_fill": "_FillValue None, not NaN",
+        "fill_not_nan": "variable initial__h fills unwritten cells with 0.0, not NaN",
+        "no_fill": "variable initial__h fills unwritten cells with 9.969",
+        "nofill_mode": "variable initial__h fills unwritten cells with None, not NaN",
+        "t_fill_not_nan": "variable initial__t fills unwritten cells with 0.0, not NaN",
+        "value_float32": "variable initial__h is of type float32, the layout float64",
+        "step_double": "variable history__h__step is of type float64, the layout int32",
+        "history_step_own_dim": "variable history__h__step has dimensions "
+                                "('history__h__step__own',), the layout ('history__h__n',)",
+        "rp_t_own_dim": "variable restart_point__t has dimensions ('restart_point__t__own',), "
+                        "the layout ('restart_point__n',)",
+        "series_step_own_dim": "variable series__step has dimensions ('series__step__own',), "
+                               "the layout ('series__n',)",
+        "series_float32": "variable series__m is of type float32, the layout float64",
+        "complete_double": "variable complete is of type float64, the layout int32",
         "count_short": "history__h__count is 2, and its record dimension history__h__n has "
                        "length 3",
         "final_count_two": "final__count is 2, not 0 or 1",
@@ -247,6 +269,17 @@ class RefusalTests(_Tmp):
                 self.assertEqual(NC.history_steps(self.sdir, defect), [])
                 self.assertEqual(NC.read_series_prefix(self.sdir, defect), ({}, None))
                 path.unlink()
+
+    def test_an_unwritten_cell_of_a_no_fill_file_is_not_read_as_zero(self) -> None:
+        # Kills: judging the `_FillValue` attribute instead of the fill in effect (the
+        # attribute is NaN; the unwritten cells read 0.0 or the type's default).
+        path = write_case(self.sdir / "nf.nc", shapes={"h": (3,)}, final={"h": [5.0, 6.0, 7.0]},
+                          defects=["nofill_mode"])
+        import netCDF4
+        with netCDF4.Dataset(str(path)) as ds:
+            self.assertTrue(math.isnan(ds.variables["final__h"]._FillValue))
+        with self.assertRaisesRegex(CaptureError, "fills unwritten cells with None"):
+            NC.read_record(self.sdir, cs.FINAL, "nf")
 
     def test_the_defect_list_is_every_seeded_file_defect(self) -> None:
         from tools.tests.netcdf_capture_fixture import DEFECTS
@@ -343,6 +376,15 @@ class ReaderParityTests(unittest.TestCase):
         self.assertEqual(wc.Conductor._snapshot_deliverable_gap(
             stub, cs.snapshot_dir(nc), ["a", "b"], ["state_snapshots"],
             initial_required=True, series_required=True), "")
+        # a case file without its initial record names the record, not a misnamed file
+        write_case(cs.snapshot_dir(nc) / "c.nc", shapes={"h": (2,)}, final={"h": [1.0, 2.0]})
+        gap = wc.Conductor._snapshot_deliverable_gap(
+            stub, cs.snapshot_dir(nc), ["a", "c"], ["state_snapshots"], initial_required=True)
+        self.assertIn("missing=['c.nc (initial record)']", gap)
+        self.assertIn("runner wrote=['a.nc', 'a.nc (initial record)', 'b.nc', "
+                      "'b.nc (initial record)', 'c.nc']", gap)
+        self.assertIn("(and one raw/state_snapshots/<case_id>.nc (initial record),", gap)
+        (cs.snapshot_dir(nc) / "c.nc").unlink()
         with tempfile.TemporaryDirectory() as tmp:
             node = Path(tmp) / "node"
             refs = wc.Conductor._promote_run_evidence(stub, nc, node, ["state_snapshots"])
@@ -367,6 +409,73 @@ class ReaderParityTests(unittest.TestCase):
     def test_the_post_execute_gate(self) -> None:
         js, nc, ir = _twin_runs(self)
         self.assertEqual(_post_execute(self, nc, ir, "netcdf"), _post_execute(self, js, ir, "json"))
+
+
+class StackedGroupParityTests(unittest.TestCase):
+    """A run with every group — samples at different steps holding different variables, two
+    restart points, a series in two chunks — read in both formats: the readers of the stacked
+    groups (`load_case_env`'s history, restart points and series; `kept_records`) see the same
+    values. The twin runs above hold an initial and a final record only."""
+
+    SCHEMA = {"variables": [{"name": "h", "shape_expr": "[3, 2]"},
+                            {"name": "s", "shape_expr": "scalar"}],
+              "time_variable": "t", "time_shape_expr": "scalar"}
+
+    def _runs(self) -> tuple[Path, Path]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        js, nc = Path(tmp.name) / "js", Path(tmp.name) / "nc"
+        jdir = cs.snapshot_dir(js)
+
+        def put(group: str, doc: dict, step: int | None = None, name: str | None = None) -> None:
+            path = (jdir / "series" / name) if name else JS.record_path(jdir, group, "c", step)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(doc), encoding="utf-8")
+
+        h = lambda k: (H0 + k).tolist()  # noqa: E731
+        put(cs.INITIAL, {"h": h(0), "s": 1.0, "step": 0, "t": 0.0})
+        put(cs.FINAL, {"h": h(4), "s": 5.0, "step": 4, "t": 1.0})
+        put(cs.HISTORY, {"h": h(2), "s": 3.0, "step": 2, "t": 0.5}, 2)
+        put(cs.HISTORY, {"h": h(3), "step": 3, "t": 0.75}, 3)
+        put(cs.HISTORY, {"h": h(4), "s": 5.0, "step": 4, "t": 1.0}, 4)
+        put(cs.RESTART_POINT, {"h": h(2), "s": 3.0, "step": 2, "t": 0.5}, 2)
+        put(cs.RESTART_POINT, {"h": h(4), "s": 5.0, "step": 4, "t": 1.0}, 4)
+        put(cs.SERIES, {"step": [1, 2], "t": [0.25, 0.5], "m": [1.0, 2.0]}, name="c__0.json")
+        put(cs.SERIES, {"step": [3, 4], "t": [0.75, 1.0], "m": [3.0, 4.0]}, name="c__1.json")
+        from_json_run(jdir, cs.snapshot_dir(nc))
+        return js, nc
+
+    def test_every_record_reads_the_same(self) -> None:
+        js, nc = self._runs()
+        jdir, ndir = cs.snapshot_dir(js), cs.snapshot_dir(nc)
+        self.assertEqual(NC.history_steps(ndir, "c"), [2, 3, 4])
+        self.assertEqual(NC.restart_point_steps(ndir, "c"), [2, 4])
+        for group, steps in ((cs.HISTORY, [2, 3, 4]), (cs.RESTART_POINT, [2, 4]),
+                             (cs.FINAL, [None]), (cs.INITIAL, [None]), (cs.SERIES, [None])):
+            for step in steps:
+                with self.subTest(group=group, step=step):
+                    self.assertEqual(NC.read_record(ndir, group, "c", step),
+                                     JS.read_record(jdir, group, "c", step))
+
+    def test_the_verdicts_case_environment(self) -> None:
+        from tools import primary_evidence as pe
+        js, nc = self._runs()
+        case = {"case_id": "c", "inputs": {}}
+        envs = [pe.load_case_env(run, case, self.SCHEMA, output_format=fmt)
+                for run, fmt in ((js, "json"), (nc, "netcdf"))]
+        for part in ("history", "restart_point", "series"):
+            got, want = (dict(getattr(env, part).get()) for env in envs)
+            with self.subTest(part=part):
+                self.assertEqual(set(got), set(want))
+                self.assertTrue(want)
+                for key in want:
+                    np.testing.assert_array_equal(got[key], want[key])
+
+    def test_kept_records(self) -> None:
+        from tools import run_configuration as rc
+        js, nc = self._runs()
+        self.assertEqual(rc.kept_records(nc, "c", "netcdf"), rc.kept_records(js, "c", "json"))
+        self.assertEqual(rc.kept_records(nc, "c", "netcdf")["restart_points"], [2, 4])
 
 
 def _post_execute(test: unittest.TestCase, run: Path, ir: dict, output_format: str) -> list[str]:

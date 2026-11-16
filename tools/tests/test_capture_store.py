@@ -47,10 +47,13 @@ class SeamTests(unittest.TestCase):
              ("raw", "state_snapshots", "restart_point"), ("raw", "state_snapshots", "series")))
         # Kills: a netcdf run whose capture directory nobody creates (its case files sit in
         # the capture directory itself, and the harness creates no directory).
-        self.assertEqual(cs.run_dirs("netcdf"), (("raw", "state_snapshots", ""),))
+        # A remote job's directory list refuses an empty element (`run/raw/state_snapshots/`).
+        from tools.remote_execution import _relative
+        self.assertEqual(cs.run_dirs("netcdf"), (("raw", "state_snapshots"),))
         with tempfile.TemporaryDirectory() as tmp:
             for parts in cs.run_dirs("netcdf"):
                 Path(tmp).joinpath(*parts).mkdir(parents=True)
+                _relative("/".join(("run", *parts)), "directory")
             self.assertTrue(cs.snapshot_dir(Path(tmp)).is_dir())
 
     def test_capture_paths_drops_the_snapshot_schema_at_the_top_only(self) -> None:

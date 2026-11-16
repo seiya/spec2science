@@ -13088,10 +13088,17 @@ class Conductor:
         # to the capture directory (the store's layout).
         present: set[str] = set()
         missing: list[str] = []
+
+        def owed_as(cid: str, group: str) -> str:
+            # A layout that keeps several groups in one file names the record, not the file.
+            layout = store.expected_layout(cid)
+            name = str(layout[group])
+            return name if group == capture_store.FINAL or name != str(
+                layout[capture_store.FINAL]) else f"{name} ({group} record)"
+
         for group in groups:
-            wrote = {str(store.expected_layout(cid)[group])
-                     for cid in store.case_ids(snapshots_dir, group)}
-            owed = {str(store.expected_layout(cid)[group]) for cid in case_ids}
+            wrote = {owed_as(cid, group) for cid in store.case_ids(snapshots_dir, group)}
+            owed = {owed_as(cid, group) for cid in case_ids}
             missing += sorted(owed - wrote)
             present |= wrote
         if not missing:
@@ -13099,7 +13106,8 @@ class Conductor:
         expected = sorted(str(store.expected_layout(cid)[capture_store.FINAL])
                           for cid in set(case_ids))
         snaps = "/".join(capture_store.SNAPSHOT_DIR_PARTS)
-        layout = store.expected_layout()
+        layout = {group: owed_as("<case_id>", group) for group in
+                  (capture_store.FINAL, capture_store.INITIAL, capture_store.SERIES)}
         return (
             "[execute fail: snapshot deliverable mismatch] Validate.execute requires "
             f"one {snaps}/{layout[capture_store.FINAL]} per case"

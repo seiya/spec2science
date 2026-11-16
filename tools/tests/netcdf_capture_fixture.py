@@ -32,6 +32,15 @@ DEFECTS = frozenset({
     "series_count_short",    # series__count one less than its record dimension
     "history_t_disagree",    # two variables' history t differ at one step
     "unwritten_cell",        # a final value's last cell is never written (reads its fill)
+    "nofill_mode",           # the file is written in no-fill mode (the attribute stays NaN)
+    "value_float32",         # every value variable is single precision
+    "step_double",           # the step columns are reals
+    "t_fill_not_nan",        # only the `t` variables' _FillValue is 0
+    "history_step_own_dim",  # history__<v>__step on a dimension of its own
+    "rp_t_own_dim",          # restart_point__t on a dimension of its own
+    "series_step_own_dim",   # series__step on a dimension of its own
+    "series_float32",        # the series columns are single precision
+    "complete_double",       # `complete` is a real (fill NaN) set to 1.0
     "not_netcdf",            # the file is not a netCDF file at all
 })
 
@@ -74,13 +83,31 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
 
     ds = netCDF4.Dataset(str(path), "w", format="NETCDF4")
     try:
-        def dvar(name: str, dims: tuple[str, ...]) -> Any:
+        if "nofill_mode" in defects:
+            ds.set_fill_off()
+
+        def dvar(name: str, dims: tuple[str, ...], kind: str = "f8") -> Any:
             if "no_fill" in defects:
-                return ds.createVariable(name, "f8", dims)
-            return ds.createVariable(name, "f8", dims, fill_value=fill)
+                return ds.createVariable(name, kind, dims)
+            role_t = name.endswith(f"{SEP}t")
+            this_fill = 0.0 if "t_fill_not_nan" in defects and role_t else fill
+            return ds.createVariable(name, kind, dims, fill_value=this_fill)
+
+        def vvar(name: str, dims: tuple[str, ...]) -> Any:
+            """A value variable."""
+            return dvar(name, dims, "f4" if "value_float32" in defects else "f8")
 
         def ivar(name: str, dims: tuple[str, ...] = ()) -> Any:
             return ds.createVariable(name, "i4", dims)
+
+        def svar(name: str, dims: tuple[str, ...], own: str) -> Any:
+            """A step column, on a dimension of its own under defect ``own``."""
+            if own in defects:
+                ds.createDimension(f"{name}{SEP}own", None)
+                dims = (f"{name}{SEP}own",)
+            if "step_double" in defects:
+                return ds.createVariable(name, "f8", dims, fill_value=nan)
+            return ivar(name, dims)
 
         for var, shape in shapes.items():
             for k, extent in enumerate(shape, start=1):
@@ -101,7 +128,7 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
         for group, doc, step, t in ((("initial", initial, initial_step, initial_t)),
                                     (("final", final, final_step, final_t))):
             for var in shapes:
-                dvar(f"{group}{SEP}{var}", array_dims(var))
+                vvar(f"{group}{SEP}{var}", array_dims(var))
             ivar(f"{group}{SEP}step")
             dvar(f"{group}{SEP}t", ())
             ivar(f"{group}{SEP}count")
@@ -128,8 +155,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
         for var, rows in history.items():
             dim = f"history{SEP}{var}{SEP}n"
             ds.createDimension(dim, None)
-            values = dvar(f"history{SEP}{var}", (dim, *array_dims(var)))
-            steps = ivar(f"history{SEP}{var}{SEP}step", (dim,))
+            values = vvar(f"history{SEP}{var}", (dim, *array_dims(var)))
+            steps = svar(f"history{SEP}{var}{SEP}step", (dim,), "history_step_own_dim")
             times = dvar(f"history{SEP}{var}{SEP}t", (dim,))
             for i, (step, t, value) in enumerate(rows):
                 put(values, value, i)
@@ -145,9 +172,13 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
         ds.createDimension(f"restart_point{SEP}n", None)
         rp_dim = (f"restart_point{SEP}n",)
         for var in restart_vars:
-            dvar(f"restart_point{SEP}{var}", (*rp_dim, *array_dims(var)))
+            vvar(f"restart_point{SEP}{var}", (*rp_dim, *array_dims(var)))
         rp_step = ivar(f"restart_point{SEP}step", rp_dim)
-        rp_t = dvar(f"restart_point{SEP}t", rp_dim)
+        if "rp_t_own_dim" in defects:
+            ds.createDimension(f"restart_point{SEP}t{SEP}own", None)
+            rp_t = dvar(f"restart_point{SEP}t", (f"restart_point{SEP}t{SEP}own",))
+        else:
+            rp_t = dvar(f"restart_point{SEP}t", rp_dim)
         for i, (step, t, doc) in enumerate(restart_points):
             for var, value in doc.items():
                 put(ds.variables[f"restart_point{SEP}{var}"], value, i)
@@ -161,8 +192,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
         ds.createDimension(f"series{SEP}n", None)
         s_dim = (f"series{SEP}n",)
         for name in series_names:
-            dvar(f"series{SEP}{name}", s_dim)
-        s_step = ivar(f"series{SEP}step", s_dim)
+            dvar(f"series{SEP}{name}", s_dim, "f4" if "series_float32" in defects else "f8")
+        s_step = svar(f"series{SEP}step", s_dim, "series_step_own_dim")
         s_t = dvar(f"series{SEP}t", s_dim)
         for i, (step, t, row) in enumerate(series):
             for name, value in row.items():
@@ -173,7 +204,9 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
             1 if "series_count_short" in defects and series else 0)
 
         if "no_complete" not in defects:
-            done = ds.createVariable("complete", "i4", (), fill_value=0)
+            done = (ds.createVariable("complete", "f8", (), fill_value=nan)
+                    if "complete_double" in defects
+                    else ds.createVariable("complete", "i4", (), fill_value=0))
             if "complete_two" in defects:
                 done[...] = 2
             elif "complete_unset" not in defects:

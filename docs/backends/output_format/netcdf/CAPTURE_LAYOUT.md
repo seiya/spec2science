@@ -8,7 +8,8 @@ contract is seeded whole, and reads a run's captures by exactly this layout.
 One file per case, `<C>.nc` directly under `raw/state_snapshots/` of the run directory (`<C>` the
 case id), opened by a path relative to the working directory: the netCDF-4 kind (HDF5 storage),
 no compression, no groups. Every dimension and variable is defined when the case's output is
-opened; the file is complete only when ending the case's output has set `complete` (below).
+opened, every group's included whether or not the case commits a record of it; the file is
+complete only when ending the case's output has set `complete` (below).
 
 **Names.** `<v>` is a snapshot variable's name, `<s>` a series name, `<k>` an axis index from 1.
 No name contains `__` (the host refuses one), so each name below has one reading.
@@ -33,9 +34,11 @@ refuses a variable whose dimensions are not exactly these, in this order.
 | `series` | the record dimension `series__n`; `series__<s>(series__n)` per series name, `series__step(series__n)`, `series__t(series__n)`, `series__count` (scalar) |
 
 - **Types.** A value, `t` and every series column are 64-bit reals (`double`); a `step` and a
-  `count` are 32-bit integers (`int`); a rank-0 value is a scalar variable.
-- **Fill values.** Every `double` variable carries the attribute `_FillValue` = NaN, so a cell
-  no commit wrote reads non-finite. `complete` is a scalar `int` with `_FillValue` = 0.
+  `count` are 32-bit integers (`int`); a rank-0 value is a scalar variable. The host refuses a
+  variable of another type.
+- **Fill values.** Every `double` variable is filled with NaN (the attribute `_FillValue` =
+  NaN, fill mode on: no `nf90_set_fill(…, NF90_NOFILL, …)`), so a cell no commit wrote reads
+  non-finite. `complete` is a scalar `int` with `_FillValue` = 0.
 - **Counts.** A commit writes its record's values at the next index of its group's record
   dimension (`initial` and `final` hold at most one record and have none), then its `step` and
   `t`, then sets the group's `count` to the records it now holds. A group's `count` equals the
