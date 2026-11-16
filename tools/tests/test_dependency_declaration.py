@@ -893,7 +893,14 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
     """
 
     def _measured(self) -> dict[str, str]:
-        return dict(fortran_structure.MEASURED_PACKAGE_VERSIONS)
+        """The Fortran structure front end's pins and each output format's capture store's
+        (`netCDF4`, issue #644 P5)."""
+        measured = dict(fortran_structure.MEASURED_PACKAGE_VERSIONS)
+        for output_format in backend_registry.backend_ids("output_format"):
+            measured.update(getattr(backend_registry.capability_module(
+                "output_format", output_format, "capture_store"),
+                "MEASURED_PACKAGE_VERSIONS", {}))
+        return measured
 
     def test_every_measured_version_is_pinned_in_the_runtime_declaration(self) -> None:
         """`==` and the measured value, for each. A floor or a different value is a machine the

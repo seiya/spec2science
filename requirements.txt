@@ -65,3 +65,10 @@ tree-sitter-fortran==0.6.0
 # expression through it. The whole suite at that commit runs on this build; no other numpy build
 # has been measured, so no floor is claimed.
 numpy==1.26.4
+
+# PIN, measured on the development host: the value `python3 -c "import netCDF4; print(netCDF4.__version__)"`
+# printed on 2026-11-14, when the `netcdf` output format's layout was measured (issue #644, E2-E11d;
+# this wheel bundles netCDF-C 4.9.3). It is `MEASURED_PACKAGE_VERSIONS` in
+# `tools/backends/output_format/netcdf/store.py`, which `tools/tests/test_dependency_declaration.py`
+# compares this line against. Required on every host: any run may read a `netcdf` target's captures.
+netCDF4==1.7.3
