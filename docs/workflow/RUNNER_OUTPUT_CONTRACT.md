@@ -79,8 +79,8 @@ names a capture file. The host creates the format's directories under `raw/state
 before every run, on every node, and a runner creates and lists none.
 
 **What each operation does**, whatever the format. `capture_open(case_id, vars,
-restart_point_capacity, series_names, series_capacity)` starts a case's output and writes
-nothing; one case is open at a time. `capture_real` and `capture_array_r1..r4(group, name,
+restart_point_capacity, series_names, series_capacity)` starts a case's output (its layout
+says what it writes); one case is open at a time. `capture_real` and `capture_array_r1..r4(group, name,
 value)` put a value into the open record of `group`; in `series` a value is a scalar and its
 name is one of `series_names`, which never hold `step` or `t`. `capture_commit(group, step, t)`
 closes that record: it holds exactly the values put into `group` since that group's previous

@@ -1192,7 +1192,13 @@ PINNED: dict[str, str] = {
     # leaf-102 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "leaf-102@ed14bd25": "0c82f01b3d93606f93982fa8206ed7b8e64ca397ffed7b53ccf99c4e682cc63d",
-    "leaf-102": "1e1ed2d2a0ba7a8edb9ff0eeb10f20bb3ba40b76289e29de7b9e8fe6721d672c",
+    # leaf-102 re-pinned in place by issue #644 P5b: two members of this tuple moved — the `netcdf`
+    # `CAPTURE_LAYOUT.md` (the store's refusals stated) and `RUNNER_OUTPUT_CONTRACT.md` §3 (no
+    # longer says `capture_open` writes nothing); no node of this host's workspace is certified
+    # at this version (66d77304's selection, 2026-11-16).
+    # The digest `leaf-102` shipped with at 66d77304:
+    "leaf-102@66d77304": "1e1ed2d2a0ba7a8edb9ff0eeb10f20bb3ba40b76289e29de7b9e8fe6721d672c",
+    "leaf-102": "d3d04e10aae747c7504be1869be9382a04c71a691495ed941de67e3e1acd54ab",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1270,14 +1276,25 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-13 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "generate-verify-13@ed14bd25": "f9b04309fb8caabf2961d946a9ed4525ee9a983563212ca6d42ccaf2a1f3c1f6",
-    "generate-verify-13": "41866eabfa416adfeb181089a9ae30aee87d7f24a1fe2d33c8cc2310a377a7b1",
+    # generate-verify-13 re-pinned in place by issue #644 P5b: two members of this tuple moved — the `netcdf`
+    # `CAPTURE_LAYOUT.md` (the store's refusals stated) and `RUNNER_OUTPUT_CONTRACT.md` §3 (no
+    # longer says `capture_open` writes nothing); no node of this host's workspace is certified
+    # at this version (66d77304's selection, 2026-11-16).
+    # The digest `generate-verify-13` shipped with at 66d77304:
+    "generate-verify-13@66d77304": "41866eabfa416adfeb181089a9ae30aee87d7f24a1fe2d33c8cc2310a377a7b1",
+    "generate-verify-13": "b89bd69867dee9b1eb9226940bda45544ecfda28af7b8344273b8484809fbbd7",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
     # validate-judge-10 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "validate-judge-10": "41f5396a6940c16dd8f8c21bd205f3878460db126cc0296149e86473b95e2996",
     # validate-judge-11 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
-    "validate-judge-11": "1c26307a9240b000ec273f875c2c10c7579bbc3df6c3c55d28fa418b54025f7a",
+    # validate-judge-11 re-pinned in place by issue #644 P5b: `RUNNER_OUTPUT_CONTRACT.md` §3, a member of this
+    # tuple, no longer says `capture_open` writes nothing; no node of this host's workspace is
+    # certified at this version (66d77304's selection, 2026-11-16).
+    # The digest `validate-judge-11` shipped with at 66d77304:
+    "validate-judge-11@66d77304": "1c26307a9240b000ec273f875c2c10c7579bbc3df6c3c55d28fa418b54025f7a",
+    "validate-judge-11": "d18893adaec0cf760b8207e71364d79a5b372afd1c5fcd88bec9af601f475ee1",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

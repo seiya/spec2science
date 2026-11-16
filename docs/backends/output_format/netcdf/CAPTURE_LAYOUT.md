@@ -17,7 +17,8 @@ No name contains `__` (the host refuses one), so each name below has one reading
 **Dimensions.** A variable `<v>` of rank `r` has the dimensions `<v>__d1` … `<v>__d<r>`, the
 extent of its index `<k>` each, shared by every group that holds `<v>`. An extent of 0 is declared
 unlimited and never written, so it stays 0. Each stacked group below adds its own unlimited
-record dimension.
+record dimension; the host refuses one that is not unlimited (a record dimension sized when the
+case opens holds fill records past the last commit).
 
 **Dimension order.** In netCDF's own order (the first dimension varies slowest) an array is
 `(<v>__d<r>, …, <v>__d1)`, so its first index varies fastest; a record dimension comes first. An
@@ -44,7 +45,8 @@ refuses a variable whose dimensions are not exactly these, in this order.
   dimension (`initial` and `final` hold at most one record and have none), then its `step` and
   `t`, then sets the group's `count` to the records it now holds. A group's `count` equals the
   length of its record dimension; `initial__count` and `final__count` are 0 or 1. Each
-  `history__<v>__step` and `restart_point__step` is strictly ascending.
+  `history__<v>__step`, `restart_point__step` and `series__step` is strictly ascending, and no
+  step is negative.
 - **A history record** at step `<k>` is every `history__<v>` whose `history__<v>__step` holds
   `<k>`, and its `history__<v>__t` there is the same for each.
 - **Ending the case's output** writes everything held to disk (`nf90_sync` / `nc_sync`), then

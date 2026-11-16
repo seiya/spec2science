@@ -1430,7 +1430,15 @@ PINNED_RENDER: dict[str, str] = {
     # render-22 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "render-22@ed14bd25": "8af4b980ada187e30a4df39e27f8a19160da92108cb07fd24371fb0a60d324d2",
-    "render-22": "8e9be2c2d7695586278f02ff0a1c01d8c443f7057182cf70cfa03da292b67522",
+    # render-22 re-pinned in place again by issue #644 P5b: `fortran/runner.py` gains the
+    # `netcdf` harness's pin (`_HARNESS_PINS`), which only a node built for a target naming that
+    # harness renders against, and the `netcdf` store (a member) refuses a record dimension that
+    # is not unlimited and a negative or out-of-order step; a json-target node's rendered bytes
+    # do not move (a round-1 reviewer rendered 1252 runners
+    # of the workspace's IRs over the json and MPI harnesses at 66d77304 and 58b6963a: equal). The digest
+    # `render-22` shipped with at 66d77304:
+    "render-22@66d77304": "8e9be2c2d7695586278f02ff0a1c01d8c443f7057182cf70cfa03da292b67522",
+    "render-22": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -2046,7 +2054,13 @@ PINNED_EXECUTE: dict[str, str] = {
     # execute-22 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "execute-22@ed14bd25": "9a21a24c41de2da81d30005aa7e6e90677f635fc77cdbeb4a1f93d95cec91710",
-    "execute-22": "c22f5e7cf3ef798640047ce9d2e96322a4e64534c74793dcfec02ffc48062bf8",
+    # execute-22 re-pinned in place by issue #644 P5b: `tools/backends/output_format/netcdf/store.py`,
+    # a member of this tuple, refuses a record dimension that is not unlimited and a negative or
+    # out-of-order step; no node of this host's workspace is certified at this version
+    # (66d77304's selection, 2026-11-16).
+    # The digest `execute-22` shipped with at 66d77304:
+    "execute-22@66d77304": "c22f5e7cf3ef798640047ce9d2e96322a4e64534c74793dcfec02ffc48062bf8",
+    "execute-22": "7e164fc524b7025f839e59af008497e22810ae11700251683070e0bb97f090ad",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2276,7 +2290,13 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-20 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "verdict-20@ed14bd25": "33fce73aeb3347208370b46a700b5a1ae000200a2cee845585e20f89cc20d82c",
-    "verdict-20": "e6af2b212c11122f0ded2ed18dbefaf47671484f01b2a73081f8722180a24013",
+    # verdict-20 re-pinned in place by issue #644 P5b: `tools/backends/output_format/netcdf/store.py`,
+    # a member of this tuple, refuses a record dimension that is not unlimited and a negative or
+    # out-of-order step; no node of this host's workspace is certified at this version
+    # (66d77304's selection, 2026-11-16).
+    # The digest `verdict-20` shipped with at 66d77304:
+    "verdict-20@66d77304": "e6af2b212c11122f0ded2ed18dbefaf47671484f01b2a73081f8722180a24013",
+    "verdict-20": "ec33f052a7217312b3eee4a04774a00a06ebc211933d146a75e2fa8c561a6def",
 }
 
 

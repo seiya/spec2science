@@ -2,7 +2,7 @@
   "token_counts": {
     ".github/workflows/tests.yml": {
       "compiler-driver": 2,
-      "fortran": 2,
+      "fortran": 3,
       "linter-cppcheck": 2,
       "linter-fortitude": 1,
       "linter-ruff": 1
@@ -16,7 +16,7 @@
     },
     "README.md": {
       "compiler-driver": 3,
-      "fortran": 5
+      "fortran": 6
     },
     "docs/AGENT_SKILLS.md": {
       "fortran": 2
@@ -44,19 +44,19 @@
     },
     "docs/DEVELOPMENT.md": {
       "compiler-driver": 1,
-      "fortran": 1,
+      "fortran": 4,
       "linter-cppcheck": 1,
       "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
-      "fortran": 7
+      "fortran": 9
     },
     "docs/ORCHESTRATION.md": {
       "fortran": 4
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 23,
+      "fortran": 33,
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
       "linter-ruff": 3
@@ -68,7 +68,7 @@
       "fortran": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "fortran": 13,
+      "fortran": 16,
       "fortran-kind": 1,
       "fortran-suffix": 2,
       "make-control-file": 5
@@ -118,7 +118,7 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 11,
+      "fortran": 12,
       "fortran-suffix": 1,
       "make-control-file": 2
     },

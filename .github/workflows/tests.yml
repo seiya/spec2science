@@ -62,7 +62,8 @@ jobs:
         # because the suite's MPI rows fail without it (issue #498): the only rows that still skip
         # on this runner are the ones `tools/tests/skip_probes.py` exempts. LAPACK is here for the
         # same reason: the rows of the `dense_solve_lu` sample link the library the compiler's own
-        # search finds (issue #644).
+        # search finds (issue #644). So is the NetCDF Fortran library: the rows of the `netcdf`
+        # harness's hand model (`tools/tests/netcdf_harness.py`) build and run against it.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -71,7 +72,8 @@ jobs:
             jq \
             bubblewrap \
             libopenmpi-dev openmpi-bin \
-            liblapack-dev
+            liblapack-dev \
+            libnetcdff-dev
 
       - name: Allow unprivileged user namespaces
         # Measured on this workflow's first run, which used `ubuntu-latest` (24.04, whose AppArmor

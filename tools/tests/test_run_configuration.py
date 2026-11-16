@@ -68,16 +68,17 @@ class _Built:
     """One binary per (IR kind, renderer) for the whole module."""
 
     _dir: Path | None = None
-    _cache: ClassVar[dict[tuple[str, bool], tuple[dict[str, Any], bytes]]] = {}
+    _cache: ClassVar[dict[tuple[str, bool, str], tuple[dict[str, Any], bytes]]] = {}
 
     @classmethod
-    def get(cls, kind: str, restart_read: bool = True) -> tuple[dict[str, Any], bytes]:
-        key = (kind, restart_read)
+    def get(cls, kind: str, restart_read: bool = True,
+            output_format: str = "json") -> tuple[dict[str, Any], bytes]:
+        key = (kind, restart_read, output_format)
         if key not in cls._cache:
             if cls._dir is None:
                 cls._dir = Path(tempfile.mkdtemp(prefix="run-configuration-bin-"))
                 atexit.register(shutil.rmtree, cls._dir, True)
-            tmp = cls._dir / f"{kind}_{int(restart_read)}"
+            tmp = cls._dir / f"{kind}_{int(restart_read)}_{output_format}"
             tmp.mkdir()
             ir = _toy_ir(kind)
 
@@ -85,14 +86,78 @@ class _Built:
                 a(f"{ind}step0 = 0")   # the read omitted, the count kept
 
             if restart_read:
-                run = run_fortran(tmp, ir)
+                run = run_fortran(tmp, ir, output_format=output_format)
             else:
                 with mock.patch.object(f_runner, "_render_restart", no_read):
-                    run = run_fortran(tmp, ir)
+                    run = run_fortran(tmp, ir, output_format=output_format)
             if run.proc.returncode != 0:
                 raise AssertionError(run.proc.stderr[-2000:])
             cls._cache[key] = (ir, (tmp / "bin").read_bytes())
         return cls._cache[key]
+
+
+class NetcdfRunConfigurationTest(unittest.TestCase):
+    """`run_configuration` on a target whose captures are `netcdf` (issue #644 P5b): the toy
+    loop node's driver built over the `netcdf` harness's hand model, certified for
+    `fortran_cpu_netcdf`. The run takes the library directory its Build recorded ahead of the
+    loader path (without it, a program using the binding loads another build of the library
+    on the development host and exits 127; on a host with one build only, CI's, the row passes
+    without the overlay too, so it kills that mutant only where another build comes first), its record reads the kernel's outcome out of the case file, and that file
+    is a restart source at the step it records. A continuation that runs and passes the start
+    check is `test_driver_render.NetcdfHarnessEndToEndTest`'s second pass."""
+
+    def setUp(self) -> None:
+        from tools.tests import netcdf_harness
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        ir, binary = _Built.get("init", output_format="netcdf")
+        refs = certify_node(self.repo, "orch_seed", NODE,
+                            ir_text="# certified\n" + yaml.safe_dump(ir), exe_bytes=binary,
+                            ir_id="drv-toy_20260101_001", pipeline_id="drv-toy_20260101_001",
+                            target=netcdf_harness.TARGET)
+        (self.repo / refs["exe_ref"]).chmod(0o755)
+        meta = self.repo / refs["binary_meta"]
+        doc = json.loads(meta.read_text())
+        doc["environment"] = {"build_site": {"site": "local", "host": None}}
+        doc["library_dirs"] = [netcdf_harness.resolved().lib_dir]
+        meta.write_text(json.dumps(doc))
+
+    def run_tool(self, out: str, **kw: Any) -> int:
+        config = self.tmp / "config.yaml"
+        config.write_text(yaml.safe_dump({"base_case": "m0"}))
+        return rc.run_configuration(self.repo, SPEC_REF, "fortran_cpu_netcdf", config,
+                                    self.tmp / out, **kw)
+
+    def record(self, out: str) -> dict[str, Any]:
+        return json.loads((self.tmp / out / rc.RUN_RECORD).read_text())
+
+    def test_a_run_and_a_continuation_from_its_case_file(self) -> None:
+        self.assertEqual(self.run_tool("full"), 0, self.record("full"))
+        full = self.record("full")
+        capture = self.tmp / "full" / "raw" / "state_snapshots" / "m0.nc"
+        final = capture_store.store("netcdf").read_record(capture.parent, capture_store.FINAL,
+                                                          "m0")
+        self.assertGreater(final["step"], 0)
+        self.assertEqual((full["status"], full["kernel"], full["final_step"]),
+                         ("ok", "reached its end", final["step"]))
+        self.assertEqual(full["library_dirs"], [netcdf_harness_lib_dir()])
+        # A final capture is a restart source as on `json`, and its step is the last: the
+        # driver refuses a restart at `n_step` (`test_a_restart_from_a_final_capture_records_
+        # its_kind`). A restart point inside the file is not a source (`TODO.md`).
+        self.assertEqual(self.run_tool("cont", restart_from=capture), rc.EXIT_RAN_FAILED)
+        cont = self.record("cont")
+        self.assertEqual((cont["restart"]["source_kind"], cont["restart"]["step"]),
+                         ("final", final["step"]))
+        self.assertEqual(cont["kept"], {"restart_points": [],
+                                        "series": {"rows": 0, "last_step": None}})
+
+
+def netcdf_harness_lib_dir() -> str:
+    from tools.tests import netcdf_harness
+    return netcdf_harness.resolved().lib_dir
 
 
 def tearDownModule() -> None:

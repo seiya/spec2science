@@ -2318,7 +2318,8 @@ class ContractPlumbingTest(unittest.TestCase):
         # MANIFEST, never a stale assertion.
         self.assertEqual({node_key.rsplit("@", 1)[0] for node_key in harnesses},
                          {"infrastructure/harness_fortran_cpu", "infrastructure/harness_cpp_gpu",
-                          "infrastructure/harness_fortran_cpu_mpi"},
+                          "infrastructure/harness_fortran_cpu_mpi",
+                          "infrastructure/harness_fortran_cpu_netcdf"},
                          "the parsed harness set is not the expected harness set: either the "
                          "catalog entry stopped parsing (fix the parser) or a harness was "
                          "added/renamed (fix THIS assertion) — never the manifest")

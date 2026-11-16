@@ -28,6 +28,11 @@ DEFECTS = frozenset({
     "final_count_two",       # final__count is 2
     "history_steps_repeat",  # a history variable's step column repeats a step
     "rp_steps_repeat",       # the restart points' step column repeats a step
+    "series_steps_repeat",   # the series' step column repeats a step
+    "series_dim_fixed",      # the series' record dimension has a fixed length, not unlimited
+    "history_dim_fixed",     # a history variable's record dimension has a fixed length
+    "rp_dim_fixed",          # the restart points' record dimension has a fixed length
+    "series_step_unwritten", # a row ahead of the series' rows: its step reads the integer fill
     "rp_count_short",        # restart_point__count one less than its record dimension
     "series_count_short",    # series__count one less than its record dimension
     "history_t_disagree",    # two variables' history t differ at one step
@@ -163,7 +168,7 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
 
         for var, rows in history.items():
             dim = f"history{SEP}{var}{SEP}n"
-            ds.createDimension(dim, None)
+            ds.createDimension(dim, len(rows) if "history_dim_fixed" in defects else None)
             values = vvar(f"history{SEP}{var}", (dim, *array_dims(var)))
             steps = svar(f"history{SEP}{var}{SEP}step", (dim,), "history_step_own_dim")
             times = dvar(f"history{SEP}{var}{SEP}t", (dim,))
@@ -178,7 +183,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
             count = len(rows) - (1 if "count_short" in defects and rows else 0)
             ivar(f"history{SEP}{var}{SEP}count")[...] = count
 
-        ds.createDimension(f"restart_point{SEP}n", None)
+        ds.createDimension(f"restart_point{SEP}n",
+                           len(restart_points) if "rp_dim_fixed" in defects else None)
         rp_dim = (f"restart_point{SEP}n",)
         for var in restart_vars:
             vvar(f"restart_point{SEP}{var}", (*rp_dim, *array_dims(var)))
@@ -198,7 +204,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
         ivar(f"restart_point{SEP}count")[...] = len(restart_points) - (
             1 if "rp_count_short" in defects and restart_points else 0)
 
-        ds.createDimension(f"series{SEP}n", None)
+        ds.createDimension(f"series{SEP}n",
+                           len(series) if "series_dim_fixed" in defects else None)
         s_dim = (f"series{SEP}n",)
         for name in series_names:
             dims = s_dim
@@ -213,6 +220,10 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
                 ds.variables[f"series{SEP}{name}"][i] = value
             s_step[i] = step
             s_t[i] = t
+        if "series_step_unwritten" in defects and series:
+            s_step[0] = -2147483647
+        if "series_steps_repeat" in defects and len(series) >= 2:
+            s_step[len(series) - 1] = series[-2][0]
         ivar(f"series{SEP}count")[...] = len(series) - (
             1 if "series_count_short" in defects and series else 0)
 
