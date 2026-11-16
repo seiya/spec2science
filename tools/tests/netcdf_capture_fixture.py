@@ -24,7 +24,7 @@ DEFECTS = frozenset({
     "dims_unreversed",       # an array's dimensions defined in declared (not reversed) order
     "fill_not_nan",          # a double variable's _FillValue is 0, not NaN
     "no_fill",               # a double variable carries no _FillValue
-    "count_short",           # a stacked group's count one less than its record dimension
+    "count_short",           # a history variable's count one less than its record dimension
     "final_count_two",       # final__count is 2
     "history_steps_repeat",  # a history variable's step column repeats a step
     "rp_steps_repeat",       # the restart points' step column repeats a step

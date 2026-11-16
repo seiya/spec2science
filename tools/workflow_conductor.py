@@ -13119,8 +13119,11 @@ class Conductor:
             "operations, under the case_id passed via --cases: the harness names the file, "
             "and a runner holds no path under the capture directory. Where the runner already "
             "commits it (an infrastructure node authors the harness model too), the model's "
-            "capture operations name the file otherwise than the capture layout states. "
-            "Canonical: phase_02_generate.md / phase_04_validate.md §43."
+            "capture operations name the file otherwise than the capture layout states"
+            + (", or commit no record of the group named" if
+               layout[capture_store.INITIAL] != str(store.expected_layout()[capture_store.INITIAL])
+               else "")
+            + ". Canonical: phase_02_generate.md / phase_04_validate.md §43."
         )
 
     @staticmethod

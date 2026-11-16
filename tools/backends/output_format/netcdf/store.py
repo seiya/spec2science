@@ -13,14 +13,15 @@ it, and a killed case keeps nothing (`read_series_prefix`).
 
 A record is returned in the value domain every store returns (`tools/capture_store.py`): the
 members as `json` would decode them — Python `float` / `int` and nested lists in the declared
-index order (the file holds the reverse, `_value`), never an array. Values are read with
+index order (the file holds the reverse, `_Case.value`), never an array. Values are read with
 auto-masking off, so a cell equal to a fill value reads as that value and an unwritten cell as
 the NaN every `double` variable's `_FillValue` must be: the neutral readers' finiteness check
 then refuses it.
 
 What is refused beyond a file that does not open or is not complete — each a defect a writer
-can make that would otherwise read as a valid record: a variable of another type than the
-layout's (a single-precision or integer value reads an unwritten cell as a finite fill, a real
+can make that would otherwise read as a valid record, judged on every variable the layout
+names (a variable outside it is read by no reader and not judged): a variable of another type
+than the layout's (a single-precision or integer value reads an unwritten cell as a finite fill, a real
 `step` truncates onto another step); a `double` variable whose fill in effect is not NaN (the
 attribute alone is not enough: a file written in no-fill mode keeps it and reads an unwritten
 cell as whatever the disk held); a group whose `count` is not the length of its record
@@ -393,8 +394,10 @@ def _files(snap_dir: Path) -> list[Path]:
 def case_ids(snap_dir: Path, group: str = FINAL) -> list[str]:
     """The ids that have a record of `group` (final, initial or series), in file-name order: a
     case file holding one, and every case file that cannot be read as complete (its reader
-    refuses it). A sample or a restart point is not asked of here: `record_path` refuses a
-    step-less one."""
+    refuses it). A sample or a restart point is not asked of here, as on `json`."""
+    if group in (HISTORY, RESTART_POINT):
+        raise ValueError(f"a {group} record's name does not determine its case; ask "
+                         "the steps of a case")
     stems = [p.name[:-len(_SUFFIX)] for p in _files(snap_dir)]
     return [c for c in stems if has_record(snap_dir, group, c)]
 

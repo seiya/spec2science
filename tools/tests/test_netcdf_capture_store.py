@@ -6,13 +6,20 @@ What each class pins:
 - `LayoutTests` / `ReadTests` / `RefusalTests` — the store against
   `docs/backends/output_format/netcdf/CAPTURE_LAYOUT.md` on files written by
   `netcdf_capture_fixture` (netCDF4-python laying them out as a column-major harness would): a
-  record reads as the `json` store reads the same record, value for value; each writer defect a
-  harness can make is refused, never read as a record.
-- `ReaderParityTests` — each reader of a run's captures (the verdict, the post-execute gate, the
-  judge's excerpt, the conductor's promotion / schema / deliverable / continuation helpers,
-  `tools/run_configuration.py`) gives over a `netcdf` run exactly what it gives over the `json`
+  record reads as the `json` store reads the same record, value for value; each writer defect
+  the fixture seeds (`netcdf_capture_fixture.DEFECTS`, and one variable per group wrongly
+  defined) is refused, never read as a record.
+- `ReaderParityTests` — the readers of a run's captures driven here (the verdict and a
+  comparand, the post-execute gate's `_validate_raw_evidence`, the judge's excerpt, the
+  conductor's promotion / schema / deliverable / continuation-merge helpers,
+  `tools/run_configuration.py`'s restart source and kept records) gives over a `netcdf` run exactly what it gives over the `json`
   run holding the same records: a reader that still builds a `json` path finds nothing in the
-  `netcdf` run and is caught.
+  `netcdf` run and is caught. Not driven over `netcdf`: the restart-point and continuation
+  readers of `primary_evidence`, `_final_records`, `run_configuration`'s run, and the
+  conductor's restart commands and remote paths (they reach the store through the same
+  `read_record` / `locate` the rows drive).
+- `StackedGroupParityTests` — samples, restart points and a chunked series read the same in
+  both formats through the store, `load_case_env` and `kept_records`.
 - `ReaderRefusesAnIncompleteCaseTests` — the same readers over a `netcdf` run one of whose case
   files was never completed (`complete` not 1: the program stopped before its output ended,
   issue #644 O12): each refuses it or reports it unread; none reads it as a case.
@@ -215,6 +222,8 @@ class ReadTests(_Tmp):
         self.assertEqual(NC.case_ids(self.sdir, cs.SERIES), ["c", "d"])
         with self.assertRaises(ValueError):
             NC.case_ids(self.sdir, cs.HISTORY)
+        with self.assertRaises(ValueError):
+            NC.case_ids(self.root / "empty", cs.RESTART_POINT)
         self.assertEqual(NC.case_paths(self.sdir, "c"), [self.sdir / "c.nc"])
         self.assertEqual(NC.case_paths(self.sdir, "x"), [])
         (self.sdir / "deep").mkdir()
@@ -440,6 +449,7 @@ class ReaderParityTests(unittest.TestCase):
         self.assertIn("runner wrote=['a.nc', 'a.nc (initial record)', 'b.nc', "
                       "'b.nc (initial record)', 'c.nc']", gap)
         self.assertIn("(and one raw/state_snapshots/<case_id>.nc (initial record),", gap)
+        self.assertIn("or commit no record of the group named.", gap)
         (cs.snapshot_dir(nc) / "c.nc").unlink()
         with tempfile.TemporaryDirectory() as tmp:
             node = Path(tmp) / "node"

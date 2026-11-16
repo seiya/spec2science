@@ -661,6 +661,7 @@ class CaptureStoreReachTests(unittest.TestCase):
             stub, cs.snapshot_dir(own.root), ["a", "b", "c"], ["state_snapshots"],
             initial_required=True)
         self.assertIn("missing=['c.json', 'initial/c.json']", gap)
+        self.assertNotIn("or commit no record", gap)
         self.assertEqual(wc.Conductor._run_raw_dirs(stub, None), cs.run_dirs("theirs"))
         self.assertEqual({n for n, _fn, _a in self.log}, {"theirs"})
         self.assertEqual({fn for _n, fn, _a in self.log}
