@@ -942,6 +942,10 @@ class EvaluationTest(unittest.TestCase):
         self.assertTrue(rec["satisfied"], rec)
         self._structural({**self._one("sum(final.h)")}, "final.h: not captured in case 'b'")
         self._structural(self._one("final.s + initial.s"), "has no initial capture")
+        # the reason a repairing leaf reads: a harness case has an initial record where its
+        # tests.md says so, not never (issue #644 P4b)
+        self._structural(self._one("final.s + initial.s"),
+                         "a harness self-test commits one only in the cases its tests.md states")
 
     def test_unknown_name_and_capture_variable(self) -> None:
         self._structural(self._one("final.zeta + final.s"), "not captured in case 'b'")
