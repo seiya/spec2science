@@ -92,7 +92,8 @@ class SpecSurfaceTests(unittest.TestCase):
 
     def test_every_tests_document_has_the_tests_and_counts_them(self) -> None:
         words = {"harness_fortran_cpu": ("eleven", 11), "harness_cpp_gpu": ("twelve", 12),
-                 "harness_fortran_cpu_mpi": ("seventeen", 17)}
+                 "harness_fortran_cpu_mpi": ("seventeen", 17),
+                 "harness_fortran_cpu_netcdf": ("ten", 10)}
         for spec_id, (word, count) in words.items():
             with self.subTest(spec_id=spec_id):
                 text = _tests_md(spec_id)
