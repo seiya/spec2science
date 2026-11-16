@@ -142,8 +142,6 @@ RAW_EVIDENCE_ARTIFACTS = {
     # Issue #644 P4b: the driver's restart points, declared iff `drive.restart_points` is.
     "restart_points",
 }
-#: The artifacts only the host-rendered driver of a node with `drive.loop` produces.
-DRIVE_LOOP_EVIDENCE_ARTIFACTS = frozenset({"state_history", "step_series", "restart_points"})
 # Where a runtime value goes when an IR reaches for a raw-evidence artifact the
 # workflow does not produce. Defined here and RESTATED verbatim by
 # phase_01_compile.md (`evidence_ref` bullet) so a warm retry converges on the
@@ -1856,6 +1854,9 @@ def _validate_raw_evidence(
                             f"{snapshots_dir}: snapshot data file missing"
                         )
                     elif state_variables and time_variable:
+                        from tools.primary_evidence import zero_extent_variables
+                        zero_extent = zero_extent_variables(
+                            schema_data if isinstance(schema_data, dict) else {})
                         missing_state_by_file: dict[str, list[str]] = {}
                         missing_time = set()
                         # Every declared variable in the initial and the final capture of
@@ -1888,9 +1889,18 @@ def _validate_raw_evidence(
                                         f"{snapshot}:{name} has unsupported or ragged shape"
                                     )
                                     continue
-                                # A zero-extent guard case's state, the host-rendered driver's:
-                                # nested lists cannot spell the extents after the zero (issue
-                                # #589 PR-3). A harness self-test's own runner has no such case.
+                                # A variable declared with a zero extent (issue #644 O15)
+                                # holds no element in any record, and nested lists cannot
+                                # spell the extents after the zero, so its rank is not asked.
+                                if name in zero_extent:
+                                    if 0 not in value_shape:
+                                        violations.append(
+                                            f"{snapshot}:{name} is declared with a zero "
+                                            f"extent ({shape_expr}) and holds elements "
+                                            f"(shape {value_shape})")
+                                    continue
+                                # A zero-extent guard case's state, the host-rendered driver's
+                                # (issue #589 PR-3), for the same reason.
                                 if 0 in value_shape and driver_wrote_snapshots:
                                     continue
                                 if not _shape_matches_expr(shape_expr, value_shape):
@@ -4028,6 +4038,50 @@ def _stride_input_violations(cases: dict[str, Any], name: str, stated: dict[str,
     return v
 
 
+#: The `zero_extent` line of a `tests.md` (issue #644 O16, `docs/TESTS.md` §Description
+#: format): `zero_extent: <var>[, <var>...]`, the snapshot variables declared with a zero
+#: extent. A leading bullet and backticks are admitted like the other definition lines.
+TEST_ZERO_EXTENT_LINE = re.compile(r"^[-*]?\s*`?zero_extent`?\s*:\s*(.*)$")
+
+
+def _zero_extent_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
+    """Gate (s) (issue #644 O16): the `tests.md` `zero_extent:` line against the snapshot
+    schema, an identity both ways. The variables whose `shape_expr` carries a zero token
+    (`primary_evidence.zero_extent_variables`) are exactly the names the line lists, and a
+    `tests.md` with no such variable carries no line; at most one line. Both readers of a
+    record admit an empty value of such a variable and of no other, so without the identity
+    the Compile leaf could declare a zero extent the human did not, and the self-test's
+    capture of that variable would be judged by nothing. A ``tests_path`` of None is not this
+    gate's finding (`_validate_ir_source_refs_tests`)."""
+    from tools.primary_evidence import snapshot_schema, zero_extent_variables
+
+    if tests_path is None:
+        return []
+    try:
+        text = tests_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    lines = [(n, m.group(1).replace("`", "").strip().rstrip("."))
+             for n, raw in enumerate(text.splitlines(), start=1)
+             if (m := TEST_ZERO_EXTENT_LINE.match(raw.strip()))]
+    if len(lines) > 1:
+        return [f"(s) tests.md carries {len(lines)} `zero_extent:` lines (lines "
+                f"{[n for n, _ in lines]}); it carries at most one"]
+    stated = sorted(name.strip() for name in lines[0][1].split(",")) if lines else []
+    declared = sorted(zero_extent_variables(snapshot_schema(ir) or {}))
+    if any(not name.isidentifier() for name in stated) or len(set(stated)) != len(stated):
+        return [f"(s) tests.md line {lines[0][0]}: `zero_extent:` {lines[0][1]!r} is not a "
+                "comma-separated list of distinct variable names (docs/TESTS.md §Description "
+                "format; the line is the operator's to correct)"]
+    if stated != declared:
+        where = f"line (line {lines[0][0]}) lists {stated}" if lines else "carries no such line"
+        return [f"(s) the snapshot schema declares a zero extent (a `shape_expr` token of "
+                f"value 0) on {declared}, and the tests.md `zero_extent:` {where}: the two "
+                "are the same set (the line is the operator's statement; the IR transcribes "
+                "it)"]
+    return []
+
+
 def _history_line_violations(tests_path: Path, ir: dict) -> list[str]:
     """Gate (m) (issue #589; issue #644 P4b): the `tests.md` `history:` and `restart_points:`
     lines against `drive`, an identity both ways, so the Compile leaf chooses no stride and
@@ -5563,11 +5617,11 @@ def _validate_io_contract_file(
     # `algorithm.state_variables` is not carried by the flattening either; keep the declared
     # names for the snapshot-coverage rule below (Z6, issue #255).
     declared_state_variables = _algorithm_state_variable_names(contract)
-    # Whether the IR carries `drive` at all (issue #589): `drive_violations` (h) pins the two loop
-    # artifacts to `drive.loop` / `drive.history` on a node that has one, and an IR with none
-    # (an `infrastructure` node, whose own runner runs its cases) has no driver to produce them.
-    from tools.primary_evidence import _has_drive  # the one spelling of "carries drive"
-    carries_drive = _has_drive(contract)
+    # `state_history`, `step_series` and `restart_points` are admitted on every IR (issue #644
+    # P4b): `drive_violations` (h) pins them to `drive.loop` / `drive.history` /
+    # `drive.restart_points` on a node that carries `drive`, and an IR with none is an
+    # `infrastructure` node's (a `component` / `problem` IR without `drive` is refused by the
+    # same gate), whose own runner commits the records its suite judges.
 
     # New IR: spec.ir.yaml has the io_contract section nested under
     # `io_contract:` and contains inputs / outputs / raw_requirements /
@@ -5727,12 +5781,6 @@ def _validate_io_contract_file(
             violations.append(
                 f"{contract_path}:raw_requirements.required_evidence[{idx}].required must be bool when present"
             )
-
-        if artifact in DRIVE_LOOP_EVIDENCE_ARTIFACTS and not carries_drive:
-            violations.append(
-                f"{contract_path}:raw_requirements.required_evidence[{idx}].artifact "
-                f"{raw_artifact!r} is produced only by the host-rendered driver of a node whose "
-                "drive block declares a loop, and this IR carries no drive block")
 
         if artifact != "state_snapshots":
             continue
@@ -11069,6 +11117,9 @@ def _validate_tests_and_predicates(
             "(docs/TESTS.md)")
     # Gate (m): the `history:` line against `drive`.
     for msg in _history_line_violations(tests_path, ir):
+        violations.append(f"{derived_path}:{msg}")
+    # Gate (s): the `zero_extent:` line against the snapshot schema (issue #644 O16).
+    for msg in _zero_extent_line_violations(tests_path, ir):
         violations.append(f"{derived_path}:{msg}")
     # Gate (o): the `distribute:` line against `drive.distribute` (issue #610).
     for msg in _distribute_line_violations(tests_path, ir, kind=kind):

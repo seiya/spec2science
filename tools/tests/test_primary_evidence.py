@@ -498,7 +498,8 @@ class EvaluationTest(unittest.TestCase):
     def test_a_state_with_no_cell_loads_only_from_the_driver(self) -> None:
         """Issue #589 PR-3: nested lists cannot spell the extents after a zero, so the rank of a
         driver-written capture with no cell is not asked. A harness self-test's own runner writes
-        its captures, and has no zero-extent case: there it stays refused
+        its captures: there an empty variable not declared with a zero extent stays refused
+        (issue #644 O15, `ZeroExtentTest` for one that is)
         (`test_capture_file_defects_are_structural`), through `load_case_env` too."""
         run = _RunDir()
         self.addCleanup(run.cleanup)
@@ -3129,10 +3130,11 @@ class StateReadsTest(unittest.TestCase):
         # (and their history / series, R2-1) never
         for expr, want in (("max(history.h.t)", False), ("max(history.h.step)", False),
                            ("max(smax(history.h))", True),
-                           # a restart point is never a state read: on a node with `drive`
-                           # it holds what a sample or the final capture of its step holds
-                           # (the schema gate refuses the read there outright)
-                           ("max(smax(restart_point.h))", False),
+                           # a restart point of a written variable is a state read as its
+                           # history is (issue #644 P4b); on a node with `drive` the schema
+                           # gate refuses the read outright (it holds what a sample or the
+                           # final capture of its step holds)
+                           ("max(smax(restart_point.h))", True),
                            ("max(restart_point.t)", False), ("max(restart_point.step)", False),
                            ("min(series.h_min)", True),
                            ("derived.dt", False), ("inputs.grid.nx", False),
@@ -3242,10 +3244,11 @@ def _toy_with_input_state() -> dict:
 
 class DriverCounterReadsTest(unittest.TestCase):
     """R2-1: the driver's counters — grammar 7's `history.<v>.t`, `history.<v>.step`,
-    `restart_point.t`, `restart_point.step` (as every `restart_point.*` read), and
+    `restart_point.t`, `restart_point.step`, and
     `series.step` — are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
     `cases_read` — and neither are the history and the series folds of a variable nothing
-    writes; those of a written variable are."""
+    writes; those of a written variable are (`restart_point.<v>` as `history.<v>`, issue
+    #644 P4b)."""
 
     _COUNTERS = ("max(history.h.t)", "max(history.h.step)", "max(restart_point.t)",
                  "max(restart_point.step)", "max(series.step)")
@@ -3262,10 +3265,15 @@ class DriverCounterReadsTest(unittest.TestCase):
         for kind, name, want in (("history", "h.t", False), ("history", "h.step", False),
                                  ("restart_point", "t", False),
                                  ("restart_point", "step", False),
-                                 # a restart point is never a state read, of a written
-                                 # variable (h) or not (b). Kills: restoring the deleted
-                                 # `_RESTART_POINT` branch of `is_state_read`
-                                 ("restart_point", "h", False), ("restart_point", "b", False),
+                                 # a restart point of a written variable is a state read
+                                 # as its history is (issue #644 P4b: read on a node with
+                                 # no `drive` alone, the schema gate refusing it on a driven
+                                 # one), of one nothing writes (b) not. Kills: dropping the
+                                 # `_RESTART_POINT` branch of `is_state_read` (h False). The
+                                 # `t` / `step` rows pin the answer False; dropping the
+                                 # branch's `_AXIS_MEMBERS` clause does not change it (both
+                                 # are reserved names, in no state set): that mutant survives
+                                 ("restart_point", "h", True), ("restart_point", "b", False),
                                  ("series", "step", False),
                                  ("history", "h", True), ("series", "h_min", True),
                                  ("series", "h_max", True), ("history", "b", False),
@@ -3311,8 +3319,8 @@ class DriverCounterReadsTest(unittest.TestCase):
         """The refusal a repairing leaf reads names the driver's counters as grammar 7 spells
         them (issue #644 P4b): `history.<v>.t` / `history.<v>.step`, `series.step` — not the
         removed `history.t` / `history.step`, which the parser now refuses — and offers no
-        `restart_point` read as a state read (a restart point is never one: on a node with
-        `drive` the gate refuses it outright). Before grammar 7 this row asserted the text
+        `restart_point` read as a state read (on a node with `drive`, the toy's, the gate
+        refuses every one outright). Before grammar 7 this row asserted the text
         `history.t / history.step / series.step`; before the review fix it also asserted
         `restart_point.t` / `restart_point.step` among the counters and `restart_point.<v>`
         among the state reads."""
@@ -4407,10 +4415,10 @@ class LazyLoaderTest(unittest.TestCase):
 
         The toy IR carries `drive`, where no predicate reads a restart point (the schema gate
         refuses it), so the loader is read through `CaseEnv` and `evaluate` (the evaluator a
-        node with no `drive` will reach). Past the gate, `evaluate_primary_predicates` refuses
-        an entry whose only read is a restart point by its whole-entry reads-no-state message,
-        before any record is loaded (a restart point is no state read); an entry that ALSO
-        reads kernel state is evaluated — the evaluator holds no `drive` rule of its own."""
+        node with no `drive` will reach). Past the gate, `evaluate_primary_predicates` takes
+        an entry whose only read is a restart point of a written variable as a state read
+        (issue #644 P4b) and evaluates it — the evaluator holds no `drive` rule of its own, so
+        on this driven IR only the Compile gate's `driven` rule refuses the read."""
         case_a = self.ir["case"]["test_case_set"][0]
         load = lambda: pe.load_case_env(  # noqa: E731
             self.run.root, case_a, pe.snapshot_schema(self.ir), output_format="json")
@@ -4422,10 +4430,9 @@ class LazyLoaderTest(unittest.TestCase):
         self.assertEqual(points["t"].shape, (0,))
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "reduction over an empty array"):
             ev("max(smax(restart_point.h))", env)
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    r"predicates\[0\]: reads no captured state the kernel "
-                                    r"produced"):
-            self._eval("max(smax(restart_point.h))")
+        rec = self._eval("max(smax(restart_point.h))")[0]
+        self.assertEqual(rec["kind"], "structural")
+        self.assertIn("reduction over an empty array", rec["evaluated"][0]["error"])
         hdir = self.run.sdir / "history"
         hdir.mkdir()
         rdir = self.run.sdir / "restart_point"
@@ -6660,3 +6667,276 @@ class ContinuationGateTest(unittest.TestCase):
             initial.unlink()
             self.assertIn("unreadable",
                           pe.continuation_start_violation(ir, root / "restart", cf, "json"))
+
+
+# ------------------------------------------------------------------ issue #644 P4b-2 (harness)
+
+#: A schema with two zero-extent variables beside an ordinary state (issue #644 O15).
+_ZERO_VARIABLES = [{"name": "h", "shape_expr": "[nx, ny]"},
+                   {"name": "a", "shape_expr": "[3,0]"},
+                   {"name": "b", "shape_expr": "[0]"},
+                   {"name": "s", "shape_expr": "scalar"}]
+
+
+class ZeroExtentTest(unittest.TestCase):
+    """Issue #644 O15: a schema variable whose `shape_expr` carries a token of value 0 holds no
+    element in any record, and is read at any nesting (its rank is not asked); every other
+    variable keeps the rank and the has-elements rule."""
+
+    def setUp(self) -> None:
+        self.run = _RunDir()
+        self.addCleanup(self.run.cleanup)
+        self.schema = pe.snapshot_schema(_ir([HMIN], variables=copy.deepcopy(_ZERO_VARIABLES)))
+        self.h = _field().tolist()
+
+    def _record(self, **over: Any) -> dict:
+        return {"h": self.h, "a": [[], [], []], "b": [], "s": 1.0, "t": 0.0, **over}
+
+    def _load(self) -> pe.CaseEnv:
+        return pe.load_case_env(self.run.root, _case("a"), self.schema, output_format="json")
+
+    def _stepped(self, group: str, **over: Any) -> None:
+        (self.run.sdir / group).mkdir(exist_ok=True)
+        (self.run.sdir / group / "a__2.json").write_text(
+            json.dumps(self._record(step=2, t=0.1, **over)))
+
+    def test_is_zero_token_and_zero_extent_variables(self) -> None:
+        # Kills: `is_zero_token` answering False (no variable), True (every one), and
+        # `token == "0"` (`[00]` left out); a `zero_extent_variables` reading the first token
+        # alone (`[3,0]` left out).
+        for token, want in (("0", True), ("00", True), ("10", False), ("1", False),
+                            ("n", False), ("nx", False), ("-0", False), ("", False)):
+            with self.subTest(token=token):
+                self.assertIs(pe.is_zero_token(token), want)
+        schema = {"variables": [{"name": "p", "shape_expr": "[0]"},
+                                {"name": "q", "shape_expr": "[3,0]"},
+                                {"name": "r", "shape_expr": "[00]"},
+                                {"name": "u", "shape_expr": "[10]"},
+                                {"name": "v", "shape_expr": "[n]"},
+                                {"name": "w", "shape_expr": "scalar"}]}
+        self.assertEqual(pe.zero_extent_variables(schema), frozenset({"p", "q", "r"}))
+        self.assertEqual(pe.zero_extent_variables({}), frozenset())
+
+    def test_a_zero_extent_capture_is_read_at_any_nesting(self) -> None:
+        # Kills: removing the `if name in zero_extent` branch of `_load_capture` (`a`, rank 2
+        # declared, holds no element: "has no elements"), and `load_case_env` not handing the
+        # schema's set to the final or the initial read.
+        self.run.write("a", initial=self._record(), final=self._record(t=0.1))
+        env = self._load()
+        self.assertEqual(env.final["a"].shape, (3, 0))
+        self.assertEqual(env.final["b"].shape, (0,))
+        self.assertEqual(env.initial["a"].shape, (3, 0))
+        self.assertEqual(env.final["h"].shape, (NX, NY))
+        # a rank the declaration does not spell is not asked of a zero-extent variable
+        self.run.write("a", initial=self._record(a=[]), final=self._record(a=[[[]]], t=0.1))
+        env = self._load()
+        self.assertEqual(env.final["a"].size, 0)
+
+    def test_a_zero_extent_variable_holding_elements_is_refused(self) -> None:
+        # Kills: dropping the holds-elements refusal of the branch (the record would be read).
+        for where in ("final", "initial"):
+            for name, value in (("a", [[1.0], [1.0], [1.0]]), ("b", [2.0])):
+                with self.subTest(where=where, name=name):
+                    final = self._record(t=0.1, **({name: value} if where == "final" else {}))
+                    initial = self._record(**({name: value} if where == "initial" else {}))
+                    self.run.write("a", initial=initial, final=final)
+                    with self.assertRaisesRegex(
+                            pe.PrimaryEvidenceError,
+                            rf"variable '{name}' is declared with a zero extent and holds "
+                            rf"{len(value) if name == 'b' else 3} element\(s\)"):
+                        self._load()
+
+    def test_an_empty_variable_not_declared_zero_extent_is_still_refused(self) -> None:
+        # The set admits only its own members: `h` (`[nx, ny]`) empty on an IR without drive
+        # (`empty_state=False`, a harness's own run) is refused as before. Kills: a branch
+        # admitting every empty array, or `zero_extent_variables` returning every variable.
+        self.run.write("a", initial=self._record(), final=self._record(h=[[]] * NX, t=0.1))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"variable 'h'.*has no elements"):
+            self._load()
+        self.run.write("a", initial=self._record(), final=self._record(h=[], t=0.1))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "'h'"):
+            self._load()
+
+    def test_a_history_and_a_restart_point_record_follow_the_same_rule(self) -> None:
+        # Kills: `_load_history` / `_load_restart_points` / `_stepped_records` not threading
+        # `zero_extent` to `_load_capture` (each stacked record of `a` would be refused "has
+        # no elements"), and `load_case_env` handing them an empty set.
+        self.run.write("a", initial=self._record(), final=self._record(t=0.1))
+        self._stepped("history")
+        self._stepped("restart_point")
+        env = self._load()
+        hist = env.history.get()
+        self.assertEqual(hist["a"].shape, (1, 3, 0))
+        self.assertEqual(hist["b"].shape, (1, 0))
+        np.testing.assert_array_equal(hist["a.step"], [2.0])
+        points = env.restart_point.get()
+        self.assertEqual(points["a"].shape, (1, 3, 0))
+        self.assertEqual(points["b"].shape, (1, 0))
+        np.testing.assert_array_equal(points["step"], [2.0])
+        for group, read in (("history", lambda env: env.history.get()),
+                            ("restart_point", lambda env: env.restart_point.get())):
+            with self.subTest(group=group, holds="elements"):
+                self._stepped(group, a=[[1.0], [1.0], [1.0]])
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            "variable 'a' is declared with a zero extent and "
+                                            "holds 3 element"):
+                    read(self._load())
+            with self.subTest(group=group, holds="an empty h"):
+                self._stepped(group, h=[[]] * NX)
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            r"variable 'h'.*has no elements"):
+                    read(self._load())
+            self._stepped(group)
+
+
+class InfrastructureRestartPointTest(unittest.TestCase):
+    """Issue #644 P4b: on an IR with no `drive` (an infrastructure node, whose own runner
+    commits its restart points) `restart_point.<v>` is a state read as `history.<v>` is, the
+    restart point names are every schema variable, and the counters `restart_point.t` /
+    `restart_point.step` are no state read. On a driven IR every `restart_point.*` read stays
+    refused."""
+
+    _MSG = "reads no captured state the kernel produced"
+
+    @staticmethod
+    def _infra(*, restart_points: bool = True) -> dict:
+        ir = _ir([HMIN])
+        if restart_points:
+            ir["io_contract"]["raw_requirements"]["required_evidence"].append(
+                {"artifact": "restart_points", "required": True})
+        return ir
+
+    def _gate(self, ir: dict, expr: str, **over: Any) -> list[str]:
+        cases = pe._cases_by_id(ir)
+        tid = ir["io_contract"]["tests"][0]["test_id"]
+        targets = ir["io_contract"]["tests"][0]["target_cases"]
+        pred = {"test_id": tid, "quantity": "q", "target_cases": targets, "per_case": True,
+                "expr": expr, "op": "ge", "value": 0}
+        ctx = {**pe.predicate_schema_context(ir), **over}
+        return pe.validate_primary_predicate_schema(
+            [pred], case_ids=set(cases), test_ids=[tid], schema=pe.snapshot_schema(ir),
+            cases=cases, **ctx)
+
+    def test_is_state_read_of_a_restart_point(self) -> None:
+        # Kills: dropping the `_RESTART_POINT` branch (`h` False). The `t` / `step` rows pin
+        # the answer False; the branch's `_AXIS_MEMBERS` clause is not what decides it (both
+        # are reserved names, in no state set), so dropping the clause survives here.
+        reads = pe.state_reads(self._infra())
+        for name, want in (("h", True), ("s", True), ("t", False), ("step", False)):
+            with self.subTest(name=name):
+                self.assertIs(pe.is_state_read(pe.NameRef("restart_point", name), reads), want)
+
+    def test_the_context_names_every_schema_variable_without_drive(self) -> None:
+        # Kills: `predicate_schema_context` answering the (empty) restart variables on an IR
+        # with no `drive`, or naming them without the entry; the driven answer unchanged.
+        ctx = pe.predicate_schema_context(self._infra())
+        self.assertEqual(ctx["restart_point_names"], frozenset({"h", "s"}))
+        self.assertIs(ctx["driven"], False)
+        self.assertIsNone(
+            pe.predicate_schema_context(self._infra(restart_points=False))[
+                "restart_point_names"])
+        self.assertEqual(pe.predicate_schema_context(_toy())["restart_point_names"],
+                         frozenset({"h"}))
+
+    def test_the_schema_gate_on_a_node_with_and_without_drive(self) -> None:
+        # Kills: the `_RESTART_POINT` branch dropped (the first row is refused "reads no
+        # captured state"); the restart point names left empty without drive (the first row
+        # is refused as no restart point name); the `driven` refusal dropped (the last rows).
+        ir = self._infra()
+        self.assertEqual(self._gate(ir, "max(smax(restart_point.h))"), [])
+        self.assertEqual(self._gate(ir, "max(restart_point.s)"), [])
+        for counter in ("max(restart_point.step)", "max(restart_point.t)"):
+            with self.subTest(counter=counter):
+                v = self._gate(ir, counter)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(self._MSG, v[0])
+                # the refusal names the read that counts here, and not on a node with `drive`
+                # (`DriverCounterReadsTest`): kills dropping the clause, and making it
+                # unconditional
+                self.assertIn("restart_point.<v> of a variable", v[0])
+        toy = _toy()
+        io, cases = toy["io_contract"], pe._cases_by_id(toy)
+        for expr in ("max(smax(restart_point.h))", "max(smax(restart_point.h)) + sum(final.h)"):
+            with self.subTest(driven=expr):
+                v = pe.validate_primary_predicate_schema(
+                    [{**io["predicates"][0], "expr": expr}], case_ids=set(cases),
+                    test_ids=["t_run"], schema=pe.snapshot_schema(toy), cases=cases,
+                    **pe.predicate_schema_context(toy))
+                self.assertTrue(any("a predicate of a node with `drive` reads no restart "
+                                    "point" in m for m in v), v)
+
+    def test_the_evaluator_reads_an_infrastructure_restart_point(self) -> None:
+        # Past the gate: an entry whose only read is `restart_point.h` is evaluated over the
+        # committed records. Kills: the `_RESTART_POINT` branch dropped (the evaluator would
+        # refuse it as reading no state).
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        ir = self._infra()
+        h = _field()
+        for cid in ("a", "b"):
+            run.write_state(cid, h, h)
+            (run.sdir / "restart_point").mkdir(exist_ok=True)
+            (run.sdir / "restart_point" / f"{cid}__1.json").write_text(json.dumps(
+                {"h": (h * 2).tolist(), "s": 1.0, "t": 0.1, "step": 1}))
+        ir["io_contract"]["predicates"] = [{
+            "test_id": "t_mass", "quantity": "h_min", "target_cases": ["a", "b"],
+            "per_case": True, "expr": "min(smin(restart_point.h))", "op": "ge", "value": 1.0}]
+        recs = pe.evaluate_primary_predicates(ir, run.root, output_format="json")
+        self.assertEqual([r["kind"] for r in recs], ["pass"], recs)
+        self.assertAlmostEqual(recs[0]["evaluated"][0]["value"], 2 * float(h.min()))
+
+
+class InfrastructureSeriesTest(unittest.TestCase):
+    """Issue #644 P4b: an `infrastructure` IR's `step_series` names are its own entry's, held
+    by `(h)` (`_infrastructure_series_violations`, reached through `drive_violations`)."""
+
+    @staticmethod
+    def _ir(names: Any = None, *, omit: bool = False) -> dict:
+        ir = _ir([HMIN])
+        entry: dict[str, Any] = {"artifact": "step_series", "required": True}
+        if not omit:
+            entry["names"] = names
+        ir["io_contract"]["raw_requirements"]["required_evidence"].append(entry)
+        return ir
+
+    def test_admitted_names(self) -> None:
+        for names in (["step"], ["step", "a"], ["a", "step", "h_min"]):
+            with self.subTest(names=names):
+                self.assertEqual(pe._infrastructure_series_violations(self._ir(names)), [])
+                self.assertEqual(pe.drive_violations(self._ir(names), kind="infrastructure"),
+                                 [])
+        # no entry, no finding
+        self.assertEqual(pe._infrastructure_series_violations(_ir([HMIN])), [])
+
+    def test_refused_names(self) -> None:
+        # Kills: the function returning [] (every row); `drive_violations` not calling it
+        # (the `kind="infrastructure"` half); dropping any one clause of the shape condition
+        # (the row naming that clause); dropping the reserved-name loop, or exempting `step`
+        # from nothing (`["step"]` above would be refused).
+        shape = "(h) step_series.names must be a list of distinct names that holds 'step'"
+        for label, ir, want in (
+                ("no step", self._ir(["a"]), [shape]),
+                ("duplicate", self._ir(["step", "a", "a"]), [shape]),
+                ("non-string", self._ir(["step", 3]), [shape]),
+                ("no list", self._ir("step"), [shape]),
+                ("no names", self._ir(omit=True), [shape]),
+                ("reserved", self._ir(["step", "count"]),
+                 ["(h) step_series name 'count' is refused: it is the driver's or the "
+                  "harness's own name"]),
+                ("separator", self._ir(["step", "a__b"]),
+                 ["(h) step_series name 'a__b' is refused: it contains '__'"]),
+                ("both", self._ir(["count"]),
+                 [shape, "(h) step_series name 'count' is refused"])):
+            with self.subTest(label):
+                for v in (pe._infrastructure_series_violations(ir),
+                          pe.drive_violations(ir, kind="infrastructure")):
+                    self.assertEqual(len(v), len(want), v)
+                    for got, fragment in zip(v, want):
+                        self.assertIn(fragment, got)
+
+    def test_a_drive_block_is_still_refused_beside_the_series(self) -> None:
+        ir = self._ir(["step", "a"])
+        ir["drive"] = {}
+        v = pe.drive_violations(ir, kind="infrastructure")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("an infrastructure node carries no drive block", v[0])

@@ -21810,7 +21810,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 15900->16900 in the same change (review round 3): §3 also states what each
         # capture operation does — a harness producer is seeded no controlled spec, and without
         # it the operations' behaviour reached that leaf only through the IR. Measured 16834.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 16900,
+        # Raised 16900->17500 (issue #644 P4b, the harness side): §3 states the two exceptions
+        # to "the host refuses an empty array" (the `zero_extent` line; the driver's guard
+        # case, the `TODO.md` item of issue #602) and what a harness self-test commits in the
+        # other capture groups, which the judge, handed §3, otherwise reads as a defect.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 17500,
         # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
         # Measured 39235 and 30421 at this commit.
         "docs/backends/language/fortran/GENERATE_RULES.md": 40000,
@@ -22259,7 +22263,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (`history.<v>.t` / `.step`, `restart_point.*`) with the one-stride rule, gate (m)'s
         # identity with the `history:` and `restart_points:` lines, and the reserved names.
         # Measured 117477 with `wc -c` (117544 after review round 1, 117567 after round 2, 117587 after round 3).
-        "docs/workflow/phases/phase_01_compile.md": 117700,
+        # Raised 117700->118900 (issue #644 P4b, the harness side): the three history evidence
+        # entries on an `infrastructure` IR, `restart_point.*` read there, and the zero-token
+        # rule of gate (s).
+        "docs/workflow/phases/phase_01_compile.md": 118900,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -28891,7 +28898,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:390b5788c880011e":
+        "tools/prompt_templates/workshop_compile_generate.txt:0bbdc48b47688e41":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28920,7 +28927,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "unchanged; re-keyed 2026-11-16 when rule 9 took the per-variable "
             "`drive.history` and `drive.restart_points` "
             "transcribing the tests document's `history:` / `restart_points:` lines, issue #644 "
-            "P4b — rule 3 unchanged, rule 5 unchanged)",
+            "P4b — rule 3 unchanged, rule 5 unchanged; re-keyed again 2026-11-16 when rule 5's "
+            "sentence on a harness self-test's captures took the other capture groups and "
+            "their evidence entries, the harness side of P4b — rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "

@@ -656,9 +656,15 @@ class PureRenderTests(unittest.TestCase):
         self.assertNotIn("Controlled spec", prompt)
         self.assertNotIn("Audusse reconstruction: h_star = max(0, eta - z_b)", prompt)
         # The template's own bytes carry no controlled_spec surface either.
-        for key in ("workshop generate.generate", "workshop generate.generate.harness"):
-            with self.subTest(template=key):
-                self.assertNotIn("controlled_spec", composed_pure_template(key))
+        self.assertNotIn("controlled_spec", composed_pure_template("workshop generate.generate"))
+        # The harness producer is the exception (issue #644 P4b, the operator's decision): it
+        # is seeded §1 to §4 of its own node's spec under a name of its own, and its template
+        # names that seed and no slot of the whole document.
+        harness = composed_pure_template("workshop generate.generate.harness")
+        self.assertIn("In your tree: `controlled_spec_sections.md`.", harness)
+        self.assertNotIn("<controlled_spec_document>", harness)
+        self.assertNotIn("`controlled_spec.md`.", harness.replace(
+            "(this node's `controlled_spec.md` from", ""))
 
     def test_prompt_states_the_static_prohibitions_the_leaf_cannot_otherwise_know(self) -> None:
         # `_validate_model_source_isolation` rejects three things the acceptance gate does NOT
