@@ -21512,7 +21512,9 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
             with self.subTest(relative=relative):
                 v = self._violations(self._drop(relative, "h"))
                 self.assertEqual(len(v), 1, v)
-                self.assertIn(f"{{'{Path(relative).name}': ['h']}}", v[0])
+                # the record is named with its group's directory, so an initial record and
+                # the final one of a case are two entries (review round 3)
+                self.assertIn(f"{{'{relative}': ['h']}}", v[0])
                 self.assertIn("declared state_variables missing", v[0])
 
     def test_a_sample_and_a_restart_point_hold_the_variables_due_there(self) -> None:
@@ -21597,11 +21599,92 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
 
     def test_a_driver_state_with_no_cell_is_admitted_and_a_harness_s_is_not(self) -> None:
         # A zero-extent guard case (issue #589 PR-3): nested lists cannot spell the extents
-        # after a zero, and only the driver has such a case.
+        # after a zero. On a harness's own run only a variable the schema declares with a
+        # zero extent is admitted empty (issue #644 O15, the rows below); `h` is `[2,2]`.
         self.assertEqual(self._violations(self._empty_h), [])
         v = self._violations(self._empty_h, step_series=False, driver=False)
         self.assertEqual(len(v), 1, v)
         self.assertIn("does not match declared shape_expr", v[0])
+
+    @staticmethod
+    def _zero_h(shape_expr: str, value):
+        """Redeclare `h` with ``shape_expr`` in the IR and in `snapshot_schema.json` (the
+        post-execute check holds the two equal) and write ``value`` as its value in every
+        record that holds it."""
+        def change(snapshots: Path) -> None:
+            workspace = next(p for p in snapshots.parents if p.name == "workspace")
+            ir_path = (workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                       / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+            ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            ir_doc["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"][0] = {"name": "h", "shape_expr": shape_expr}
+            _write_json(ir_path, ir_doc)
+            schema_path = snapshots / "snapshot_schema.json"
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            schema["variables"][0] = {"name": "h", "shape_expr": shape_expr}
+            _write_json(schema_path, schema)
+            for record in snapshots.rglob("snapshot000*.json"):
+                doc = json.loads(record.read_text(encoding="utf-8"))
+                if "h" in doc:
+                    doc["h"] = value
+                    _write_json(record, doc)
+        return change
+
+    def test_a_zero_extent_variable_holds_no_element_on_a_harness_run(self) -> None:
+        # Issue #644 O15: a variable declared with a zero extent is admitted empty in a
+        # harness's own run (no driver), at any nesting (its rank is not asked), and refused
+        # when it holds elements. Kills: `is_zero_token` answering False and removing the
+        # `if name in zero_extent` branch (`[0,2]` holding `[]` is rank 1 against a rank-2
+        # declaration, which `_shape_matches_expr` refuses; `[2,0]` holding `[[], []]` matches
+        # the declaration either way and pins only that the branch admits it), and dropping
+        # the branch's holds-elements refusal (the third row).
+        self.assertEqual(self._violations(self._zero_h("[2,0]", [[], []]),
+                                          step_series=False, driver=False), [])
+        self.assertEqual(self._violations(self._zero_h("[0,2]", []),
+                                          step_series=False, driver=False), [])
+        self.assertEqual(self._violations(self._zero_h("[00]", []),
+                                          step_series=False, driver=False), [])
+        for shape, value in (("[2,0]", [[1.0], [1.0]]), ("[0,2]", [[1.0, 1.0]]),
+                             ("[2,0]", [[1.0, 1.0], [1.0, 1.0]])):
+            with self.subTest(shape=shape, value=value):
+                v = self._violations(self._zero_h(shape, value), step_series=False,
+                                     driver=False)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(f"snapshot000.json:h is declared with a zero extent ({shape}) "
+                              "and holds elements", v[0])
+
+    def test_a_zero_extent_variable_holding_elements_is_refused_on_a_driver_run_too(self) -> None:
+        # The driver's own zero-extent guard case (any empty value) stays admitted; a value
+        # with elements of a variable declared with a zero extent is refused there too.
+        self.assertEqual(self._violations(self._zero_h("[2,0]", [[], []])), [])
+        v = self._violations(self._zero_h("[2,0]", [[1.0], [1.0]]))
+        # one per record of the case: final, initial, its history sample, its restart point
+        self.assertEqual(len(v), 4, v)
+        self.assertTrue(all(":h is declared with a zero extent ([2,0]) and holds elements"
+                            in x for x in v), v)
+
+    def test_a_harness_series_is_held_to_its_names_and_not_to_the_step_column(self) -> None:
+        # Issue #644 P4b: an infrastructure node may declare `step_series` (its own runner
+        # commits the series), and its records hold exactly the names. The step column is the
+        # driver's: a harness's run that commits an initial and a final record with `step`
+        # is not held to `range(first + 1, last + 1)`. Kills: dropping `driver_wrote and`
+        # from the step-column check (the harness row then draws it; the driver row is the
+        # control that the change reaches the check).
+        v = self._violations(self._series(hv_max=None), driver=False)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("exactly the step_series names", v[0])
+        self.assertEqual(self._violations(lambda _s: None, driver=False), [])
+
+        def steps(snapshots: Path) -> None:
+            final = snapshots / "snapshot000.json"
+            doc = json.loads(final.read_text(encoding="utf-8"))
+            doc["step"] = 5
+            _write_json(final, doc)
+            _write_json(snapshots / "initial" / final.name, {**doc, "step": 0})
+        self.assertEqual(self._violations(steps, driver=False), [])
+        v = self._violations(steps)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("its step column is not the committed steps 1 .. 5", v[0])
 
     def test_a_series_with_a_subset_of_the_names_is_refused(self) -> None:
         v = self._violations(self._series(hv_max=None))
@@ -30393,7 +30476,8 @@ class DriveGateStageTests(unittest.TestCase):
 
     def test_an_infrastructure_node_carries_no_drive(self) -> None:
         """The catalog says `infrastructure`: `drive` is refused (its own runner runs its cases);
-        the same IR without `drive` draws no drive finding, and declares no loop artifact."""
+        the same IR without `drive` draws no drive finding, and may declare the loop artifacts
+        (issue #644 P4b), its `step_series` names held by `(h)`."""
         cs_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
         catalog = [dict(spec_kind="infrastructure", spec_id=_CORIOLIS_ID,
                         controlled_spec_path=cs_ref)]
@@ -30421,22 +30505,60 @@ class DriveGateStageTests(unittest.TestCase):
             del ir["drive"]
         self.assertFalse([x for x in _drive_stage("coriolis", bare, catalog=catalog)
                           if "drive" in x.split(":", 1)[1][:8]])
-        # the driver's loop artifacts are refused on an IR with no drive block at all (the
-        # restart points among them, issue #644 P4b: kills dropping it from
-        # DRIVE_LOOP_EVIDENCE_ARTIFACTS)
-        self.assertEqual(vps.DRIVE_LOOP_EVIDENCE_ARTIFACTS,
-                         frozenset({"state_history", "step_series", "restart_points"}))
-        for artifact in ("state_history", "step_series", "restart_points"):
-            def loop_artifact(ir, artifact=artifact):
+        # The loop artifacts are admitted on an IR with no drive block (issue #644 P4b): an
+        # infrastructure node's own runner commits its history, its restart points and its
+        # series. Each draws exactly the findings the bare IR draws (the seeded tests.md's
+        # gate (o) line). Kills: restoring the deleted "is produced only by the host-rendered
+        # driver" refusal for any of the three.
+        baseline = _drive_stage("coriolis", bare, catalog=catalog)
+        for entry in ({"artifact": "state_history", "required": True},
+                      {"artifact": "restart_points", "required": True},
+                      {"artifact": "step_series", "required": True, "names": ["step", "a"]}):
+            def loop_artifact(ir, entry=entry):
                 bare(ir)
                 ir["io_contract"]["raw_requirements"]["required_evidence"].append(
-                    {"artifact": artifact, "required": True})
-            with self.subTest(artifact):
-                v = _drive_stage("coriolis", loop_artifact, catalog=catalog)
-                self.assertEqual(len(self._hits(
-                    v, f"artifact '{artifact}' is produced only by the host-rendered driver of "
-                       "a node whose drive block declares a loop, and this IR carries no drive "
-                       "block")), 1, v)
+                    copy.deepcopy(entry))
+            with self.subTest(admitted=entry["artifact"]):
+                self.assertEqual(_drive_stage("coriolis", loop_artifact, catalog=catalog),
+                                 baseline)
+        # The step_series names are the entry's own on an infrastructure node, held by `(h)`:
+        # strings, each once, `step` among them, none reserved. Kills:
+        # `_infrastructure_series_violations` returning [] (each row), and dropping any one
+        # clause of its first condition or its reserved-name loop (the row that names it).
+        shape = ("(h) step_series.names must be a list of distinct names that holds 'step'; "
+                 "got ")
+        for names, msg in (
+                (["a"], shape + "['a']"),                          # no `step`
+                (["step", "a", "a"], shape + "['step', 'a', 'a']"),  # a duplicate
+                (["step", 3], shape + "['step', 3]"),              # a non-string
+                ("step", shape + "'step'"),                        # no list
+                (_OMIT, shape + "None"),                           # no `names` key
+                (["step", "count"], "(h) step_series name 'count' is refused: it is the "
+                                    "driver's or the harness's own name"),
+                (["step", "a__b"], "(h) step_series name 'a__b' is refused: it contains "
+                                   "'__'")):
+            def series(ir, names=names):
+                bare(ir)
+                entry = {"artifact": "step_series", "required": True}
+                if names is not _OMIT:
+                    entry["names"] = names
+                ir["io_contract"]["raw_requirements"]["required_evidence"].append(entry)
+            with self.subTest(names=names):
+                v = _drive_stage("coriolis", series, catalog=catalog)
+                hits = self._hits(v, "(h) step_series")
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn(msg, hits[0])
+                self.assertEqual(sorted(set(v) - set(hits)), sorted(baseline))
+        # The evidence the deletion rests on: a `component` IR with no drive block that
+        # declares a loop artifact is still refused, by "drive is required". Kills: a
+        # `drive_violations` that stopped requiring `drive` on a component, which the deleted
+        # refusal would have hidden.
+        def component_without_drive(ir):
+            del ir["drive"]
+            ir["io_contract"]["raw_requirements"]["required_evidence"].append(
+                {"artifact": "state_history", "required": True})
+        v = _drive_stage("coriolis", component_without_drive)
+        self.assertTrue(self._hits(v, "drive is required on a"), v)
 
     def test_a_source_key_is_refused_on_an_infrastructure_node(self) -> None:
         """R1-5: the `source` vocabulary is retired on every kind, so the refusal runs before
@@ -31092,6 +31214,117 @@ class HistoryLinesGateTests(unittest.TestCase):
                   "(m) tests.md carries 0 `restart_points:` lines")
 
 
+class ZeroExtentLineGateTests(unittest.TestCase):
+    """Gate (s) (issue #644 O16): the tests.md `zero_extent:` line names exactly the snapshot
+    variables whose `shape_expr` carries a zero token, both ways, at most one line. Through the
+    stage over the coriolis fixture (`_drive_stage`), whose schema declares `U`, `S`
+    (`[ncomp, nx, ny]`) and `guard_pass`. Redeclaring `S` with a zero extent trips unrelated
+    gates (the rank of its dummy, the predicates that read it, the outputs' shape), so the
+    stage rows assert on the `(s)` findings alone; `vps._zero_extent_line_violations` is
+    called directly where the stage's other findings would only add noise."""
+
+    _ZERO = "(s) the snapshot schema declares a zero extent"
+
+    @staticmethod
+    def _shape(shape_expr: str, index: int = 1):
+        """Redeclare schema variable ``index`` (`S`) with ``shape_expr``."""
+        def mutate(ir: dict) -> None:
+            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"][index]["shape_expr"] = shape_expr
+        return mutate
+
+    @staticmethod
+    def _s(findings: list[str]) -> list[str]:
+        return [f for f in findings if f.startswith("<ir>:(s) ")]
+
+    @staticmethod
+    def _direct(text: str, ir: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text(text, encoding="utf-8")
+            return vps._zero_extent_line_violations(path, ir)
+
+    def test_no_zero_token_and_no_line_is_clean(self) -> None:
+        self.assertEqual(_drive_stage("coriolis", tests_md=_coriolis_tests_md()), [])
+
+    def test_a_zero_token_without_the_line_is_refused(self) -> None:
+        # Kills: gate (s) returning []; the gate not wired into the stage; `is_zero_token`
+        # answering False (the schema then declares no zero extent, and the line is not asked);
+        # `is_zero_token` as `token == "0"` (the `[00]` row).
+        for shape in ("[0]", "[00]", "[ncomp, 0, ny]"):
+            with self.subTest(shape=shape):
+                found = self._s(_drive_stage("coriolis", self._shape(shape),
+                                             tests_md=_coriolis_tests_md()))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(f"{self._ZERO} (a `shape_expr` token of value 0) on ['S'], and "
+                              "the tests.md `zero_extent:` carries no such line", found[0])
+
+    def test_the_line_naming_the_variable_is_admitted(self) -> None:
+        # Kills: a gate that refuses every zero extent, or misreads the line's admitted forms
+        # (bullet, backticks, a trailing period).
+        for line in ("zero_extent: S", "- zero_extent: `S`", "* `zero_extent`: `S`.",
+                     "  - zero_extent:S  "):
+            for shape in ("[0]", "[00]"):
+                with self.subTest(line=line, shape=shape):
+                    self.assertEqual(self._s(_drive_stage(
+                        "coriolis", self._shape(shape),
+                        tests_md=_coriolis_tests_md() + f"\n{line}\n")), [])
+        # two zero-extent variables, listed in another order: the set is compared
+        ir = _drive_fixture("coriolis")
+        self._shape("[0]", 0)(ir)
+        self._shape("[0, 0]", 1)(ir)
+        self.assertEqual(self._direct("zero_extent: S, U\n", ir), [])
+        # ...and a line naming one of the two is refused: the schema declares a zero extent
+        # the line does not state. Kills: a comparison that asks only `stated <= declared`
+        # beside a non-empty line.
+        (msg,) = self._direct("zero_extent: S\n", ir)
+        self.assertIn("on ['S', 'U'], and the tests.md `zero_extent:` line (line 1) lists "
+                      "['S']", msg)
+
+    def test_a_line_naming_no_zero_extent_variable_is_refused(self) -> None:
+        # The other direction of the identity: the line declares a zero extent the schema
+        # does not (or names one variable too many). Kills: a one-way comparison
+        # (`set(declared) <= set(stated)`), and an absent line taken for an empty list only.
+        found = self._s(_drive_stage("coriolis", tests_md=_coriolis_tests_md()
+                                     + "\nzero_extent: S\n"))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn(f"{self._ZERO} (a `shape_expr` token of value 0) on [], and the tests.md "
+                      "`zero_extent:` line (line ", found[0])
+        self.assertIn("lists ['S']", found[0])
+        ir = _drive_fixture("coriolis")
+        self._shape("[0]")(ir)
+        for text in ("zero_extent: S, U\n", "zero_extent: U\n"):
+            with self.subTest(text=text):
+                (msg,) = self._direct(text, ir)
+                self.assertTrue(msg.startswith(self._ZERO), msg)
+                self.assertIn("are the same set", msg)
+
+    def test_two_lines_are_refused(self) -> None:
+        # Kills: dropping the at-most-one rule (the second line would go unread).
+        md = _coriolis_tests_md() + "\nzero_extent: S\n- zero_extent: S\n"
+        found = self._s(_drive_stage("coriolis", self._shape("[0]"), tests_md=md))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("(s) tests.md carries 2 `zero_extent:` lines (lines [", found[0])
+        self.assertIn("it carries at most one", found[0])
+
+    def test_a_malformed_list_is_refused(self) -> None:
+        # Kills: dropping the identifier / distinct check (`S U` and `S, S` would then be
+        # compared as names, or the duplicate collapsed into the set). An empty line is no
+        # list either: it states no variable, where a node with none carries no line.
+        for line in ("zero_extent: S U", "zero_extent: S, S", "zero_extent: S;", "zero_extent:"):
+            with self.subTest(line=line):
+                found = self._s(_drive_stage("coriolis", self._shape("[0]"),
+                                             tests_md=_coriolis_tests_md() + f"\n{line}\n"))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("is not a comma-separated list of distinct variable names",
+                              found[0])
+
+    def test_no_tests_md_is_not_this_gate_s_finding(self) -> None:
+        ir = _drive_fixture("coriolis")
+        self._shape("[0]")(ir)
+        self.assertEqual(vps._zero_extent_line_violations(None, ir), [])
+
+
 class DistributeLineGateTests(unittest.TestCase):
     """Gate (o) (issue #610, B14): the `tests.md` `distribute:` line against `drive.distribute`,
     driven through the `Compile.static` body over the converted fixtures (`_drive_stage`); the
@@ -31364,10 +31597,6 @@ class DistributeLineGateTests(unittest.TestCase):
                      "is the operator's to correct)")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RestartLineGateTests(unittest.TestCase):
     """Gate (r) (issue #632, `_restart_line_violations`): the tests.md `restart:` line against
     the IR's continuation cases, as a set, in both polarities."""
@@ -31567,3 +31796,7 @@ class RestartRequiredGateTests(unittest.TestCase):
         found = _drive_stage("swe", drop, catalog=[{"spec_kind": "component", "spec_id": "shallow_water2d",
                                  "controlled_spec_path": cs}])
         self.assertFalse([v for v in found if "(q)" in v], found)
+
+
+if __name__ == "__main__":
+    unittest.main()

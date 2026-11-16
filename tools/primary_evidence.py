@@ -18,14 +18,17 @@ leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` d
 `history.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts for. `initial.<v>`
 of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
 nothing writes (and its history), `final.step` / `final.t` and `history.<v>.t` /
-`history.<v>.step` / `series.step` (the driver's counters), every `restart_point.*` (refused
-on a node with `drive`: where a restart point falls on the step of a sample or of the final
-capture it holds the state that capture holds, so a difference of the two is zero whatever
-the kernel computed), a logical `out` state (of `step` or `init`,
+`history.<v>.step` / `series.step` (the driver's counters), `restart_point.t` /
+`restart_point.step`, a logical `out` state (of `step` or `init`,
 per case: a flag, so under a physics quantity it would value that judgment alone — review round
 5, R5-2), `derived.*` and `inputs.*` are not (`predicate_reads_state`); a flag stands only as a
-flag predicate (`fixed_form`). An IR with no `drive` (an
-`infrastructure` node) counts every schema variable at both capture points, as grammar 5 did. Two
+flag predicate (`fixed_form`). Every `restart_point.*` read is refused
+on a node with `drive`: where a restart point falls on the step of a sample or of the final
+capture it holds the state that capture holds, so a difference of the two is zero whatever
+the kernel computed. An IR with no `drive` (an
+`infrastructure` node) counts every schema variable at both capture points, as grammar 5 did,
+and in its history and its restart points (`restart_point.<v>`, issue #644 P4b: its own runner
+commits them, and its suite judges each capture group). Two
 classes of kernel-written scalar are judged: a logical `out`, through its flag predicate, and the
 scalar a rank-0 real / integer `out` of a one-call operation writes, where a predicate reading it
 stands beside one that reads it TOGETHER with an array state the same operation writes
@@ -610,12 +613,19 @@ def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str],
     DRIVER's counters `history.<v>.t`, `history.<v>.step` and `series.step`, like
     `final.t` / `final.step`, never do (review round 2, R2-1: `max(series.step) ge 0` judged
     nothing the kernel produced), and neither does the history of a variable nothing writes
-    (host data echoed per sample). A time or step capture, an input, a coordinate, a
-    `derived.*` value and a `comparand.` read never do."""
+    (host data echoed per sample). `restart_point.<v>` does as `history.<v>` does, and
+    `restart_point.t` / `restart_point.step` never do; a node with `drive` reads none of them
+    (`validate_primary_predicate_schema`'s ``driven``). A time or step capture, an input, a
+    coordinate, a `derived.*` value and a `comparand.` read never do."""
     if ref.kind == _HISTORY:
         name, member = history_member(ref.name)
         if member is not None:
             return False
+    elif ref.kind == _RESTART_POINT:
+        # Reached only on an IR with no `drive` (the schema gate refuses the read itself on a
+        # driven one): a harness self-test's restart points of a variable are what its own
+        # runner captured. `t` and `step` are no variable's name, so they count for nothing.
+        name = ref.name
     elif ref.kind == _SERIES:
         match = _SERIES_FOLD_RE.match(ref.name)
         if match is None:
@@ -979,8 +989,8 @@ def _table(value: Any) -> Any:
 class CaseEnv(NamedTuple):
     """Everything an expression can name inside one case. A capture table holds the declared
     variables the capture file carries; a variable it omits, and every ``initial.<var>`` of a
-    case with no ``initial/`` capture (``initial`` None — a harness self-test's own runner
-    writes none), is an evaluation error of the predicate that names it. ``history`` /
+    case with no ``initial/`` capture (``initial`` None — a harness self-test commits one
+    only in the cases its `tests.md` states), is an evaluation error of the predicate that names it. ``history`` /
     ``series`` / ``derived`` (grammar 6) are a mapping or a `Lazy` of one, None when nothing
     can answer them; ``state_rank`` is the state's rank (the coordinates' rank), None when not
     known, and lets a reduction tell a sampled field's leading axis from a state axis;
@@ -1029,6 +1039,29 @@ def schema_variables(schema: dict[str, Any]) -> dict[str, list[str]]:
         if isinstance(entry, dict) and isinstance(entry.get("name"), str):
             out[entry["name"].strip()] = _shape_dims(entry.get("shape_expr"))
     return out
+
+
+def is_zero_token(token: str) -> bool:
+    """Whether a `shape_expr` token is an unsigned integer whose VALUE is 0 (`0`, `00`)."""
+    return token.isascii() and token.isdigit() and int(token) == 0
+
+
+def zero_extent_variables(schema: dict[str, Any]) -> frozenset[str]:
+    """The schema variables declared with a zero extent (issue #644 O15): a `shape_expr` token
+    that `is_zero_token`. The one predicate of the Compile gate that holds them to the
+    `tests.md` `zero_extent:` line and of both readers of a record (`_load_capture`, the
+    post-execute shape check)."""
+    out: set[str] = set()
+    for entry in (schema.get("variables") if isinstance(schema.get("variables"), list) else []):
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        try:
+            dims = _shape_dims(entry.get("shape_expr"))
+        except PrimaryEvidenceError:
+            continue   # an unreadable shape is the schema gate's finding, and declares no zero
+        if any(is_zero_token(token) for token in dims):
+            out.add(entry["name"].strip())
+    return frozenset(out)
 
 
 def state_rank(schema: dict[str, Any]) -> int:
@@ -1214,9 +1247,12 @@ class _Captures(NamedTuple):
 
 def _load_capture(captures: _Captures, group: str, case_id: str, step: int | None,
                   variables: dict[str, list[str]],
-                  time_variable: str | None, *, empty_state: bool = False) -> dict[str, Any]:
+                  time_variable: str | None, *, empty_state: bool = False,
+                  zero_extent: frozenset[str] = frozenset()) -> dict[str, Any]:
     """One state record as `variable -> float | float64 ndarray`, each checked against its
-    declared rank (and equal extents for a repeated dimension token) and for finiteness."""
+    declared rank (and equal extents for a repeated dimension token) and for finiteness. A
+    variable of ``zero_extent`` (`zero_extent_variables`) holds no element in any record, and
+    no other variable is empty but under ``empty_state``."""
     doc = captures.read(group, case_id, step)
     label = captures.label(group, case_id, step)
     out: dict[str, Any] = {}
@@ -1240,6 +1276,15 @@ def _load_capture(captures: _Captures, group: str, case_id: str, step: int | Non
                 f"({exc})") from None
         if _contains_non_number(raw):
             raise PrimaryEvidenceError(f"{label}: variable {name!r} holds a non-numeric value")
+        if name in zero_extent:
+            # Declared with a zero extent (issue #644 O15): no element in any record. The
+            # rank is not asked, for the reason below.
+            if arr.size != 0:
+                raise PrimaryEvidenceError(
+                    f"{label}: variable {name!r} is declared with a zero extent and holds "
+                    f"{arr.size} element(s)")
+            out[name] = arr
+            continue
         if arr.size == 0 and empty_state:
             # A zero-extent guard case's state, written by the host-rendered driver
             # (`_evaluate_case` admits one only on a case only `xfail` tests target): nested
@@ -1276,14 +1321,15 @@ def _contains_non_number(value: Any) -> bool:
 
 
 def _stepped_records(captures: _Captures, group: str, steps: list[int], case_id: str,
-                     variables: dict[str, list[str]], time_variable: str | None, what: str
-                     ) -> list[dict[str, Any]]:
+                     variables: dict[str, list[str]], time_variable: str | None, what: str,
+                     zero_extent: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """The records of one case in a stepped group, ascending by their step `k`: each read like
     a capture (`_load_capture`: declared rank, finiteness), and carrying `step` equal to `k`."""
     records: list[dict[str, Any]] = []
     for k in steps:
         name = captures.label(group, case_id, k)
-        record = _load_capture(captures, group, case_id, k, variables, time_variable)
+        record = _load_capture(captures, group, case_id, k, variables, time_variable,
+                               zero_extent=zero_extent)
         if STEP_CAPTURE not in record:
             raise PrimaryEvidenceError(f"{what} {name} carries no {STEP_CAPTURE!r}")
         if record[STEP_CAPTURE] != float(k):
@@ -1304,7 +1350,8 @@ def _stack(case_id: str, what: str, name: str, records: list[dict[str, Any]]) ->
 
 
 def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[str]],
-                  time_variable: str | None, final: dict[str, Any]) -> dict[str, Any]:
+                  time_variable: str | None, final: dict[str, Any],
+                  zero_extent: frozenset[str] = frozenset()) -> dict[str, Any]:
     """The samples of one case (grammar 7): per variable `v`, the records the store lists
     (`history_steps`, ascending) that hold `v`, stacked on a LEADING axis under `v`, with their
     committed steps under `v.step` and their times under `v.t` — a history record holds the
@@ -1314,7 +1361,7 @@ def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[s
     it (`runner_ir.driver_plan`)."""
     records = _stepped_records(captures, capture_store.HISTORY,
                                captures.store.history_steps(captures.sdir, case_id), case_id,
-                               variables, time_variable, "history sample")
+                               variables, time_variable, "history sample", zero_extent)
     out: dict[str, Any] = {}
     for name in variables:
         mine = [record for record in records if name in record]
@@ -1332,14 +1379,16 @@ def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[s
 
 
 def _load_restart_points(captures: _Captures, case_id: str, variables: dict[str, list[str]],
-                         time_variable: str | None, final: dict[str, Any]) -> dict[str, Any]:
+                         time_variable: str | None, final: dict[str, Any],
+                         zero_extent: frozenset[str] = frozenset()) -> dict[str, Any]:
     """The restart points of one case (grammar 7), ascending by step: every variable each of
     them holds stacked on a LEADING axis, with `step` and `t`. No restart point is admitted
     (a stride of 0, or a run shorter than the stride): every name is then empty, an array
     variable shaped like its final capture."""
     records = _stepped_records(captures, capture_store.RESTART_POINT,
                                captures.store.restart_point_steps(captures.sdir, case_id),
-                               case_id, variables, time_variable, "restart point")
+                               case_id, variables, time_variable, "restart point",
+                               zero_extent)
     out: dict[str, Any] = {}
     for name in variables:
         if not records:
@@ -1404,15 +1453,16 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
     tv = schema.get("time_variable")
     tv = tv.strip() if isinstance(tv, str) and tv.strip() else None
     captures = _Captures.of(run_dir, output_format)
-    # A node whose own runner writes the snapshots (a harness self-test) writes no initial
-    # capture; the host-rendered runner always does, and the conductor's
+    zero = zero_extent_variables(schema)
+    # A node whose own runner writes the snapshots (a harness self-test) commits an initial
+    # record only in the cases its `tests.md` states; the host-rendered runner always does, and the conductor's
     # `_snapshot_deliverable_gap(initial_required=True)` refuses a run without one before any
     # verdict is authored (the `--stage post_execute` validator only shape-checks the record).
     initial = (_load_capture(captures, capture_store.INITIAL, case_id, None, variables, tv,
-                             empty_state=empty_state)
+                             empty_state=empty_state, zero_extent=zero)
                if captures.has(capture_store.INITIAL, case_id) else None)
     final = _load_capture(captures, capture_store.FINAL, case_id, None, variables, tv,
-                          empty_state=empty_state)
+                          empty_state=empty_state, zero_extent=zero)
     rank = state_rank(schema)
     shape = state_shape_of(final, rank)
     if shape is not None and initial is not None and state_shape_of(initial, rank) != shape:
@@ -1420,10 +1470,12 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
             f"{case_id}: the initial and final captures disagree on the state shape")
     return CaseEnv(case_id=case_id, initial=initial, final=final, inputs=inputs,
                    coordinates=coordinate_arrays(schema, inputs, shape),
-                   history=Lazy(lambda: _load_history(captures, case_id, variables, tv, final)),
+                   history=Lazy(
+                       lambda: _load_history(captures, case_id, variables, tv, final, zero)),
                    series=Lazy(lambda: _load_series(captures, case_id)),
                    restart_point=Lazy(
-                       lambda: _load_restart_points(captures, case_id, variables, tv, final)),
+                       lambda: _load_restart_points(captures, case_id, variables, tv, final,
+                                                    zero)),
                    derived=_state_shaped_derived(derived, shape), state_rank=rank,
                    captured_shapes=frozenset(np.shape(v) for v in final.values()))
 
@@ -1738,7 +1790,7 @@ def _capture_value(env: CaseEnv, point: str, var: str, *, who: str = "this run")
     if table is None:
         raise PrimaryEvidenceError(
             f"{point}.{var}: case {env.case_id!r} of {who} has no initial capture "
-            "(a node whose own runner writes the snapshots writes none)")
+            "(a harness self-test commits one only in the cases its tests.md states)")
     if var not in table:
         raise PrimaryEvidenceError(
             f"{point}.{var}: not captured in case {env.case_id!r} of {who}")
@@ -2321,7 +2373,8 @@ def validate_primary_predicate_schema(
     is refused); ``history_strides`` — `drive.history`, variable -> the `inputs` path of its
     stride (None on an IR with no `drive`): a `history.<v>` read of a variable with no stride is
     refused, and so is a predicate whose history reads span two stride inputs (the stacks have
-    different axes); ``restart_point_names`` — the variables a restart point holds (None: no
+    different axes); ``restart_point_names`` — the variables a restart point holds (every schema
+    variable on an IR with no `drive`; None: no
     `restart_points` entry is declared and every `restart_point.*` read is refused);
     ``driven`` — the IR carries `drive`, and every `restart_point.*` read is refused: where a
     restart point falls on the step of a sample or of the final capture, the host-rendered
@@ -2611,7 +2664,9 @@ def validate_primary_predicate_schema(
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
                      "non-logical variable an operation writes, initial.<v> of one init writes, "
-                     "history.<v> / series.<v>_min|_max of a written v) in expr or a "
+                     "history.<v> / series.<v>_min|_max of a written v"
+                     + ("" if driven else "; restart_point.<v> of a variable this node's own "
+                                          "runner captures") + ") in expr or a "
                      "bind expr reaches: a predicate values the state the kernel produced (the "
                      "host's own initial_state read back, a derived.* value, final.step / "
                      "final.t, the driver's history.<v>.t / history.<v>.step / series.step, "
@@ -4276,8 +4331,10 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
     raises — `Compile.static` reports that itself through `drive_violations` (c) — and a
     `derived.*` read is then judged against the names the case declares),
     `series_names`, `history_declared`, `history_strides` (`drive.history`; None with no
-    `drive` or a malformed one), `restart_point_names` (the restart variables when a
-    `restart_points` entry is declared, else None) and `driven` (the IR carries `drive`)."""
+    `drive` or a malformed one), `restart_point_names` (when a `restart_points` entry is
+    declared: the restart variables, or every schema variable on an IR with no `drive`, whose
+    own runner decides what a restart point holds; else None) and `driven` (the IR carries
+    `drive`)."""
     try:
         reads: StateReads | None = state_reads(ir)
     except PrimaryEvidenceError:
@@ -4288,7 +4345,9 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
         case_inputs = None
     try:
         block = drive_block(ir) if _has_drive(ir) else None
-        points: frozenset[str] | None = restart_variables(ir)
+        points: frozenset[str] | None = (
+            restart_variables(ir) if _has_drive(ir)
+            else frozenset(schema_variables(snapshot_schema(ir) or {})))
     except PrimaryEvidenceError:
         block, points = None, frozenset()
     entries = _evidence_entries(ir)
@@ -4908,11 +4967,33 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     return _source_key_violations(ir) + _drive_kind_violations(ir, kind=kind)
 
 
+def _infrastructure_series_violations(ir: dict[str, Any]) -> list[str]:
+    """The `step_series` entry of an `infrastructure` IR (issue #644 P4b): its own runner
+    commits the series, so the names are the entry's own — strings, each once, `step` among
+    them (every series carries the step column, and the post-execute check compares the
+    record's names with these), and none of the reserved names beside it."""
+    series = _evidence_entries(ir).get("step_series")
+    if series is None:
+        return []
+    names = series.get("names")
+    listed = [n for n in (names if isinstance(names, list) else []) if isinstance(n, str)]
+    v: list[str] = []
+    if not isinstance(names, list) or len(listed) != len(names) \
+            or len(set(listed)) != len(listed) or STEP_CAPTURE not in listed:
+        v.append(f"(h) step_series.names must be a list of distinct names that holds "
+                 f"{STEP_CAPTURE!r}; got {names!r}")
+    for name in listed:
+        reason = reserved_name_reason(name) if name != STEP_CAPTURE else None
+        if reason is not None:
+            v.append(f"(h) step_series name {name!r} is refused: {reason}")
+    return v
+
+
 def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     """`drive_violations` past the `source` key: the gates (a)-(l) and (n) under ``kind``."""
     if kind == INFRASTRUCTURE_KIND:
         return (["drive: an infrastructure node carries no drive block (its own runner runs "
-                 "its cases)"] if _has_drive(ir) else [])
+                 "its cases)"] if _has_drive(ir) else []) + _infrastructure_series_violations(ir)
     if kind not in DRIVE_REQUIRED_KINDS:
         return [f"drive: spec kind {kind!r} is not one of "
                 f"{sorted(DRIVE_REQUIRED_KINDS | {INFRASTRUCTURE_KIND})}"]

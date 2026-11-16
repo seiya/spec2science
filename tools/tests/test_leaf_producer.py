@@ -2866,9 +2866,18 @@ def _write_harness_node(repo: Path, *, ir_id="h_20260908_001",
     spec_dir = repo / _HARNESS_SPEC_PATH
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "tests.md").write_text("- test: the plumbing round-trips\n", encoding="utf-8")
-    (spec_dir / "controlled_spec.md").write_text("## 5 Algorithm\nplumbing\n", encoding="utf-8")
+    (spec_dir / "controlled_spec.md").write_text(_HARNESS_SPEC_TEXT, encoding="utf-8")
     return wc.NodeRefs(target_id=_TARGET_ID, node_key=_HARNESS, spec_path=_HARNESS_SPEC_PATH, ir_id=ir_id,
                        pipeline_id="h_20260908_001", source_id=source_id)
+
+
+#: A harness `controlled_spec.md` with the numbered sections the producer's slice reads.
+_HARNESS_SPEC_TEXT = (
+    "# spec\n\n## 1. Responsibility and scope\nSCOPE-MARK\n\n"
+    "## 2. input/output contract\nIO-MARK\n\n## 3. Operation definition\nOPERATION-MARK\n\n"
+    "### 3.2 Published operations\nplumbing\n\n## 4. Failure conditions and constraints\n"
+    "FAILURE-MARK\n\n## 5. Public API and compatibility\nSURFACE-MARK\n\n"
+    "## 6. Prohibitions\nPROHIBITION-MARK\n\n## 7. Traceability\nTRACE-MARK\n")
 
 
 def _harness_bundle() -> dict:
@@ -3027,8 +3036,7 @@ class PureHarnessShapeTests(unittest.TestCase):
                     / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(
                         encoding="utf-8")
         # ... followed by the target language's runner-output binding (issue #289), whole too,
-        # and by the capture layout of the target's output format (issue #644 P4a): the producer
-        # is seeded no controlled spec, so this is where the layout its model writes reaches it.
+        # and by the capture layout of the target's output format (issue #644 P4a).
         from tools.backends.language.fortran import prompts as fortran_prompts
         from tools.backends.output_format.json import store as json_store
         self.assertEqual(ctx["runner_output_contract_document"],
@@ -3045,6 +3053,32 @@ class PureHarnessShapeTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as caught:
                     self.c._build_leaf_harness_context(self.refs)
             self.assertIn(reason, str(caught.exception))
+        # §1 to §4 and §6 of the node's own controlled spec (issue #644 P4b; the operator's
+        # decision names §3 and §4, `_harness_controlled_spec_sections` says why the others go
+        # with them): `## 1.` up to `## 5.`, then `## 6.` up to `## 7.`, verbatim. Kills:
+        # seeding the whole document, §3 alone, or dropping §6.
+        self.assertEqual(
+            ctx["controlled_spec_sections_document"],
+            _HARNESS_SPEC_TEXT[_HARNESS_SPEC_TEXT.index("## 1."):
+                               _HARNESS_SPEC_TEXT.index("## 5.")].rstrip("\n") + "\n\n"
+            + _HARNESS_SPEC_TEXT[_HARNESS_SPEC_TEXT.index("## 6."):
+                                 _HARNESS_SPEC_TEXT.index("## 7.")].rstrip("\n"))
+        self.assertTrue(ctx["controlled_spec_sections_document"].startswith("## 1. "))
+        for mark, held in (("SCOPE-MARK", True), ("IO-MARK", True), ("OPERATION-MARK", True),
+                           ("FAILURE-MARK", True), ("SURFACE-MARK", False),
+                           ("PROHIBITION-MARK", True), ("TRACE-MARK", False)):
+            self.assertEqual(mark in ctx["controlled_spec_sections_document"], held, mark)
+        # A spec the slice cannot be cut from is a named refusal, not a shorter seed.
+        spec_file = self.repo / self.refs.spec_path / "controlled_spec.md"
+        for broken in (_HARNESS_SPEC_TEXT.replace("## 1. ", "## One. "),
+                       _HARNESS_SPEC_TEXT.replace("## 5. ", "## Five. "),
+                       _HARNESS_SPEC_TEXT.replace("## 6. ", "## Six. "),
+                       _HARNESS_SPEC_TEXT.replace("## 7. ", "## Seven. ")):
+            spec_file.write_text(broken, encoding="utf-8")
+            with self.assertRaises(RuntimeError) as caught:
+                self.c._build_leaf_harness_context(self.refs)
+            self.assertIn("pure_controlled_spec_document_unsliceable", str(caught.exception))
+        spec_file.write_text(_HARNESS_SPEC_TEXT, encoding="utf-8")
         # ...and the manifest it is shown is its OWN.
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
@@ -3196,7 +3230,7 @@ class PureHarnessShapeTests(unittest.TestCase):
             (f"{self.refs.spec_path}/tests.md", "pure_tests_document_missing",
              (self.c._build_leaf_harness_context, self.c._build_leaf_harness_verify_context)),
             (f"{self.refs.spec_path}/controlled_spec.md", "pure_controlled_spec_document_missing",
-             (self.c._build_leaf_harness_verify_context,)),
+             (self.c._build_leaf_harness_context, self.c._build_leaf_harness_verify_context)),
             (f"{self.refs.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing",
              (self.c._build_leaf_harness_verify_context,)),
         )

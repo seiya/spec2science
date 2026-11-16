@@ -1139,6 +1139,31 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
     return "\n".join(lines[start:stop]).rstrip("\n")
 
 
+def _harness_controlled_spec_sections(text: str) -> str:
+    """§1 through §4 and §6 of a harness node's `controlled_spec.md` — its responsibility and
+    scope, its input/output contract, its operation definitions, its failure conditions and
+    its prohibitions — as the harness `generate.generate` producer is seeded them (issue #644 P4b, an operator decision
+    recorded on the issue).
+
+    Every other producer reads no `controlled_spec.md` (`phase_02_generate.md` §2-1): the IR
+    carries the algorithm. A harness's contract is the behaviour of each published operation
+    and of the self-test in each case, and the audit on the issue found seven rules of it on
+    every harness, five more on one and nearly all of the distributed operations' on another
+    that no seed stated; restating them in a seeded document had left the next omission to be
+    found in review twice. The decision named §3 and §4; §1 and §2 are seeded with them
+    because §3 and §4 cite both — §2 for the case-file rules, the tokens of a non-finite real
+    and the variables each case captures, §1 for which operations are rank-agnostic and who
+    serializes the output on the distributed harness — and §6 because its reviewer, seeded the
+    whole document, holds the source to prohibitions stated nowhere else (a body that treats a
+    name, a case id or a group's content specially; review round 1). §5 is not: the
+    published surface it pins is the IR's `public_api`. `ValueError` on a missing heading
+    (`_numbered_section_range`), which the caller turns into a named fail-closed contract;
+    no line of the three specs inside either range is a fenced `## <n>.`."""
+    subject = "the harness controlled_spec.md"
+    return (_numbered_section_range(text, "1", "5", subject=subject) + "\n\n"
+            + _numbered_section_range(text, "6", "7", subject=subject))
+
+
 _GATE_GUARDS_HEADING_RE = re.compile(r"^## (?:\d+\.\s+)?Legality and gate guards\s*$")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
@@ -5793,8 +5818,8 @@ class Conductor:
         binding (the writer rules its JSON tokens follow; issue #289, R4-b PR-2 moved them out of
         the neutral document) and by the capture layout of the target's output format (which
         file holds a record of each capture group; issue #644 P4a moved it out of the neutral
-        document, and a harness producer is seeded no `controlled_spec.md`, so this is where the
-        layout its model must write reaches it). The binding is read through
+        document; a harness producer was seeded no `controlled_spec.md` then, and the layout
+        stays here beside the sections of the spec it is seeded since issue #644 P4b). The binding is read through
         `prompt_fragments` and the layout through the format's capture store, and every failure
         RAISES a named `RuntimeError` for the reason `_generate_rules_text` gives."""
         language = self.target.toolchain["language"]
@@ -6467,6 +6492,9 @@ class Conductor:
         rather than the language's, which is why "author to the standard the profile names" is
         not a substitute. See the slicer's docstring for the full history.
 
+        The EIGHTH document is §1 to §4 and §6 of the node's own `controlled_spec.md`
+        (`_harness_controlled_spec_sections`, which says why this producer alone reads it).
+
         Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
         (its OWN, see `_leaf_harness_node_key`), the target profile
         (`_leaf_target_profile_document`), the lowered IR and the tests. Every read RAISES on an
@@ -6492,6 +6520,13 @@ class Conductor:
                 f"pure_gate_guards_document_unsliceable: the "
                 f"{self.target.toolchain['language']} generate rules: {exc}") from exc
         lint_rules = self._lint_rules_document(refs)
+        spec_ref = f"{refs.spec_path}/controlled_spec.md"
+        try:
+            spec_sections = _harness_controlled_spec_sections(
+                self._leaf_node_document(spec_ref, "controlled_spec"))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"pure_controlled_spec_document_unsliceable: {spec_ref}: {exc}") from exc
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
@@ -6500,6 +6535,7 @@ class Conductor:
             "target_profile": self._leaf_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
+            "controlled_spec_sections_document": spec_sections,
             "runner_output_contract_document": self._runner_output_contract_with_binding(
                 contract_text),
             "gate_guards_document": gate_guards,
@@ -7807,6 +7843,8 @@ class Conductor:
             "target_profile": "target_profile.json",
             "ir_document": "spec.ir.yaml",
             "tests_document": "tests.md",
+            # The harness producer alone carries this key (`_build_leaf_harness_context`).
+            "controlled_spec_sections_document": "controlled_spec_sections.md",
             "runner_output_contract_document": "runner_output_contract.md",
             "gate_guards_document": "gate_guards.md",
             "lint_rules_document": "lint_rules.md",
@@ -12967,7 +13005,7 @@ class Conductor:
                 # issue #589) — the initial capture, the samples and the series. An earlier
                 # attempt's sample or series is removed, so it is not read as this run's; a
                 # directory the run left empty is not made (a harness self-test's run leaves
-                # each case's rowless series and nothing else beside its final records).
+                # records of the other groups only for the cases its `tests.md` states).
                 snaps_ref = f"{node_ref}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}"
                 for name in capture_store.store(self.target.output_format).copy_run(
                         capture_store.snapshot_dir(run_tmp), sdst):

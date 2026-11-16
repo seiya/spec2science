@@ -101,8 +101,10 @@ never refused by the harness.
   declaration (its `shape_expr`), with the `step` and the time its commit carries (the schema's
   `time_variable`, of shape `time_shape_expr`). A case that rejects its input or
   produces no meaningful values (e.g. a `*_xfail` length-guard case) **still
-  captures every declared variable, shape-valid**: `0.0` or zeros of the declared extents
-  (the host refuses an empty array in any capture). It may additionally record a guard flag.
+  captures every declared variable, shape-valid**: `0.0` or zeros of the declared extents.
+  The host refuses an empty array in a capture, with two exceptions: a variable the node's
+  `tests.md` `zero_extent:` line names, which holds no element in any record, and the state
+  of a host-rendered driver's zero-extent guard case. It may additionally record a guard flag.
   - Correct (a guard case, `x` declared `[3]`): `x` captured as three zeros, `invalid_rejected` as `1.0`.
   - Wrong: `x` not captured → `post_execute` fails with "declared state_variables missing"; and `x` captured with no element → the host refuses an empty capture.
   - **No placeholder text.** `post_execute` scans every file under
@@ -117,8 +119,8 @@ never refused by the harness.
 - **`initial`** (host-rendered runners) — the driver the host renders for an M3c physics node
   commits a SECOND record of each case, before the first call of `step`, after `init`, of
   exactly the shape above (Z6, issue #255). It is a deliverable of that runner and is
-  shape-checked like the `final` record. A harness self-test commits none, and nothing requires
-  it to.
+  shape-checked like the `final` record. A harness self-test commits one in the cases its
+  `tests.md` states, and it is shape-checked the same.
 - **`history`** (a host-rendered runner on a node whose `drive` declares `loop`, when the IR
   requires `state_history`) — at committed step `<k>`, the variables whose stride
   (`drive.history`; 0: never) divides `<k>`, of the shape above; no record if none is due.
@@ -131,6 +133,10 @@ never refused by the harness.
   `step_series` the host does not read it.
 - **`restart_point`** (the same node, when the IR requires `restart_points`) — the
   restart variables every `drive.restart_points.every` committed steps (0: none).
+- **A harness self-test** commits `history` records, `restart_point` records and `series` rows
+  in the cases its `tests.md` states, each at the steps and holding the variables stated
+  there, when its IR requires `state_history`, `restart_points` and `step_series`; its series
+  holds exactly the names its `step_series` entry declares, in every case.
 
 **What the driver captures.** An `initial` or `final` record of a host-rendered driver holds every
 state variable; every record carries the `step` and the `t` of its commit. Per case the driver reads the case through `__read_case` and the getters

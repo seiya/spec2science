@@ -91,8 +91,8 @@ class SpecSurfaceTests(unittest.TestCase):
                                      ("out", r, True))
 
     def test_every_tests_document_has_the_tests_and_counts_them(self) -> None:
-        words = {"harness_fortran_cpu": ("nine", 9), "harness_cpp_gpu": ("ten", 10),
-                 "harness_fortran_cpu_mpi": ("fifteen", 15)}
+        words = {"harness_fortran_cpu": ("ten", 10), "harness_cpp_gpu": ("eleven", 11),
+                 "harness_fortran_cpu_mpi": ("sixteen", 16)}
         for spec_id, (word, count) in words.items():
             with self.subTest(spec_id=spec_id):
                 text = _tests_md(spec_id)
@@ -101,7 +101,7 @@ class SpecSurfaceTests(unittest.TestCase):
                 self.assertIn(f"The suite defines {word} `case`s and {word} `test_id`s", text)
                 self.assertIn(f"`final.case_index <= {count}.0`", text)
                 for test_id in ("l0_read_case_roundtrip_pass", "l0_read_case_second_pass",
-                                "l0_missing_case_file_xfail"):
+                                "l0_missing_case_file_xfail", "l0_capture_groups_pass"):
                     self.assertIn(test_id, ids)
 
     def test_the_reading_contract_is_one_text_across_the_three_harnesses(self) -> None:

@@ -1188,6 +1188,8 @@ PINNED: dict[str, str] = {
     "leaf-100": "a3ba868a7e70a224f818081f96379b635347c3b6dff190ddd8072158ff1a7924",
     # leaf-101 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "leaf-101": "427472531112e820c4a4b507a573e41f7872ec75fa16f98e37a22866bbc8be37",
+    # leaf-102 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
+    "leaf-102": "0c82f01b3d93606f93982fa8206ed7b8e64ca397ffed7b53ccf99c4e682cc63d",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1261,11 +1263,15 @@ PINNED_READER: dict[str, str] = {
     "generate-verify-11": "6ac8c9e4c2e6f360541b8d9e6ac3218807da61c1ef55aec7dcab25546564f279",
     # generate-verify-12 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "generate-verify-12": "2e1252450f3d491db31cd552e3c46b7ecfbd4346234b5fb96dd4b317c8ff6e23",
+    # generate-verify-13 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
+    "generate-verify-13": "f9b04309fb8caabf2961d946a9ed4525ee9a983563212ca6d42ccaf2a1f3c1f6",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
     # validate-judge-10 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "validate-judge-10": "41f5396a6940c16dd8f8c21bd205f3878460db126cc0296149e86473b95e2996",
+    # validate-judge-11 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
+    "validate-judge-11": "1c26307a9240b000ec273f875c2c10c7579bbc3df6c3c55d28fa418b54025f7a",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
