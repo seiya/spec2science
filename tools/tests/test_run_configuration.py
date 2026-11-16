@@ -55,6 +55,7 @@ def _toy_ir(kind: str) -> dict[str, Any]:
         for var in schema["variables"]:
             if var["name"] == "ok":
                 var["name"] = "valid"
+        ir["drive"]["history"]["valid"] = ir["drive"]["history"].pop("ok")
     for case in ir["case"]["test_case_set"]:
         case["inputs"]["unused"] = 7
         case["inputs"]["profile"] = "descriptive"
@@ -332,7 +333,7 @@ class RunConfigurationTest(unittest.TestCase):
     def _continue(self, first: str, k: int, out: str, cfg: dict[str, Any] | None = None,
                   final: bool = False) -> int:
         capture = (self.tmp / first / "raw" / "state_snapshots"
-                   / ("m0.json" if final else f"history/m0__{k}.json"))
+                   / ("m0.json" if final else f"restart_point/m0__{k}.json"))
         return self.run_tool(cfg or {"base_case": "m0"}, out, restart_from=capture)
 
     def _assert_equal_runs(self, full: str, cont: str, k: int, n_step: int) -> None:
@@ -342,6 +343,14 @@ class RunConfigurationTest(unittest.TestCase):
         for j in range(k + 1, n_step + 1):
             self.assertEqual(self.snap(cont, f"history/m0__{j}"),
                              self.snap(full, f"history/m0__{j}"), j)
+            self.assertEqual(self.snap(cont, f"restart_point/m0__{j}"),
+                             self.snap(full, f"restart_point/m0__{j}"), j)
+        # and nothing at or before the restart step: those are the source run's
+        snaps = self.tmp / cont / "raw" / "state_snapshots"
+        for group in ("history", "restart_point"):
+            self.assertEqual(sorted(int(p.stem.rsplit("__", 1)[1])
+                                    for p in (snaps / group).glob("m0__*.json")),
+                             list(range(k + 1, n_step + 1)), group)
         series, base = (capture_store.store("json").read_record(
             capture_store.snapshot_dir(self.tmp / out), capture_store.SERIES, "m0")
             for out in (cont, full))
@@ -351,7 +360,7 @@ class RunConfigurationTest(unittest.TestCase):
         for name, column in series.items():
             self.assertEqual(column, base[name][k:], name)
 
-    def test_a_continuation_from_a_history_sample_equals_the_uninterrupted_run(self) -> None:
+    def test_a_continuation_from_a_restart_point_equals_the_uninterrupted_run(self) -> None:
         for kind, n_step in (("loop", 4), ("init", 3)):
             with self.subTest(kind=kind):
                 shutil.rmtree(self.repo, ignore_errors=True)
@@ -364,11 +373,12 @@ class RunConfigurationTest(unittest.TestCase):
                 rec = self.record(cont)
                 self.assertEqual(rec["start_check"], "held")
                 self.assertEqual(rec["restart"]["step"], 1)
-                self.assertEqual(rec["restart"]["source_kind"], "history")
+                self.assertEqual(rec["restart"]["source_kind"], "restart_point")
                 case = json.loads((self.tmp / cont / "case_inputs" / "m0.json").read_text())
                 self.assertEqual(case["restart.step"], 1)
-                self.assertEqual(case["restart.u"], self.snap(full, "history/m0__1")["u"])
-                # a chain: the continuation's own sample continues again
+                self.assertEqual(case["restart.u"],
+                                 self.snap(full, "restart_point/m0__1")["u"])
+                # a chain: the continuation's own restart point continues again
                 self.assertEqual(self._continue(cont, 2, chain), 0)
                 self._assert_equal_runs(full, chain, 2, n_step)
 
@@ -382,7 +392,13 @@ class RunConfigurationTest(unittest.TestCase):
     def test_restart_refusals(self) -> None:
         self.certify()
         self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
-        hist = self.tmp / "full" / "raw" / "state_snapshots" / "history"
+        hist = self.tmp / "full" / "raw" / "state_snapshots" / "restart_point"
+        # a history sample is no restart point (issue #644 P4b): the record at the same step
+        # under `history/` is refused by the store's placement
+        sample = self.tmp / "full" / "raw" / "state_snapshots" / "history" / "m0__2.json"
+        self.assertTrue(sample.is_file())
+        self.assertIn("not a capture of 'm0' (expected a restart point",
+                      self.refused({"base_case": "m0"}, "x0", restart_from=sample))
         # another configuration than the source's
         why = self.refused({"base_case": "m0", "inputs": {"n_step": 8, "t_end": 3.0}},
                            "x1", restart_from=hist / "m0__2.json")
@@ -400,7 +416,7 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertIn("not under <run>/raw/state_snapshots/",
                       self.refused({"base_case": "m0"}, "x4", restart_from=loose))
         # a run directory with no record of this tool
-        other = self.tmp / "other" / "raw" / "state_snapshots" / "history"
+        other = self.tmp / "other" / "raw" / "state_snapshots" / "restart_point"
         other.mkdir(parents=True)
         shutil.copy(hist / "m0__2.json", other)
         self.assertIn("run_record.json is unreadable",
@@ -461,7 +477,9 @@ class RunConfigurationTest(unittest.TestCase):
         meta.write_text(json.dumps(doc))
 
     def _sample(self, run: str, k: int) -> Path:
-        return self.tmp / run / "raw" / "state_snapshots" / "history" / f"m0__{k}.json"
+        """The restart point of ``run`` at step ``k`` (issue #644 P4b: no longer a history
+        sample)."""
+        return self.tmp / run / "raw" / "state_snapshots" / "restart_point" / f"m0__{k}.json"
 
     def _refused_at(self, out: Path) -> str:
         with self.assertRaises(rc.ConfigurationRefused) as ctx:
@@ -547,6 +565,80 @@ class RunConfigurationTest(unittest.TestCase):
                 rec = json.loads((out / rc.RUN_RECORD).read_text())
                 self.assertEqual(rec["status"], "interrupted")
                 self.assertEqual(rec["signal"], int(sig))
+
+    # --- what a run that did not reach its end kept (issue #644 P4b) -----------------------
+
+    #: The toy kernel's mode 6 stops the program in step 6 and mode 7 blocks there; at a
+    #: stride of 2 over 8 steps the run commits steps 1..5, the restart points 2 and 4, and the
+    #: series chunks written before them (rows 1..4); row 5 was never written.
+    _UNFINISHED = {"n_step": 8, "t_end": 3.0, "every": 2}
+    _KEPT = {"restart_points": [2, 4], "series": {"rows": 4, "last_step": 4}}
+
+    def test_a_run_that_stops_non_zero_records_what_it_kept(self) -> None:
+        """A binary that exits non-zero after committing restart points: the record's `kept`
+        names them and the series up to the last of them, read off the captures; an exit
+        before any capture keeps nothing; a run that reaches its end records no `kept`. Kills
+        dropping `kept` from the failed branch and recording it on an `ok` run."""
+        self.certify()
+        cfg = {"base_case": "m0", "inputs": {"mode": 6, **self._UNFINISHED}}
+        self.assertEqual(self.run_tool(cfg, "stopped"), rc.EXIT_RAN_FAILED)
+        rec = self.record("stopped")
+        self.assertEqual((rec["status"], rec["exit_status"]), ("failed", 7))
+        self.assertEqual(rec["kept"], self._KEPT)
+        snaps = self.tmp / "stopped" / "raw" / "state_snapshots"
+        self.assertEqual(sorted(p.name for p in (snaps / "restart_point").iterdir()),
+                         ["m0__2.json", "m0__4.json"])
+        # the series the store keeps is the rows 1..4 of the uninterrupted run
+        self.assertEqual(self.run_tool({"base_case": "m0", "inputs": self._UNFINISHED},
+                                       "full"), 0)
+        self.assertNotIn("kept", self.record("full"))
+        prefix, last = capture_store.store("json").read_series_prefix(snaps, "m0")
+        whole = capture_store.store("json").read_record(
+            capture_store.snapshot_dir(self.tmp / "full"), capture_store.SERIES, "m0")
+        self.assertEqual(last, 4)
+        self.assertEqual(prefix, {k: v[:4] for k, v in whole.items()})
+        shutil.rmtree(self.repo)
+        self.repo.mkdir()
+        self.certify(exe_bytes=b"#!/bin/sh\nexit 3\n")
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "bare"), rc.EXIT_RAN_FAILED)
+        self.assertEqual(self.record("bare")["kept"],
+                         {"restart_points": [], "series": {"rows": 0, "last_step": None}})
+
+    def test_a_timed_out_run_records_what_it_kept(self) -> None:
+        """A run killed at the timeout after committing restart points records them in
+        `kept` (the failed branch, `timed_out`). Kills dropping `kept` from the failed
+        branch."""
+        self.certify()
+        cfg = {"base_case": "m0", "inputs": {"mode": 7, **self._UNFINISHED}}
+        self.assertEqual(self.run_tool(cfg, timeout_sec=5.0), rc.EXIT_RAN_FAILED)
+        rec = self.record()
+        self.assertTrue(rec["timed_out"])
+        self.assertEqual(rec["kept"], self._KEPT)
+
+    def test_an_interrupted_run_records_what_it_kept(self) -> None:
+        """A run the tool is signalled out of after the binary committed restart points: the
+        `interrupted` record carries `kept` (the signal branch, a site of its own). Kills
+        dropping `kept` from the signal branch."""
+        self.certify()
+        cfg = self.config({"base_case": "m0", "inputs": {"mode": 7, **self._UNFINISHED}})
+        out = self.tmp / "sig"
+        proc = subprocess.Popen(
+            [sys.executable, str(rc.REPO_ROOT / "tools" / "run_configuration.py"), SPEC_REF,
+             "--target", "fortran_cpu", "--config", str(cfg), "--out", str(out),
+             "--repo-root", str(self.repo)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self.addCleanup(_reap_proc, proc)
+        last = out / "raw" / "state_snapshots" / "restart_point" / "m0__4.json"
+        deadline = time.monotonic() + 60
+        while not last.is_file() and time.monotonic() < deadline and proc.poll() is None:
+            time.sleep(0.05)
+        self.assertTrue(last.is_file())
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 128 + int(signal.SIGTERM))
+        rec = json.loads((out / rc.RUN_RECORD).read_text())
+        self.assertEqual(rec["status"], "interrupted")
+        self.assertEqual(rec["kept"], self._KEPT)
 
     def test_the_timeout_kills_a_child_the_binary_started(self) -> None:
         self.certify(exe_bytes=b"#!/bin/sh\nsleep 120 &\necho $! > grandchild.pid\nwait\n")
@@ -679,7 +771,7 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertEqual(self._continue("full", 1, "cont"), 0)
         rec = self.record("cont")["restart"]
         self.assertEqual(rec["sha256"], hashlib.sha256(sample.read_bytes()).hexdigest())
-        self.assertEqual((rec["source_kind"], rec["step"]), ("history", 1))
+        self.assertEqual((rec["source_kind"], rec["step"]), ("restart_point", 1))
         self.assertEqual(rec["source_run"], str((self.tmp / "full").resolve()))
         ir_files = list((self.repo / "workspace" / "ir" / "component__drv_toy__0.1.0")
                         .rglob("spec.ir.yaml"))

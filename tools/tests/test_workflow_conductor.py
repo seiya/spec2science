@@ -18640,13 +18640,13 @@ class DeterministicBuildTest(unittest.TestCase):
             # declares no one-call scalar, so none).
             record = basis["predicates"][0]
             self.assertNotIn("sources_read", record)
-            self.assertEqual(record["grammar_version"], 6)
+            self.assertEqual(record["grammar_version"], 7)   # issue #644 P4b
             self.assertEqual(record["scalar_pairing"], {})
             on_disk = json.loads((node / "verdict.json").read_text())
             self.assertEqual(on_disk["per_test"][0]["basis"]["predicates"][0]["quantity"], "scale")
             self.assertNotIn("sources_read", on_disk["per_test"][1]["basis"]["predicates"][0])
             self.assertEqual(
-                on_disk["per_test"][1]["basis"]["predicates"][0]["grammar_version"], 6)
+                on_disk["per_test"][1]["basis"]["predicates"][0]["grammar_version"], 7)
 
             # the captured state says the kernel did not scale
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 9.0])

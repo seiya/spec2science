@@ -52,7 +52,10 @@ from tools import capture_store
 #: 5 (issue #644 P4): a case's `series` is shown on a node that declares `step_series` (every
 #: case has a series record, with no row on a node that commits none), and its `t` is one
 #: entry per row where it was the writer's one scalar.
-RAW_EXCERPT_POLICY_VERSION = 5
+#: 6 (issue #644 P4b): each case carries `restart_points`, the number of its restart points;
+#: `history_samples` counts history records, each holding the variables due at its step; and
+#: `required_evidence` looks for `restart_points` where the driver writes them.
+RAW_EXCERPT_POLICY_VERSION = 6
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
 RAW_EVIDENCE_ALIASES = {
@@ -62,11 +65,18 @@ RAW_EVIDENCE_ALIASES = {
     # Issue #589: the driver's samples and its per-step series (`_EVIDENCE_GROUPS`).
     "state_history": "state_history",
     "step_series": "step_series",
+    # Issue #644 P4b: the driver's restart points, a capture group of their own.
+    "restart_points": "restart_points",
 }
 
 #: The capture group a canonical artifact is, when it is one: its presence is asked of the
 #: capture store of the run's output format, not of a directory name.
-_EVIDENCE_GROUPS = {"state_history": capture_store.HISTORY, "step_series": capture_store.SERIES}
+_EVIDENCE_GROUPS = {"state_history": capture_store.HISTORY, "step_series": capture_store.SERIES,
+                    "restart_points": capture_store.RESTART_POINT}
+#: The groups a legal stride of 0 leaves empty: a run with no record of one is missing no
+#: evidence (a predicate that reads the group is what needs records, and it answers
+#: `structural`).
+_OPTIONAL_GROUP_ARTIFACTS = frozenset({"state_history", "restart_points"})
 
 #: The capture directory as the excerpt's labels spell it, and its place below `raw/`.
 _SNAPSHOTS_LABEL = "/".join(capture_store.SNAPSHOT_DIR_PARTS)
@@ -148,7 +158,8 @@ def _state_snapshots(raw_dir: Path, problems: list[str], store: Any, *,
     the initial one, taken before the first call. The initial capture is summarized under the
     case's `initial` key by the same summarizer, or `None` when the runner wrote none (a
     harness self-test's own runner). On a `loop` node (issue #589) `history_samples` counts the
-    case's samples and `series` is the summary of its series record: each name's length,
+    case's history records (the steps at which some variable was sampled), `restart_points` its
+    restart points, and `series` is the summary of its series record: each name's length,
     minimum and maximum, or `None`. The cases are those ``store`` finds a final capture of, in
     its order; a record is labelled by the file the store reads it from.
     """
@@ -181,6 +192,7 @@ def _state_snapshots(raw_dir: Path, problems: list[str], store: Any, *,
                            time_variable, problems)
             if store.has_record(snapshots_dir, capture_store.INITIAL, case_id) else None)
         case["history_samples"] = len(store.history_steps(snapshots_dir, case_id))
+        case["restart_points"] = len(store.restart_point_steps(snapshots_dir, case_id))
         case["series"] = (_series_summary(store, snapshots_dir, case_id, problems)
                           if series_declared else None)
         cases.append(case)
@@ -249,6 +261,9 @@ def _group_present(store: Any, snapshots_dir: Path, group: str) -> bool:
         if group == capture_store.HISTORY:
             return any(store.history_steps(snapshots_dir, case_id)
                        for case_id in store.case_ids(snapshots_dir))
+        if group == capture_store.RESTART_POINT:
+            return any(store.restart_point_steps(snapshots_dir, case_id)
+                       for case_id in store.case_ids(snapshots_dir))
         return bool(store.case_ids(snapshots_dir, group))
     except OSError:
         return False
@@ -287,9 +302,8 @@ def _required_evidence_rows(raw_dir: Path, io_contract: Any, store: Any) -> list
         rows.append({
             "declared_as": spelling,
             "artifact": artifact,
-            # `every: 0` is a legal stride, so a run with no sample is missing no evidence: a
-            # predicate over `history.*` is what needs samples, and it answers `structural`.
-            "required": item.get("required") is not False and artifact != "state_history",
+            "required": item.get("required") is not False
+            and artifact not in _OPTIONAL_GROUP_ARTIFACTS,
             "present": present,
         })
     return rows

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Builds the hand-authored IR of `problem/shallow_water2d_rotating@0.1.1` (system tier PR-S2;
-the restart case of issue #632 P2) from `tests.md` of that node: the cases (§2-§4), the judged
+"""Builds the hand-authored IR of `problem/shallow_water2d_rotating@0.1.2` (system tier PR-S2;
+the restart case of issue #632 P2; the restart points of issue #644 P4b) from `tests.md` of that node: the cases (§2-§4), the judged
 quantities (§5) and the tests (§6), transcribed by hand into a generator so that the
 transcription is reviewable as code. It is NOT an output of `Compile`. The member's hand IR
 (`../pr3_evidence/ir/shallow_water2d.yaml`) supplies the `drive` / `public_api` / `io_contract`
@@ -29,12 +29,12 @@ HERE = Path(__file__).resolve().parent
 MEMBER_IR = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d.yaml"
 TRANSCRIPTION = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d_rotating.yaml"
 SID = "shallow_water2d_rotating"
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 NODE_KEY = f"problem/{SID}@{VERSION}"
 SPEC_DIR = f"spec/problem/dynamics/shallow_water/{SID}"
 CORIOLIS = "dynamics_shallow_water_source_2d_coriolis"
 RK4 = "dynamics_shallow_water_time_update_2d_rk4"
-TEST_PROFILE = ("shallow_water2d_rotating_baseline", "0.2.0")
+TEST_PROFILE = ("shallow_water2d_rotating_baseline", "0.3.0")
 
 # ---------------------------------------------------------------------------------------------
 # closed forms (tests.md §2)
@@ -92,13 +92,15 @@ DERIVED = {
 
 
 def case(case_id: str, *, nx: int, ny: int, L_x: float = 1.0, L_y: float = 1.0,
-         t_end: float = 0.2, every: int, dt_scale: float = 1.0, initial: dict[str, Any],
+         t_end: float = 0.2, every: int, restart_every: int = 0, dt_scale: float = 1.0,
+         initial: dict[str, Any],
          state: dict[str, str], rotation: dict[str, Any],
          topography: dict[str, Any] | None = None) -> dict[str, Any]:
     inputs = {
         "grid": {"nx": nx, "ny": ny, "L_x": L_x, "L_y": L_y},
         "time": {"t_start": 0.0, "t_end": t_end},
         "history": {"every": every},
+        "restart_points": {"every": restart_every},
         "dt_rule": {"kind": "cfl_ceil_n_step", "dt_scale": dt_scale, "cfl_target": 0.45},
         "initial": initial,
         "topography": topography or {"topography_profile": "flat"},
@@ -206,10 +208,11 @@ def cases(member_ir: dict[str, Any]) -> list[dict[str, Any]]:
                     rotation=q))
     out.append(case("swr_shear_n064_rect", nx=64, ny=48, L_y=0.5, every=20, initial=SHEAR_BASE,
                     state=SHEAR, rotation=SHEAR_ROT))
-    # judgment 10 (issue #632 P2): the restart case and its continuation from the sample at
-    # step 61 of 183, odd, so no multiple of rotation.every = 2 (tests.md 2-13)
-    base = case(RESTART_BASE, nx=64, ny=64, every=61, initial=SHEAR_BASE, state=SHEAR,
-                rotation=SHEAR_ROT)
+    # judgment 10 (issue #632 P2): the restart case and its continuation from the restart point
+    # at step 61 of 183, odd, so no multiple of rotation.every = 2 (tests.md 2-13); its history
+    # stride is the shear-flow cases' 20 (issue #644 P4b)
+    base = case(RESTART_BASE, nx=64, ny=64, every=20, restart_every=RESTART_STEP,
+                initial=SHEAR_BASE, state=SHEAR, rotation=SHEAR_ROT)
     out.append(base)
     cont = {k: copy.deepcopy(v) for k, v in base.items() if k not in ("case_id", "initial_state")}
     out.append({"case_id": RESTART_CONT, **cont, "restart": {"from": RESTART_BASE,
@@ -227,6 +230,8 @@ def cases(member_ir: dict[str, Any]) -> list[dict[str, Any]]:
         inp = m["inputs"]
         inp.pop("profile_selection", None)
         inp["rotation"] = r
+        # every member input kept, `restart_points.every` among them (tests.md §3: 90 on the
+        # cone cases, whose member case is the member's restart base)
         inp["test_profile_id"], inp["test_profile_version"] = TEST_PROFILE
         m["initial_state"]["f"] = F_EXPR
         out.append(m)
@@ -392,7 +397,7 @@ def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
            "ev": "rho ** m * (u0 * sin(m * psi) + v0 * cos(m * psi))"}
     t.add("rotation.closed_form.final_rel",
           "max(maxabs(final.hu - eu), maxabs(final.hv - ev)) / w0", "le", 1.0e-12, bind=fin)
-    his = {**cf, "m": "floor(history.step / inputs.rotation.every)",
+    his = {**cf, "m": "floor(history.h.step / inputs.rotation.every)",
            "eu": "rho ** m * (u0 * cos(m * psi) - v0 * sin(m * psi))",
            "ev": "rho ** m * (u0 * sin(m * psi) + v0 * cos(m * psi))"}
     t.add("rotation.closed_form.history_rel",
@@ -414,7 +419,7 @@ def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
     t.add("wave.phase_error_max", "max(abs(atan2(sin(d), cos(d))))", "le", b,
           bind={**pw, "s1": "ssum((history.h - inputs.constants.H_0) * x)",
                 "s2": f"ssum((roll(history.h, 0, {q}, 0) - inputs.constants.H_0) * x)",
-                "d": "atan2(-s1, -s2) - om * history.t"})
+                "d": "atan2(-s1, -s2) - om * history.h.t"})
     t.add("wave.phase_error_final", "abs(atan2(sin(d), cos(d)))", "le", b,
           bind={**pw, "s1": "sum((final.h - inputs.constants.H_0) * x)",
                 "s2": f"sum((roll(final.h, {q}, 0) - inputs.constants.H_0) * x)",
@@ -575,11 +580,11 @@ def skeleton(member_ir: dict[str, Any]) -> dict[str, Any]:
     ir["dependency"] = {
         "node_key": NODE_KEY,
         "direct_deps": [
-            {"kind": "problem", "node_key": "problem/shallow_water2d@0.5.2",
+            {"kind": "problem", "node_key": "problem/shallow_water2d@0.5.3",
              "operations": ["shallow_water2d__step"]},
             {"kind": "component", "node_key": f"component/{CORIOLIS}@0.2.0",
              "operations": [f"{CORIOLIS}__apply"]},
-            {"kind": "component", "node_key": f"component/{RK4}@0.1.1",
+            {"kind": "component", "node_key": f"component/{RK4}@0.1.2",
              "operations": [f"{RK4}__advance"]}]}
     step = ir["drive"]["step"]
     step["operation"] = op

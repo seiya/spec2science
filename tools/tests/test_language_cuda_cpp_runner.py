@@ -37,7 +37,7 @@ from tools.structured_signatures import load_structured_signatures
 from tools.tests import skip_probes
 from tools.tests import test_fortran_runner as ft_tests
 from tools.tests.object_cache import compile_cached
-from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir
+from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir, sampled
 
 HARNESS = "harness_cpp_gpu"
 NVCC = shutil.which("nvcc")
@@ -144,7 +144,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_includes_the_two_headers_and_the_standard_library_only(self) -> None:
         includes = re.findall(r'^#include (.*)$', self.text, re.MULTILINE)
         self.assertEqual(['"harness_cpp_gpu_model.cuh"', f'"{RANK_SID}_model.cuh"', "<algorithm>",
-                          "<chrono>", "<cmath>", "<cstddef>", "<cstdint>", "<cstdio>", "<cstdlib>",
+                          "<array>", "<chrono>", "<cmath>", "<cstddef>", "<cstdint>", "<cstdio>", "<cstdlib>",
                           "<iostream>", "<limits>", "<string>", "<type_traits>", "<vector>"],
                          includes)
         self.assertIn("int main(int argc, char** argv) {", self.text)
@@ -168,7 +168,7 @@ class RenderShapeTest(unittest.TestCase):
         order = [self.text.index(needle) for needle in (
             "hm::harness_cpp_gpu__read_case(cid, ok);",
             'hm::harness_cpp_gpu__get_array_r2("a2", st_a2);',
-            "hm::harness_cpp_gpu__capture_open(cid, cvars, 0, {}, 0);",
+            "hm::harness_cpp_gpu__capture_open(cid, cvars, 0,\n        {}, 0);",
             'capture_state("initial");',
             f"md::{SMOKE_OP}(",
             'capture_state("final");',
@@ -445,7 +445,8 @@ class HarnessPinTest(unittest.TestCase):
         self.ir = _boundary_ir()  # no rank-1 state
         self.ir["drive"]["loop"] = {"n_step": "inputs.n_step", "dt": "inputs.dt",
                                     "t_start": "inputs.t_start", "t_end": "inputs.t_end"}
-        self.ir["drive"]["history"] = {"every": "inputs.every"}
+        schema = self.ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        self.ir["drive"].update(sampled([v["name"] for v in schema["variables"]]))
         used = cpp_runner._used_harness_ops(self.ir)
         self.assertNotIn("capture_array_r1", used)
         self.assertIn("capture_real", used)
@@ -457,8 +458,9 @@ class HarnessPinTest(unittest.TestCase):
 
 class CaptureOpenRenderTest(unittest.TestCase):
     """What the driver declares to `capture_open` (issue #644 P4a; the Fortran twin is
-    `test_fortran_runner.CaptureOpenRenderTest`): the json harness does not read `h_var`, so no
-    json run observes it and these rows hold the text."""
+    `test_fortran_runner.CaptureOpenRenderTest`): the json harness does not read `h_var`, so a
+    json run does not observe it and these rows hold the text (the counts a run hands over are
+    `test_driver_render`'s capacity row)."""
 
     _ENTRY = re.compile(r'\{"(\w+)", \d, \{[^}]*\}, ([^\n]+),\n\s*(true|false)\},')
 
@@ -477,16 +479,43 @@ class CaptureOpenRenderTest(unittest.TestCase):
                 self.assertEqual(set(entries), {v["name"] for v in ir["io_contract"][
                     "raw_requirements"]["required_evidence"][0]["schema"]["variables"]})
 
+    _DUE = ("const auto due = [&](int every) {\n"
+            "      return every > 0 && n_c > step0 ? n_c / every - step0 / every : 0;\n"
+            "    };\n")
+
     def test_the_history_capacity_is_the_sample_count_on_a_loop_node_and_0_otherwise(
             self) -> None:
-        """`n_c / every_c` when `every_c > 0`, else 0, on a loop node; 0 on a one-call node. The
-        json harness does not read `h_var`, so no json run observes it: a text row."""
-        loop = self._entries(_render(loop_ir(0), "drv_toy"))
+        """Per variable (issue #644 P4b), `due(<its stride>)`: the multiples of the stride in
+        `step0 + 1 .. n_c` when it is positive, else 0, on a loop node; 0 for a variable
+        `drive.history` leaves out, and 0 on a one-call node. The json harness does not read
+        `h_var`, so no json run observes it: a text row (the counts a run writes are
+        `test_driver_render`'s capacity rows)."""
+        text = _render(loop_ir(0), "drv_toy")
+        self.assertEqual(1, text.count(self._DUE))
+        loop = self._entries(text)
         self.assertTrue(loop)
-        self.assertEqual({"every_c > 0 ? n_c / every_c : 0"}, {c for c, _ in loop.values()})
+        self.assertEqual({"due(history_every_c[0])"}, {c for c, _ in loop.values()})
         one = self._entries(_render(call_ir(0), "drv_toy"))
         self.assertTrue(one)
         self.assertEqual({"0"}, {c for c, _ in one.values()})
+        # two strides, one variable sampled by neither: each its own group's count
+        ir = loop_ir(0)
+        ir["drive"]["history"] = {"w": "inputs.ew", "u": "inputs.eu"}
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"].update(eu=2, ew=3)
+        caps = {name: cap for name, (cap, _) in self._entries(_render(ir, "drv_toy")).items()}
+        self.assertEqual(caps["ok"], "0")
+        self.assertEqual({caps["u"], caps["w"]},
+                         {"due(history_every_c[0])", "due(history_every_c[1])"})
+
+    def test_the_restart_point_capacity_is_the_restart_stride_s_count(self) -> None:
+        """`capture_open`'s restart point capacity is `due(restart_every_c)` on a loop node
+        (kills the literal 0 it was before issue #644 P4b), 0 on a one-call node."""
+        text = _render(loop_ir(0), "drv_toy")
+        self.assertIn("hm::harness_cpp_gpu__capture_open(cid, cvars, due(restart_every_c),\n",
+                      text)
+        self.assertIn("hm::harness_cpp_gpu__capture_open(cid, cvars, 0,\n",
+                      _render(call_ir(0), "drv_toy"))
 
 
 def _nvcc_lint(directory: Path, sources: list[str]) -> subprocess.CompletedProcess:

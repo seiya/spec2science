@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d_channel_subcycled`
-- `spec_version`: `0.1.0`
+- `spec_version`: `0.1.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -418,7 +418,7 @@ Everything the member's §7 forbids is forbidden here; the scheme of a member st
 - Forbid continuing after a `false` result of a sub-step, and forbid a result other than `false` for that call.
 - Forbid calling the member's `__init` anywhere but in `shallow_water2d_channel_subcycled__init`, more or less than once per call of it, with other arguments than that call's own, or under a condition; and forbid a result `init_ok` other than the member's.
 - Forbid computing a case by transposing or reflecting its state, its grid or its inputs to the orientation or sign of another case, computing there and transforming the result back; the member computes each case in its own orientation, from the inputs as given (`docs/TESTS.md` §Symmetry pairs).
-- Forbid carrying anything from one call of `shallow_water2d_channel_subcycled__step` to the next outside the state of §5: no step counter, clock, sub-step length, sub-step count, tendency or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is established by `shallow_water2d_channel_subcycled__init` from the current case's inputs, in every process that runs the case, or set by `shallow_water2d_channel_subcycled__step` from its own arguments at every call before it is read. `tests.md` continues a case from a state sample in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
+- Forbid carrying anything from one call of `shallow_water2d_channel_subcycled__step` to the next outside the state of §5: no step counter, clock, sub-step length, sub-step count, tendency or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is established by `shallow_water2d_channel_subcycled__init` from the current case's inputs, in every process that runs the case, or set by `shallow_water2d_channel_subcycled__step` from its own arguments at every call before it is read. `tests.md` continues a case from a restart point in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
 
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it: this `spec`, the member `problem` and the member's `component`s. No `profile` is adopted by this `spec`; the member's adopted `profile` resolves within the member.
@@ -426,7 +426,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is the member's (Williamson et al. 1992, LeVeque 2002, Toro 2009, van Leer 1977; the member's §8). The assembled-model mechanism is that of the system tier of `docs/design/scale_migration.md` §Order item 3: Part 1 for a `problem` that composes a `problem`, and Part 2 ([issue #632](https://github.com/seiya/spec2science/issues/632)) for a member that publishes `__init` and for the restart test; this `spec` is Part 2's sample of both.
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `false`. The member's step is differentiable under the member's §10, and the composition is the member's step repeated; the guard and the sub-step count are integer branches on an input, not on the state. AD of an assembled model is not prepared in this version.

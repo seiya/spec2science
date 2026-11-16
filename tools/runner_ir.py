@@ -32,8 +32,25 @@ from typing import Any
 from tools.host_render import RenderError
 from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
-#: Harness-owned snapshot keys a physics snapshot variable must not shadow.
-HARNESS_RESERVED_SNAPSHOT_KEYS = frozenset({"t", "case_id", "step"})
+#: Names a snapshot variable must not take (issue #644 O13): the driver's and the harness's own
+#: keys (`t`, `step`, `case_id`), the capture group words, and the words an output format's
+#: layout and the `tests.md` history lines spell beside a variable's name. The same set as
+#: `primary_evidence.RESERVED_VARIABLE_NAMES` (a test holds the two equal); a name containing
+#: `RESERVED_NAME_SEPARATOR` is refused with them, since a layout joins a group, a variable and
+#: a member with it.
+HARNESS_RESERVED_SNAPSHOT_KEYS = frozenset({
+    "t", "case_id", "step", "n", "count", "complete", "every", "none",
+    "initial", "final", "history", "restart_point", "series"})
+RESERVED_NAME_SEPARATOR = "__"
+
+
+def reserved_name_reason(name: str) -> str | None:
+    """Why ``name`` cannot name a snapshot variable or a series column, or None."""
+    if name in HARNESS_RESERVED_SNAPSHOT_KEYS:
+        return f"it is a reserved name ({sorted(HARNESS_RESERVED_SNAPSHOT_KEYS)})"
+    if RESERVED_NAME_SEPARATOR in name:
+        return f"it contains {RESERVED_NAME_SEPARATOR!r}, which a capture layout joins names with"
+    return None
 
 #: The harness's `case_id_len` (§5.1 of every harness this repository certifies): the width a
 #: parsed case id is stored at, and the bound on a declared case id.
@@ -101,10 +118,9 @@ def snapshot_schema(
     time_var = schema.get("time_variable")
     time_var = time_var.strip() if isinstance(time_var, str) and time_var.strip() else "t"
     for name in variables:
-        if name in HARNESS_RESERVED_SNAPSHOT_KEYS:
-            raise RenderError(
-                f"snapshot variable {name!r} collides with a harness-reserved key "
-                f"{sorted(HARNESS_RESERVED_SNAPSHOT_KEYS)}")
+        reason = reserved_name_reason(name)
+        if reason is not None:
+            raise RenderError(f"snapshot variable {name!r} is refused: {reason}")
         if check_name is not None:
             check_name(name)
     return variables, time_var
@@ -194,6 +210,8 @@ def infra_dep_count(ir: dict[str, Any]) -> int:
 # `tools/tests/test_runner_ir.py` (`DriveAgreementTest`).
 
 _DRIVE_LOOP_KEYS = ("n_step", "dt", "t_start", "t_end")
+#: The keys of `drive`.
+DRIVE_KEYS = ("init", "step", "loop", "history", "restart_points", "distribute")
 _IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 
 
@@ -249,7 +267,7 @@ def drive_block(ir: dict[str, Any]) -> dict[str, Any]:
     drive = dget(ir, "drive")
     if not isinstance(drive, dict):
         raise RenderError("IR has no drive block (the operation the driver calls per case)")
-    unknown = sorted(set(drive) - {"init", "step", "loop", "history", "distribute"}, key=str)
+    unknown = sorted(set(drive) - set(DRIVE_KEYS), key=str)
     if unknown:
         raise RenderError(f"drive carries unknown key(s) {unknown}")
     return drive
@@ -671,16 +689,34 @@ def drive_loop(ir: dict[str, Any]) -> dict[str, tuple[str, Any]] | None:
     return out
 
 
-def drive_history_every(ir: dict[str, Any]) -> str | None:
-    """The `inputs` path `drive.history.every` names, or None when no history is declared."""
+def drive_history(ir: dict[str, Any]) -> dict[str, str] | None:
+    """`drive.history` (issue #644 P4b): state variable -> the `inputs` path of its sampling
+    stride, in the block's order; None when no history is declared, empty when the node
+    samples nothing."""
     raw = drive_block(ir).get("history")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RenderError("drive.history must be {<state variable>: inputs.<path>, ...}")
+    out: dict[str, str] = {}
+    for var, value in raw.items():
+        kind, ref = drive_binding(value)
+        if not isinstance(var, str) or kind != "inputs":
+            raise RenderError(f"drive.history.{var} must be inputs.<path>")
+        out[var] = ref
+    return out
+
+
+def drive_restart_points_every(ir: dict[str, Any]) -> str | None:
+    """The `inputs` path `drive.restart_points.every` names, or None when none is declared."""
+    raw = drive_block(ir).get("restart_points")
     if raw is None:
         return None
     if isinstance(raw, dict) and set(raw) == {"every"}:
         kind, ref = drive_binding(raw["every"])
         if kind == "inputs":
             return ref
-    raise RenderError("drive.history must be {every: inputs.<path>}")
+    raise RenderError("drive.restart_points must be {every: inputs.<path>}")
 
 
 def drive_state_classes(ir: dict[str, Any]) -> dict[str, frozenset[str]]:
@@ -1003,11 +1039,16 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
     init = drive_init(ir)
     steps = drive_steps(ir)
     loop = drive_loop(ir)
-    every = drive_history_every(ir)
+    history = drive_history(ir)
+    restart_every = drive_restart_points_every(ir)
     axes = drive_distribute_axes(ir)
     axis_names = {a.name for a in axes}
-    if (loop is None) != (every is None):
-        raise RenderError("drive.history is declared exactly when drive.loop is")
+    if (loop is None) != (history is None) or (loop is None) != (restart_every is None):
+        raise RenderError("drive.history and drive.restart_points are declared exactly when "
+                          "drive.loop is")
+    for var in history or {}:
+        if var not in variables:
+            raise RenderError(f"drive.history.{var} names no snapshot variable")
     if loop is not None and len(steps) != 1:
         raise RenderError("a loop node's drive.step is one mapping entry")
     hosts: dict[tuple[str, str, int], HostValue] = {}
@@ -1165,9 +1206,22 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
                     value = host(f"{kind}.{ref}", "real", 0)
                     used.append(value)
                     loop_values[key] = ("host", value)
-            value = host(f"inputs.{every}", "real", 0)
+            # One stride per `inputs` path, with the variables it samples in schema order (the
+            # strides in the order of their first variable): what a renderer loops over at
+            # each committed step.
+            strides: dict[str, list[str]] = {}
+            for var in variables:
+                if var in (history or {}):
+                    strides.setdefault(history[var], []).append(var)
+            groups = []
+            for path, sampled in strides.items():
+                value = host(f"inputs.{path}", "real", 0)
+                used.append(value)
+                groups.append((value, tuple(sampled)))
+            loop_values["history"] = tuple(groups)
+            value = host(f"inputs.{restart_every}", "real", 0)
             used.append(value)
-            loop_values["every"] = ("host", value)
+            loop_values["restart_every"] = ("host", value)
         work_nan = tuple(a.ref for a, d in zip(step_plan.actuals, step["dummies"])
                          if a.form == "work" and d.get("intent") == "out")
         work_copy = tuple(a.ref for a, d in zip(step_plan.actuals, step["dummies"])

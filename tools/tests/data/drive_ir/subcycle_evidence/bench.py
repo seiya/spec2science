@@ -13,8 +13,9 @@ the certified one: no certified harness has the capture interface the rendered d
 (issue #644 P4a).
 
 Issue #632 P6 V-a (after the billed run R of 2026-11-13 certified this node and its member):
-`--ir certified` reads the IR of R's composite pipeline (`R_PIPE`, its lineage `ir_ref`) in
-place of the hand IR; `--model generated` runs R's GENERATED composite over R's generated member
+`--ir certified` reads the IR of R's composite pipeline (`R_PIPE`, its lineage `ir_ref`),
+converted to the drive shape of issue #644 P4b (the restart bench's `p4b_shape`), in place of
+the hand IR; `--model generated` runs R's GENERATED composite over R's generated member
 and R's closure (`R_PIPE`'s `resolved_dependencies`), with `--mutants
 tools/tests/data/drive_ir/subcycle_evidence/mutants_generated.yaml` (a path from the working
 directory; the rows of `mutants.yaml` re-expressed on the generated text); `--ir certified
@@ -125,8 +126,9 @@ def sources(closure_of: str = "p4", member: str = "hand") -> list[tuple[str, Pat
 
 def certified_ir() -> dict[str, Any]:
     lin = json.loads((R_PIPE / "lineage.json").read_text())
-    print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml", flush=True)
-    return yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
+    print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml (in the P4b drive shape)", flush=True)
+    return _RST.p4b_shape(yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text()),
+                          like=yaml.safe_load(B.TRANSCRIPTION.read_text()))
 
 
 def generated_model() -> Path:

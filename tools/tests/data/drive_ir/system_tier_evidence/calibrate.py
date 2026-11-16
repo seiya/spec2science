@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Calibration of `shallow_water2d_rotating`'s bands against the independent reference
 (`reference.py`, issue #265's procedure): every case of the hand IR is solved by the reference,
-written in the driver's capture layout (final, initial and history snapshots), and judged by the
+written in the driver's capture layout (final, initial and history snapshots, a history record
+holding the variables `drive.history` samples, issue #644 P4b), and judged by the
 SAME host predicates the IR carries. The reference's values set the bands (`bands.yaml`), and
 three variants of the reference measure the margins `tests.md` states beside them:
 
@@ -84,15 +85,19 @@ def solve(work: Path, ir: dict[str, Any], variant: str = "stated") -> Path:
                         history_every=every_h, member=member)
         t0, dt, n = ci["inputs.time.t_start"], ci["derived.dt"], int(ci["derived.n_step"])
 
-        def snap(path: Path, state, step: int, t: float, ok: float) -> None:
+        def snap(path: Path, state, step: int, t: float, ok: float,
+                 keep: set[str] | None = None) -> None:
             doc = {"h": state[0].tolist(), "hu": state[1].tolist(), "hv": state[2].tolist(),
                    "z_b": zb.tolist(), "f": f.tolist(), "ok": ok, "step": int(step), "t": t}
+            if keep is not None:   # a history record holds the variables sampled at its step
+                doc = {k: v for k, v in doc.items() if k in keep | {"step", "t"}}
             path.write_text(json.dumps(doc))
 
         snap(run / "initial" / f"{cid}.json", (h, hu, hv), 0, t0, 0.0)
         snap(run / f"{cid}.json", U, n, t0 + n * dt, 1.0)
         for step, *state in hist:
-            snap(run / "history" / f"{cid}__{step}.json", state, step, t0 + step * dt, 1.0)
+            snap(run / "history" / f"{cid}__{step}.json", state, step, t0 + step * dt, 1.0,
+                 keep=set(ir["drive"]["history"]))
     return work / variant / "run"
 
 

@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/shallow_water2d_channel@0.4.1
+  node_key: problem/shallow_water2d_channel@0.4.2
   spec_kind: problem
   spec_id: shallow_water2d_channel
-  spec_version: 0.4.1
+  spec_version: 0.4.2
   source_refs:
     controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md
     tests: spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md
@@ -48,9 +48,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 221
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -92,9 +94,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 442
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -136,9 +140,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 883
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -180,9 +186,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 142
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -224,9 +232,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 284
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -268,9 +278,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 567
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -312,8 +324,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 272
+      restart_points:
         every: 272
     derived:
       nx_g: inputs.grid.nx
@@ -356,9 +370,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 544
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -400,9 +416,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 1087
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -444,9 +462,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 222
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -488,9 +508,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 443
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -532,9 +554,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 886
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -576,9 +600,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 1772
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -620,9 +646,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 92
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -664,9 +692,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 4413
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -708,9 +738,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 5433
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -752,9 +784,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 543
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -796,9 +830,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 443
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -840,9 +876,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 576
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -884,9 +922,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 303
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -928,9 +968,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 442
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -972,9 +1014,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 284
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1016,9 +1060,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 443
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1060,9 +1106,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 303
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1104,9 +1152,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 576
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1148,9 +1198,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 442
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1192,9 +1244,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 284
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1236,9 +1290,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 544
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1280,9 +1336,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 443
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1324,9 +1382,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 576
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1368,9 +1428,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 442
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1412,9 +1474,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 284
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1456,9 +1520,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 544
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1500,9 +1566,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 443
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1544,8 +1612,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1588,8 +1658,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1632,8 +1704,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1676,8 +1750,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1720,8 +1796,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1764,8 +1842,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1808,8 +1888,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1852,8 +1934,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1896,8 +1980,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -1940,9 +2026,11 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
         every: 221
+      restart_points:
+        every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
@@ -1984,8 +2072,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -2028,8 +2118,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 0
+      restart_points:
         every: 0
     derived:
       nx_g: inputs.grid.nx
@@ -2072,8 +2164,10 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
       history:
+        every: 272
+      restart_points:
         every: 272
     derived:
       nx_g: inputs.grid.nx
@@ -2691,7 +2785,7 @@ algorithm:
   diagnostics_from_state: true
   fallback_policy: fail_closed
 dependency:
-  node_key: problem/shallow_water2d_channel@0.4.1
+  node_key: problem/shallow_water2d_channel@0.4.2
   direct_deps:
   - node_key: component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0
     kind: component
@@ -2713,7 +2807,7 @@ dependency:
     kind: component
     operations:
     - dynamics_shallow_water_source_2d_tc4_forcing__apply
-  - node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.1
+  - node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.2
     kind: component
     operations:
     - dynamics_shallow_water_time_update_2d_rk4__advance
@@ -2892,6 +2986,7 @@ io_contract:
           length: inputs.grid.L_y
           placement: cell_center
     - artifact: state_history
+    - artifact: restart_points
     - artifact: step_series
       names:
       - step
@@ -20392,4 +20487,8 @@ drive:
     t_start: inputs.time.t_start
     t_end: inputs.time.t_end
   history:
-    every: inputs.history.every
+    h: inputs.history.every
+    hu: inputs.history.every
+    hv: inputs.history.every
+  restart_points:
+    every: inputs.restart_points.every

@@ -50,8 +50,8 @@ What it does, in order (each refusal exits 2 before anything runs):
    written. The run is `ok` only when the binary exits 0 and its final capture holds every
    state an entry's result dummy is bound to in the case, true: a kernel that refuses a
    configuration exits 0 and stops short of `n_step`.
-4. `--restart-from <capture>` continues an earlier run of this tool: the capture (a history
-   sample of the base case, or its final capture, as the target's capture store lays them out
+4. `--restart-from <capture>` continues an earlier run of this tool: the capture (a restart
+   point of the base case, or its final capture, as the target's capture store lays them out
    under `<prev>/raw/state_snapshots/`) must sit in an output directory of
    this tool whose `run_record.json` names the same node, target, IR, binary and
    configuration, and whose case file, its `restart.*` keys aside, is this run's evaluated case
@@ -68,7 +68,10 @@ What it does, in order (each refusal exits 2 before anything runs):
    selected ids, the binary's sha256, the configuration verbatim, the restart source with its
    sha256 and step, the command, the launch environment the tool set over its own, the exit
    status, the final capture's step and the kernel's outcome, the start check, and the
-   statement that the run certifies nothing. stdout and stderr go to `<out>/stdout.txt` and
+   statement that the run certifies nothing. A run that did not reach its end (a non-zero
+   exit, a timeout, a signal) also records `kept`: the steps of the restart points it
+   committed and what its series holds up to the last of them (`rows`, `last_step`), where
+   the target's output format keeps records of an unfinished case. stdout and stderr go to `<out>/stdout.txt` and
    `<out>/stderr.txt`.
 
 Exit status: 0 when the run is `ok` (and, on a continuation, the start check held); 1 when the
@@ -81,8 +84,7 @@ file and the record); 128 + the signal number on SIGINT, SIGTERM or SIGHUP (130,
 What it does not do (issue #632 §3): stop a run at a chosen step; extend a finished run (a
 final capture is refused by `K < n_step` where `n_step` is host data, and by the driver at run
 time, exit 1, where `init` writes it); continue with another
-configuration or `dt`; run at a remote site or under a launcher; keep the series of a killed
-segment (the driver writes the series at the end of a case). `docs/RUNBOOK.md` §"Running a
+configuration or `dt`; run at a remote site or under a launcher. `docs/RUNBOOK.md` §"Running a
 person-written configuration" is the operator's procedure.
 """
 from __future__ import annotations
@@ -411,7 +413,7 @@ def select_certified(repo_root: Path, spec_ref: str, target_id: str) -> Selectio
 
 class RestartSource(NamedTuple):
     """Where a `--restart-from` capture sits: the tool output directory it is in, its kind (the
-    capture group: `history` or `final`), and the record it is — the members as the target's
+    capture group: `restart_point` or `final`), and the record it is — the members as the target's
     capture store reads them."""
     run_dir: Path
     kind: str
@@ -420,14 +422,14 @@ class RestartSource(NamedTuple):
 
 def _restart_source(capture: Path, base: str, output_format: str) -> RestartSource:
     """The `RestartSource` of a capture path; refuses a path the target's capture store does
-    not place as a history sample or the final capture of ``base`` in a run's capture
+    not place as a restart point or the final capture of ``base`` in a run's capture
     directory, and one it cannot read."""
     store = capture_store.store(output_format)
     snaps_label = "<run>/" + "/".join(capture_store.SNAPSHOT_DIR_PARTS) + "/"
     located = store.locate(capture, base)
     if located is None:
         raise ConfigurationRefused(
-            f"--restart-from {capture}: not a capture of {base!r} (expected a history sample "
+            f"--restart-from {capture}: not a capture of {base!r} (expected a restart point "
             f"or the final capture of that case under {snaps_label})")
     snaps, group, step = located
     parts = capture_store.SNAPSHOT_DIR_PARTS
@@ -686,6 +688,22 @@ def _kernel_outcome(ir: dict[str, Any], out: Path, base: str,
     return step, None
 
 
+def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any] | None:
+    """What a run that did not reach its end kept, as the target's capture store reads it: the
+    steps of its restart points and the rows of its series up to where they stop being
+    readable in order; None when the store cannot be asked (no capture directory)."""
+    store = capture_store.store(output_format)
+    snaps = capture_store.snapshot_dir(out)
+    try:
+        rows, last = store.read_series_prefix(snaps, base)
+        points = list(store.restart_point_steps(snaps, base))
+    except OSError:
+        return None
+    return {"restart_points": points,
+            "series": {"rows": max((len(v) for v in rows.values()), default=0),
+                       "last_step": last}}
+
+
 def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Path, out: Path,
                       restart_from: Path | None = None, timeout_sec: float | None = None
                       ) -> int:
@@ -780,6 +798,8 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
             return EXIT_REFUSED
         record.update(exit_status=rc, timed_out=timed_out, finished_at=_now())
         failed = rc != 0
+        if failed:
+            record["kept"] = kept_records(out, base, output_format)
         if not failed:
             record["final_step"], why = _kernel_outcome(ir, out, base, output_format)
             record["kernel"] = why or "reached its end"
@@ -795,7 +815,8 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         # Whatever was recorded before the signal is kept; the status says the tool was
         # stopped before it finished judging the run.
         record.update(status="interrupted", finished_at=_now(),
-                      signal=exc.signum if isinstance(exc, Terminated) else int(signal.SIGINT))
+                      signal=exc.signum if isinstance(exc, Terminated) else int(signal.SIGINT),
+                      kept=kept_records(out, base, output_format))
         _write_json(out / RUN_RECORD, record)
         raise
     finally:

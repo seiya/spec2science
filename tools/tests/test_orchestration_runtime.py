@@ -22254,7 +22254,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 114650->115500 (issue #632 P3): the member `__init` rule's two spec-input
         # reasons in the node-identity preconditions, and V4c-iv (a `problem` member's
         # `operations` equal its §5.1) with its gate-list entry. Measured 115347 with `wc -c`.
-        "docs/workflow/phases/phase_01_compile.md": 115500,
+        # Raised 115500->117700 (issue #644 P4b): `drive.history` as a stride per variable and
+        # `drive.restart_points`, the `restart_points` evidence entry, the grammar 7 names
+        # (`history.<v>.t` / `.step`, `restart_point.*`) with the one-stride rule, gate (m)'s
+        # identity with the `history:` and `restart_points:` lines, and the reserved names.
+        # Measured 117477 with `wc -c`.
+        "docs/workflow/phases/phase_01_compile.md": 117700,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -28886,7 +28891,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:4bdaaa4eeaf71d71":
+        "tools/prompt_templates/workshop_compile_generate.txt:b574087f59850125":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28912,7 +28917,10 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "re-keyed 2026-11-08 when rule 9 took `drive.distribute`, issue #610 PR-B1 — rule 3 "
             "unchanged; re-keyed 2026-11-11 when rule 3 said a `problem` the declaration names "
             "under `problems:` is in the set too, the system tier's Part 1 — the set's source "
-            "unchanged)",
+            "unchanged; re-keyed 2026-11-16 when rules 5 and 9 took `restart_point.*` beside "
+            "the samples, the per-variable `drive.history` and `drive.restart_points` "
+            "transcribing the tests document's `history:` / `restart_points:` lines, issue #644 "
+            "P4b — rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "

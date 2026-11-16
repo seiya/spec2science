@@ -21,7 +21,8 @@
 #   Must NOT be caught (control): the unmutated model; `ctl-dead-counter`: a private counter
 #   incremented and never read.
 #   Placement control: the rotating model mutants again with the cut at K a MULTIPLE of the
-#   call interval (base `history.every` 62, K = 62), caught/missed recorded per mutant.
+#   call interval (base `restart_points.every` 62 — `history.every` 62 before issue #644 P4b —,
+#   K = 62), caught/missed recorded per mutant.
 
 rot-step-counter:
   title: >-

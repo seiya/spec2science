@@ -102,6 +102,12 @@ def _ir(variables: dict[str, str], drive: dict[str, Any], cases: list[dict[str, 
     }
 
 
+def sampled(variables: Any, path: str = "inputs.every") -> dict[str, Any]:
+    """The `drive` keys of a loop fixture that samples every variable and commits its restart
+    points at one stride: `history` (a stride per variable) and `restart_points`."""
+    return {"history": {v: path for v in variables}, "restart_points": {"every": path}}
+
+
 def loop_ir(*modes: int, every: int = 2, n_step: int = 4, dt: float = 0.25) -> dict[str, Any]:
     """A loop node: `u` an inout state, `w` a lone out, `ok` the result; one case per mode."""
     drive = {
@@ -110,7 +116,7 @@ def loop_ir(*modes: int, every: int = 2, n_step: int = 4, dt: float = 0.25) -> d
             "stepno": "step", "u": "state.u", "w": "state.w", "ok": "state.ok"}},
         "loop": {"n_step": "inputs.n_step", "dt": "derived.dt", "t_start": "inputs.t_start",
                  "t_end": "inputs.t_end"},
-        "history": {"every": "inputs.every"}}
+        **sampled(("u", "w", "ok"))}
     cases = [{"case_id": f"m{m}", "derived": {"dt": dt},
               "inputs": {"grid": {"nx": 3}, "mode": m, "n_step": n_step, "t_start": 1.0,
                          "t_end": 1.0 + n_step * dt, "every": every},
@@ -129,7 +135,7 @@ def init_ir(*modes: int) -> dict[str, Any]:
             "stepno": "step", "u": "state.u", "w": "state.w", "ok": "state.ok"}},
         "loop": {"n_step": "state.n_plan", "dt": "state.dt_plan", "t_start": "inputs.t_start",
                  "t_end": "inputs.t_end"},
-        "history": {"every": "inputs.every"}}
+        **sampled(("u", "w", "n_plan", "dt_plan", "init_ok", "ok"))}
     cases = [{"case_id": f"m{m}", "inputs": {"grid": {"nx": 3}, "mode": m, "t_start": 0.0,
                                              "t_end": 0.75, "every": 0},
               "initial_state": {"w": -5.0}} for m in modes]
@@ -293,13 +299,18 @@ def _exec(tmp: Path, ids: list[str], env: dict[str, str] | None = None) -> Run:
 
 def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
                 deps: tuple[str, ...] = (), case_ids: list[str] | None = None,
-                model: str | None = None) -> Run:
+                model: str | None = None, harness: str | None = None) -> Run:
+    """Build and run ``ir``'s Fortran driver; ``harness`` is the harness model's source in
+    place of the fixture's (`counting_harness`)."""
     ids = _prepare(tmp, ir, case_ids)
     objs = []
     flags = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
     # each source enters the directory just before its own compile (`_compile_cached`)
     for stem in ("harness_fortran_cpu", *deps, model or sid):
-        shutil.copy(DATA / f"{stem}_model.f90", tmp)
+        if stem == "harness_fortran_cpu" and harness is not None:
+            (tmp / f"{stem}_model.f90").write_text(harness)
+        else:
+            shutil.copy(DATA / f"{stem}_model.f90", tmp)
         _compile_cached(["gfortran", *flags, "-c", f"{stem}_model.f90", "-o", f"{stem}.o"], tmp)
         objs.append(f"{stem}.o")
     text = f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU)
@@ -317,7 +328,7 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
                 env: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
     """`Validate.execute`'s second pass over one execution shape (issue #632), for a test row or
     an evidence bench that judges a whole IR: the real continuation writer reads the shape's
-    pass-1 samples under ``shape_dir``, each continuation runs ``binary`` in a process of its
+    pass-1 restart points under ``shape_dir``, each continuation runs ``binary`` in a process of its
     own under `<shape_dir>/restart/`, the host's start check is applied, and its captures are
     merged into ``shape_dir`` by the conductor's own helper. Returns the continuation ids merged
     and one line per continuation that was not (no restart point, a non-zero exit, a failed
@@ -363,14 +374,18 @@ def _harness_public_api() -> dict[str, Any]:
             + [{"symbol": p["name"], "signature": p} for p in block["procedures"]]}
 
 
-def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
+def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
+            harness: str | None = None) -> Run:
+    """Build and run ``ir``'s C++ driver; ``harness`` is the harness model's source in place
+    of the fixture's (`counting_harness`)."""
     ids = _prepare(tmp, ir, None)
     # each stage's files enter the directory just before its compile (`_compile_cached`)
     sources = {
         "harness_cpp_gpu_model": {
             "harness_cpp_gpu_model.cuh": cpp_header.render(
                 "harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"),
-            "harness_cpp_gpu_model.cu": (DATA / "harness_cpp_gpu_model.cu").read_text()},
+            "harness_cpp_gpu_model.cu": harness if harness is not None
+            else (DATA / "harness_cpp_gpu_model.cu").read_text()},
         f"{sid}_model": {
             f"{sid}_model.cuh": cpp_header.render(sid, ir["public_api"], spec_kind="component"),
             f"{sid}_model.cu": (DATA / f"{sid}_model.cu").read_text()},
@@ -385,6 +400,76 @@ def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
         objs.append(f"{stem}.o")
     subprocess.run(["nvcc", *objs, "-o", "bin"], cwd=tmp, check=True, capture_output=True)
     return _exec(tmp, ids, {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
+
+
+#: What `counting_harness` adds to a harness model's `capture_open`: a file
+#: `capacity_<case_id>.txt` in the working directory, one `<what> <count>` line each for the
+#: restart point capacity, the series capacity and every declared variable's history capacity.
+#: The json models read none of the three (their format needs nothing defined up front), so a
+#: run is the only witness of what the driver hands over.
+_COUNT_FORTRAN = """    block
+      integer :: cu, kv
+      open(newunit=cu, file='capacity_'//trim(case_id)//'.txt', status='replace', &
+        & action='write', form='formatted')
+      write(cu, '(A,1X,I0)') 'restart_point', restart_point_capacity
+      write(cu, '(A,1X,I0)') 'series', series_capacity
+      do kv = 1, size(vars)
+        write(cu, '(A,1X,I0)') vars(kv)%name, vars(kv)%history_capacity
+      end do
+      close(cu)
+    end block
+"""
+_COUNT_CPP = """    {
+        std::FILE* cu = std::fopen(("capacity_" + case_id + ".txt").c_str(), "w");
+        std::fprintf(cu, "restart_point %d\\nseries %d\\n", restart_point_capacity,
+                     series_capacity);
+        for (const auto& v : vars) {
+            std::fprintf(cu, "%s %d\\n", v.name.c_str(), v.history_capacity);
+        }
+        std::fclose(cu);
+    }
+"""
+
+
+def counting_harness(cpp: bool) -> str:
+    """The fixture harness model whose `capture_open` also writes what it was handed
+    (`_COUNT_FORTRAN` / `_COUNT_CPP`); `capacities` reads it back."""
+    if cpp:
+        text = (DATA / "harness_cpp_gpu_model.cu").read_text()
+        anchor = "    cap_case = case_id;\n"
+        if "<cstdio>" not in text:
+            text = "#include <cstdio>\n" + text
+        assert text.count(anchor) == 1
+        return text.replace(anchor, _COUNT_CPP + anchor)
+    text = (DATA / "harness_fortran_cpu_model.f90").read_text()
+    anchor = "    cap_case = trim(case_id)\n"
+    assert text.count(anchor) == 1
+    return text.replace(anchor, _COUNT_FORTRAN + anchor)
+
+
+def capacities(run_dir: Path, case_id: str) -> dict[str, int]:
+    """What `counting_harness`'s `capture_open` was handed for ``case_id`` in ``run_dir``."""
+    lines = (run_dir / f"capacity_{case_id}.txt").read_text().splitlines()
+    return {name: int(n) for name, n in (line.split() for line in lines)}
+
+
+def strides_ir(eu: int = 2, ew: int = 3, er: int = 5, n_step: int = 12) -> dict[str, Any]:
+    """`loop_ir`'s node with a stride per sampled variable (issue #644 P4b): `u` every ``eu``
+    steps, `w` every ``ew``, `ok` not sampled, and the restart points (`u`, `w`) every ``er``.
+    At the defaults the steps 1..12 hold every kind of step: none due (1, 5, 7, 11), one
+    variable due (2, 3, 4, 8, 9, 10), both (6, 12), a restart point that is no history
+    sample's step (5) and one that is (10)."""
+    ir = loop_ir(0, n_step=n_step)
+    ir["drive"]["history"] = {"u": "inputs.eu", "w": "inputs.ew"}
+    ir["drive"]["restart_points"] = {"every": "inputs.er"}
+    for case in ir["case"]["test_case_set"]:
+        case["inputs"].update(eu=eu, ew=ew, er=er)
+    return ir
+
+
+def _toy_u(k: int, dt: float = 0.25) -> list[float]:
+    """`u` (and `w`) of `loop_ir`'s mode-0 case after ``k`` committed steps: `u += dt`."""
+    return [1.0 + k * dt, 2.0 + k * dt, 3.0 + k * dt]
 
 
 class _DriverBehaviour:
@@ -452,6 +537,174 @@ class _DriverBehaviour:
     def test_every_zero_writes_no_sample(self) -> None:
         run = self._run(loop_ir(0, every=0))
         self.assertEqual(list((run.snapshots / "history").iterdir()), [])
+
+    # --- per-variable strides and restart points (issue #644 P4b) ---------------------------
+
+    def _build_run(self, ir: dict[str, Any], **kw: Any) -> Run:
+        run = type(self).build_and_run(Path(self._tmp.name), ir, **kw)
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+        return run
+
+    @staticmethod
+    def _stepped(snaps: Path, group: str, case_id: str) -> dict[int, dict[str, Any]]:
+        """The records of ``case_id`` in a stepped group, by the step in their name."""
+        out = {}
+        for path in (snaps / group).glob(f"{case_id}__*.json"):
+            out[int(path.stem.rsplit("__", 1)[1])] = json.loads(path.read_text())
+        return out
+
+    def _assert_strided_records(self, snaps: Path, cid: str, eu: int, ew: int, er: int,
+                                steps: range) -> None:
+        """`cid`'s history and restart point records over ``steps`` are exactly what
+        `strides_ir` at those strides commits: one history record at a step where a stride
+        divides it, holding exactly the variables due there (never `ok`, which `drive.history`
+        leaves out), and none where no stride does; a restart point at each multiple of ``er``,
+        holding exactly the restart variables, `step` and `t`."""
+        history = self._stepped(snaps, "history", cid)
+        due = {k: {v for v, e in (("u", eu), ("w", ew)) if e > 0 and k % e == 0} for k in steps}
+        self.assertEqual(sorted(history), sorted(k for k, names in due.items() if names))
+        for k, record in history.items():
+            self.assertEqual(set(record), due[k] | {"step", "t"}, k)
+            self.assertEqual((record["step"], record["t"]), (float(k), 1.0 + 0.25 * k), k)
+            for var in due[k]:
+                self.assertEqual(record[var], _toy_u(k), (k, var))
+        points = self._stepped(snaps, "restart_point", cid)
+        self.assertEqual(sorted(points), [k for k in steps if er > 0 and k % er == 0])
+        for k, record in points.items():
+            self.assertEqual(set(record), {"u", "w", "step", "t"}, k)
+            self.assertEqual((record["step"], record["t"]), (float(k), 1.0 + 0.25 * k), k)
+            self.assertEqual((record["u"], record["w"]), (_toy_u(k), _toy_u(k)), k)
+
+    def test_each_history_record_holds_exactly_the_variables_due_at_its_step(self) -> None:
+        """Two variables at two strides (`u` every 2, `w` every 3), a third (`ok`) sampled by
+        neither: one record per step a stride divides, holding the variables due there and no
+        other, and no record at a step where none is due. Kills: a record holding every
+        variable at every sampled step (the pre-P4b whole-state sample); one stride for both
+        variables; a variable absent from `drive.history` captured anyway; an empty record
+        written at a step where none is due (the `any(csel)` guard dropped); `csel` not reset
+        between steps."""
+        run = self._build_run(strides_ir())
+        self.assertEqual(set(pe.restart_variables(strides_ir())), {"u", "w"})
+        self._assert_strided_records(run.snapshots, "m0", 2, 3, 5, range(1, 13))
+        # the initial and the final capture still hold every variable
+        for name in ("initial/m0", "m0"):
+            self.assertEqual(set(run.snapshot(name)), {"u", "w", "ok", "step", "t"}, name)
+
+    def test_an_empty_history_writes_no_record_and_a_zero_stride_none_for_its_variable(
+            self) -> None:
+        """`history: {}` samples nothing: no history record at all, the restart points and the
+        series unchanged. A stride of 0 samples its variable never, the other's still. Kills
+        sampling a variable `drive.history` does not name, and a zero stride read as 1."""
+        ir = strides_ir()
+        ir["drive"]["history"] = {}
+        run = self._build_run(ir)
+        self.assertEqual(list((run.snapshots / "history").iterdir()), [])
+        self._assert_strided_records(run.snapshots, "m0", 0, 0, 5, range(1, 13))
+        self.assertEqual(run.series("m0")["step"], list(range(1, 13)))
+        with tempfile.TemporaryDirectory() as tmp:
+            run = type(self).build_and_run(Path(tmp), strides_ir(eu=0))
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self._assert_strided_records(run.snapshots, "m0", 0, 3, 5, range(1, 13))
+
+    def test_restart_points_land_at_their_own_stride_and_hold_the_restart_variables(
+            self) -> None:
+        """A restart stride (5) that no history stride equals: restart points at its multiples
+        only, each holding exactly the restart variables (`u`, `w`: not `ok`) with `step` and
+        `t`, at steps with no history record (5) and with one (10); a stride of 0 commits none.
+        Kills: the restart point committed at a history stride; a restart point holding every
+        variable (`csel` not set to `crestart`); none committed (the pre-P4b driver)."""
+        run = self._build_run(strides_ir())
+        self.assertNotIn(5, self._stepped(run.snapshots, "history", "m0"))
+        self.assertIn(10, self._stepped(run.snapshots, "history", "m0"))
+        self._assert_strided_records(run.snapshots, "m0", 2, 3, 5, range(1, 13))
+        with tempfile.TemporaryDirectory() as tmp:
+            run = type(self).build_and_run(Path(tmp), strides_ir(er=0))
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self.assertEqual(list((run.snapshots / "restart_point").iterdir()), [])
+            self.assertEqual(sorted(p.name for p in (run.snapshots / "series").iterdir()),
+                             ["m0__0.json"])
+
+    def test_the_series_is_chunked_at_each_restart_point_and_reads_back_whole(self) -> None:
+        """The json harness closes a series chunk before each restart point, so a case with
+        restart points at 5 and 10 of 12 steps has the chunks `__0` (steps 1..5), `__1`
+        (6..10) and `__2` (11..12), and the store joins them into the whole series in order.
+        Kills the restart point committed before the series row of its step (chunk `__0`
+        would end at 4) and a restart stride taken from a history stride."""
+        run = self._build_run(strides_ir())
+        chunks = sorted((run.snapshots / "series").glob("m0__*.json"))
+        self.assertEqual([p.name for p in chunks], ["m0__0.json", "m0__1.json", "m0__2.json"])
+        self.assertEqual([json.loads(p.read_text())["step"] for p in chunks],
+                         [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10], [11, 12]])
+        series = run.series("m0")
+        self.assertEqual(series["step"], list(range(1, 13)))
+        self.assertEqual(series["t"], [1.0 + 0.25 * k for k in range(1, 13)])
+        self.assertEqual(series["u_min"], [_toy_u(k)[0] for k in range(1, 13)])
+        self.assertEqual(series["w_max"], [_toy_u(k)[2] for k in range(1, 13)])
+
+    def test_a_continuation_from_a_restart_point_off_every_history_stride_equals_its_base(
+            self) -> None:
+        """A continuation from the restart point at 5 (no history stride divides 5): its
+        history records and restart points are its base's at every step after 5 and none at
+        or before, its series the base's rows 6..12, its final capture the base's. Kills a
+        continuation that counts its strides from `step0` (`mod(n - step0, E)`), and a
+        restart point the second pass cannot find (written under `history/`)."""
+        ir = self._with_continuation(strides_ir(), "m0", 5)
+        run = self._build_run(ir)
+        files, refused, rdir = self._continue(run, ir)
+        self.assertEqual(refused, {})
+        self.assertEqual([(f.case_id, f.step) for f in files], [("m0_cont", 5)])
+        self.assertIsNone(pe.continuation_start_violation(ir, rdir, files[0], "json"))
+        snaps = rdir / "raw" / "state_snapshots"
+        self._assert_strided_records(snaps, "m0_cont", 2, 3, 5, range(6, 13))
+        for group in ("history", "restart_point"):
+            base = self._stepped(run.snapshots, group, "m0")
+            cont = self._stepped(snaps, group, "m0_cont")
+            self.assertEqual(cont, {k: v for k, v in base.items() if k > 5}, group)
+        self.assertEqual(read_series(snaps, "m0_cont"),
+                         {k: v[5:] for k, v in run.series("m0").items()})
+        self.assertEqual({k: v for k, v in json.loads((snaps / "m0_cont.json").read_text())
+                          .items() if k != "case_id"},
+                         {k: v for k, v in run.snapshot("m0").items() if k != "case_id"})
+
+    def test_the_capacities_handed_to_capture_open_are_the_records_written(self) -> None:
+        """What the driver hands `capture_open` (each variable's history capacity, the restart
+        point capacity, the series capacity) equals what the case then commits, read off the
+        captures: on the strided base case, on its continuation from step 5 (the counts are
+        of `step0 + 1 .. n_c`: `u` 4, `w` 3, one restart point, 7 rows), and on an `init` node
+        whose step count the state holds. Kills a capacity counted from step 1 on a
+        continuation, `(n_c - step0) / E` (`u` would read 3), the restart capacity left 0 or
+        taken from a history stride, and a variable `drive.history` leaves out given its
+        neighbour's count."""
+        harness = counting_harness(type(self).build_and_run is run_cpp)
+
+        def written(snaps: Path, cid: str) -> dict[str, int]:
+            history = self._stepped(snaps, "history", cid).values()
+            out = {v: sum(v in r for r in history) for v in self._names}
+            out["restart_point"] = len(self._stepped(snaps, "restart_point", cid))
+            out["series"] = len(read_series(snaps, cid)["step"])
+            return out
+
+        self._names = ("u", "w", "ok")
+        ir = self._with_continuation(strides_ir(), "m0", 5)
+        run = self._build_run(ir, harness=harness)
+        base = capacities(run.dir / "run", "m0")
+        self.assertEqual(base, {"u": 6, "w": 4, "ok": 0, "restart_point": 2, "series": 12})
+        self.assertEqual(base, written(run.snapshots, "m0"))
+        _files, _refused, rdir = self._continue(run, ir)
+        cont = capacities(rdir, "m0_cont")
+        self.assertEqual(cont, {"u": 4, "w": 3, "ok": 0, "restart_point": 1, "series": 7})
+        self.assertEqual(cont, written(rdir / "raw" / "state_snapshots", "m0_cont"))
+        # an `init` node: `n_c` is the state `init` wrote (3), every variable at stride 1
+        with tempfile.TemporaryDirectory() as tmp:
+            ir = init_ir(0)
+            ir["case"]["test_case_set"][0]["inputs"]["every"] = 1
+            run = type(self).build_and_run(Path(tmp), ir, harness=harness)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self._names = ("u", "w", "n_plan", "dt_plan", "init_ok", "ok")
+            got = capacities(run.dir / "run", "m0")
+            self.assertEqual(got, {**{v: 3 for v in self._names}, "restart_point": 3,
+                                   "series": 3})
+            self.assertEqual(got, written(run.snapshots, "m0"))
 
     def test_the_series_holds_one_entry_per_committed_step_of_every_array(self) -> None:
         run = self._run(loop_ir(0))
@@ -805,7 +1058,7 @@ class _DriverBehaviour:
 
     def _continue(self, run: Run, ir: dict[str, Any]) -> tuple[list[Any], dict[str, str], Path]:
         """The second pass over ``run``'s directory, as `Validate.execute` lays it out: the real
-        continuation writer reads the first pass's samples, and each continuation runs the same
+        continuation writer reads the first pass's restart points, and each continuation runs the same
         binary in a process of its own under `run/restart/`, on the one case."""
         files, refused = pe.write_continuation_inputs(
             ir, run.dir / "run", pe.restart_point_reader(run.dir / "run", "json"))
@@ -851,11 +1104,14 @@ class _DriverBehaviour:
                          {k: v for k, v in full.items() if k != "case_id"})
         self.assertEqual(full["step"], float(n_step))
         initial = json.loads((snaps / "initial" / f"{cid}.json").read_text())
-        sample = run.snapshot(f"history/{base}__{step}")
+        # it started from its base's restart point (issue #644 P4b: no longer a history
+        # sample), which holds the restart variables alone
+        point = run.snapshot(f"restart_point/{base}__{step}")
+        self.assertEqual(set(point), set(pe.restart_variables(ir)) | {"step", "t"})
         self.assertEqual(initial["step"], float(step))
-        self.assertEqual(initial["t"], sample["t"])
+        self.assertEqual(initial["t"], point["t"])
         for var in pe.restart_variables(ir):
-            self.assertEqual(initial[var], sample[var], var)
+            self.assertEqual(initial[var], point[var], var)
         # the continuation commits only its own rows: the base's from `step + 1` on, each with
         # its own `t`
         series = read_series(snaps, cid)
@@ -872,6 +1128,16 @@ class _DriverBehaviour:
             k = name.rsplit("__", 1)[1]
             self.assertEqual(json.loads((snaps / "history" / name).read_text()),
                              run.snapshot(f"history/{base}__{k[:-5]}"))
+        # and its own restart points after `step`, the base's at the same steps
+        points = sorted(p.name for p in (snaps / "restart_point").iterdir())
+        self.assertEqual(points, sorted(
+            f"{cid}__{k}.json" for k in range(step + 1, n_step + 1)
+            if (run.snapshots / "restart_point" / f"{base}__{k}.json").exists()))
+        self.assertTrue(points)
+        for name in points:
+            k = name.rsplit("__", 1)[1][:-5]
+            self.assertEqual(json.loads((snaps / "restart_point" / name).read_text()),
+                             run.snapshot(f"restart_point/{base}__{k}"))
         self.assertEqual(json.loads((rdir / "perf.json").read_text())["steps"], n_step - step)
 
     def test_a_continuation_reads_its_state_after_the_case_file_s_and_equals_its_base(
@@ -1045,7 +1311,7 @@ class _DriverBehaviour:
         self.assertFalse(merged_capture(run))
 
         run = fresh("no_point")
-        (run.snapshots / "history" / "m0__2.json").unlink()
+        (run.snapshots / "restart_point" / "m0__2.json").unlink()
         merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
         self.assertEqual(merged, [])
         self.assertEqual(len(problems), 1, problems)
@@ -1143,9 +1409,9 @@ class ResultResetOptimisationTest(unittest.TestCase):
 
 
 class HarnessModelRestartPointTest(unittest.TestCase):
-    """The hand-written Fortran harness model's `restart_point` path, which no rendered driver
-    commits (a restart point is a history sample the host takes): a program written here calls
-    the capture operations directly, and the store reads what the model wrote. The ordering
+    """The hand-written Fortran harness model's `restart_point` path, called here directly by a
+    program written for it (the rendered driver's restart points are `_DriverBehaviour`'s
+    strided rows, issue #644 P4b), and the store reads what the model wrote. The ordering
     rule is `docs/backends/output_format/json/CAPTURE_LAYOUT.md`'s: the series rows committed
     since the previous chunk are written as a chunk before each restart point's record."""
 
@@ -1413,6 +1679,8 @@ def shallow_water2d_rotating_ir(cases: list[dict[str, Any]]) -> dict[str, Any]:
     variables = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]
     variables.insert([v["name"] for v in variables].index("z_b") + 1,
                      {"name": "f", "shape_expr": "[nx, ny]"})
+    # the member samples its whole state at one stride; the composite's `f` with it
+    ir["drive"]["history"]["f"] = ir["drive"]["history"]["z_b"]
     return ir
 
 
@@ -1695,7 +1963,7 @@ def cmp_ir(sid: str, cases: list[dict[str, Any]]) -> dict[str, Any]:
             "step": {"operation": f"{sid}__step", "result": "ok", "arguments": step_bind},
             "loop": {"n_step": "state.n_plan", "dt": "state.dt", "t_start": "inputs.t_start",
                      "t_end": "inputs.t_end"},
-            "history": {"every": "inputs.every"}},
+            **sampled(("u", "dt", "n_plan", "init_ok", "ok"))},
         "case": {"test_case_set": cases},
         "io_contract": {"raw_requirements": {"required_evidence": [
             {"artifact": "state_snapshots", "required": True,
@@ -2172,7 +2440,8 @@ class RenderRefusalTest(unittest.TestCase):
             ir["public_api"]["signatures"][0]["signature"]["args"][2]["dims"] = ["nope"]
 
         def history_without_loop(ir: dict) -> None:
-            ir["drive"]["history"] = {"every": "inputs.mode"}
+            ir["drive"]["history"] = {"x": "inputs.mode"}
+            ir["drive"]["restart_points"] = {"every": "inputs.mode"}
 
         for mutate, ir_of in ((integer_array, lambda: call_ir(0)),
                               (logical_in_state, lambda: call_ir(0)),
@@ -2343,7 +2612,8 @@ def _mpi_ir(sid: str, kind: str, ops: dict[str, list[dict[str, Any]]], drive: di
         names = ["step", *(f"{v}_{m}" for v, s in variables.items() if s != "scalar"
                            for m in ("min", "max"))]
         ir["io_contract"]["raw_requirements"]["required_evidence"] += [
-            {"artifact": "state_history"}, {"artifact": "step_series", "names": names}]
+            {"artifact": "state_history"}, {"artifact": "restart_points"},
+            {"artifact": "step_series", "names": names}]
     return ir
 
 
@@ -2441,7 +2711,7 @@ def prob_ir() -> dict[str, Any]:
             "h": "state.h", "ok": "state.step_ok"}},
         "loop": {"n_step": "inputs.n_step", "dt": "state.dt", "t_start": "inputs.t_start",
                  "t_end": "inputs.t_end"},
-        "history": {"every": "inputs.every"}}
+        **sampled(("h", "dt", "n_cells", "init_ok", "step_ok"))}
     cases = [{"case_id": cid, "derived": {"nx_g": "inputs.nx", "ny_g": "inputs.ny"},
               "inputs": {"nx": 8, "ny": ny, "refuse_at": refuse_at, "refuse_init": refuse_init,
                          "n_step": 6, "t_start": 0.0, "t_end": 1.0, "every": 2}}
@@ -2516,7 +2786,8 @@ def loop_mpi_ir() -> dict[str, Any]:
             "t": "time", "dt": "inputs.time.dt", "u_np1": "state.u", "ok": "state.ok"}},
         "loop": {"n_step": "inputs.time.n_step", "dt": "inputs.time.dt",
                  "t_start": "inputs.time.t_start", "t_end": "inputs.time.t_end"},
-        "history": {"every": "inputs.history.every"}}
+        **sampled(("u", "ok", "n_calls", "stage_t", "stage_q1", "stage_q2", "ug", "zb"),
+                  "inputs.history.every")}
 
     def case(cid: str, nx: int, ny: int, ng: int) -> dict[str, Any]:
         u = [[[(k + 1) * (i + 1) + 10 * (j + 1) + 0.01 * i * j for j in range(ny)]
@@ -2890,6 +3161,54 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                     want = run.snapshots()[f"{base}.json"]
                     for var in [*names, "step", "t"]:
                         self.assertEqual(got[var], want[var], var)
+
+    def test_two_history_strides_and_a_restart_stride_on_every_grid(self) -> None:
+        """Issue #644 P4b, the distributed form: model (4) with `u` (partitioned, gathered)
+        sampled every 2 steps, the call record `stage_q1` (gathered from the record) every 3,
+        the other variables not at all, and its restart points every 4 of 6 steps. On the
+        singleton and on several grids, each history record holds exactly the variables due at
+        its step (none at 1 and 5), each restart point exactly the restart variables with
+        `step` and `t`, the series is chunked at the restart point, and every record equals the
+        singleton's. Kills the distributed capture ignoring `csel` (a record holding every
+        variable), the whole state at every sampled step, and a restart point at a history
+        stride."""
+        ir = MPI_FIXTURES["fx_loop"]()
+        ir["drive"]["history"] = {"u": "inputs.history.a", "stage_q1": "inputs.history.b"}
+        ir["drive"]["restart_points"] = {"every": "inputs.history.r"}
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["history"] = {"every": 1, "a": 2, "b": 3, "r": 4}
+            case["inputs"]["time"].update(n_step=6, t_end=0.6)
+        restart = set(pe.restart_variables(ir))
+        self.assertEqual(restart, {"u"})
+        build = self._build(ir)
+        reference = None
+        for grid in (SINGLETON, (2, 2), (3, 1), (1, 3)):
+            with self.subTest(grid=grid):
+                run = build.run(grid, timeout=60)
+                self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                got = run.snapshots()
+                for case in ir["case"]["test_case_set"]:
+                    cid = case["case_id"]
+                    history = {int(n.rsplit("__", 1)[1][:-5]): doc for n, doc in got.items()
+                               if n.startswith(f"history/{cid}__")}
+                    self.assertEqual(sorted(history), [2, 3, 4, 6], cid)
+                    for k, record in history.items():
+                        due = {v for v, e in (("u", 2), ("stage_q1", 3)) if k % e == 0}
+                        self.assertEqual(set(record), due | {"step", "t"}, (cid, k))
+                    points = {int(n.rsplit("__", 1)[1][:-5]): doc for n, doc in got.items()
+                              if n.startswith(f"restart_point/{cid}__")}
+                    self.assertEqual(sorted(points), [4], cid)
+                    self.assertEqual(set(points[4]), restart | {"step", "t"}, cid)
+                    self.assertEqual(points[4]["u"], history[4]["u"], cid)
+                    self.assertEqual([got[f"series/{cid}__{i}.json"]["step"] for i in (0, 1)],
+                                     [[1, 2, 3, 4], [5, 6]], cid)
+                    self.assertNotIn(f"series/{cid}__2.json", got)
+                if reference is None:
+                    reference = got
+                else:
+                    self.assertEqual(sorted(got), sorted(reference))
+                    for name in reference:
+                        self.assertEqual(got[name], reference[name], name)
 
     def test_the_fixture_irs_pass_gates_n_and_o_and_the_harness_pin(self) -> None:
         """Each fixture IR is one `Compile.static` admits (gates (a)-(n), and gate (o) against its
@@ -3493,15 +3812,15 @@ _DRIVER_DEFECTS: tuple[tuple[str, str, str, str], ...] = (
      "    else if (p1 == 2 .and. p2 == 1) then\n      select case (cid)\n      case ('c6')\n"
      "        replicated = .true."),
     ("fx_loop", "the null axis's offset is wrong in a gather",
-     "      call harness_fortran_cpu_mpi__gather_r3(st_u, &\n        2, 1, dnl1, dlo1, &",
-     "      call harness_fortran_cpu_mpi__gather_r3(st_u, &\n        1, 1, dnl1, dlo1, &"),
+     "        call harness_fortran_cpu_mpi__gather_r3(st_u, &\n          2, 1, dnl1, dlo1, &",
+     "        call harness_fortran_cpu_mpi__gather_r3(st_u, &\n          1, 1, dnl1, dlo1, &"),
     ("fx_loop", "a derived slice has its axes swapped",
      "h5 = h5g(dlo1:dhi1, dlo2:dhi2)", "h5 = h5g(dlo2:dhi2, dlo1:dhi1)"),
     ("fx_loop", "the record gather is dropped",
-     "    if (replicated) then\n      if (rank == 0) call harness_fortran_cpu_mpi__capture_array_r3("
-     "group, &\n        'stage_q1', &\n        st_stage_q1)",
-     "    if (.true.) then\n      if (rank == 0) call harness_fortran_cpu_mpi__capture_array_r3("
-     "group, &\n        'stage_q1', &\n        st_stage_q1)"),
+     "      if (replicated) then\n        if (rank == 0) call harness_fortran_cpu_mpi__capture_array_r3("
+     "group, &\n          'stage_q1', &\n          st_stage_q1)",
+     "      if (.true.) then\n        if (rank == 0) call harness_fortran_cpu_mpi__capture_array_r3("
+     "group, &\n          'stage_q1', &\n          st_stage_q1)"),
 )
 
 #: The seeded kernel defects: (fixture, label, the model edits, cases, grids). Each fails a

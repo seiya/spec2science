@@ -1186,6 +1186,8 @@ PINNED: dict[str, str] = {
     # trailing-blank rule; a new member, `capture_layout_document`, is the output format's
     # capture layout seeded after the contract in the harness trees.
     "leaf-100": "a3ba868a7e70a224f818081f96379b635347c3b6dff190ddd8072158ff1a7924",
+    # leaf-101 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
+    "leaf-101": "234432f4fc4fb39ff6a7585a435d3ff0c21e9d94ea1ae40df0e816c7a57a321a",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1204,6 +1206,8 @@ PINNED_READER: dict[str, str] = {
     "compile-verify-5": "2654c5b6a2cc5023c2bc42d4ac7d2e6322628d9ce3340b0b78e29d313f732d89",
     # compile-verify-6: compile.verify is told the dependency surface's `libraries` list (issue #644 P1).
     "compile-verify-6": "c00dc2185d9f3563fe7759b740fd972c1487c3b15744c2a3b8833d444ccc75b6",
+    # compile-verify-7 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
+    "compile-verify-7": "347b7ce0c2980232253b29eea414f39820d28c6c0da203b28b82c30e607c3307",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
@@ -1255,9 +1259,13 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-11 (issue #644 P4a): the runner-output contract's capture section, the
     # harness reviewer's rules, the Fortran binding and the new `capture_layout_document` member.
     "generate-verify-11": "6ac8c9e4c2e6f360541b8d9e6ac3218807da61c1ef55aec7dcab25546564f279",
+    # generate-verify-12 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
+    "generate-verify-12": "2e1252450f3d491db31cd552e3c46b7ecfbd4346234b5fb96dd4b317c8ff6e23",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
+    # validate-judge-10 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
+    "validate-judge-10": "41f5396a6940c16dd8f8c21bd205f3878460db126cc0296149e86473b95e2996",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

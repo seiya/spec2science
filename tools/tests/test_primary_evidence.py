@@ -213,7 +213,7 @@ class GrammarAllowlistTest(unittest.TestCase):
             "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2),
             "coarsen": (2, 2), "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
-        self.assertEqual(pe.GRAMMAR_VERSION, 6)
+        self.assertEqual(pe.GRAMMAR_VERSION, 7)
         self.assertEqual(pe.MAX_INPUT_RANK, 4)
         for src in ("abs(1, 2)", "sum()", "roll(final.h)", "transpose(final.h, 1, 0, 1)",
                     "flip(final.h)", "flip(final.h, 0, 1)", "coarsen(final.h)",
@@ -1228,7 +1228,7 @@ class VerdictIntegrationTest(unittest.TestCase):
         for rec in records:
             self.assertNotIn("sources_read", rec)
             self.assertEqual(rec["scalar_pairing"], {})
-            self.assertEqual(rec["grammar_version"], 6)
+            self.assertEqual(rec["grammar_version"], 7)
         self.assertEqual(records[1]["cases_read"], ["a", "b"])
         self.assertEqual(evaluate_verdict(self.tests, records)["per_test"][0]["status"], "pass")
 
@@ -1682,8 +1682,9 @@ class SchemaGateTest(unittest.TestCase):
         ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
                                     {"name": "t", "shape_expr": "[nx]"}])
         # grammar 6 refuses `t` as a variable name; the rank check still reads it as rank 0
-        reserved = ["state_snapshots.schema.variables: 't' is the driver's or the harness's "
-                    "own key (['case_id', 'step', 't']), not a variable name"]
+        reserved = ["state_snapshots.schema.variables: 't' is not a variable name: it is the "
+                    "driver's or the harness's own name "
+                    f"({sorted(pe.RESERVED_VARIABLE_NAMES)})"]
         self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), reserved)
         self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), reserved)
 
@@ -1722,14 +1723,19 @@ class StaticRankTest(unittest.TestCase):
         v = np.linspace(0.1, 0.9, NX)
         cap = {"h": h, "v": v, "s": 0.5, "t": 0.2, "step": 3.0}
         inputs = {"k": 2.0, "a1": v.tolist(), "a2": h.tolist()}
-        history = {"h": np.stack([h, 2 * h, 3 * h]), "v": np.stack([v, v]),
-                   "s": np.array([0.5, 0.7]), "t": np.array([0.1, 0.2]),
-                   "step": np.array([1.0, 2.0])}
+        # grammar 7: each sampled variable has its own `t` / `step` axis
+        history = {"h": np.stack([h, 2 * h, 3 * h]), "h.t": np.array([0.1, 0.2, 0.3]),
+                   "h.step": np.array([1.0, 2.0, 3.0]), "v": np.stack([v, v]),
+                   "v.t": np.array([0.1, 0.2]), "v.step": np.array([1.0, 2.0]),
+                   "s": np.array([0.5, 0.7]), "s.t": np.array([0.1, 0.2]),
+                   "s.step": np.array([1.0, 2.0])}
+        restart_point = {"h": np.stack([h, 2 * h]), "s": np.array([0.5, 0.7]),
+                         "t": np.array([0.1, 0.2]), "step": np.array([2.0, 4.0])}
         series = {"step": np.array([1.0, 2.0, 3.0]), "h_max": np.array([1.0, 1.1, 1.2])}
         derived = {"dt": 0.01, "f": h * 0 + 1.0, "w": v.copy()}
         env = pe.CaseEnv(case_id="a", initial=dict(cap), final=dict(cap), inputs=inputs,
                          coordinates={"x": h * 0 + 0.25}, history=history, series=series,
-                         derived=derived, state_rank=2)
+                         derived=derived, state_rank=2, restart_point=restart_point)
         ranks = {"h": 2, "v": 1, "s": 0, "t": 0, "step": 0}
         renv = pe.RankEnv(captures=ranks, coordinates=frozenset({"x"}), coordinate_rank=2,
                           input_rank=lambda cid, p: int(np.ndim(
@@ -1759,11 +1765,15 @@ class StaticRankTest(unittest.TestCase):
         "coarsen(final.h, 2)", "coarsen(final.v, 2)", "norm2(final.h - flip(at('a').final.h, 0))",
         "sum(coarsen(final.h, inputs.k))",
         # grammar 6
-        "final.step", "initial.step", "history.h", "history.v", "history.s", "history.t",
-        "history.step", "series.h_max", "derived.dt", "derived.f", "derived.w",
+        "final.step", "initial.step", "history.h", "history.v", "history.s", "history.h.t",
+        "history.h.step", "series.h_max", "derived.dt", "derived.f", "derived.w",
         "smax(history.h)", "smin(history.v)", "ssum(history.h)", "smax(series.step)",
         "smax(history.s)", "max(smax(history.h * derived.dt))", "x * history.h",
         "history.h - x", "at('a').x + history.h", "sum(history.h)", "final.h - derived.f",
+        # grammar 7
+        "history.v.t", "history.s.step", "smax(history.v.t)", "restart_point.h",
+        "restart_point.s", "restart_point.t", "restart_point.step", "smax(restart_point.h)",
+        "x * restart_point.h",
     )
 
     def test_static_rank_is_the_evaluated_rank(self) -> None:
@@ -1779,6 +1789,18 @@ class StaticRankTest(unittest.TestCase):
         # a bind's rank is what reads it
         self.assertEqual(pe.expr_rank(pe.parse_expr("d + 1"), renv, {"d": 1}), 1)
 
+    def test_an_axis_member_is_rank_1_whatever_the_captures_hold(self) -> None:
+        """Grammar 7: `history.<v>.t` / `.step` and `restart_point.t` / `.step` are rank 1 by
+        their member, without a capture rank to look up — a schema that declares no time
+        variable has no `t` among the captures. Kills: ranking an axis member by
+        `captures[...]` (a KeyError on such a schema)."""
+        renv, _env = self._envs()
+        bare = renv._replace(captures={"h": 2, "v": 1})
+        for expr in ("history.h.t", "history.v.step", "restart_point.t", "restart_point.step"):
+            with self.subTest(expr=expr):
+                self.assertEqual(pe.expr_rank(pe.parse_expr(expr), bare, {}), 1)
+        self.assertEqual(pe.expr_rank(pe.parse_expr("restart_point.h"), bare, {}), 3)
+
     def test_static_refusals_are_the_evaluator_refusals(self) -> None:
         renv, env = self._envs()
         for expr in ("final.h + final.v", "final.v - x", "inputs.a1 * final.h",
@@ -1792,7 +1814,9 @@ class StaticRankTest(unittest.TestCase):
                      "transpose(final.h) + final.v", "flip(final.h, 0) - final.v",
                      # grammar 6
                      "smax(final.s)", "smax(1.0)", "history.h - final.v", "history.h + final.h",
-                     "derived.w * final.h", "sqrt(x) * history.h"):
+                     "derived.w * final.h", "sqrt(x) * history.h",
+                     # grammar 7
+                     "restart_point.h + final.h", "history.v.t + final.h"):
             with self.subTest(expr=expr):
                 tree = pe.parse_expr(expr)
                 with self.assertRaises(pe.PrimaryEvidenceError) as runtime:
@@ -2635,8 +2659,16 @@ def _evidence(variables: list[dict], *, loop: bool, coords: bool = True) -> list
         arrays = [v["name"] for v in variables if v["shape_expr"] != "scalar"]
         out += [{"artifact": "state_history"},
                 {"artifact": "step_series",
-                 "names": ["step"] + [f"{a}_{m}" for a in arrays for m in ("min", "max")]}]
+                 "names": ["step"] + [f"{a}_{m}" for a in arrays for m in ("min", "max")]},
+                {"artifact": "restart_points"}]
     return out
+
+
+def _sampled(variables: tuple[str, ...], path: str = "inputs.history.every") -> dict:
+    """The `drive` keys of a loop IR that samples every variable in ``variables`` and commits
+    its restart points at the one stride ``path`` (issue #644 P4b): `history` and
+    `restart_points`."""
+    return {"history": {v: path for v in variables}, "restart_points": {"every": path}}
 
 
 def _toy_case(cid: str, nx: int) -> dict:
@@ -2660,7 +2692,7 @@ def _toy() -> dict:
                                          "t": "time", "h": "state.h", "ok": "state.ok"}},
                   "loop": {"n_step": "derived.n_step", "dt": "derived.dt",
                            "t_start": "inputs.time.t_start", "t_end": "inputs.time.t_end"},
-                  "history": {"every": "inputs.history.every"},
+                  **_sampled(("h", "ok")),
                   "distribute": {"axes": []}},
         "case": {"test_case_set": [_toy_case("a", 4), _toy_case("b", 8)]},
         "io_contract": {
@@ -2697,7 +2729,7 @@ def _toyi() -> dict:
                                "h": "state.h", "ok": "state.ok"}},
         "loop": {"n_step": "state.n_plan", "dt": "state.dt", "t_start": "inputs.time.t_start",
                  "t_end": "inputs.time.t_end"},
-        "history": {"every": "inputs.history.every"},
+        **_sampled(("h", "dt", "n_plan", "init_ok", "ok")),
         "distribute": {"axes": []}}
     for case in ir["case"]["test_case_set"]:
         del case["initial_state"], case["derived"]
@@ -2777,15 +2809,24 @@ class Grammar6Test(unittest.TestCase):
     """The grammar 6 roots and functions, both polarities."""
 
     def test_the_new_roots_parse_and_name_what_they_read(self) -> None:
+        # grammar 7: the time axes are a sampled variable's own (`history.<v>.t` / `.step`),
+        # and `restart_point.*` is a root
         self.assertEqual(
-            pe.expr_names(pe.parse_expr("history.h + history.t + series.h_min + derived.dt "
-                                        "+ final.step")),
-            [pe.NameRef("history", "h"), pe.NameRef("history", "t"),
+            pe.expr_names(pe.parse_expr("history.h + history.h.t + history.h.step + series.h_min "
+                                        "+ derived.dt + final.step + restart_point.h "
+                                        "+ restart_point.t + restart_point.step")),
+            [pe.NameRef("history", "h"), pe.NameRef("history", "h.t"),
+             pe.NameRef("history", "h.step"),
              pe.NameRef("series", "h_min"), pe.NameRef("derived", "dt"),
-             pe.NameRef("capture", "step", point="final")])
+             pe.NameRef("capture", "step", point="final"), pe.NameRef("restart_point", "h"),
+             pe.NameRef("restart_point", "t"), pe.NameRef("restart_point", "step")])
         for src in ("history", "series", "derived", "history.h.x", "series.a.b",
                     "at('a').history.h", "at('a').series.step", "at('a').derived.dt",
-                    "comparand.history.h", "comparand.series.step", "history.h(1)"):
+                    "comparand.history.h", "comparand.series.step", "history.h(1)",
+                    # grammar 7: the removed driver axes, and over-long chains
+                    "history.t", "history.step", "history.t.t", "history.step.t",
+                    "history.h.t.t", "history.h.step.x", "restart_point", "restart_point.h.t",
+                    "at('a').restart_point.h", "comparand.restart_point.h"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
                 pe.parse_expr(src)
 
@@ -2795,23 +2836,27 @@ class Grammar6Test(unittest.TestCase):
         unadmitted root lists them among the admitted ones."""
         with self.assertRaisesRegex(
                 pe.PrimaryEvidenceError,
-                r"history\.\*, series\.\* and derived\.\* are read in the case being evaluated "
-                r"only"):
+                r"history\.\*, restart_point\.\*, series\.\* and derived\.\* are read in the "
+                r"case being evaluated only"):
             pe.parse_expr("at('a').history.h")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    r"roots: initial, final, inputs, history, series, derived, "
-                                    r"at\('<case_id>'\), comparand\)"):
+                                    r"roots: initial, final, inputs, history, restart_point, "
+                                    r"series, derived, at\('<case_id>'\), comparand\)"):
             pe.parse_expr("foo.bar")
+        # grammar 7: the removed `history.t` is refused naming the spellings that replace it
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"history\.<variable>\.t or history\.<variable>\.step"):
+            pe.parse_expr("history.t")
 
     def test_the_sample_reductions(self) -> None:
         a = np.arange(24.0).reshape(2, 3, 4)
-        env = pe.CaseEnv("c", None, {}, {}, {}, history={"h": a, "t": np.array([1.0, 2.0])},
+        env = pe.CaseEnv("c", None, {}, {}, {}, history={"h": a, "h.t": np.array([1.0, 2.0])},
                          state_rank=2)
         ev = lambda e: pe.evaluate(pe.parse_expr(e), env)  # noqa: E731
         np.testing.assert_array_equal(ev("smax(history.h)"), [11.0, 23.0])
         np.testing.assert_array_equal(ev("smin(history.h)"), [0.0, 12.0])
         np.testing.assert_array_equal(ev("ssum(history.h)"), [66.0, 210.0])
-        np.testing.assert_array_equal(ev("smax(history.t)"), [1.0, 2.0])   # identity on rank 1
+        np.testing.assert_array_equal(ev("smax(history.h.t)"), [1.0, 2.0])  # identity on rank 1
         self.assertEqual(ev("max(smax(history.h))"), 23.0)
         self.assertEqual(ev("max(history.h)"), 23.0)                       # unchanged
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"smax\(\): the argument must be"):
@@ -2850,13 +2895,24 @@ class Grammar6Test(unittest.TestCase):
         gate = lambda preds, **kw: pe.validate_primary_predicate_schema(  # noqa: E731
             preds, case_ids={"a", "b"}, test_ids=["t_mass"], schema=schema, cases=cases, **kw)
         self.assertEqual(gate([{**HMIN, "expr": "min(final.h) + final.step"}]), [])
-        for name in ("step", "case_id"):
+        # issue #644 O13: every reserved word, and any name holding the layout separator
+        # (kills a mutant dropping a word from RESERVED_VARIABLE_NAMES, or the `__` clause of
+        # `reserved_name_reason`)
+        self.assertEqual(pe.RESERVED_VARIABLE_NAMES, frozenset({
+            "t", "step", "case_id", "n", "count", "complete", "every", "none", "initial",
+            "final", "history", "restart_point", "series"}))
+        for name in sorted(pe.RESERVED_VARIABLE_NAMES) + ["a__b", "__h", "h__"]:
             with self.subTest(name=name):
                 bad = {**schema, "variables": schema["variables"] + [
                     {"name": name, "shape_expr": "scalar"}]}
                 v = pe.validate_primary_predicate_schema(
                     [HMIN], case_ids={"a", "b"}, test_ids=["t_mass"], schema=bad, cases=cases)
-                self.assertIn(f"{name!r} is the driver's or the harness's own key", v[0])
+                self.assertIn(f"{name!r} is not a variable name: ", v[0])
+                self.assertIn("own name" if "__" not in name else "contains '__'", v[0])
+        # one underscore is a name like any other
+        ok = {**schema, "variables": schema["variables"] + [{"name": "h_b", "shape_expr": "scalar"}]}
+        self.assertEqual(pe.validate_primary_predicate_schema(
+            [HMIN], case_ids={"a", "b"}, test_ids=["t_mass"], schema=ok, cases=cases), [])
 
     def test_the_new_roots_resolve_only_where_the_ir_declares_them(self) -> None:
         ir = _toy()
@@ -2869,13 +2925,44 @@ class Grammar6Test(unittest.TestCase):
                 [pred], case_ids=set(cases), test_ids=["t_run"],
                 schema=pe.snapshot_schema(ir), cases=cases, **{**ctx, **over})
         for ok in ("max(history.h)", "min(series.h_min)", "max(smax(history.h)) * derived.dt",
-                   "max(history.t) + sum(final.h)"):
+                   "max(history.h.t) + sum(final.h)", "max(history.h.step) + sum(final.h)",
+                   # grammar 7: both history variables share one stride input here
+                   "max(smax(history.h)) + max(history.ok)", "max(smax(restart_point.h))",
+                   "max(restart_point.t) + max(restart_point.step) + sum(final.h)"):
             with self.subTest(ok=ok):
                 self.assertEqual(gate(ok), [])
         # ...and a declared one is not refused a second time (the cascade 9c275119 removed)
         self.assertEqual(gate("sum(final.h) * derived.dt", case_inputs=None), [])
         refused = [
-            ("max(history.q)", {}, "history.q is not a snapshot schema variable"),
+            ("max(history.q)", {}, "history.q: 'q' is not a snapshot schema variable"),
+            ("max(history.q.t) + sum(final.h)", {},
+             "history.q.t: 'q' is not a snapshot schema variable"),
+            # grammar 7 (issue #644 P4b). Kills: dropping the no-stride clause
+            ("max(smax(history.h))", {"history_strides": {"ok": "history.every"}},
+             "drive.history gives 'h' no stride"),
+            ("max(history.h.t) + sum(final.h)", {"history_strides": {"ok": "history.every"}},
+             "drive.history gives 'h' no stride"),
+            # kills: dropping the two-strides refusal (`len(strides_read) > 1`), and not
+            # counting a `.t` / `.step` member's variable toward its stride
+            ("max(smax(history.h)) + max(history.ok)",
+             {"history_strides": {"h": "every_h", "ok": "every_ok"}},
+             "reads the history of variables sampled at different strides"),
+            ("max(smax(history.h)) + max(history.ok.t)",
+             {"history_strides": {"h": "every_h", "ok": "every_ok"}},
+             "reads the history of variables sampled at different strides"),
+            # a restart variable the drive names that the schema does not declare is refused
+            # here, not raised as a KeyError by the rank inference. Kills: dropping the
+            # `not in variables` half
+            ("max(smax(restart_point.zz)) + sum(final.h)",
+             {"restart_point_names": frozenset({"h", "zz"})},
+             "restart_point.zz: 'zz' is not a schema variable a restart point holds"),
+            # kills: dropping the restart-variable check, or the no-entry check
+            ("max(restart_point.ok) + sum(final.h)", {},
+             "restart_point.ok: 'ok' is not a schema variable a restart point holds"),
+            ("max(smax(restart_point.h))", {"restart_point_names": None},
+             "declares no restart_points required_evidence entry"),
+            ("max(restart_point.t) + sum(final.h)", {"restart_point_names": None},
+             "declares no restart_points required_evidence entry"),
             ("max(history.h)", {"history_declared": False}, "declares no state_history"),
             ("min(series.q_min)", {}, "series.q_min is not a name of the step_series entry"),
             ("min(series.h_min)", {"series_names": None}, "declares no step_series"),
@@ -2889,6 +2976,60 @@ class Grammar6Test(unittest.TestCase):
             with self.subTest(expr=expr, over=over):
                 v = gate(expr, **over)
                 self.assertTrue(any(msg in m for m in v), v)
+        # a bind's history read counts toward the predicate's strides too
+        pred = {**io["predicates"][0], "bind": {"a": "max(history.ok)"},
+                "expr": "max(smax(history.h)) + a"}
+        v = pe.validate_primary_predicate_schema(
+            [pred], case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
+            cases=cases, **{**ctx, "history_strides": {"h": "every_h", "ok": "every_ok"}})
+        self.assertTrue(any("sampled at different strides" in m for m in v), v)
+
+    def test_a_time_axis_needs_a_declared_time_variable(self) -> None:
+        """`history.<v>.t` and `restart_point.t` are refused at Compile when the schema declares
+        no `time_variable` (grammar 6 refused `history.t` there; without this the read passed
+        the gate and failed at evaluation). `.step` needs none. Kills: dropping either
+        `has_time` clause."""
+        ir = _toy()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        schema = dict(pe.snapshot_schema(ir))
+        schema.pop("time_variable")
+        ctx = pe.predicate_schema_context(ir)
+
+        def gate(expr: str) -> list[str]:
+            return pe.validate_primary_predicate_schema(
+                [{**io["predicates"][0], "expr": expr}], case_ids=set(cases),
+                test_ids=["t_run"], schema=schema, cases=cases, **ctx)
+        for expr, msg in (("max(history.h.t) + sum(final.h)", "a sample carries no time"),
+                          ("max(restart_point.t) + sum(final.h)",
+                           "a restart point carries no time")):
+            with self.subTest(expr=expr):
+                self.assertTrue(any(msg in m for m in gate(expr)), gate(expr))
+        self.assertEqual(gate("max(history.h.step) + max(restart_point.step) + sum(final.h)"),
+                         [])
+
+    def test_the_context_carries_the_strides_and_the_restart_variables(self) -> None:
+        """`predicate_schema_context` (issue #644 P4b): `history_strides` is `drive.history`
+        and `restart_point_names` the restart variables while a `restart_points` entry is
+        declared, None otherwise; an IR with no `drive`, or a malformed one, answers None for
+        the strides and does not raise. Kills: a context that drops either key, or reads the
+        restart variables without the entry."""
+        ir = _toy()
+        ctx = pe.predicate_schema_context(ir)
+        self.assertEqual(ctx["history_strides"], {"h": "history.every", "ok": "history.every"})
+        self.assertEqual(ctx["restart_point_names"], frozenset({"h"}))
+        ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
+        ev[:] = [e for e in ev if e["artifact"] != "restart_points"]
+        self.assertIsNone(pe.predicate_schema_context(ir)["restart_point_names"])
+        bare = _ir([HMIN])
+        self.assertNotIn("drive", bare)
+        ctx = pe.predicate_schema_context(bare)
+        self.assertIsNone(ctx["history_strides"])
+        self.assertIsNone(ctx["restart_point_names"])
+        broken = _toy()
+        broken["drive"]["history"] = {"h": "derived.n_step"}
+        ctx = pe.predicate_schema_context(broken)
+        self.assertIsNone(ctx["history_strides"])
+        self.assertEqual(ctx["restart_point_names"], frozenset())
 
 
 class StateReadsTest(unittest.TestCase):
@@ -2915,7 +3056,10 @@ class StateReadsTest(unittest.TestCase):
         self.assertTrue(self._reads("initial.dt", toyi))
         # history / series of a written variable; derived, inputs, the driver's step and time
         # (and their history / series, R2-1) never
-        for expr, want in (("max(history.t)", False), ("max(smax(history.h))", True),
+        for expr, want in (("max(history.h.t)", False), ("max(history.h.step)", False),
+                           ("max(smax(history.h))", True),
+                           ("max(smax(restart_point.h))", True),
+                           ("max(restart_point.t)", False), ("max(restart_point.step)", False),
                            ("min(series.h_min)", True),
                            ("derived.dt", False), ("inputs.grid.nx", False),
                            ("final.step", False), ("final.t", False), ("initial.step", False)):
@@ -3018,16 +3162,18 @@ def _toy_with_input_state() -> dict:
     ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
     ev[0]["schema"]["variables"].append({"name": "b", "shape_expr": "[nx]"})
     ev[2]["names"] += ["b_min", "b_max"]
+    ir["drive"]["history"]["b"] = "inputs.history.every"
     return ir
 
 
 class DriverCounterReadsTest(unittest.TestCase):
-    """R2-1: the driver's counters `history.t`, `history.step` and `series.step`
-    are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
+    """R2-1: the driver's counters — grammar 7's `history.<v>.t`, `history.<v>.step`,
+    `restart_point.t`, `restart_point.step`, and `series.step` — are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
     `cases_read` — and neither are the history and the series folds of a variable nothing
     writes; those of a written variable are."""
 
-    _COUNTERS = ("max(history.t)", "max(history.step)", "max(series.step)")
+    _COUNTERS = ("max(history.h.t)", "max(history.h.step)", "max(restart_point.t)",
+                 "max(restart_point.step)", "max(series.step)")
     _MSG = "predicates[0]: reads no captured state the kernel produced"
 
     def _pred(self, expr: str) -> dict:
@@ -3038,7 +3184,10 @@ class DriverCounterReadsTest(unittest.TestCase):
         ir = _toy_with_input_state()
         self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
         reads = pe.state_reads(ir)
-        for kind, name, want in (("history", "t", False), ("history", "step", False),
+        for kind, name, want in (("history", "h.t", False), ("history", "h.step", False),
+                                 ("restart_point", "t", False),
+                                 ("restart_point", "step", False),
+                                 ("restart_point", "h", True), ("restart_point", "b", False),
                                  ("series", "step", False),
                                  ("history", "h", True), ("series", "h_min", True),
                                  ("series", "h_max", True), ("history", "b", False),
@@ -3061,13 +3210,29 @@ class DriverCounterReadsTest(unittest.TestCase):
                 v = pe.validate_primary_predicate_schema([self._pred(expr)], **kw)
                 self.assertEqual(len(v), 1, v)
                 self.assertTrue(v[0].startswith(self._MSG), v)
-                self.assertIn("history.t / history.step / series.step", v[0])
                 self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), set())
         for expr in ("max(smax(history.h))", "min(series.h_min)"):
             with self.subTest(expr=expr):
                 self.assertEqual(pe.validate_primary_predicate_schema(
                     [self._pred(expr)], **kw), [])
                 self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), {"a", "b"})
+
+    def test_the_schema_gate_s_refusal_names_the_grammar_7_counters(self) -> None:
+        """The refusal a repairing leaf reads names the driver's counters as grammar 7 spells
+        them (issue #644 P4b): `history.<v>.t` / `history.<v>.step`, `restart_point.t` /
+        `restart_point.step`, `series.step` — not the removed `history.t` / `history.step`,
+        which the parser now refuses — and `restart_point.<v>` among the state reads (as the
+        evaluator's refusal does). Before grammar 7 this row asserted the text
+        `history.t / history.step / series.step`."""
+        ir = _toy_with_input_state()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
+                  cases=cases, **pe.predicate_schema_context(ir))
+        (v,) = pe.validate_primary_predicate_schema([self._pred("max(series.step)")], **kw)
+        self.assertNotIn("history.t /", v)
+        for name in ("history.<v>.t", "history.<v>.step", "restart_point.t",
+                     "restart_point.step", "series.step", "restart_point.<v>"):
+            self.assertIn(name, v)
 
     def test_the_evaluator_refuses_each_counter_alone(self) -> None:
         run = _RunDir()
@@ -3359,7 +3524,8 @@ class ClosureExemptionTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, re.escape(
                 "predicates[2]: reads no captured state the kernel produced (final.<written "
                 "non-logical var>, initial.<var init writes>, history.<written var>, "
-                "series.<written var>_min|_max) in expr or a bind expr reaches. "
+                "restart_point.<written var>, series.<written var>_min|_max) in expr or a bind "
+                "expr reaches. "
                 f"{pe.FLAG_FORM_STATEMENT}") + r"\Z"):
             self._evaluate(ir)
 
@@ -4109,11 +4275,75 @@ class LazyLoaderTest(unittest.TestCase):
         env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
                                pe.snapshot_schema(self.ir), output_format="json")
         hist = env.history.get()
-        np.testing.assert_array_equal(hist["step"], [2.0, 10.0])   # 10 after 2, not before
+        np.testing.assert_array_equal(hist["h.step"], [2.0, 10.0])   # 10 after 2, not before
         self.assertEqual(hist["h"].shape, (2, 4))
         # the step count alone is no state read (R2-1): read beside the samples of h
-        self.assertEqual(self._eval("max(history.step) + 0 * max(smax(history.h))")[0]
+        self.assertEqual(self._eval("max(history.h.step) + 0 * max(smax(history.h))")[0]
                          ["evaluated"][0]["value"], 10.0)
+
+    def test_each_variable_stacks_the_records_that_hold_it(self) -> None:
+        """Grammar 7 (issue #644 P4b): a history record holds the variables due at its step, so
+        each variable is stacked from the records holding it, with ITS steps and times. Kills:
+        a loader that stacks only the records holding every variable (h would lose step 2), one
+        that drops a variable some record omits (ok), or one giving every variable the steps of
+        all the records (`ok.step` would be [2, 4])."""
+        hdir = self.run.sdir / "history"
+        hdir.mkdir()
+        for cid, n in (("a", 4), ("b", 8)):
+            (hdir / f"{cid}__2.json").write_text(json.dumps(
+                {"h": [2.0] * n, "t": 0.2, "step": 2}))
+            (hdir / f"{cid}__4.json").write_text(json.dumps(
+                {"h": [4.0] * n, "ok": 1.0, "t": 0.4, "step": 4}))
+        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
+                               pe.snapshot_schema(self.ir), output_format="json")
+        hist = env.history.get()
+        self.assertEqual(hist["h"].shape, (2, 4))
+        np.testing.assert_array_equal(hist["h.step"], [2.0, 4.0])
+        np.testing.assert_array_equal(hist["h.t"], [0.2, 0.4])
+        np.testing.assert_array_equal(hist["ok"], [1.0])
+        np.testing.assert_array_equal(hist["ok.step"], [4.0])
+        np.testing.assert_array_equal(hist["ok.t"], [0.4])
+        self.assertEqual(self._eval("max(history.h.step) + 0 * max(smax(history.h))")[0]
+                         ["evaluated"][0]["value"], 4.0)
+        self.assertEqual(self._eval("sum(history.h.step) + 0 * max(smax(history.h))")[0]
+                         ["evaluated"][0]["value"], 6.0)
+
+    def test_the_restart_points_are_their_own_stack(self) -> None:
+        """`restart_point.*` (grammar 7) reads the `restart_point` group, not the history: its
+        records stacked by step, with `step` and `t`; none is an empty stack shaped like the
+        final capture; a record whose step is not its name is refused. Kills: a loader reading
+        the history group for it, or one that skips the step check."""
+        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
+                               pe.snapshot_schema(self.ir), output_format="json")
+        points = env.restart_point.get()
+        self.assertEqual(points["h"].shape, (0, 4))
+        self.assertEqual(points["step"].shape, (0,))
+        self.assertEqual(points["t"].shape, (0,))
+        self.assertEqual(self._eval("max(smax(restart_point.h))")[0]["kind"], "structural")
+        hdir = self.run.sdir / "history"
+        hdir.mkdir()
+        rdir = self.run.sdir / "restart_point"
+        rdir.mkdir()
+        for cid, n in (("a", 4), ("b", 8)):
+            (hdir / f"{cid}__2.json").write_text(json.dumps(
+                {"h": [99.0] * n, "t": 0.2, "step": 2}))
+            for k in (5, 10):
+                (rdir / f"{cid}__{k}.json").write_text(json.dumps(
+                    {"h": [float(k)] * n, "t": 0.1 * k, "step": k}))
+        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
+                               pe.snapshot_schema(self.ir), output_format="json")
+        points = env.restart_point.get()
+        self.assertEqual(points["h"].shape, (2, 4))
+        np.testing.assert_array_equal(points["step"], [5.0, 10.0])
+        np.testing.assert_array_equal(points["t"], [0.5, 1.0])
+        self.assertNotIn("ok", points)        # a member no restart point holds is left out
+        rec = self._eval("max(smax(restart_point.h)) + 0 * max(restart_point.step)")[0]
+        self.assertEqual(rec["kind"], "pass")
+        self.assertEqual(rec["evaluated"][0]["value"], 10.0)
+        (rdir / "a__5.json").write_text(json.dumps({"h": [5.0] * 4, "t": 0.5, "step": 6}))
+        rec = self._eval("max(smax(restart_point.h))")[0]
+        self.assertIn("restart point", rec["evaluated"][0]["error"])
+        self.assertIn("carries step 6.0, not the committed step 5", rec["evaluated"][0]["error"])
 
     def test_a_sample_whose_step_is_not_its_name_is_refused(self) -> None:
         hdir = self.run.sdir / "history"
@@ -4128,7 +4358,8 @@ class LazyLoaderTest(unittest.TestCase):
                                pe.snapshot_schema(self.ir), output_format="json")
         hist = env.history.get()
         self.assertEqual(hist["h"].shape, (0, 4))
-        self.assertEqual(hist["t"].shape, (0,))
+        self.assertEqual(hist["h.t"].shape, (0,))
+        self.assertEqual(hist["h.step"].shape, (0,))
         rec = self._eval("max(smax(history.h))")[0]
         self.assertEqual(rec["kind"], "structural")
 
@@ -4228,6 +4459,27 @@ class CaseInputsTest(unittest.TestCase):
                 pe.evaluate_case_inputs(mutate(fn))
             self.assertIn("case 'a'", str(cm.exception))
             self.assertIn(msg, str(cm.exception))
+
+    def test_every_stride_is_an_integer_of_at_least_0(self) -> None:   # (c)
+        """Issue #644 P4b: each history stride input and the restart points' are evaluated,
+        each its own `inputs` path. Kills: `stride_inputs` dropping the restart points', or
+        keeping one history stride per IR instead of one per input."""
+        def toy(**every: Any) -> dict:
+            ir = _toy()
+            ir["drive"]["history"] = {"h": "inputs.history.h_every",
+                                      "ok": "inputs.history.ok_every"}
+            ir["drive"]["restart_points"] = {"every": "inputs.history.rp_every"}
+            for c in ir["case"]["test_case_set"]:
+                c["inputs"]["history"] = {"h_every": 2, "ok_every": 0, "rp_every": 5, **every}
+            return ir
+        self.assertEqual(sorted(pe.evaluate_case_inputs(toy())), ["a", "b"])
+        for key in ("h_every", "ok_every", "rp_every"):
+            for bad in (-1, 1.5):
+                with self.subTest(key=key, bad=bad), \
+                        self.assertRaises(pe.PrimaryEvidenceError) as cm:
+                    pe.evaluate_case_inputs(toy(**{key: bad}))
+                self.assertIn(f"the stride inputs.history.{key}", str(cm.exception))
+                self.assertIn("not an integer >= 0", str(cm.exception))
 
     def test_an_integral_float_loop_count_is_admitted(self) -> None:
         ir = _toy()
@@ -4351,8 +4603,23 @@ class DriveViolationsTest(unittest.TestCase):
             (lambda d: d.update(init=[d["step"]]), "drive.init is one mapping entry"),
             (lambda d: d["loop"].pop("t_end"), "drive.loop.t_end is required whenever loop"),
             (lambda d: d["loop"].update(dt="time"), "drive.loop.dt must be inputs.<path>"),
+            # issue #644 P4b: `history` is a map variable -> stride input, `restart_points`
+            # carries the one stride of the restart points
+            (lambda d: d.update(history="inputs.history.every"),
+             "drive.history must be a mapping {<state variable>: inputs.<path>, ...}"),
+            (lambda d: d.update(history={"h": "derived.n_step"}),
+             "drive.history.h must be inputs.<path>"),
+            (lambda d: d.update(history={"h": "inputs.history.every", "ok": "h + 1"}),
+             "drive.history.ok must be inputs.<path>"),
+            # the removed grammar-6 spelling reads as a variable named `every`
             (lambda d: d.update(history={"every": "derived.n_step"}),
-             "drive.history must be {every: inputs.<path>}"),
+             "drive.history.every must be inputs.<path>"),
+            (lambda d: d.update(restart_points={"every": "derived.n_step"}),
+             "drive.restart_points must be {every: inputs.<path>}"),
+            (lambda d: d.update(restart_points={"every": "inputs.history.every", "at": 1}),
+             "drive.restart_points must be {every: inputs.<path>}"),
+            (lambda d: d.update(restart_points="inputs.history.every"),
+             "drive.restart_points must be {every: inputs.<path>}"),
             (lambda d: d.update(extra=1), "drive.extra is not a key of drive"),
         ]
         for fn, msg in rows:
@@ -4449,8 +4716,24 @@ class DriveViolationsTest(unittest.TestCase):
         del ir["drive"]["history"]
         self._refused(ir, "(e) drive.history is required with loop")
         rus = _rus()
-        rus["drive"]["history"] = {"every": "inputs.grid.nx"}
+        rus["drive"]["history"] = {"q": "inputs.grid.nx"}
         self._refused(rus, "(e) drive.history is refused without loop")
+        # issue #644 P4b: `restart_points` both ways (kills dropping either half)
+        ir = _toy()
+        del ir["drive"]["restart_points"]
+        self._refused(ir, "(e) drive.restart_points is required with loop")
+        rus = _rus()
+        rus["drive"]["restart_points"] = {"every": "inputs.grid.nx"}
+        self._refused(rus, "(e) drive.restart_points is refused without loop")
+        # an empty history is a node that samples nothing: admitted (kills `if not
+        # block.history` in place of `is None`)
+        ir = _toy()
+        ir["drive"]["history"] = {}
+        self.assertEqual(self._v(ir), [])
+        # each key names a schema variable (kills dropping the key check)
+        ir = _toy()
+        ir["drive"]["history"]["zz"] = "inputs.history.every"
+        self._refused(ir, "(e) drive.history.zz: 'zz' is not a snapshot schema variable")
 
     def test_the_initial_state_entries(self) -> None:   # (f)
         ir = _toy()
@@ -4527,6 +4810,26 @@ class DriveViolationsTest(unittest.TestCase):
         self._refused(ir, "(h) the step_series evidence entry is declared iff drive.loop is")
         del ev[1]
         self._refused(ir, "(h) the state_history evidence entry is declared iff drive.history")
+        # issue #644 P4b: the restart_points entry iff drive.restart_points, both ways
+        ir = _toy()
+        ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
+        ev[:] = [e for e in ev if e["artifact"] != "restart_points"]
+        self._refused(ir, "(h) the restart_points evidence entry is declared iff "
+                          "drive.restart_points is")
+        rus = _rus()
+        rus["io_contract"]["raw_requirements"]["required_evidence"].append(
+            {"artifact": "restart_points"})
+        self._refused(rus, "(h) the restart_points evidence entry is declared iff "
+                           "drive.restart_points is")
+        # a step_series name with a reserved spelling is refused by name (kills dropping the
+        # `reserved_name_reason` loop over the names); `step` is the driver's own column
+        for bad in ("every", "n", "h__min"):
+            with self.subTest(bad=bad):
+                ir = _toy()
+                ir["io_contract"]["raw_requirements"]["required_evidence"][2]["names"].append(
+                    bad)
+                self._refused(ir, f"(h) step_series name {bad!r} is refused: ")
+        self.assertFalse(any("(h) step_series name 'step'" in m for m in self._v(_toy())))
         rus = _rus()
         rus["io_contract"]["raw_requirements"]["required_evidence"].append(
             {"artifact": "step_series", "names": ["step"]})
@@ -5924,7 +6227,8 @@ def _continuation_ir(**over: Any) -> dict[str, Any]:
     ir["io_contract"]["raw_requirements"]["required_evidence"] += [
         {"artifact": "state_history", "required": True},
         {"artifact": "step_series", "required": True,
-         "names": ["step", "u_min", "u_max", "w_min", "w_max"]}]
+         "names": ["step", "u_min", "u_max", "w_min", "w_max"]},
+        {"artifact": "restart_points", "required": True}]
     base = copy.deepcopy(ir["case"]["test_case_set"][0])
     cont = {k: v for k, v in base.items() if k != "initial_state"}
     cont.update(case_id="m0_cont", restart={"from": "m0", "step": 2})
@@ -6042,15 +6346,33 @@ class ContinuationGateTest(unittest.TestCase):
         self.assertEqual(self._p(ir), [])
 
     def test_the_restart_point_is_a_sample_before_the_end(self) -> None:
-        for step, every, want in ((3, 2, "no multiple of its base's history.every"),
+        # issue #644 P4b: the restart point is one of the base's restart points (its
+        # `restart_points.every`), no longer a history sample
+        for step, every, want in ((3, 2, "no multiple of its base's restart_points.every"),
                                   (4, 1, "not below the base's n_step"),
-                                  (2, 0, "takes history samples")):
+                                  (2, 0, "commits restart points (its restart_points.every")):
             with self.subTest(step=step, every=every):
                 ir = _continuation_ir()
                 for c in ir["case"]["test_case_set"]:
                     c["inputs"]["every"] = every
                 ir["case"]["test_case_set"][2]["restart"]["step"] = step
                 self.assertTrue(any(want in v for v in self._p(ir)), self._p(ir))
+
+    def test_the_step_divides_the_restart_points_stride_not_the_history_s(self) -> None:
+        """Issue #644 P4b: gate (p) reads `drive.restart_points.every`; the history strides are
+        no restart point's. Kills a gate (p) that still reads a history stride (either
+        polarity: a history stride of 3 would refuse step 2; one of 1 would admit step 3)."""
+        for h_every, rp_every, step, refused in ((3, 1, 2, False), (1, 2, 3, True),
+                                                 (1, 2, 2, False), (0, 1, 2, False)):
+            with self.subTest(h_every=h_every, rp_every=rp_every, step=step):
+                ir = _continuation_ir()
+                ir["drive"]["history"] = {v: "inputs.h_every" for v in ir["drive"]["history"]}
+                ir["drive"]["restart_points"] = {"every": "inputs.rp_every"}
+                for c in ir["case"]["test_case_set"]:
+                    c["inputs"].update(h_every=h_every, rp_every=rp_every)
+                ir["case"]["test_case_set"][2]["restart"]["step"] = step
+                found = [v for v in self._p(ir) if "restart_points.every" in v]
+                self.assertEqual(bool(found), refused, self._p(ir))
 
     def test_the_step_is_bounded_by_a_derived_n_step_too(self) -> None:
         """Round 2 (axis A, P17b): three of the five loop IRs of the corpus bind `loop.n_step`
@@ -6121,8 +6443,10 @@ class ContinuationGateTest(unittest.TestCase):
             written = pe.write_case_inputs(ir, Path(tmp))
             self.assertEqual(sorted(p.name for p in written), ["m0.json", "m1.json"])
 
-    def _sample(self, root: Path, **edit: Any) -> Path:
-        path = root / "raw" / "state_snapshots" / "history" / "m0__2.json"
+    def _sample(self, root: Path, group: str = "restart_point", **edit: Any) -> Path:
+        """The base's restart point at step 2 (issue #644 P4b: the `restart_point` group);
+        ``group`` writes the same record in another group."""
+        path = root / "raw" / "state_snapshots" / group / "m0__2.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         doc = {"u": [1.5, 2.5, 3.5], "w": [1.5, 2.5, 3.5], "ok": 1.0, "step": 2.0, "t": 1.5}
         doc.update(edit)
@@ -6165,6 +6489,18 @@ class ContinuationGateTest(unittest.TestCase):
                 self.assertEqual(files, [])
                 self.assertIn(want, refused["m0_cont"])
                 self.assertFalse((Path(tmp) / "restart" / "case_inputs" / "m0_cont.json").exists())
+
+    def test_a_history_sample_is_no_restart_point(self) -> None:
+        """Issue #644 P4b: the reader reads the `restart_point` group; a history sample at the
+        step, holding every restart variable, is no restart point. Kills a reader left on
+        `capture_store.HISTORY`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._sample(Path(tmp), group="history")
+            files, refused = pe.write_continuation_inputs(
+                _continuation_ir(), Path(tmp), pe.restart_point_reader(Path(tmp), "json"))
+            self.assertEqual(files, [])
+            self.assertIn("no restart point", refused["m0_cont"])
+            self.assertIn("the restart point of 'm0' at step 2", refused["m0_cont"])
 
     def test_the_start_check(self) -> None:
         ir = _continuation_ir()

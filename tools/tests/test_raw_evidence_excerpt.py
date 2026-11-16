@@ -416,6 +416,20 @@ class StateSnapshotsTest(unittest.TestCase):
         self.assertEqual(self._case("case_a__b")["history_samples"], 1)
         self.assertEqual(self._case()["history_samples"], 3)
 
+    def test_restart_points_counts_this_case_s_records_alone(self):
+        """Issue #644 P4b: a case's `restart_points` is the number of its restart points, read
+        from the `restart_point` group and not the history. Kills: the key left out, counted
+        from `history_steps`, or from another case's records."""
+        self.assertEqual(self._case()["restart_points"], 0)
+        for rel in ("case_a__1.json", "case_a__2.json"):
+            self.raw.write(f"state_snapshots/history/{rel}", {"h": [[1.0]], "t": 0.0})
+        self.assertEqual(self._case()["restart_points"], 0)
+        for rel in ("case_a__2.json", "case_a__4.json", "case_a__6.json", "case_b__2.json",
+                    "case_a__x.json"):
+            self.raw.write(f"state_snapshots/restart_point/{rel}", {"h": [[1.0]], "t": 0.0})
+        case = self._case()
+        self.assertEqual((case["restart_points"], case["history_samples"]), (3, 2))
+
     def test_series_summarizes_each_name_and_is_none_without_a_file(self):
         self.assertIsNone(self._case()["series"])
         self.raw.write("state_snapshots/series/case_a__0.json",
@@ -455,12 +469,17 @@ class RequiredEvidenceTest(unittest.TestCase):
         self.raw = _RawDir(self)
 
     def test_a_stride_of_zero_is_no_missing_history(self) -> None:
+        # issue #644 P4b: nor missing restart points (a stride of 0 commits none). Kills:
+        # `restart_points` dropped from `_OPTIONAL_GROUP_ARTIFACTS`.
         contract = {"raw_requirements": {"required_evidence": [
-            {"artifact": "state_history"}, {"artifact": "step_series"}]}}
+            {"artifact": "state_history"}, {"artifact": "step_series"},
+            {"artifact": "restart_points", "required": True}]}}
         rows = {r["artifact"]: r for r in self._rows(contract)}
         self.assertFalse(rows["state_history"]["required"])
         self.assertFalse(rows["state_history"]["present"])
         self.assertTrue(rows["step_series"]["required"])
+        self.assertFalse(rows["restart_points"]["required"])
+        self.assertFalse(rows["restart_points"]["present"])
 
     def _rows(self, contract=None) -> list[dict]:
         return rex.raw_evidence_excerpt(
@@ -494,29 +513,35 @@ class RequiredEvidenceTest(unittest.TestCase):
         contract = _contract(raw_requirements={"required_evidence": [
             {"artifact": "state_snapshots", "required": True},
             {"artifact": "state_history", "required": True},
-            {"artifact": "step_series", "required": True}]})
+            {"artifact": "step_series", "required": True},
+            {"artifact": "restart_points", "required": True}]})
         return {row["artifact"]: row["present"] for row in self._rows(contract)}
 
     def test_the_driver_s_artifacts_are_looked_for_where_it_writes_them(self):
         """Issue #589: `state_history` and `step_series` sit under `state_snapshots/`
-        (`_EVIDENCE_GROUPS`), so a row reading `raw/<artifact>` would answer false for every run."""
-        self.assertEqual(self._drive_rows(), {"state_snapshots": False, "state_history": False,
-                                              "step_series": False})
+        (`_EVIDENCE_GROUPS`), so a row reading `raw/<artifact>` would answer false for every run;
+        issue #644 P4b: `restart_points` too, its own group (a history sample is none)."""
+        none = {"state_snapshots": False, "state_history": False, "step_series": False,
+                "restart_points": False}
+        self.assertEqual(self._drive_rows(), none)
         self.raw.write("state_snapshots/case_a.json", {"h": [[1.0]]})
-        self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": False,
-                                              "step_series": False})
+        self.assertEqual(self._drive_rows(), {**none, "state_snapshots": True})
         self.raw.write("state_snapshots/history/case_a__1.json", {"h": [[1.0]]})
-        self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": True,
-                                              "step_series": False})
+        self.assertEqual(self._drive_rows(), {**none, "state_snapshots": True,
+                                              "state_history": True})
         self.raw.write("state_snapshots/series/case_a__0.json", {"step": [1], "t": [1.0]})
+        self.assertEqual(self._drive_rows(), {**none, "state_snapshots": True,
+                                              "state_history": True, "step_series": True})
+        self.raw.write("state_snapshots/restart_point/case_a__1.json", {"h": [[1.0]]})
         self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": True,
-                                              "step_series": True})
+                                              "step_series": True, "restart_points": True})
 
     def test_a_directory_at_the_artifact_s_bare_name_does_not_answer(self):
         self.raw.write("state_history/x.json", {})
         self.raw.write("step_series/x.json", {})
+        self.raw.write("restart_points/x.json", {})
         self.assertEqual(self._drive_rows(), {"state_snapshots": False, "state_history": False,
-                                              "step_series": False})
+                                              "step_series": False, "restart_points": False})
 
     def test_required_false_is_carried(self):
         contract = _contract(raw_requirements={"required_evidence": [
@@ -602,8 +627,10 @@ class ExcerptIsBoundedTest(unittest.TestCase):
         # 2 since Z6 (issue #255): the window gained each case's `initial` capture. 3 since
         # issue #582: the metrics-basis sections left it and each variable names its `source`. 4
         # since issue #589: `source` went, and each case carries `history_samples` and `series`.
-        # 5 since issue #644 P4: every case has a `series`, whose `t` is one entry per row.
-        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 5)
+        # 5 since issue #644 P4: every case has a `series`, whose `t` is one entry per row. 6
+        # since issue #644 P4b: each case carries `restart_points`, and `required_evidence`
+        # looks for them where the driver writes them.
+        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 6)
 
 
 if __name__ == "__main__":

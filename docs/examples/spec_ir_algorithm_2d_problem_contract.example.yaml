@@ -31,7 +31,8 @@
 #                   h: state.h, hu: state.hu, hv: state.hv, ok: state.ok}
 #     loop: {n_step: derived.n_step, dt: derived.dt, t_start: inputs.time.t_start,
 #            t_end: inputs.time.t_end}
-#     history: {every: inputs.history.every}
+#     history: {h: inputs.history.every, hu: inputs.history.every, hv: inputs.history.every}
+#     restart_points: {every: inputs.restart_points.every}
 #   case.test_case_set[].initial_state: {h: "<expression over x, y and inputs>", hu: ..., hv: ...}
 #   case.test_case_set[].derived: {dx: "inputs.grid.L_x / inputs.grid.nx", dy: ...,
 #                                  dt: "<the tests.md dt rule>", n_step: "<the step count>"}

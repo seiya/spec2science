@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.1
+  node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.2
   spec_kind: component
   spec_id: dynamics_shallow_water_time_update_2d_rk4
-  spec_version: 0.1.1
+  spec_version: 0.1.2
   source_refs:
     controlled_spec: spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/controlled_spec.md
     tests: spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/tests.md
@@ -21,8 +21,8 @@ case:
         dt: 0.4
         n_step: 1
         t_end: 1.15
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: 0.0
       expected:
@@ -32,7 +32,7 @@ case:
         - 0.95
         - 1.15
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_linear_one_step
@@ -46,8 +46,8 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       expected:
@@ -57,7 +57,7 @@ case:
         - 2.55
         - 2.6
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_linear_one_step_axis
@@ -71,14 +71,14 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       expected:
         stage_t: *id001
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1.5*((kc - 1.5)*(kc - 2.5)/2) + 2.5*((kc - 0.5)*(2.5 - kc)) + 2.0*((kc -
         0.5)*(kc - 1.5)/2) + 0.1*(yc + 0.5) - 0.2*(xc + 0.5)
@@ -93,14 +93,14 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       expected:
         stage_t: *id001
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_large_dt
@@ -114,8 +114,8 @@ case:
         dt: 500.0
         n_step: 1
         t_end: 502.5
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -0.0002
       expected:
@@ -125,7 +125,7 @@ case:
         - 252.5
         - 502.5
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_ncomp4
@@ -139,14 +139,14 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       expected:
         stage_t: *id001
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_linear_convergence_n10
@@ -160,12 +160,12 @@ case:
         dt: 0.1
         n_step: 10
         t_end: 3.5
-      history:
-        every: 5
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_linear_convergence_n20
@@ -179,12 +179,12 @@ case:
         dt: 0.05
         n_step: 20
         t_end: 3.5
-      history:
-        every: 10
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_invalid_dt_zero
@@ -198,12 +198,12 @@ case:
         dt: 0.0
         n_step: 1
         t_end: 2.5
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_invalid_dt_negative
@@ -217,12 +217,12 @@ case:
         dt: -0.1
         n_step: 1
         t_end: 2.4
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_ncomp0
@@ -236,12 +236,12 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_nx0
@@ -255,12 +255,12 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
   - case_id: l0_ny0
@@ -274,12 +274,12 @@ case:
         dt: 0.1
         n_step: 1
         t_end: 2.6
-      history:
-        every: 1
+      restart_points:
+        every: 0
       constants:
         lam: -1.0
       test_profile_id: dynamics_shallow_water_time_update_2d_rk4_l0
-      test_profile_version: 0.5.0
+      test_profile_version: 0.6.0
     initial_state:
       U: 1 + 0.5*(kc + 0.5) + 0.1*(xc + 0.5) - 0.2*(yc + 0.5)
 algorithm:
@@ -561,6 +561,7 @@ io_contract:
           length: inputs.grid.ny
           placement: cell_center
     - artifact: state_history
+    - artifact: restart_points
     - artifact: step_series
       names:
       - step
@@ -1027,7 +1028,7 @@ io_contract:
     op: eq
     value: 0
 dependency:
-  node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.1
+  node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.2
   direct_deps: []
 public_api:
   published_operations:
@@ -1189,5 +1190,6 @@ drive:
     dt: inputs.time.dt
     t_start: inputs.time.t_start
     t_end: inputs.time.t_end
-  history:
-    every: inputs.history.every
+  history: {}
+  restart_points:
+    every: inputs.restart_points.every

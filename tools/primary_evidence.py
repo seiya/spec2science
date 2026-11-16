@@ -15,10 +15,12 @@ number. These predicates alone decide a test (issue #582, `tools/verdict_evaluat
 `drive` block and the published operations' §5.1 signatures (`drive_model`), never from a label the
 leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` dummy of `init` or of a
 `step` entry), `initial.<v>` of a variable `init` writes,
-`history.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts for. `initial.<v>`
+`history.<v>`, `restart_point.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts
+for. `initial.<v>`
 of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
-nothing writes (and its history), `final.step` / `final.t` and `history.t` / `history.step` /
-`series.step` (the driver's counter), a logical `out` state (of `step` or `init`,
+nothing writes (and its history), `final.step` / `final.t` and `history.<v>.t` /
+`history.<v>.step` / `restart_point.t` / `restart_point.step` /
+`series.step` (the driver's counters), a logical `out` state (of `step` or `init`,
 per case: a flag, so under a physics quantity it would value that judgment alone — review round
 5, R5-2), `derived.*` and `inputs.*` are not (`predicate_reads_state`); a flag stands only as a
 flag predicate (`fixed_form`). An IR with no `drive` (an
@@ -69,15 +71,19 @@ Names, and where each resolves:
   (a scalar `shape_expr` gives a float, an array one a float64 array of that rank);
   ``initial.<time_variable>`` / ``final.<time_variable>`` — the capture's time value;
   ``initial.step`` / ``final.step`` (grammar 6) — the driver's committed step count.
-- ``history.<var>`` (grammar 6) — the case's samples, one per committed step `k` the run
-  sampled, `k` ascending, stacked on a LEADING axis (rank of the variable + 1); ``history.t`` /
-  ``history.step`` rank 1. ``series.<name>`` — a rank-1 entry of
-  the case's series record, a name the `step_series` evidence entry lists. Both
-  are loaded only when a predicate names them; zero samples / zero committed steps is admitted,
+- ``history.<var>`` (grammar 6; a stride per variable since grammar 7) — the samples of ONE
+  variable, one per committed step `k` at which the run sampled it, `k` ascending, stacked on a
+  LEADING axis (rank of the variable + 1); ``history.<var>.t`` / ``history.<var>.step`` (rank
+  1) are the time and step of each of its samples. ``history.t`` / ``history.step`` are no
+  names: two variables may be sampled at different steps. ``restart_point.<var>`` (grammar 7)
+  — the case's restart points of a restart variable, stacked the same way, with
+  ``restart_point.t`` / ``restart_point.step``. ``series.<name>`` — a rank-1 entry of
+  the case's series record, a name the `step_series` evidence entry lists. Each
+  is loaded only when a predicate names it; zero records / zero committed steps is admitted,
   a non-finite entry is refused, and a reduction over an empty one is an evaluation error of that
   predicate. ``derived.<name>`` — the case's `derived` value as the host evaluated it
   (`evaluate_case_inputs`), an array taking the state's shape as a coordinate does
-  (`_state_shaped_derived`): host data, never a state read. None of the three combines with
+  (`_state_shaped_derived`): host data, never a state read. None of the four combines with
   `at('<case>')` or `comparand`.
 - ``smax(a)`` / ``smin(a)`` / ``ssum(a)`` reduce every axis of ``a`` but the leading one (the
   identity on rank 1); a coordinate NAMED directly as an operand of a binary operator broadcasts
@@ -182,8 +188,11 @@ from tools.verdict_evaluator import (_QUANTITY_RE, _apply_op, _is_number, _resol
 #: through the axis exchange or a mirror, and a refinement family judged against its finest
 #: level restricts that level to each coarser grid by the block mean. Grammar 6 (issue #589)
 #: adds the `history.*`, `series.*` and `derived.*` roots, `step` as a capture name, `smax` /
-#: `smin` / `ssum`, and the coordinate broadcast against a `history.*` operand.
-GRAMMAR_VERSION = 6
+#: `smin` / `ssum`, and the coordinate broadcast against a `history.*` operand. Grammar 7
+#: (issue #644 P4b) gives every sampled variable its own time axis: `history.<var>.t` /
+#: `history.<var>.step` replace `history.t` / `history.step`, and the `restart_point.*` root
+#: is added.
+GRAMMAR_VERSION = 7
 
 #: `quantity` names: lowercase identifiers with dots.
 #: ONE definition, in the verdict evaluator's module.
@@ -191,8 +200,26 @@ QUANTITY_RE = _QUANTITY_RE
 
 #: The driver's committed step count, a capture name beside the time variable (grammar 6).
 STEP_CAPTURE = "step"
-#: Names a snapshot schema variable may not take: the driver's and the harness's own keys.
-RESERVED_VARIABLE_NAMES: frozenset[str] = frozenset({"t", STEP_CAPTURE, "case_id"})
+#: Names a snapshot schema variable may not take (issue #644 O13): the driver's and the
+#: harness's own keys, the capture group words, and the words a capture layout and the
+#: `tests.md` history lines spell beside a variable's name. The same set as
+#: `runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS` (a test holds the two equal); a name containing
+#: `RESERVED_NAME_SEPARATOR` is refused with them.
+RESERVED_VARIABLE_NAMES: frozenset[str] = frozenset({
+    "t", STEP_CAPTURE, "case_id", "n", "count", "complete", "every", "none",
+    "initial", "final", "history", "restart_point", "series"})
+RESERVED_NAME_SEPARATOR = "__"
+
+
+def reserved_name_reason(name: str) -> str | None:
+    """Why ``name`` cannot name a snapshot variable or a series column, or None."""
+    if name in RESERVED_VARIABLE_NAMES:
+        return (f"it is the driver's or the harness's own name "
+                f"({sorted(RESERVED_VARIABLE_NAMES)})")
+    if RESERVED_NAME_SEPARATOR in name:
+        return (f"it contains {RESERVED_NAME_SEPARATOR!r}, which a capture layout joins "
+                "names with")
+    return None
 
 #: The comparison operators a predicate admits.
 PRIMARY_OPS: frozenset[str] = frozenset({"eq", "ne", "le", "ge", "lt", "gt"})
@@ -228,7 +255,18 @@ _COMPARAND = "comparand"
 _HISTORY = "history"
 _SERIES = "series"
 _DERIVED = "derived"
-_SAMPLED_ROOTS: tuple[str, ...] = (_HISTORY, _SERIES, _DERIVED)
+#: The grammar 7 root: the case's restart points, stacked as `history.<var>` is.
+_RESTART_POINT = "restart_point"
+_SAMPLED_ROOTS: tuple[str, ...] = (_HISTORY, _RESTART_POINT, _SERIES, _DERIVED)
+#: The axes of a stack: `history.<var>.t` / `.step`, `restart_point.t` / `.step`.
+_AXIS_MEMBERS: tuple[str, ...] = ("t", STEP_CAPTURE)
+
+
+def history_member(name: str) -> tuple[str, str | None]:
+    """``(variable, member)`` of a `history` reference's name: `<var>` -> ``(var, None)``,
+    `<var>.t` / `<var>.step` -> ``(var, 't' | 'step')``."""
+    var, _, member = name.partition(".")
+    return var, member or None
 #: Every identifier the grammar reserves as a root; a coordinate or a bind may not take one.
 _ROOTS: tuple[str, ...] = CAPTURE_POINTS + (_INPUTS_ROOT, _AT, _COMPARAND) + _SAMPLED_ROOTS
 
@@ -334,6 +372,18 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             refs.append(NameRef("inputs", ".".join(attrs)))
             return
+        if isinstance(root, ast.Name) and root.id == _HISTORY:
+            # every sampled variable has its own time axis (grammar 7): `history.t` and
+            # `history.step` name none
+            if not (len(attrs) == 1 and attrs[0] not in _AXIS_MEMBERS
+                    or len(attrs) == 2 and attrs[0] not in _AXIS_MEMBERS
+                    and attrs[1] in _AXIS_MEMBERS):
+                raise PrimaryEvidenceError(
+                    f"{_HISTORY}.{'.'.join(attrs)}: a history reference is exactly "
+                    f"{_HISTORY}.<variable>, {_HISTORY}.<variable>.t or "
+                    f"{_HISTORY}.<variable>.step (each sampled variable has its own samples)")
+            refs.append(NameRef(_HISTORY, ".".join(attrs)))
+            return
         if isinstance(root, ast.Name) and root.id in _SAMPLED_ROOTS:
             if len(attrs) != 1:
                 raise PrimaryEvidenceError(
@@ -371,7 +421,8 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
                 f"at({case_id!r}).{'.'.join(attrs)}: a cross-case reference is exactly "
                 "at('<case_id>').initial.<variable>, at('<case_id>').final.<variable>, "
                 "at('<case_id>').inputs.<path> or at('<case_id>').<coordinate> (history.*, "
-                "series.* and derived.* are read in the case being evaluated only)")
+                "restart_point.*, series.* and derived.* are read in the case being evaluated "
+                "only)")
         raise PrimaryEvidenceError(
             f"attribute chain rooted at {ast.dump(root)} is not admitted (roots: "
             f"{', '.join(CAPTURE_POINTS)}, {_INPUTS_ROOT}, {', '.join(_SAMPLED_ROOTS)}, "
@@ -494,8 +545,9 @@ class StateReads(NamedTuple):
     """Which capture reads value the kernel's state (grammar 6, issue #589): ``final`` — the
     variables whose `final.<v>` counts (those an operation writes, the logical `out` states aside),
     ``initial`` — those whose `initial.<v>` counts (those `init` writes, the logical ones aside).
-    `history.<v>` and `series.<v>_min` / `_max` count for a ``final`` variable, the driver's
-    counters (`history.t`, `history.step`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
+    `history.<v>`, `restart_point.<v>` and `series.<v>_min` / `_max` count for a ``final``
+    variable, the driver's counters (`history.<v>.t`, `history.<v>.step`, `restart_point.t`,
+    `restart_point.step`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
     `<ref>`s gate (l) accepts in `final.step - <ref>` (`_zero_step_refs`: the counterpart of
     `loop.n_step`; None while gate (e) refuses `loop.n_step` itself — the IR is refused there,
     and any ref is then exempt so the refusal is not restated per predicate); ``closure_tests`` — the `test_id`s of the `expected_outcome: pass` tests gate
@@ -550,14 +602,23 @@ def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str],
     names counted at both capture points), IN ``case`` — the case the reference is read in
     (its `at('<case>')` case, else the case being evaluated): on a list-form node a variable
     is kernel state in a case only when an entry that runs that case writes it
-    (`StateReads.sets_for`, R2-2 / R2-3); None asks the node's classes. `history.<v>` and `series.<v>_min` / `_max` do when
-    `final.<v>` does — the samples and the per-step folds of a variable the kernel writes; the
-    DRIVER's counters `history.t`, `history.step` and `series.step`, like
+    (`StateReads.sets_for`, R2-2 / R2-3); None asks the node's classes. `history.<v>`,
+    `restart_point.<v>` and `series.<v>_min` / `_max` do when
+    `final.<v>` does — the samples, the restart points and the per-step folds of a variable the
+    kernel writes; the
+    DRIVER's counters `history.<v>.t`, `history.<v>.step`, `restart_point.t`,
+    `restart_point.step` and `series.step`, like
     `final.t` / `final.step`, never do (review round 2, R2-1: `max(series.step) ge 0` judged
     nothing the kernel produced), and neither does the history of a variable nothing writes
     (host data echoed per sample). A time or step capture, an input, a coordinate, a
     `derived.*` value and a `comparand.` read never do."""
     if ref.kind == _HISTORY:
+        name, member = history_member(ref.name)
+        if member is not None:
+            return False
+    elif ref.kind == _RESTART_POINT:
+        if ref.name in _AXIS_MEMBERS:
+            return False
         name = ref.name
     elif ref.kind == _SERIES:
         match = _SERIES_FOLD_RE.match(ref.name)
@@ -939,6 +1000,7 @@ class CaseEnv(NamedTuple):
     derived: Any = None
     state_rank: int | None = None
     captured_shapes: frozenset[tuple[int, ...]] = frozenset()
+    restart_point: Any = None
 
 
 def _shape_dims(shape_expr: Any) -> list[str]:
@@ -1217,43 +1279,80 @@ def _contains_non_number(value: Any) -> bool:
     return not _is_number(value)
 
 
+def _stepped_records(captures: _Captures, group: str, steps: list[int], case_id: str,
+                     variables: dict[str, list[str]], time_variable: str | None, what: str
+                     ) -> list[dict[str, Any]]:
+    """The records of one case in a stepped group, ascending by their step `k`: each read like
+    a capture (`_load_capture`: declared rank, finiteness), and carrying `step` equal to `k`."""
+    records: list[dict[str, Any]] = []
+    for k in steps:
+        name = captures.label(group, case_id, k)
+        record = _load_capture(captures, group, case_id, k, variables, time_variable)
+        if STEP_CAPTURE not in record:
+            raise PrimaryEvidenceError(f"{what} {name} carries no {STEP_CAPTURE!r}")
+        if record[STEP_CAPTURE] != float(k):
+            raise PrimaryEvidenceError(
+                f"{what} {name} carries step {record[STEP_CAPTURE]!r}, not the "
+                f"committed step {k} its name says")
+        records.append(record)
+    return records
+
+
+def _stack(case_id: str, what: str, name: str, records: list[dict[str, Any]]) -> np.ndarray:
+    shapes = {np.shape(record[name]) for record in records}
+    if len(shapes) != 1:
+        raise PrimaryEvidenceError(
+            f"{what} of case {case_id!r}: variable {name!r} changes shape between records "
+            f"({sorted(map(list, shapes))})")
+    return np.stack([np.asarray(record[name], dtype=np.float64) for record in records])
+
+
 def _load_history(captures: _Captures, case_id: str, variables: dict[str, list[str]],
                   time_variable: str | None, final: dict[str, Any]) -> dict[str, Any]:
-    """The samples of one case, one per committed step `k` the store lists
-    (`history_steps`), ascending by `k`, every name stacked on a LEADING axis. Each sample is
-    read like a capture (`_load_capture`: declared rank, finiteness) and must carry `step`
-    equal to its `k`; a name every sample carries is stacked (equal shapes required), one a
-    sample omits is left out (a predicate naming it fails on that predicate). No sample at all
-    is admitted (`every = 0`, or a first step refused): every name is then empty, an array
-    variable shaped like its final capture."""
-    samples: list[dict[str, Any]] = []
-    for k in captures.store.history_steps(captures.sdir, case_id):
-        name = captures.label(capture_store.HISTORY, case_id, k)
-        sample = _load_capture(captures, capture_store.HISTORY, case_id, k, variables,
-                               time_variable)
-        if STEP_CAPTURE not in sample:
-            raise PrimaryEvidenceError(f"history sample {name} carries no {STEP_CAPTURE!r}")
-        if sample[STEP_CAPTURE] != float(k):
-            raise PrimaryEvidenceError(
-                f"history sample {name} carries step {sample[STEP_CAPTURE]!r}, not the "
-                f"committed step {k} its name says")
-        samples.append(sample)
-    names = list(variables) + [n for n in (time_variable, STEP_CAPTURE)
-                               if n and n not in variables]
+    """The samples of one case (grammar 7): per variable `v`, the records the store lists
+    (`history_steps`, ascending) that hold `v`, stacked on a LEADING axis under `v`, with their
+    committed steps under `v.step` and their times under `v.t` — a history record holds the
+    variables due at its step, so each variable has its own axis. A variable no record holds
+    (a stride of 0, no stride, or a first step refused) is empty, shaped like its final
+    capture. Which variables a record must hold is the post-execute gate's."""
+    records = _stepped_records(captures, capture_store.HISTORY,
+                               captures.store.history_steps(captures.sdir, case_id), case_id,
+                               variables, time_variable, "history sample")
     out: dict[str, Any] = {}
-    for name in names:
-        if not samples:
-            shape = np.shape(final[name]) if name in variables and name in final else ()
+    for name in variables:
+        mine = [record for record in records if name in record]
+        if not mine:
+            shape = np.shape(final[name]) if name in final else ()
             out[name] = np.empty((0, *shape), dtype=np.float64)
-            continue
-        if not all(name in sample for sample in samples):
-            continue
-        shapes = {np.shape(sample[name]) for sample in samples}
-        if len(shapes) != 1:
-            raise PrimaryEvidenceError(
-                f"history of case {case_id!r}: variable {name!r} changes shape between samples "
-                f"({sorted(map(list, shapes))})")
-        out[name] = np.stack([np.asarray(sample[name], dtype=np.float64) for sample in samples])
+        else:
+            out[name] = _stack(case_id, "history", name, mine)
+        out[f"{name}.{STEP_CAPTURE}"] = np.asarray(
+            [record[STEP_CAPTURE] for record in mine], dtype=np.float64)
+        if time_variable and all(time_variable in record for record in mine):
+            out[f"{name}.t"] = np.asarray(
+                [record[time_variable] for record in mine], dtype=np.float64)
+    return out
+
+
+def _load_restart_points(captures: _Captures, case_id: str, variables: dict[str, list[str]],
+                         time_variable: str | None, final: dict[str, Any]) -> dict[str, Any]:
+    """The restart points of one case (grammar 7), ascending by step: every variable each of
+    them holds stacked on a LEADING axis, with `step` and `t`. No restart point is admitted
+    (a stride of 0, or a run shorter than the stride): every name is then empty, an array
+    variable shaped like its final capture."""
+    records = _stepped_records(captures, capture_store.RESTART_POINT,
+                               captures.store.restart_point_steps(captures.sdir, case_id),
+                               case_id, variables, time_variable, "restart point")
+    out: dict[str, Any] = {}
+    for name in variables:
+        if not records:
+            shape = np.shape(final[name]) if name in final else ()
+            out[name] = np.empty((0, *shape), dtype=np.float64)
+        elif all(name in record for record in records):
+            out[name] = _stack(case_id, "restart points", name, records)
+    out[STEP_CAPTURE] = np.asarray([r[STEP_CAPTURE] for r in records], dtype=np.float64)
+    if time_variable and all(time_variable in record for record in records):
+        out["t"] = np.asarray([r[time_variable] for r in records], dtype=np.float64)
     return out
 
 
@@ -1326,6 +1425,8 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
                    coordinates=coordinate_arrays(schema, inputs, shape),
                    history=Lazy(lambda: _load_history(captures, case_id, variables, tv, final)),
                    series=Lazy(lambda: _load_series(captures, case_id)),
+                   restart_point=Lazy(
+                       lambda: _load_restart_points(captures, case_id, variables, tv, final)),
                    derived=_state_shaped_derived(derived, shape), state_rank=rank,
                    captured_shapes=frozenset(np.shape(v) for v in final.values()))
 
@@ -1556,7 +1657,7 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             return resolve_input_value(env.inputs, ".".join(attrs))
         if isinstance(root, ast.Name) and root.id in _SAMPLED_ROOTS:
-            return _sampled_value(env, root.id, attrs[0])
+            return _sampled_value(env, root.id, ".".join(attrs))
         if isinstance(root, ast.Name) and root.id == _COMPARAND:
             if cenv is None:
                 raise PrimaryEvidenceError(
@@ -1606,14 +1707,15 @@ def _lift_coordinate(node: ast.AST, value: Any, other: Any, env: CaseEnv,
 
 
 def _sampled_value(env: CaseEnv, root: str, name: str) -> Any:
-    """`history.<name>` / `series.<name>` / `derived.<name>` of the case being evaluated."""
+    """`history.<name>` / `restart_point.<name>` / `series.<name>` / `derived.<name>` of the
+    case being evaluated."""
     table = _table(getattr(env, root))
     if table is None:
         raise PrimaryEvidenceError(
             f"{root}.{name}: case {env.case_id!r} has no {root} to read")
     if name not in table:
-        what = {_HISTORY: "sampled", _SERIES: "in the series",
-                _DERIVED: "a derived entry"}[root]
+        what = {_HISTORY: "sampled", _RESTART_POINT: "in the restart points",
+                _SERIES: "in the series", _DERIVED: "a derived entry"}[root]
         raise PrimaryEvidenceError(f"{root}.{name}: not {what} in case {env.case_id!r}")
     return table[name]
 
@@ -1904,7 +2006,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
                 f"{loc}: reads no captured state the kernel produced (final.<written non-logical "
-                "var>, initial.<var init writes>, history.<written var>, series.<written var>_"
+                "var>, initial.<var init writes>, history.<written var>, restart_point.<written "
+                "var>, series.<written var>_"
                 f"min|_max) in expr or a bind expr reaches. {FLAG_FORM_STATEMENT}")
         unread = [] if closure else unread_scope_cases(expr_refs, bind_refs, reads, contexts)
         if unread:
@@ -2070,7 +2173,9 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
             assert env.case is not None
             return env.input_rank(env.case, ".".join(attrs))
         if isinstance(root, ast.Name) and root.id == _HISTORY:
-            return env.captures[attrs[0]] + 1
+            return 1 if len(attrs) == 2 else env.captures[attrs[0]] + 1
+        if isinstance(root, ast.Name) and root.id == _RESTART_POINT:
+            return 1 if attrs[0] in _AXIS_MEMBERS else env.captures[attrs[0]] + 1
         if isinstance(root, ast.Name) and root.id == _SERIES:
             return 1
         if isinstance(root, ast.Name) and root.id == _DERIVED:
@@ -2202,6 +2307,8 @@ def validate_primary_predicate_schema(
     case_inputs: dict[str, dict[str, Any]] | None = None,
     series_names: frozenset[str] | set[str] | None = None,
     history_declared: bool = False,
+    history_strides: dict[str, str] | None = None,
+    restart_point_names: frozenset[str] | set[str] | None = None,
 ) -> list[str]:
     """The Compile-stage gate over `io_contract.predicates` (present-or-absent; the per-test
     rules over quantities and the one-call scalar pairing are `quantity_violations` and
@@ -2214,7 +2321,12 @@ def validate_primary_predicate_schema(
     (None: every `derived.*` read is refused); ``series_names`` — the `step_series` entry's
     `names` (None: no `step_series` is declared and every `series.*` read is refused);
     ``history_declared`` — a `state_history` entry is declared (else every `history.*` read
-    is refused). A schema variable named `t`, `step` or `case_id` is refused.
+    is refused); ``history_strides`` — `drive.history`, variable -> the `inputs` path of its
+    stride (None on an IR with no `drive`): a `history.<v>` read of a variable with no stride is
+    refused, and so is a predicate whose history reads span two stride inputs (the stacks have
+    different axes); ``restart_point_names`` — the variables a restart point holds (None: no
+    `restart_points` entry is declared and every `restart_point.*` read is refused). A schema
+    variable with a reserved name (`reserved_name_reason`) is refused.
 
     Checks each entry's shape (`test_id` ∈ tests.md, `quantity`, `op`, a non-null `value` of
     a number or a per-case map, exactly one scope, `target_cases` ⊆
@@ -2256,11 +2368,13 @@ def validate_primary_predicate_schema(
     except PrimaryEvidenceError as exc:
         return [f"io_contract.predicates: snapshot schema unreadable ({exc})"]
     tv = schema.get("time_variable")
-    capture_names = set(variables) | ({tv.strip()} if isinstance(tv, str) and tv.strip()
-                                      else set()) | {STEP_CAPTURE}
-    for name in sorted(set(variables) & RESERVED_VARIABLE_NAMES):
-        v.append(f"state_snapshots.schema.variables: {name!r} is the driver's or the "
-                 f"harness's own key ({sorted(RESERVED_VARIABLE_NAMES)}), not a variable name")
+    has_time = isinstance(tv, str) and bool(tv.strip())
+    capture_names = set(variables) | ({tv.strip()} if has_time else set()) | {STEP_CAPTURE}
+    for name in sorted(variables):
+        reason = reserved_name_reason(name)
+        if reason is not None:
+            v.append(f"state_snapshots.schema.variables: {name!r} is not a variable name: "
+                     f"{reason}")
     state: StateReads | set[str] = reads if reads is not None else set(variables)
     coord_names: set[str] = set()
     for cid, case in sorted(cases.items()):
@@ -2367,6 +2481,7 @@ def validate_primary_predicate_schema(
         effective_bind_refs: dict[str, list[NameRef]] = {}
         effective_expr_refs: list[NameRef] = []
         parsed: list[tuple[str, str | None, ast.Expression]] = []
+        strides_read: dict[str, set[str]] = {}   # stride input -> the history variables read
         parsed_all = True
         for eloc, bind_name, text in exprs:
             try:
@@ -2396,12 +2511,34 @@ def validate_primary_predicate_schema(
                         v.append(f"{eloc}: {prefix}{ref.point}.{ref.name} is not a snapshot "
                                  f"schema variable ({sorted(capture_names)})")
                 elif ref.kind == _HISTORY:
+                    var = history_member(ref.name)[0]
                     if not history_declared:
                         v.append(f"{eloc}: history.{ref.name}: the IR declares no "
                                  "state_history required_evidence entry")
-                    elif ref.name not in capture_names:
-                        v.append(f"{eloc}: history.{ref.name} is not a snapshot schema "
-                                 f"variable ({sorted(capture_names)})")
+                    elif var not in variables:
+                        v.append(f"{eloc}: history.{ref.name}: {var!r} is not a snapshot "
+                                 f"schema variable ({sorted(variables)})")
+                    elif history_strides is not None and var not in history_strides:
+                        v.append(f"{eloc}: history.{ref.name}: drive.history gives {var!r} no "
+                                 f"stride, so it is never sampled (sampled: "
+                                 f"{sorted(history_strides)})")
+                    elif ref.name.endswith(".t") and not has_time:
+                        v.append(f"{eloc}: history.{ref.name}: the snapshot schema declares no "
+                                 "time_variable, so a sample carries no time")
+                    elif history_strides is not None:
+                        strides_read.setdefault(history_strides[var], set()).add(var)
+                elif ref.kind == _RESTART_POINT:
+                    if restart_point_names is None:
+                        v.append(f"{eloc}: restart_point.{ref.name}: the IR declares no "
+                                 "restart_points required_evidence entry")
+                    elif ref.name == "t" and not has_time:
+                        v.append(f"{eloc}: restart_point.t: the snapshot schema declares no "
+                                 "time_variable, so a restart point carries no time")
+                    elif ref.name not in _AXIS_MEMBERS and (
+                            ref.name not in restart_point_names or ref.name not in variables):
+                        v.append(f"{eloc}: restart_point.{ref.name}: {ref.name!r} is not a "
+                                 "schema variable a restart point holds "
+                                 f"({sorted(set(restart_point_names) & set(variables))})")
                 elif ref.kind == _SERIES:
                     if series_names is None:
                         v.append(f"{eloc}: series.{ref.name}: the IR declares no step_series "
@@ -2445,6 +2582,12 @@ def validate_primary_predicate_schema(
                              "constant")
             if bind_name is not None:
                 seen_binds.add(bind_name)
+        if len(strides_read) > 1:
+            v.append(f"{loc}: reads the history of variables sampled at different strides ("
+                     + "; ".join(f"{sorted(names)} every inputs.{path}"
+                                 for path, names in sorted(strides_read.items()))
+                     + "): their samples are of different steps, so no expression combines "
+                     "them")
         reads_derived = any(r.kind == _DERIVED for _, _, tree in parsed
                             for r in expr_names(tree))
         # Without the evaluated case inputs a `derived.*` read has no rank to infer; the IR is
@@ -2459,16 +2602,19 @@ def validate_primary_predicate_schema(
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
                      "non-logical variable an operation writes, initial.<v> of one init writes, "
-                     "history.<v> / series.<v>_min|_max of a written v) in expr or a "
+                     "history.<v> / restart_point.<v> / series.<v>_min|_max of a written v) "
+                     "in expr or a "
                      "bind expr reaches: a predicate values the state the kernel produced (the "
                      "host's own initial_state read back, a derived.* value, final.step / "
-                     "final.t, the driver's history.t / history.step / series.step, "
+                     "final.t, the driver's history.<v>.t / history.<v>.step / "
+                     "restart_point.t / restart_point.step / series.step, "
                      "and a comparand.<point>.<var> — another target's state — are not "
                      f"this run's kernel state). {FLAG_FORM_STATEMENT}")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
                                                       state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<var> / "
-                     "initial.<var> / history.<var> / series.<var>_min|_max) "
+                     "initial.<var> / history.<var> / restart_point.<var> / "
+                     "series.<var>_min|_max) "
                      "outside a term multiplied by a literal zero, raised to a literal zero, or "
                      "subtracted from itself or added to its own negation (the same expression "
                      "spelled the same): the expression is constant in the captured values "
@@ -2564,7 +2710,7 @@ def point_reads(pred: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
     for ref in entering:
         if ref.kind == "capture":
             key = (str(ref.point), ref.name)
-        elif ref.kind in (_HISTORY, _SERIES):
+        elif ref.kind in (_HISTORY, _RESTART_POINT, _SERIES):
             key = (ref.kind, ref.name)
         else:
             continue
@@ -2871,18 +3017,33 @@ def parse_distribute(raw: Any) -> tuple[tuple[DistributeAxis, ...] | None, list[
     return tuple(axes), []
 
 
+#: The keys of `drive` (`runner_ir.DRIVE_KEYS`; a test holds the two equal).
+_DRIVE_KEYS = ("init", "step", "loop", "history", "restart_points", "distribute")
+
+
 class DriveBlock(NamedTuple):
     """The parsed `drive` block: ``init`` (None when absent), the ``step`` entries,
     ``list_form`` (the `step` is a list of entries with `cases`), ``loop`` (key -> `Binding`,
-    None when absent: one call per case), ``history_every`` (the `inputs` path of
-    `history.every`, None when absent) and ``distribute`` (the `drive.distribute` axes,
+    None when absent: one call per case), ``history`` (`drive.history`: state variable -> the
+    `inputs` path of its sampling stride, None when absent, empty when nothing is sampled),
+    ``restart_points_every`` (the `inputs` path of `restart_points.every`, None when absent)
+    and ``distribute`` (the `drive.distribute` axes,
     `parse_distribute`; None when the block is absent or malformed — gate (n) reports both)."""
     init: DriveEntry | None
     step: tuple[DriveEntry, ...]
     list_form: bool
     loop: dict[str, Binding] | None
-    history_every: str | None
+    history: dict[str, str] | None
+    restart_points_every: str | None = None
     distribute: tuple[DistributeAxis, ...] | None = None
+
+    def stride_inputs(self) -> list[str]:
+        """The `inputs` paths of the strides: each history one once, then the restart
+        points'."""
+        paths = list(dict.fromkeys((self.history or {}).values()))
+        if self.restart_points_every is not None:
+            paths.append(self.restart_points_every)
+        return paths
 
     def entries(self) -> list[DriveEntry]:
         return ([self.init] if self.init is not None else []) + list(self.step)
@@ -3001,9 +3162,10 @@ def _parse_drive(ir: dict[str, Any]) -> tuple[DriveBlock | None, list[str]]:
     v: list[str] = []
     drive = ir.get("drive")
     if not isinstance(drive, dict):
-        return None, ["drive must be a mapping {init?, step, loop?, history?, distribute}"]
-    for key in sorted(set(drive) - {"init", "step", "loop", "history", "distribute"}, key=str):
-        v.append(f"drive.{key} is not a key of drive (init, step, loop, history, distribute)")
+        return None, ["drive must be a mapping {init?, step, loop?, history?, "
+                      "restart_points?, distribute}"]
+    for key in sorted(set(drive) - set(_DRIVE_KEYS), key=str):
+        v.append(f"drive.{key} is not a key of drive ({', '.join(_DRIVE_KEYS)})")
     published, sigs = _published_operations(ir)
     init = None
     if drive.get("init") is not None:
@@ -3052,27 +3214,48 @@ def _parse_drive(ir: dict[str, Any]) -> tuple[DriveBlock | None, list[str]]:
                              f"state.<var> (got {binding.text()})")
                     continue
                 loop[key] = binding
-    every: str | None = None
+    history: dict[str, str] | None = None
     if drive.get("history") is not None:
         raw_history = drive["history"]
+        if not isinstance(raw_history, dict):
+            v.append("drive.history must be a mapping {<state variable>: inputs.<path>, ...} "
+                     "(empty when the node samples nothing)")
+        else:
+            history = {}
+            for var, raw in raw_history.items():
+                try:
+                    binding = parse_binding(raw)
+                except PrimaryEvidenceError:
+                    binding = None
+                if not isinstance(var, str) or binding is None or binding.kind != "inputs":
+                    v.append(f"drive.history.{var} must be inputs.<path>: a variable's "
+                             "sampling stride is a case input (gate (m) compares tests.md's "
+                             "number with it)")
+                else:
+                    history[var] = binding.ref
+    restart_every: str | None = None
+    if drive.get("restart_points") is not None:
+        raw_points = drive["restart_points"]
         binding = None
-        if isinstance(raw_history, dict) and set(raw_history) == {"every"}:
+        if isinstance(raw_points, dict) and set(raw_points) == {"every"}:
             try:
-                binding = parse_binding(raw_history["every"])
+                binding = parse_binding(raw_points["every"])
             except PrimaryEvidenceError:
                 binding = None
         if binding is None or binding.kind != "inputs":
-            v.append("drive.history must be {every: inputs.<path>}: the sampling stride is a "
-                     "case input (gate (m) compares tests.md's number with it)")
+            v.append("drive.restart_points must be {every: inputs.<path>}: the stride of the "
+                     "restart points is a case input (gate (m) compares tests.md's number "
+                     "with it)")
         else:
-            every = binding.ref
+            restart_every = binding.ref
     if v:
         return None, v
     # `distribute`'s own findings are gate (n)'s, APPENDED (`_distribute_violations`): a
     # structural refusal here would stop every other gate and mask its subject
     axes, _findings = parse_distribute(drive.get("distribute"))
     return DriveBlock(init=init, step=tuple(step), list_form=list_form, loop=loop,
-                      history_every=every, distribute=axes), []
+                      history=history, restart_points_every=restart_every,
+                      distribute=axes), []
 
 
 def drive_block(ir: dict[str, Any]) -> DriveBlock | None:
@@ -3452,8 +3635,7 @@ def _input_paths(block: DriveBlock, entries: list[DriveEntry]) -> list[str]:
             if b.kind == "procedure":
                 paths.extend(r.name for r in expr_names(parse_expr(b.ref)) if r.kind == "inputs")
     paths.extend(b.ref for b in (block.loop or {}).values() if b.kind == "inputs")
-    if block.history_every is not None:
-        paths.append(block.history_every)
+    paths.extend(block.stride_inputs())
     return sorted(set(paths))
 
 
@@ -3689,12 +3871,12 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                 f"drive.loop: t_start + n_step * dt = "
                 f"{host['t_start'] + host['n_step'] * host['dt']!r} is not t_end "
                 f"{host['t_end']!r} within 4 ulp ({bound!r}): the loop does not end at t_end")
-    if block.history_every is not None:
-        every = resolve_input_value(inputs, block.history_every)
+    for path in block.stride_inputs():
+        every = resolve_input_value(inputs, path)
         if np.ndim(every) != 0 or not (float(every).is_integer() and every >= 0):
             raise PrimaryEvidenceError(
-                f"drive.history.every (inputs.{block.history_every}) is {every!r}, not an "
-                "integer >= 0")
+                f"the stride inputs.{path} (drive.history / drive.restart_points) is "
+                f"{every!r}, not an integer >= 0")
 
     used = {}
     for path in _input_paths(block, entries):
@@ -3910,20 +4092,20 @@ RestartPointReader = Callable[[str, int], tuple[str, dict[str, Any]]]
 
 
 def restart_point_reader(shape_dir: Path, output_format: str) -> RestartPointReader:
-    """The reader of a shape directory's OWN restart points: its base's history sample at the
+    """The reader of a shape directory's OWN restart points: its base's restart point at the
     step, through the store of ``output_format`` (the target's)."""
     captures = _Captures.of(shape_dir, output_format)
 
     def read(base: str, step: int) -> tuple[str, dict[str, Any]]:
-        return (captures.label(capture_store.HISTORY, base, step),
-                dict(captures.store.read_record(captures.sdir, capture_store.HISTORY, base,
-                                                step)))
+        return (captures.label(capture_store.RESTART_POINT, base, step),
+                dict(captures.store.read_record(captures.sdir, capture_store.RESTART_POINT,
+                                                base, step)))
     return read
 
 
 def _restart_point(read: RestartPointReader, ir: dict[str, Any], base: str, step: int,
                    shapes: dict[str, tuple[int, ...]], names: frozenset[str]) -> dict[str, Any]:
-    """The restart point of a continuation: its base's history sample at `step`, as the record
+    """The restart point of a continuation: its base's restart point at `step`, as the record
     the driver wrote (all its members). Refused (`PrimaryEvidenceError`) when it is absent or
     unreadable, carries another `step`, lacks a restart variable (`_load_capture` skips an
     absent one silently, so presence is checked here), holds a variable whose extents differ
@@ -3933,9 +4115,9 @@ def _restart_point(read: RestartPointReader, ir: dict[str, Any], base: str, step
     except CaptureError as exc:
         if exc.absent:
             raise PrimaryEvidenceError(
-                f"no restart point: {exc.label} (the history sample of {base!r} at step {step}) "
-                "was not written — the base wrote no sample there: the step must be a multiple "
-                "of the base's history.every and below the steps it ran (the tests.md "
+                f"no restart point: {exc.label} (the restart point of {base!r} at step {step}) "
+                "was not written: the step must be a multiple of the base's "
+                "restart_points.every and no later than the steps it ran (the tests.md "
                 "`restart:` line and the case's restart.step state it)") from None
         raise PrimaryEvidenceError(f"the restart point {exc.label} is {exc.reason}") from None
     got = doc.get(STEP_CAPTURE)
@@ -3979,7 +4161,7 @@ def write_continuation_inputs(ir: dict[str, Any], shape_dir: Path, read: Restart
                               ) -> tuple[list[ContinuationFile], dict[str, str]]:
     """The second pass's case files of one execution shape (issue #632): for every
     continuation case `C` (`continuation_cases`, base `B`, step `K`), from the restart point
-    ``read`` returns for `B` at `K` — the shape's OWN history sample for the conductor
+    ``read`` returns for `B` at `K` — the shape's OWN restart point for the conductor
     (`restart_point_reader(shape_dir, <the target's output format>)`) —
     `<shape_dir>/restart/case_inputs/<C>.json`: `B`'s evaluated payload whole
     (`evaluate_case_inputs`), with `restart.step` = `K` and, per restart variable `v`
@@ -4087,7 +4269,9 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
     `drive_violations` refuses on its own), `case_inputs` (`evaluate_case_inputs`, None when it
     raises — `Compile.static` reports that itself through `drive_violations` (c) — and a
     `derived.*` read is then judged against the names the case declares),
-    `series_names` and `history_declared`."""
+    `series_names`, `history_declared`, `history_strides` (`drive.history`; None with no
+    `drive` or a malformed one) and `restart_point_names` (the restart variables when a
+    `restart_points` entry is declared, else None)."""
     try:
         reads: StateReads | None = state_reads(ir)
     except PrimaryEvidenceError:
@@ -4096,9 +4280,17 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
         case_inputs: dict[str, dict[str, Any]] | None = evaluate_case_inputs(ir)
     except PrimaryEvidenceError:
         case_inputs = None
+    try:
+        block = drive_block(ir) if _has_drive(ir) else None
+        points: frozenset[str] | None = restart_variables(ir)
+    except PrimaryEvidenceError:
+        block, points = None, frozenset()
+    entries = _evidence_entries(ir)
     return {"reads": reads, "case_inputs": case_inputs,
             "series_names": step_series_names(ir),
-            "history_declared": "state_history" in _evidence_entries(ir)}
+            "history_declared": "state_history" in entries,
+            "history_strides": block.history if block is not None else None,
+            "restart_point_names": points if "restart_points" in entries else None}
 
 
 def _test_entries(ir: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4797,10 +4989,22 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                              f"a step dummy named `{name}` is bound to {want.text()}, "
                              + ("the reference `loop.dt` names" if name == "dt"
                                 else "the driver's t"))
-        if block.history_every is None:
-            v.append("(e) drive.history is required with loop: {every: inputs.<path>}")
-    elif block.history_every is not None:
-        v.append("(e) drive.history is refused without loop (a one-call node has no samples)")
+        if block.history is None:
+            v.append("(e) drive.history is required with loop: {<state variable>: "
+                     "inputs.<path>, ...}, empty when the node samples nothing")
+        if block.restart_points_every is None:
+            v.append("(e) drive.restart_points is required with loop: {every: inputs.<path>}")
+    else:
+        if block.history is not None:
+            v.append("(e) drive.history is refused without loop (a one-call node has no "
+                     "samples)")
+        if block.restart_points_every is not None:
+            v.append("(e) drive.restart_points is refused without loop (a one-call node has "
+                     "no restart point)")
+    for var in sorted(set(block.history or {}) - set(schema_vars)):
+        v.append(f"(e) drive.history.{var}: {var!r} is not a snapshot schema variable "
+                 f"({sorted(schema_vars)}); each key is a state variable and its value the "
+                 "input holding its stride")
 
     # (f) initial_state per case, under the classes of that case (R2-2 / R2-3)
     for cid, case in sorted(cases.items()):
@@ -4904,8 +5108,15 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                 or len(set(listed)) != len(listed) or set(listed) != expected:
             v.append(f"(h) step_series.names must be exactly {sorted(expected)} (step and the "
                      f"min / max of every array state); got {names!r}")
-    if ("state_history" in entries) != (block.history_every is not None):
+    for name in (listed if series is not None else []):
+        reason = reserved_name_reason(name) if name != STEP_CAPTURE else None
+        if reason is not None:
+            v.append(f"(h) step_series name {name!r} is refused: {reason}")
+    if ("state_history" in entries) != (block.history is not None):
         v.append("(h) the state_history evidence entry is declared iff drive.history is")
+    if ("restart_points" in entries) != (block.restart_points_every is not None):
+        v.append("(h) the restart_points evidence entry is declared iff drive.restart_points "
+                 "is")
 
     # (i) D7
     v.extend(f"(i) {msg}" for msg in scalar_pairing_violations(ir))
@@ -5004,7 +5215,8 @@ def _restart_violations(ir: dict[str, Any], block: DriveBlock,
     key is exactly `{from: <case_id>, step: <integer >= 1>}`; the base is another case that is
     no continuation, targeted by a `pass` test and by no `xfail` test; the continuation carries
     no `initial_state` and its `inputs` and `derived` equal the base's; the base's
-    `history.every` is at least 1 and divides `K`, and `K` is below a host-evaluated `n_step`;
+    `restart_points.every` is at least 1 and divides `K`, and `K` is below a host-evaluated
+    `n_step`;
     and for every restart variable `v` (`restart_variables`) a `pass` test whose target cases
     are exactly `{base, continuation}` carries, among its OWN predicates (`_own_predicates`),
     one on the continuation under `quantity: restart.<v>` whose parsed expression is
@@ -5058,18 +5270,19 @@ def _restart_violations(ir: dict[str, Any], block: DriveBlock,
             if case.get(key) != raw_cases[base].get(key):
                 v.append(f"{loc}: its {key} must equal its base {base!r}'s (a continuation is its "
                          "base's configuration; only its starting state differs)")
-        every_path = block.history_every
+        every_path = block.restart_points_every
         try:
             every = resolve_input_value(raw_cases[base].get("inputs"), every_path) \
                 if every_path is not None else None
         except PrimaryEvidenceError:
             every = None
         if every is None or np.ndim(every) != 0 or not float(every).is_integer() or every < 1:
-            v.append(f"{loc}: its base {base!r} takes history samples (history.every "
-                     f"{every!r} must be an integer >= 1): the restart point is one")
+            v.append(f"{loc}: its base {base!r} commits restart points (its "
+                     f"restart_points.every {every!r} must be an integer >= 1)")
         elif step % int(every) != 0:
-            v.append(f"{loc}: restart.step {step} is no multiple of its base's history.every "
-                     f"{int(every)}, so no history sample is its restart point")
+            v.append(f"{loc}: restart.step {step} is no multiple of its base's "
+                     f"restart_points.every {int(every)}, so the base commits no restart "
+                     "point there")
         n_step = block.loop.get("n_step")
         n_value: Any = None
         if n_step is not None and n_step.kind == "inputs":

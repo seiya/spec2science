@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Builds the hand-authored IR of `problem/shallow_water2d_channel_subcycled@0.1.0` (issue #632
-P4) from `tests.md` of that node, transcribed into a generator so that the transcription is
+"""Builds the hand-authored IR of `problem/shallow_water2d_channel_subcycled@0.1.1` (issue #632
+P4; the restart points of issue #644 P4b) from `tests.md` of that node, transcribed into a generator so that the transcription is
 reviewable as code. It is NOT an output of `Compile`.
 
 Most of the suite restates judgments of the member `shallow_water2d_channel` on cases equal to a
@@ -37,12 +37,12 @@ HERE = Path(__file__).resolve().parent
 MEMBER_IR = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d_channel.yaml"
 TRANSCRIPTION = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d_channel_subcycled.yaml"
 MEMBER = "shallow_water2d_channel"
-MEMBER_VERSION = "0.4.1"
+MEMBER_VERSION = "0.4.2"
 SID = "shallow_water2d_channel_subcycled"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 NODE_KEY = f"problem/{SID}@{VERSION}"
 SPEC_DIR = f"spec/problem/dynamics/shallow_water/{SID}"
-TEST_PROFILE = ("shallow_water2d_channel_subcycled_baseline", "0.1.0")
+TEST_PROFILE = ("shallow_water2d_channel_subcycled_baseline", "0.2.0")
 SUBSTEPS = "inputs.subcycle.substeps"
 
 # ---------------------------------------------------------------------------------------------
@@ -74,6 +74,12 @@ CASES: dict[str, tuple[str, int, dict[str, Any], int]] = {
 }
 #: the continuation (tests.md 2-8, §3 the `restart` line): id -> (base, K)
 RESTART = {"chs_tc4_ref_n032_dts100_m2_cont": ("chs_tc4_ref_n032_dts100_m2", 272)}
+#: the stride of the restart points (tests.md §3, the `restart_points` line): a case keeps the
+#: member case's (272 on the member's restart base `chan_tc4_ref_n032_dts100` with any
+#: `substeps`, this suite's base among them), except the two cases with another `dt_scale`,
+#: which are no member case input for input (`_dts050_m1` is the member's `_half`, which
+#: carries 0): id -> the stride in place of the member case's
+RESTART_POINTS = {"chs_tc4_ref_n032_dts025_m1": 0, "chs_tc4_ref_n032_dts050_m1": 0}
 
 
 def _case(member_ir: dict[str, Any], cid: str) -> dict[str, Any]:
@@ -85,6 +91,7 @@ def _case(member_ir: dict[str, Any], cid: str) -> dict[str, Any]:
     inp["subcycle"] = {"substeps": substeps}
     inp["test_profile_id"], inp["test_profile_version"] = TEST_PROFILE
     inp["history"]["every"] = every
+    inp["restart_points"]["every"] = RESTART_POINTS.get(cid, inp["restart_points"]["every"])
     for path, value in overrides.items():
         d = inp
         *head, last = path.split(".")

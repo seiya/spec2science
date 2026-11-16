@@ -830,7 +830,17 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     if plan.list_form:
         a("  integer :: entry_no")
     if plan.loop:
-        a("  integer :: n, n_c, every_c, step0")
+        a("  integer :: n, n_c, step0, restart_every_c")
+        groups = len(plan.entries[0].loop_values["history"])
+        if groups:
+            a(f"  integer :: history_every_c({groups})")
+        # Which variables the next record holds: all at the initial and final captures, those
+        # due at a sampled step, the restart variables at a restart point.
+        a(f"  logical :: csel({len(plan.variables)})")
+        marks = ", ".join(".true." if v in plan.restart_vars else ".false."
+                          for v in plan.variables)
+        for line in _wrap(f"logical, parameter :: crestart({len(plan.variables)}) = [{marks}]"):
+            a(f"  {line}")
         a("  real(dp) :: dt_c, t_start_c")
         if dist is not None and any(v in plan.written for v in plan.arrays):
             a("  real(dp) :: f_min, f_max")
@@ -961,14 +971,20 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("")
     a("contains")
     a("")
-    a("  ! One record of `group`: every declared state variable, closed with the committed")
-    a("  ! `step` and `t` — the same set at every capture point of every case.")
+    if plan.loop:
+        a("  ! One record of `group`: the state variables `csel` selects — every one at the")
+        a("  ! initial and final captures, those due at a sampled step, the restart variables at")
+        a("  ! a restart point — closed with the committed `step` and `t`.")
+    else:
+        a("  ! One record of `group`: every declared state variable, closed with the committed")
+        a("  ! `step` and `t` — the same set at every capture point of every case.")
     a("  subroutine capture_state(group)")
     a("    character(len=*), intent(in) :: group")
     if dist is None:
-        for var, rank in plan.variables.items():
+        for k, (var, rank) in enumerate(plan.variables.items(), start=1):
             put = H("capture_real") if rank == 0 else H(f"capture_array_r{rank}")
-            a(f"    call {put}(group, &")
+            sel = f"if (csel({k})) " if plan.loop else ""
+            a(f"    {sel}call {put}(group, &")
             a(f"      '{_flit(var)}', &")
             a(f"      {_ST}{var})")
         a(f"    call {H('capture_commit')}(group, step_c, t_c)")
@@ -1047,44 +1063,56 @@ def _render_distributed_capture(a: Any, plan: runner_ir.DriverPlan, dist: _Dist,
     partitioned array the driver or the kernel writes (a collective), and rank 0 captures. A
     replicated case gathers nothing (a gather of a whole array on every rank does not tile);
     an array nothing writes is captured from the global copy every rank read; a scalar is rank
-    0's."""
+    0's. On a loop node a variable is captured where `csel` selects it: `csel` is computed
+    from the case file and the step count, the same on every rank, so a gather under it stays
+    a collective."""
     gathered_ranks = sorted({plan.variables[v] for v in dist.gathered})
     for r in gathered_ranks:
         a(f"    real(dp), allocatable :: g_r{r}({_colons(r)})")
-    for var, rank in plan.variables.items():
-        put = H("capture_real") if rank == 0 else H(f"capture_array_r{rank}")
-        call = f"if (rank == 0) call {put}(group, &"
-        if var in dist.gathered:
-            layout = dist.layouts[var]
-            slots: list[str] = []
-            for axis in range(len(dist.axes)):
-                dims = [i for i, d in enumerate(layout, start=1) if d is not None and d[0] == axis]
-                if not dims:
-                    slots += ["0", "1", "1", "1"]
-                    continue
-                kind = layout[dims[0] - 1][1]
-                slots += [str(dims[0]), "1",
-                          f"{'dfe' if kind == 'face' else 'dnl'}{axis + 1}", f"dlo{axis + 1}"]
-            if len(dist.axes) == 1:
-                slots += ["0", "1", "1", "1"]
-            a("    if (replicated) then")
-            a(f"      {call}")
-            a(f"        '{_flit(var)}', &")
-            a(f"        {_ST}{var})")
-            a("    else")
-            a(f"      call {H(f'gather_r{rank}')}({_ST}{var}, &")
-            a(f"        {', '.join(slots[:4])}, &")
-            a(f"        {', '.join(slots[4:])}, g_r{rank})")
-            a(f"      {call}")
-            a(f"        '{_flit(var)}', &")
-            a(f"        g_r{rank})")
+    for k, (var, rank) in enumerate(plan.variables.items(), start=1):
+        if plan.loop:
+            a(f"    if (csel({k})) then")
+            _render_distributed_put(lambda line: a("  " + line), dist, H, var, rank)
             a("    end if")
-            continue
-        source = f"{_GL}{var}" if var in dist.layouts else f"{_ST}{var}"
-        a(f"    {call}")
-        a(f"      '{_flit(var)}', &")
-        a(f"      {source})")
+        else:
+            _render_distributed_put(a, dist, H, var, rank)
     a(f"    if (rank == 0) call {H('capture_commit')}(group, step_c, t_c)")
+
+
+def _render_distributed_put(a: Any, dist: _Dist, H: Any, var: str, rank: int) -> None:
+    """One variable of `_render_distributed_capture`."""
+    put = H("capture_real") if rank == 0 else H(f"capture_array_r{rank}")
+    call = f"if (rank == 0) call {put}(group, &"
+    if var in dist.gathered:
+        layout = dist.layouts[var]
+        slots: list[str] = []
+        for axis in range(len(dist.axes)):
+            dims = [i for i, d in enumerate(layout, start=1) if d is not None and d[0] == axis]
+            if not dims:
+                slots += ["0", "1", "1", "1"]
+                continue
+            kind = layout[dims[0] - 1][1]
+            slots += [str(dims[0]), "1",
+                      f"{'dfe' if kind == 'face' else 'dnl'}{axis + 1}", f"dlo{axis + 1}"]
+        if len(dist.axes) == 1:
+            slots += ["0", "1", "1", "1"]
+        a("    if (replicated) then")
+        a(f"      {call}")
+        a(f"        '{_flit(var)}', &")
+        a(f"        {_ST}{var})")
+        a("    else")
+        a(f"      call {H(f'gather_r{rank}')}({_ST}{var}, &")
+        a(f"        {', '.join(slots[:4])}, &")
+        a(f"        {', '.join(slots[4:])}, g_r{rank})")
+        a(f"      {call}")
+        a(f"        '{_flit(var)}', &")
+        a(f"        g_r{rank})")
+        a("    end if")
+        return
+    source = f"{_GL}{var}" if var in dist.layouts else f"{_ST}{var}"
+    a(f"    {call}")
+    a(f"      '{_flit(var)}', &")
+    a(f"      {source})")
 
 
 def _render_partition(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
@@ -1201,7 +1229,10 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
                 a(f"{ind}{target} = 0.0_dp")
         form, ref = entry.loop_values["n_step"]
         a(f"{ind}n_c = {'nint(' + ref.local + ')' if form == 'host' else '0'}")
-        a(f"{ind}every_c = nint({entry.loop_values['every'][1].local})")
+        for g, (value, _vars) in enumerate(entry.loop_values["history"], start=1):
+            a(f"{ind}history_every_c({g}) = nint({value.local})")
+        a(f"{ind}restart_every_c = nint({entry.loop_values['restart_every'][1].local})")
+        a(f"{ind}csel = .true.")
         a(f"{ind}t_c = t_start_c")
     if entry.init is not None:
         a(f"{ind}! --- init, on the state itself; a false result refuses the case ---")
@@ -1247,6 +1278,8 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         a(f"{ind}  if ({_LG}{entry.step.result_state}) step_c = 1")
         a(f"{ind}end if")
     a(f"{ind}! --- the final capture, and the end of the case's output ---")
+    if plan.loop:
+        a(f"{ind}csel = .true.")
     a(f"{ind}call capture_state('final')")
     a(f"{ind}{'if (rank == 0) ' if dist is not None else ''}call {H('capture_close')}()")
     if dist is not None:
@@ -1276,23 +1309,34 @@ def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.En
                          ind: str, dist: _Dist | None = None) -> None:
     """The start of the case's output: what the harness's format may need defined before the
     first record — each state variable's name, rank and extents, the number of samples it may
-    hold, whether a restart point holds it — and the series' names and row count. No restart
-    point is committed (a restart point is a history sample), so its capacity is 0."""
+    hold, whether a restart point holds it — the number of restart points, and the series'
+    names and row count. A count is the multiples of the stride in `step0 + 1 .. n_c`, the
+    steps this process may commit."""
     a(f"{ind}! --- the case's output: its variables and the records it may hold ---")
     restart = set(plan.restart_vars)
-    samples = "merge(n_c / max(every_c, 1), 0, every_c > 0)" if plan.loop else "0"
+
+    def count(every: str) -> str:
+        return (f"merge(n_c / max({every}, 1) - step0 / max({every}, 1), 0, "
+                f"{every} > 0 .and. n_c > step0)")
+
+    group_of = {var: g for g, (_value, sampled) in enumerate(
+        entry.loop_values["history"], start=1) for var in sampled} if plan.loop else {}
     for k, (var, rank) in enumerate(plan.variables.items(), start=1):
+        samples = count(f"history_every_c({group_of[var]})") if var in group_of else "0"
         a(f"{ind}cvars({k})%name = '{_flit(var)}'")
         a(f"{ind}cvars({k})%rank = {rank}")
         a(f"{ind}cvars({k})%shape = 0")
         if rank:
             for line in _wrap(f"cvars({k})%shape(1:{rank}) = {_global_shape(var, entry, dist)}"):
                 a(f"{ind}{line}")
-        a(f"{ind}cvars({k})%history_capacity = {samples}")
+        for line in _wrap(f"cvars({k})%history_capacity = {samples}"):
+            a(f"{ind}{line}")
         a(f"{ind}cvars({k})%restart = {'.true.' if var in restart else '.false.'}")
     rows = "max(n_c - step0, 0)" if plan.loop else "0"
     a(f"{ind}{'if (rank == 0) ' if dist is not None else ''}call {H('capture_open')}(cid, &")
-    a(f"{ind}  cvars, 0, series_names, {rows})")
+    points = count("restart_every_c") if plan.loop else "0"
+    for line in _wrap(f"cvars, {points}, series_names, {rows})"):
+        a(f"{ind}  {line}")
 
 
 def _render_restart(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
@@ -1378,8 +1422,24 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
             a(f"{in1}  {hi}, &")
             a(f"{in1}  fold_max_r{rank}({source}))")
     a(f"{in1}{root}call {H('capture_commit')}('series', n, t_c)")
-    a(f"{in1}if (every_c > 0) then")
-    a(f"{in1}  if (mod(n, every_c) == 0) call capture_state('history')")
+    index = {var: k for k, var in enumerate(plan.variables, start=1)}
+    if entry.loop_values["history"]:
+        a(f"{in1}csel = .false.")
+    for g, (_value, sampled) in enumerate(entry.loop_values["history"], start=1):
+        a(f"{in1}if (history_every_c({g}) > 0) then")
+        a(f"{in1}  if (mod(n, history_every_c({g})) == 0) then")
+        for var in sampled:
+            a(f"{in1}    csel({index[var]}) = .true.")
+        a(f"{in1}  end if")
+        a(f"{in1}end if")
+    if entry.loop_values["history"]:
+        a(f"{in1}if (any(csel)) call capture_state('history')")
+    a(f"{in1}! --- a restart point: the restart variables, after the row of its step ---")
+    a(f"{in1}if (restart_every_c > 0) then")
+    a(f"{in1}  if (mod(n, restart_every_c) == 0) then")
+    a(f"{in1}    csel = crestart")
+    a(f"{in1}    call capture_state('restart_point')")
+    a(f"{in1}  end if")
     a(f"{in1}end if")
     a(f"{ind}end do")
 

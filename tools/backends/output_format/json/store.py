@@ -147,6 +147,34 @@ def _read_series(snap_dir: Path, case_id: str) -> dict[str, Any]:
     return joined
 
 
+def read_series_prefix(snap_dir: Path, case_id: str) -> tuple[dict[str, Any], int | None]:
+    """What a case that did not finish kept of its series: the rows of its chunks from chunk 0
+    up to the first that is absent, does not decode, holds other members than chunk 0, or
+    whose `step` column does not continue the one before it by 1 — and the last step among
+    them (None when no row is kept or the series has no `step` column). The harness writes a
+    chunk before each restart point, so a killed run keeps its rows up to its last restart
+    point. `Validate` never calls this: a complete run is read by `read_record`, which refuses
+    what this passes over. Read by `tools/run_configuration.py` for its run record."""
+    joined: dict[str, Any] = {}
+    for i, path in enumerate(_series_chunks(snap_dir, case_id)):
+        if path.name != f"{case_id}__{i}{_SUFFIX}":
+            break
+        try:
+            doc = _read_file(path)
+        except CaptureError:
+            break
+        if any(not isinstance(v, list) for v in doc.values()) or (i and set(doc) != set(joined)):
+            break
+        steps = [*joined.get("step", []), *doc.get("step", [])]
+        if any(isinstance(x, bool) or not isinstance(x, int) for x in steps) \
+                or any(b != a + 1 for a, b in zip(steps, steps[1:])):
+            break
+        for name, rows in doc.items():
+            joined.setdefault(name, []).extend(rows)
+    steps = joined.get("step") or []
+    return joined, (steps[-1] if steps else None)
+
+
 def _files(directory: Path) -> list[Path]:
     """The capture files directly in ``directory``, sorted by name; the snapshot schema is none."""
     if not directory.is_dir():
@@ -250,14 +278,16 @@ def move_case(src_dir: Path, dst_dir: Path, case_id: str) -> str | None:
 
 
 def locate(path: Path, case_id: str) -> tuple[Path, str, int | None] | None:
-    """`(capture directory, group, step)` of a file that is a final record or a sample of
-    `case_id` by its place and name, else None. The step is None for a final record."""
+    """`(capture directory, group, step)` of a file that is a final record or a restart point
+    of `case_id` by its place and name — the records that hold every restart variable — else
+    None. The step is None for a final record."""
     path = Path(path)
     if path.name == f"{case_id}{_SUFFIX}":
         return path.parent, FINAL, None
     match = _SAMPLE.fullmatch(path.name[:-len(_SUFFIX)]) if path.name.endswith(_SUFFIX) else None
-    if match and match.group("case") == case_id and path.parent.name == _GROUP_DIR[HISTORY]:
-        return path.parent.parent, HISTORY, int(match.group("step"))
+    if match and match.group("case") == case_id \
+            and path.parent.name == _GROUP_DIR[RESTART_POINT]:
+        return path.parent.parent, RESTART_POINT, int(match.group("step"))
     return None
 
 

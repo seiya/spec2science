@@ -4,6 +4,9 @@
 # shallow_water2d__step, drive (step + loop + history), per-case initial_state / derived, no `source`
 # keys, no n_step / cfl_run_max / h_min_run, state_history + step_series, gate (l)'s fixed form.
 # Every decision is in CONVERSION.md beside this file.
+# Issue #644 P4b: `drive.history` is the per-variable map (every state variable at
+# inputs.history.every) and `drive.restart_points.every` is the same input, with its
+# `restart_points` evidence entry; tests.md's history and restart_points lines say so.
 schema_version: '1.0'
 meta:
   node_key: problem/shallow_water2d@0.4.7
@@ -2106,6 +2109,7 @@ io_contract:
           length: inputs.grid.L_y
           placement: cell_center
     - artifact: state_history
+    - artifact: restart_points
     - artifact: step_series
       names:
       - step
@@ -6682,4 +6686,10 @@ drive:
     t_start: inputs.time.t_start
     t_end: inputs.time.t_end
   history:
+    h: inputs.history.every
+    hu: inputs.history.every
+    hv: inputs.history.every
+    z_b: inputs.history.every
+    ok: inputs.history.every
+  restart_points:
     every: inputs.history.every
