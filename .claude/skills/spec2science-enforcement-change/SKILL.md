@@ -239,6 +239,19 @@ to **one unbilled observation**).
   clause, run it on every target, and widen the self-test to each member the clause names. A fixture
   shows what one author read, so a fixture that passes does not show that the contract holds**
   (`references/judgment-episodes.md` §Rule 1-d, issue #589 PR-3)
+- **A rule a format's layout STATES and the host's reader does not CHECK is a rule a generated
+  writer may break while its own suite passes.** Issue #644 P5a shipped a store whose PR listed
+  "the layout states rules the store does not check (unlimited record dimensions …)". In P5b a
+  harness writer that sized a record dimension by the capacity it was told passed all nine
+  cases of the harness suite, because every case committed exactly what it planned, and then
+  every consumer case that stopped early was refused. Two review rounds closed it by adding
+  case shapes to the self-test; a later round showed that the self-test could leave them out.
+  What held was the reader: the store now refuses a record dimension that is not unlimited,
+  whatever the self-test does. **Rule: for each sentence of a layout or contract a leaf writes
+  to, name the reader that refuses a file breaking it. Where there is none, add the refusal,
+  or delete the sentence and say the shape is free. A self-test case shows only what that one
+  author's writer does on that case** (`references/judgment-episodes.md` §Rule 1-d, issue
+  #644 P5b)
 - **A node certified alone is certified under ITS OWN RUNNER'S calling convention, and its
   consumers may call it another way.** Issue #512 PR-4a's lowering rules let a `component`
   distribute its cases; two regenerated components did it INSIDE their published operation,

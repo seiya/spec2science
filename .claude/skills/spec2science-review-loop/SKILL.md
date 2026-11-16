@@ -1693,6 +1693,17 @@ that tells you how it closed.
   stalls with an idle machine, list each worker's children (`ps -eo pid,ppid,args`) before
   reading anything else. Episode: `references/signs-episodes.md` §"Signals in a test process"
   (issue #632 P5)
+- **Each round finds a writer that passes a harness suite because the suite lacks a case
+  shape** → the suite samples writers, so each shape you add moves the finding to the next
+  shape. Issue #644 P5b's security axis found such a writer in all three rounds, two writers,
+  then two more, then nine. **Before adding a case, check whether the host can refuse the
+  file**: a layout rule the store checks holds against every writer. Use a case shape only
+  where no reader can tell, and put a predicate on what that case commits, so that the
+  self-test cannot drop the case (the same producer writes the writer and the self-test).
+  Then state in the PR that the suite samples, and name the check outside it, which is
+  running the generated model under the driver's rows. Episode:
+  `references/signs-episodes.md` §"A suite that closed a writer family one shape at a time"
+  (issue #644 P5b)
 
 ## Finally
 

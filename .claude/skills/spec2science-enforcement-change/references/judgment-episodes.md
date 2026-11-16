@@ -762,6 +762,25 @@ tell the two apart. The fix did both: the fixture follows the contract, and `rc_
 joins the self-test of all three harnesses. The case was new and the clause was old, so nothing in
 the diff pointed at the clause. Only a run on the second target did.
 
+## Rule 1-d: a layout rule with no reader, closed in the self-test twice (issue #644 P5b / PR #657, 2026-11-16)
+
+P5a's `netcdf` store read the counts, types, fill values and dimension names of a case file. Its
+PR said the layout also states rules the store does not check, the unlimited record dimensions
+among them. P5b's harness `capture_open` is told a capacity per group. Round 1's security
+reviewer wrote a hand-model writer that defined each record dimension with that capacity: all
+nine cases of the harness suite passed, because each case committed exactly as many records as it
+opened with. A consumer case whose kernel refuses a step mid-run commits fewer, so its file holds
+a count short of its dimension, and the store refuses the whole case. That is the shape of
+`shallow_water2d`'s `l0_wet_domain_refusal_xfail`.
+
+Round 1's fix gave the other cases capacities above what they commit. Round 2 found two gaps.
+The fix covered only the series. It also held only while the self-test followed the spec, and
+the self-test is written by the same producer as the writer, with no predicate reading the
+capacities it passes. Round 2's fix moved the rule to the reader: the store refuses a record
+dimension that is not unlimited (`isunlimited()`). Round 3 then found a family of writers wrong
+on other shapes the suite lacked. All but one were closed by a case shape or a store refusal,
+and the PR disclosed the one left open. What did not recur was the rule the store reads.
+
 ## Rule 4: a mocked subprocess silenced the check (issue #644 P1 / PR #646, 2026-11-14)
 
 `tools/tests/test_checked_build.py`'s Build fixture patches `subprocess.run` to return 0, so the
