@@ -274,10 +274,20 @@ def _prepare(tmp: Path, ir: dict[str, Any], case_ids: list[str] | None) -> list[
         c["case_id"] for c in ir["case"]["test_case_set"] if not pe.is_continuation(c)]
 
 
+#: The threads of a built driver, and how they wait where cores are scarce. Two such runs on the
+#: four cores of a CI runner (`-n 4`) are eight spinning threads: the two swe2d rows, 24 s each
+#: alone, both ran into the 300 s bound together and took 36 s and 40 s with a passive wait (a
+#: round-3 reviewer, 2026-11-16 at 088e714a; reproduced: both killed at 303 s, then 38.5 s for
+#: the pair). With cores to spare the default wait is kept: passive, the longer of the two rows
+#: took 52 s against 30 s on 48 cores.
+_OMP_ENV = {"OMP_NUM_THREADS": "4",
+            **({"OMP_WAIT_POLICY": "passive"} if len(os.sched_getaffinity(0)) < 8 else {})}
+
+
 def _exec(tmp: Path, ids: list[str], env: dict[str, str] | None = None) -> Run:
     proc = subprocess.run([str(tmp / "bin"), "--cases", str(tmp / "ir" / "spec.ir.yaml"), *ids],
                           cwd=tmp / "run", capture_output=True, text=True, timeout=300,
-                          env={**os.environ, "OMP_NUM_THREADS": "4", **(env or {})})
+                          env={**os.environ, **_OMP_ENV, **(env or {})})
     return Run(tmp, proc)
 
 
@@ -806,8 +816,8 @@ class _DriverBehaviour:
         for cf in files:
             proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
                                    cf.case_id], cwd=rdir, capture_output=True, text=True,
-                                  timeout=300, check=False, env={**os.environ, "OMP_NUM_THREADS": "4",
-                                                    "SPEC2SCIENCE_CUDA_BLOCK": "64"})
+                                  timeout=300, check=False,
+                                  env={**os.environ, **_OMP_ENV, "SPEC2SCIENCE_CUDA_BLOCK": "64"})
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         return files, refused, rdir
 

@@ -177,8 +177,8 @@ def pytest_cmdline_main(config) -> None:
     the file's 145 rows were about 40% of the suite's CPU, and the suite took 469 s wall under
     `load` and 133 s under `worksteal`, the same 7646 rows.
 
-    In a conftest, not in `pytest.ini`'s `addopts`: xdist is optional here (CI runs the
-    suite serially without it), and `--dist` is an unknown option when the plugin is absent.
+    In a conftest, not in `pytest.ini`'s `addopts`: xdist is optional here (a run
+    without the plugin installed still works), and `--dist` is an unknown option when the plugin is absent.
     An explicit `--dist`, `-n 0` and a serial run are left alone. Runs before xdist's own
     `tryfirst` hook (a conftest registers later, and pluggy calls the later one first),
     which would otherwise turn the default `no` into `load`. Returns None: the hook is

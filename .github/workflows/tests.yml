@@ -41,7 +41,8 @@ jobs:
     # the wrong one — the profile is what confines a leaf in production, and widening it for a CI
     # image is exactly the shape this repository calls a leaf shortcut when a leaf does it.
     runs-on: ubuntu-22.04
-    # The suite takes about 225s on the development host. The ceiling is generous against a
+    # The suite takes about 4 minutes in this job's shape on four cores of the development host.
+    # The ceiling is generous against a
     # slower shared runner and still far below the 6-hour default, which is long enough that a
     # hung job would look like an outage rather than a failure.
     timeout-minutes: 30
@@ -140,11 +141,12 @@ jobs:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
         # `-n 4`: the runner's four CPUs. The suite is run in parallel on the development host
         # every day (`tools/tests/conftest.py` picks the scheduler), and in this job's shape on
-        # four pinned cores it took 356 s against 1042 s serially (measured 2026-11-16 and
-        # 2026-11-11 on the development host). What this gives up is the serial ORDER: a row that
-        # passes only after another row of its file ran is no longer seen here, and is still seen
-        # by the review loop's mutation check, whose baseline is one serial run. The guard below
-        # reads the report and the collected count, which `-n` changes neither of.
+        # four pinned cores it took 218 s (measured 2026-11-16 on the development host, load 8)
+        # against 1042 s serially (2026-11-11, PR #627).
+        # What this gives up is the serial ORDER: a row that FAILS only after an earlier row
+        # of the run left something behind is no longer seen here, and is still seen by the
+        # review loop's mutation check, whose baseline is one serial run. The guard below reads
+        # the report and the collected count, which `-n` changes neither of.
         run: >
           python3 -m pytest tools/tests/ -n 4 -q -rs
           --junitxml="${{ runner.temp }}/pytest-report.xml"
