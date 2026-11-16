@@ -441,41 +441,53 @@ def _negates(node: ast.AST, other: ast.AST) -> bool:
             and ast.dump(node.operand) == ast.dump(other))
 
 
-class _ConstantByFormPruner(ast.NodeTransformer):
-    """Replace, children first, every term whose value is fixed by its FORM: `X * 0` / `0 * X`
-    and `X - X` / `X + -X` / `-X + X` (structurally identical sides, after `-(-X)` is collapsed
-    to `X`) by the literal 0, `X ** 0` by the literal 1. Sides equal only after commuting or
-    re-associating, and literal arithmetic other than these forms (`0 + 0`), are not folded.
-    Each is exact for every finite evaluation, and the evaluator refuses a non-finite value.
-    Nothing else is folded — `0 / X`, `0 ** X` and `X / X` are not exact."""
+def _pruned(node: ast.AST) -> ast.AST:
+    """``node`` with, children first, every term whose value is fixed by its FORM replaced:
+    `X * 0` / `0 * X` and `X - X` / `X + -X` / `-X + X` (structurally identical sides, after
+    `-(-X)` is collapsed to `X`) by the literal 0, `X ** 0` by the literal 1. Sides equal only
+    after commuting or re-associating, and literal arithmetic other than these forms (`0 + 0`),
+    are not folded. Each is exact for every finite evaluation, and the evaluator refuses a
+    non-finite value. Nothing else is folded — `0 / X`, `0 ** X` and `X / X` are not exact.
 
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
-        self.generic_visit(node)
-        if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.UnaryOp) \
-                and isinstance(node.operand.op, ast.USub):
-            return node.operand.operand
-        return node
-
-    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
-        self.generic_visit(node)
-        if isinstance(node.op, ast.Mult) and (_is_literal_zero(node.left)
-                                              or _is_literal_zero(node.right)):
+    ``node`` is not modified: a subtree with nothing to replace comes back as the same object,
+    and a node one of whose children changed is a shallow copy holding the new child."""
+    new = node
+    for field, old in ast.iter_fields(node):
+        if isinstance(old, ast.AST):
+            value: Any = _pruned(old)
+            changed = value is not old
+        elif isinstance(old, list):
+            value = [_pruned(item) if isinstance(item, ast.AST) else item for item in old]
+            changed = any(a is not b for a, b in zip(value, old))
+        else:
+            continue
+        if changed:
+            if new is node:
+                new = copy.copy(node)
+            setattr(new, field, value)
+    if isinstance(new, ast.UnaryOp):
+        if isinstance(new.op, ast.USub) and isinstance(new.operand, ast.UnaryOp) \
+                and isinstance(new.operand.op, ast.USub):
+            return new.operand.operand
+    elif isinstance(new, ast.BinOp):
+        if isinstance(new.op, ast.Mult) and (_is_literal_zero(new.left)
+                                             or _is_literal_zero(new.right)):
             return ast.Constant(0.0)
-        if isinstance(node.op, ast.Pow) and _is_literal_zero(node.right):
+        if isinstance(new.op, ast.Pow) and _is_literal_zero(new.right):
             return ast.Constant(1.0)
-        if isinstance(node.op, ast.Sub) and ast.dump(node.left) == ast.dump(node.right):
+        if isinstance(new.op, ast.Sub) and ast.dump(new.left) == ast.dump(new.right):
             return ast.Constant(0.0)
-        if isinstance(node.op, ast.Add) and (_negates(node.left, node.right)
-                                             or _negates(node.right, node.left)):
+        if isinstance(new.op, ast.Add) and (_negates(new.left, new.right)
+                                            or _negates(new.right, new.left)):
             return ast.Constant(0.0)
-        return node
+    return new
 
 
 def effective_names(tree: ast.Expression) -> list[NameRef]:
     """The name references of a parsed expression that survive pruning the terms constant by
-    form (`_ConstantByFormPruner`): a read that sits only inside such a term does not enter
+    form (`_pruned`): a read that sits only inside such a term does not enter
     the value. `tree` is not modified."""
-    return expr_names(_ConstantByFormPruner().visit(copy.deepcopy(tree)))
+    return expr_names(_pruned(tree))  # type: ignore[arg-type]
 
 
 class StateReads(NamedTuple):

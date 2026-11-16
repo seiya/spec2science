@@ -1490,6 +1490,16 @@ class SchemaGateTest(unittest.TestCase):
         pe.effective_names(tree)
         self.assertEqual(names("final.h * 0"), [])
         self.assertEqual([r.name for r in pe.expr_names(tree)], ["h"])   # input untouched
+        # ... also where the replaced term sits under nodes that are rebuilt around it
+        import ast
+        for src in ("abs((final.h - final.h) * final.u + initial.u)",
+                    "max(-(-final.h), final.u * 0) / (initial.u ** 0)"):
+            tree = pe.parse_expr(src)
+            before = ast.dump(tree, include_attributes=True)
+            first = pe.effective_names(tree)
+            self.assertEqual(ast.dump(tree, include_attributes=True), before, src)
+            self.assertEqual(pe.effective_names(tree), first, src)
+            self.assertNotEqual(pe.expr_names(tree), first, src)   # the pruning did act
 
     def test_coordinates_resolve_in_every_case(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
