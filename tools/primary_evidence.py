@@ -19,8 +19,9 @@ leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` d
 of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
 nothing writes (and its history), `final.step` / `final.t` and `history.<v>.t` /
 `history.<v>.step` / `series.step` (the driver's counters), every `restart_point.*` (refused
-on a node with `drive`: a restart point holds what a sample or the final capture of its step
-holds, so a difference with one is zero whatever the kernel computed), a logical `out` state (of `step` or `init`,
+on a node with `drive`: where a restart point falls on the step of a sample or of the final
+capture it holds the state that capture holds, so a difference of the two is zero whatever
+the kernel computed), a logical `out` state (of `step` or `init`,
 per case: a flag, so under a physics quantity it would value that judgment alone — review round
 5, R5-2), `derived.*` and `inputs.*` are not (`predicate_reads_state`); a flag stands only as a
 flag predicate (`fixed_form`). An IR with no `drive` (an
@@ -2322,10 +2323,12 @@ def validate_primary_predicate_schema(
     refused, and so is a predicate whose history reads span two stride inputs (the stacks have
     different axes); ``restart_point_names`` — the variables a restart point holds (None: no
     `restart_points` entry is declared and every `restart_point.*` read is refused);
-    ``driven`` — the IR carries `drive`, and every `restart_point.*` read is refused: the
-    host-rendered driver commits a restart point from the state a sample or the final capture
-    of the same step holds, so `history.<v> - restart_point.<v>` is zero whatever the kernel
-    computed (review round 1 passed it through the reads-state rule on four real suites). A schema
+    ``driven`` — the IR carries `drive`, and every `restart_point.*` read is refused: where a
+    restart point falls on the step of a sample or of the final capture, the host-rendered
+    driver commits both from one state, so `history.<v> - restart_point.<v>` is zero there
+    whatever the kernel computed (review round 1 passed it through the reads-state rule on
+    cases of four real suites whose two strides are equal; a restart point at another step
+    has no such twin, and the refusal covers every one alike). A schema
     variable with a reserved name (`reserved_name_reason`) is refused.
 
     Checks each entry's shape (`test_id` ∈ tests.md, `quantity`, `op`, a non-null `value` of
@@ -2530,10 +2533,10 @@ def validate_primary_predicate_schema(
                 elif ref.kind == _RESTART_POINT:
                     if driven:
                         v.append(f"{eloc}: restart_point.{ref.name}: a predicate of a node "
-                                 "with `drive` reads no restart point (it holds the state a "
-                                 "sample or the final capture of its step holds, so it judges "
-                                 "nothing of its own; the continuation's judgment is gate "
-                                 "(p)'s `restart.<v>`)")
+                                 "with `drive` reads no restart point (where one falls on the "
+                                 "step of a sample or of the final capture it holds the same "
+                                 "state, and a difference of the two judges nothing; the "
+                                 "continuation's judgment is gate (p)'s `restart.<v>`)")
                     elif restart_point_names is None:
                         v.append(f"{eloc}: restart_point.{ref.name}: the IR declares no "
                                  "restart_points required_evidence entry")

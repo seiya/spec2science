@@ -230,8 +230,8 @@ io_contract:
   #               and committed step of each of ITS samples; each sampled variable has its own, and `history.t` /
   #               `history.step` are no names); a predicate reads the history of variables of ONE stride input only
   #               (samples of two strides are of different steps), and of no variable `drive.history` omits;
-  #               no predicate of a node with `drive` reads `restart_point.*` (a restart point holds the state a
-  #               sample or the final capture of its step holds, so a difference with one judges nothing; the
+  #               no predicate of a node with `drive` reads `restart_point.*` (where a restart point falls on the step
+  #               of a sample or of the final capture it holds the same state, and a difference of the two judges nothing; the
   #               continuation's judgment is gate (p)'s); and series.<name> (a `step_series` name, rank 1 over
   #               the committed steps 1..n — `K + 1 .. n` on a continuation case starting at step K): a `loop`
   #               node's, each loaded only when a predicate names it, either of

@@ -120,8 +120,10 @@ def p4b_shape(ir: dict[str, Any], like: dict[str, Any] | None = None) -> dict[st
     carries the member's), else `K` on each restart base and its continuation and `0` on every
     other case; the `restart_points`
     evidence entry is declared beside `state_history`; and `history.t` / `history.step` read the
-    first sampled variable's axis (every sampled variable has one stride). Every other key, the
-    cases' history strides included, is the IR's own. An IR already in the P4b shape is returned
+    first sampled variable's axis (every sampled variable has one stride). A case's history
+    stride is ``like``'s for a case of the same id too (the rotating restart base and its
+    continuation sample every 20 steps since P4b, where the certified IR says 61), else the
+    IR's own. Every other key is the IR's own. An IR already in the P4b shape is returned
     as a copy, unchanged. The certified IRs of `workspace/` predate P4b, so a bench that judges
     one judges this copy of it."""
     import re
@@ -148,14 +150,19 @@ def p4b_shape(ir: dict[str, Any], like: dict[str, Any] | None = None) -> dict[st
     for c in ir["case"]["test_case_set"]:
         if isinstance(c.get("restart"), dict):
             points[c["case_id"]] = points[c["restart"]["from"]] = c["restart"]["step"]
+    strides = {}
     for c in (like or {}).get("case", {}).get("test_case_set", []):
         points[c["case_id"]] = c["inputs"]["restart_points"]["every"]
+        if isinstance(c["inputs"].get("history"), dict):
+            strides[c["case_id"]] = c["inputs"]["history"]["every"]
     for c in ir["case"]["test_case_set"]:
         inp = c["inputs"]
         k = list(inp)
         new = {}
         for key in k:
             new[key] = inp[key]
+            if key == "history" and c["case_id"] in strides:
+                new[key] = {**inp[key], "every": strides[c["case_id"]]}
             if key == "history":
                 new["restart_points"] = {"every": points.get(c["case_id"], 0)}
         c["inputs"] = new if "history" in inp else {**inp, "restart_points": {

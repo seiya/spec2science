@@ -22258,7 +22258,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `drive.restart_points`, the `restart_points` evidence entry, the grammar 7 names
         # (`history.<v>.t` / `.step`, `restart_point.*`) with the one-stride rule, gate (m)'s
         # identity with the `history:` and `restart_points:` lines, and the reserved names.
-        # Measured 117477 with `wc -c`.
+        # Measured 117477 with `wc -c` (117544 after review round 1, 117567 after round 2).
         "docs/workflow/phases/phase_01_compile.md": 117700,
     }
 
@@ -28917,10 +28917,10 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "re-keyed 2026-11-08 when rule 9 took `drive.distribute`, issue #610 PR-B1 — rule 3 "
             "unchanged; re-keyed 2026-11-11 when rule 3 said a `problem` the declaration names "
             "under `problems:` is in the set too, the system tier's Part 1 — the set's source "
-            "unchanged; re-keyed 2026-11-16 when rules 5 and 9 took `restart_point.*` beside "
-            "the samples, the per-variable `drive.history` and `drive.restart_points` "
+            "unchanged; re-keyed 2026-11-16 when rule 9 took the per-variable "
+            "`drive.history` and `drive.restart_points` "
             "transcribing the tests document's `history:` / `restart_points:` lines, issue #644 "
-            "P4b — rule 3 unchanged)",
+            "P4b — rule 3 unchanged, rule 5 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "

@@ -953,7 +953,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-36 (issue #644 P4a): `phase_01_compile.md` names the capture groups where it named capture files.
     "compile-docs-36": "b21bb5f7d526e5e9a23260e5e11f7beb092b6888d99df38e7709871f01568d2d",
     # compile-docs-37 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "compile-docs-37": "9628f7138482ef028abcaab0fadb26583627e54cca90c544c87ec2ff2eb7bb54",
+    "compile-docs-37": "f61efbcc60b6edd561bcf73133499cc63bcce737944425eceace9b2631462d69",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -2036,7 +2036,7 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-20@68692c3c": "519eb9f0d784cb08762164dc9150520e21357315dcfab38085ae4f1e9a1c7610",
     "execute-20": "c461a0027e23fa96f0751a98113d86979099a3d80f6a59a5630e72f249bf92aa",
     # execute-21 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "execute-21": "9d518a2edfc85892939144a80edd7e8b018dc05063b8f34ff2d54ced416156a1",
+    "execute-21": "a5ab040c1ea9d34f0a9b6c636554c7481f05be07c128ba1b56e4a159cf0d924a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2261,7 +2261,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-18@68692c3c": "2c1862be224006f9ae7e99ba9c63d9ff20d749d3a5480b46dfbab9483d93b32a",
     "verdict-18": "5693e1d0f751d9d73280632f0b82fcda9736091437e23c6d96df31e02962eaa3",
     # verdict-19 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "verdict-19": "d2a50b25de4c8efd196a06c29356d4d8cedfad6a41028ea43d6db124343778f8",
+    "verdict-19": "f78ab9e31dc4d0ead6162716ec436c79acb453d09b8386af212deca21391ce88",
 }
 
 

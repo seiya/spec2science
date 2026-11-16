@@ -604,6 +604,26 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertEqual(self.record("bare")["kept"],
                          {"restart_points": [], "series": {"rows": 0, "last_step": None}})
 
+    def test_kept_names_the_restart_points_that_read(self) -> None:
+        """A restart point a kill cut short is on disk and is no restart point
+        (`--restart-from` refuses it), so `kept` leaves it out and keeps the ones before it
+        (Codex, review round 2). A capture directory whose mode forbids listing gives None,
+        so the record is still written (a reviewer's `PermissionError`, round 2). Kills:
+        listing the names without reading them; dropping the `OSError` branch."""
+        snaps = capture_store.snapshot_dir(self.tmp / "cut")
+        points = snaps / "restart_point"
+        points.mkdir(parents=True)
+        (points / "m0__2.json").write_text('{"u": [1.0], "step": 2, "t": 0.5}\n')
+        (points / "m0__4.json").write_text('{"u": [1.0], "st')
+        self.assertEqual(rc.kept_records(self.tmp / "cut", "m0", "json"),
+                         {"restart_points": [2], "series": {"rows": 0, "last_step": None}})
+        if os.geteuid() != 0:   # root lists a directory whatever its mode
+            points.chmod(0o644)
+            try:
+                self.assertIsNone(rc.kept_records(self.tmp / "cut", "m0", "json"))
+            finally:
+                points.chmod(0o755)
+
     def test_a_timed_out_run_records_what_it_kept(self) -> None:
         """A run killed at the timeout after committing restart points records them in
         `kept` (the failed branch, `timed_out`). Kills dropping `kept` from the failed

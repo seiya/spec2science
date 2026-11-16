@@ -688,14 +688,25 @@ def _kernel_outcome(ir: dict[str, Any], out: Path, base: str,
     return step, None
 
 
-def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any]:
+def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any] | None:
     """What a run that did not reach its end kept, as the target's capture store reads it: the
-    steps of its restart points and the rows of its series up to where they stop being
-    readable in order."""
+    steps of the restart points that read (one a kill cut short is no restart point:
+    `--restart-from` refuses it) and the rows of its series up to where they stop being
+    readable in order; None when the capture directory cannot be read at all (its mode
+    forbids it), so that the run record is still written."""
     store = capture_store.store(output_format)
     snaps = capture_store.snapshot_dir(out)
-    rows, last = store.read_series_prefix(snaps, base)
-    points = list(store.restart_point_steps(snaps, base))
+    try:
+        rows, last = store.read_series_prefix(snaps, base)
+        points = []
+        for step in store.restart_point_steps(snaps, base):
+            try:
+                store.read_record(snaps, capture_store.RESTART_POINT, base, step)
+            except capture_store.CaptureError:
+                continue
+            points.append(step)
+    except OSError:
+        return None
     return {"restart_points": points,
             "series": {"rows": max((len(v) for v in rows.values()), default=0),
                        "last_step": last}}
