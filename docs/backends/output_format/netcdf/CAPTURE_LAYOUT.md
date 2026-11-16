@@ -17,7 +17,8 @@ No name contains `__` (the host refuses one), so each name below has one reading
 **Dimensions.** A variable `<v>` of rank `r` has the dimensions `<v>__d1` … `<v>__d<r>`, the
 extent of its index `<k>` each, shared by every group that holds `<v>`. An extent of 0 is declared
 unlimited and never written, so it stays 0. Each stacked group below adds its own unlimited
-record dimension.
+record dimension; the host refuses one that is not unlimited (a record dimension sized when the
+case opens holds fill records past the last commit).
 
 **Dimension order.** In netCDF's own order (the first dimension varies slowest) an array is
 `(<v>__d<r>, …, <v>__d1)`, so its first index varies fastest; a record dimension comes first. An

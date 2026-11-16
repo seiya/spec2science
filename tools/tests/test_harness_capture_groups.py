@@ -37,6 +37,9 @@ HARNESSES = ("harness_fortran_cpu", "harness_fortran_cpu_mpi", "harness_cpp_gpu"
              "harness_fortran_cpu_netcdf")
 CASE = "l0_capture_groups_pass"
 OTHER = "l0_case_fanout_pass"
+#: A third case of the netcdf bench: a placeholder case that commits no record of a stacked
+#: group (the netcdf §3's fanout case commits one of each).
+PLAIN = "l0_perf_derived_pass"
 
 #: The snapshot variables of the case, with the `shape_expr` each harness spec declares.
 VARIABLES = {"g_s": "scalar", "g_r1": "[3]", "g_r2": "[2,3]", "g_r3": "[2,3,4]",
@@ -139,6 +142,8 @@ class _Harness:
     link: list[str] = field(default_factory=list)
     #: The self-test's source when it is not the file `selftest` names in `DATA`.
     selftest_source: str | None = None
+    #: Cases a run takes after the two every harness's run takes.
+    extra_cases: tuple[str, ...] = ()
 
     @property
     def model_text(self) -> str:
@@ -183,7 +188,9 @@ def _build(h: _Harness, model_text: str, out: Path, selftest_text: str | None = 
 class _Run:
     """One run of a built self-test on both cases, in a fresh run dir under `out`."""
 
-    def __init__(self, h: _Harness, binary: Path, out: Path, launch: tuple[str, ...]) -> None:
+    def __init__(self, h: _Harness, binary: Path, out: Path, launch: tuple[str, ...],
+                 cases: tuple[str, ...] | None = None) -> None:
+        self.cases = cases if cases is not None else (CASE, OTHER, *h.extra_cases)
         self.run_dir = out / "run"
         self.output_format = h.output_format
         for parts in capture_store.run_dirs(h.output_format):
@@ -194,7 +201,7 @@ class _Run:
         self.ir = ir(h.spec_id)
         pe.write_case_inputs(self.ir, ir_dir)
         self.proc = subprocess.run(
-            [*launch, str(binary), "--cases", str(ir_dir / "spec.ir.yaml"), CASE, OTHER],
+            [*launch, str(binary), "--cases", str(ir_dir / "spec.ir.yaml"), *self.cases],
             cwd=self.run_dir, capture_output=True, text=True, check=False, env=h.env,
             timeout=300)
 
@@ -203,7 +210,7 @@ class _Run:
         store = capture_store.store(self.output_format)
         snap = capture_store.snapshot_dir(self.run_dir)
         out = []
-        for case_id in (CASE, OTHER):
+        for case_id in self.cases:
             try:
                 store.read_record(snap, capture_store.FINAL, case_id)
             except capture_store.CaptureError:
@@ -359,8 +366,8 @@ NETCDF_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
     # no NaN fill value: an unwritten cell reads the library's default fill, a finite number
     # (the store refuses)
     "fill_value_omitted": (
-        "    call nc(nf90_def_var_fill(cap_ncid, varid, 0, ieee_value(0.0_dp, ieee_quiet_nan)), &\n"
-        "      & 'fill '//name)\n", "", ALL | {UNREAD}),
+        ("    call nc(nf90_def_var_fill(cap_ncid, varid, 0, ieee_value(0.0_dp, ieee_quiet_nan)), &\n"
+         "      & 'fill '//name)\n"), "", ALL | {UNREAD}),
     # fill mode off: an unwritten cell reads whatever the disk held (the store refuses)
     "fill_off": (
         "nf90_def_var_fill(cap_ncid, varid, 0, ieee_value",
@@ -392,9 +399,14 @@ NETCDF_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
     "record_dimension_sized_by_capacity": (
         "    call nc(nf90_def_dim(cap_ncid, 'series__n', nf90_unlimited, dim_s), 'dimension')",
         "    call nc(nf90_def_dim(cap_ncid, 'series__n', series_capacity, dim_s), 'dimension')",
-        {UNREAD}),
-    # the record counters outlive their case: the next case's rows land after fill rows
+        ALL | {UNREAD}),
+    # the record counters outlive their case: the next case's records land after fill rows
     "record_counters_carried": ("    cap_n_rp = 0\n    cap_n_s = 0\n", "", {UNREAD}),
+    # the restart points' counter alone outlives its case
+    "restart_point_counter_carried": ("    cap_n_rp = 0\n", "", {UNREAD}),
+    # a variable's samples start at the previous case's row count, not at 0
+    "history_count_carried": ("      cap_vars(k)%h_count = 0\n",
+                              "      cap_vars(k)%h_count = cap_n_s\n", {UNREAD}),
     # the final record's count never set: the store finds no final record
     "final_count_unset": (
         "      call put_int(cap_single(g, 3), 1)\n",
@@ -438,6 +450,49 @@ def _cpp_gpu() -> _Harness:
                         "harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure")})
 
 
+#: The placeholder case's `capture_open` in the json self-test, and what the netcdf
+#: harness's §3 has `l0_case_fanout_pass` (the bench's other case) do in its place.
+FANOUT_OPEN_JSON = ("    call harness_fortran_cpu_netcdf__capture_open(case_id, variables(0, 0), 0, "
+                    "series_names, 0)\n")
+
+
+def fanout_commits(h: str) -> str:
+    """The netcdf §3's `l0_case_fanout_pass` commits, at step 1 and time 0: one `history`
+    record and one `restart_point` record of the seven restart variables' placeholders, one
+    series row with `g_a = 1`. Every other placeholder case opens as the json self-test's."""
+    out = [f"    if (trim(case_id) /= '{OTHER}') then\n",
+           "  " + FANOUT_OPEN_JSON.replace("harness_fortran_cpu_netcdf", h),
+           "    else\n",
+           f"    call {h}__capture_open(case_id, variables(1, 1), 1, series_names, 1)\n"]
+    for group in ("history", "restart_point"):
+        out += [f"    call {h}__capture_real('{group}', 'g_s', 0.0_dp)\n",
+                f"    call {h}__capture_array_r1('{group}', 'g_r1', r1)\n",
+                f"    call {h}__capture_array_r2('{group}', 'g_r2', r2)\n",
+                f"    call {h}__capture_array_r3('{group}', 'g_r3', r3)\n",
+                f"    call {h}__capture_array_r4('{group}', 'g_r4', r4)\n",
+                f"    call {h}__capture_array_r1('{group}', 'g_z1', z1)\n",
+                f"    call {h}__capture_array_r2('{group}', 'g_z2', z2)\n",
+                f"    call {h}__capture_commit('{group}', 1, 0.0_dp)\n"]
+    out += [f"    call {h}__capture_real('series', 'g_a', 1.0_dp)\n",
+            f"    call {h}__capture_real('series', series_names(2), 0.0_dp)\n",
+            f"    call {h}__capture_commit('series', 1, 0.0_dp)\n",
+            "    end if\n"]
+    return "".join(out)
+
+
+def fanout_predicates() -> list[str]:
+    """The expressions of `l0_case_fanout_pass`'s predicate in the netcdf `tests.md` that read
+    the stacked records (the entries of the form `<expr> == 0.0`)."""
+    text = _tests_md("harness_fortran_cpu_netcdf")
+    row = text[text.index(f"- `test_id`: `{OTHER}`") + 1:]
+    row = row[:row.index("- `test_id`:")]
+    line = re.search(r"`predicate`[^\n]*", row).group(0)
+    found = [e[:-len(" == 0.0")] for e in re.findall(r"`([^`]+)`", line)
+             if e.endswith(" == 0.0")]
+    assert len(found) == 1, line
+    return found
+
+
 def _fortran_cpu_netcdf() -> _Harness:
     """The `netcdf` harness's hand model under the Fortran self-test with its names: built with
     the module directory of the library it declares and linked against it, run with the
@@ -446,21 +501,17 @@ def _fortran_cpu_netcdf() -> _Harness:
     h = netcdf_harness.HARNESS
     selftest = (DATA / "groups_selftest.f90").read_text(encoding="utf-8").replace(
         "harness_fortran_cpu", h)
-    # this harness's §3: every other case opens with capacities above what it commits and
-    # commits one series row (so a record count carried across cases, or a record dimension
-    # sized by a capacity, leaves a file the store refuses)
-    opened = f"    call {h}__capture_open(case_id, variables(0, 0), 0, series_names, 0)\n"
-    assert selftest.count(opened) == 1
-    selftest = selftest.replace(opened, (
-        f"    call {h}__capture_open(case_id, variables(2, 2), 2, series_names, 2)\n"
-        f"    call {h}__capture_real('series', 'g_a', 0.0_dp)\n"
-        f"    call {h}__capture_real('series', series_names(2), 0.0_dp)\n"
-        f"    call {h}__capture_commit('series', 1, 0.0_dp)\n"))
+    # this harness's §3: the other case, `l0_case_fanout_pass` here, commits one record of
+    # each stacked group (`FANOUT_COMMITS`), so a record count carried across cases leaves one
+    # of the two cases' records wrong
+    assert selftest.count(FANOUT_OPEN_JSON) == 1
+    selftest = selftest.replace(FANOUT_OPEN_JSON, fanout_commits(h))
     return _Harness(netcdf_harness.HARNESS, netcdf_harness.MODEL, "groups_selftest.f90",
                     ["gfortran", "-O0", "-fcheck=bounds", *netcdf_harness.compile_flags()],
                     NETCDF_DEFECTS, ("", ""), _selftest_defects(netcdf_harness.HARNESS),
                     env=netcdf_harness.run_env(), output_format="netcdf",
-                    link=netcdf_harness.link_words(), selftest_source=selftest)
+                    link=netcdf_harness.link_words(), selftest_source=selftest,
+                    extra_cases=(PLAIN,))
 
 
 class _CaptureGroupRows:
@@ -554,6 +605,64 @@ class CppGpuCaptureGroupTests(_CaptureGroupRows, _SeriesChunkRows, unittest.Test
 
 class FortranCpuNetcdfCaptureGroupTests(_CaptureGroupRows, unittest.TestCase):
     harness = staticmethod(_fortran_cpu_netcdf)
+
+    def _fanout(self, run: _Run) -> list[dict]:
+        doc = copy.deepcopy(run.ir)
+        doc["io_contract"]["tests"].append(
+            {"test_id": OTHER, "target_cases": [OTHER], "expected_outcome": "pass",
+             "quantities": ["case_fanout"]})
+        doc["io_contract"]["predicates"] = [
+            {"test_id": OTHER, "quantity": "case_fanout", "target_cases": [OTHER],
+             "expr": expr, "op": "eq", "value": 0.0, "per_case": True}
+            for expr in fanout_predicates()]
+        return pe.evaluate_primary_predicates(doc, run.run_dir, output_format="netcdf")
+
+    def test_the_fanout_case_judges_the_records_it_commits_and_the_carried_counts(
+            self) -> None:
+        """The netcdf `tests.md` judges what §3 has `l0_case_fanout_pass` commit, so a
+        self-test that leaves those records out fails its own case: what keeps a carried
+        record count from passing the suite is a predicate, not the self-test's good will. A
+        carried count fails it when the fanout case runs second (the bench's order), and
+        fails the capture-group case when it runs first."""
+        def satisfied(run: _Run) -> list[bool]:
+            return [r["satisfied"] for r in self._fanout(run)]
+        self.assertEqual(satisfied(self.clean[-1]), [True])
+        skipped = self.h.selftest_text.replace(fanout_commits(self.h.spec_id), FANOUT_OPEN_JSON)
+        self.assertNotEqual(skipped, self.h.selftest_text)
+        binary = _build(self.h, self.h.model_text, self.root / "fanout_skipped", skipped)
+        run = _Run(self.h, binary, self.root / "fanout_skipped_run", self.h.launches[-1])
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+        self.assertEqual(satisfied(run), [False])
+        carried = self._variant("fanout_carried", "    cap_n_rp = 0\n", "")
+        self.assertEqual(satisfied(carried), [False])
+        first = self.h.model_text.replace("    cap_n_rp = 0\n", "")
+        binary = _build(self.h, first, self.root / "fanout_first")
+        run = _Run(self.h, binary, self.root / "fanout_first_run", self.h.launches[-1],
+                   cases=(OTHER, CASE))
+        self.assertEqual(satisfied(run), [True])
+        self.assertTrue(run.failed())
+
+    def test_the_fanout_predicate_passes_the_compile_stage_gates(self) -> None:
+        """As `CaptureGroupDocumentTests` holds the capture-group case's: a gate that came to
+        refuse the fanout case's predicate would stop the harness's Compile."""
+        doc = ir(self.h.spec_id)
+        contract = doc["io_contract"]
+        contract["tests"].append({"test_id": OTHER, "target_cases": [OTHER],
+                                  "expected_outcome": "pass", "quantities": ["case_fanout"]})
+        contract["predicates"] += [
+            {"test_id": OTHER, "quantity": "case_fanout", "target_cases": [OTHER],
+             "expr": expr, "op": "eq", "value": 0.0, "per_case": True}
+            for expr in fanout_predicates()]
+        cases = pe._cases_by_id(doc)
+        context = pe.predicate_schema_context(doc)
+        self.assertEqual([
+            *pe.validate_primary_predicate_schema(
+                contract["predicates"], case_ids=set(cases), test_ids=[CASE, OTHER],
+                schema=pe.snapshot_schema(doc), cases=cases,
+                test_target_cases={CASE: [CASE], OTHER: [OTHER]}, **context),
+            *pe.quantity_violations(contract["tests"], contract["predicates"],
+                                    context["reads"]),
+            *pe.drive_violations(doc, kind="infrastructure")], [])
 
 
 #: How the `json` harnesses and the `netcdf` one name the nesting the case's inputs are written in.

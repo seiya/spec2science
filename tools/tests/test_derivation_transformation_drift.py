@@ -1437,7 +1437,7 @@ PINNED_RENDER: dict[str, str] = {
     # of the workspace's IRs over the json and MPI harnesses at 66d77304 and 58b6963a: equal). The digest
     # `render-22` shipped with at 66d77304:
     "render-22@66d77304": "8e9be2c2d7695586278f02ff0a1c01d8c443f7057182cf70cfa03da292b67522",
-    "render-22": "93be9f42e2a24e441d3bfc4768e64a07725244b7c70afeae232a770ba9942b14",
+    "render-22": "15ad00a76afea006475a1e586ee7fe04b6051b0c4f668d5d2d9920abb1dfd23d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -2054,10 +2054,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # records (no target selects it), and no json-target node's bytes move.
     "execute-22@ed14bd25": "9a21a24c41de2da81d30005aa7e6e90677f635fc77cdbeb4a1f93d95cec91710",
     # execute-22 re-pinned in place by issue #644 P5b: the `netcdf` store refuses a series step
-    # out of order, and its layout says so; no target that a node is certified for selects
-    # netcdf. The digest `execute-22` shipped with at 66d77304:
+    # out of order and a record dimension that is not unlimited, its layout says so, and the
+    # runner-output contract no longer says `capture_open` writes nothing; no node of this host's
+    # workspace is certified at this version (66d77304's selection over the catalog, 2026-11-16). The digest `execute-22` shipped with at 66d77304:
     "execute-22@66d77304": "c22f5e7cf3ef798640047ce9d2e96322a4e64534c74793dcfec02ffc48062bf8",
-    "execute-22": "b721fd6bfdbfe1f5d40936e9a886d5862e99d0e8be16c0819789f8b70943f17f",
+    "execute-22": "73286f8895cbccd522ab3d4ea28750ac2a8d89ceb5f3fb5273271e48e3a433d6",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2288,10 +2289,11 @@ PINNED_VERDICT: dict[str, str] = {
     # records (no target selects it), and no json-target node's bytes move.
     "verdict-20@ed14bd25": "33fce73aeb3347208370b46a700b5a1ae000200a2cee845585e20f89cc20d82c",
     # verdict-20 re-pinned in place by issue #644 P5b: the `netcdf` store refuses a series step
-    # out of order, and its layout says so; no target that a node is certified for selects
-    # netcdf. The digest `verdict-20` shipped with at 66d77304:
+    # out of order and a record dimension that is not unlimited, its layout says so, and the
+    # runner-output contract no longer says `capture_open` writes nothing; no node of this host's
+    # workspace is certified at this version (66d77304's selection over the catalog, 2026-11-16). The digest `verdict-20` shipped with at 66d77304:
     "verdict-20@66d77304": "e6af2b212c11122f0ded2ed18dbefaf47671484f01b2a73081f8722180a24013",
-    "verdict-20": "8726371937f3e298c128847c3cee706a3f9e095f6c2f75687a7d4883f1cc1797",
+    "verdict-20": "bf2f87df980587e1c84035a6ed6edcfe69e116b255b645b314f7c95037447cc5",
 }
 
 

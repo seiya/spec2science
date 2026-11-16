@@ -27,7 +27,7 @@ attribute alone is not enough: a file written in no-fill mode keeps it and reads
 cell as whatever the disk held); a group whose `count` is not the length of its record
 dimension (or, for `initial` and `final`, is not 0 or 1); a variable whose dimensions are not
 the layout's names in the layout's order (an array written with its dimensions unreversed among
-them); a history variable's, the restart points' or the series' steps not strictly ascending; history
+them); a record dimension that is not unlimited; a history variable's, the restart points' or the series' steps not strictly ascending; history
 variables whose times disagree at one step.
 
 Every reader opens the file per call; nothing is cached, so a file replaced between two calls
@@ -210,6 +210,15 @@ def _well_formed(case: _Case) -> None:
         if length != count:
             raise case.refuse(f"{HISTORY}{_SEP}{var}{_SEP}count is {count}, and its record "
                               f"dimension {dim} has length {length}")
+    # A record dimension is unlimited (the layout): one the writer sized when the case opened,
+    # from the capacities it was told, passes the count check whenever the case commits as
+    # many records as it planned, and breaks a case that commits fewer — a consumer's kernel
+    # refusing a step mid-run (issue #644 P5b).
+    record_dim_names = ([f"{HISTORY}{_SEP}{v}{_SEP}n" for v in case.history_vars()]
+                        + [record_dims[RESTART_POINT], record_dims[SERIES]])
+    for dim in record_dim_names:
+        if dim in ds.dimensions and not ds.dimensions[dim].isunlimited():
+            raise case.refuse(f"record dimension {dim} is not unlimited")
     # A sample and a restart point are read by their step: a repeated step names two records.
     # A series row is one committed step, in commit order: a step out of order is a row
     # written at an index its commit did not reach (a writer whose row counter outlived its

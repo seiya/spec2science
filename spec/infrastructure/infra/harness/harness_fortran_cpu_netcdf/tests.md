@@ -28,7 +28,7 @@ This suite verifies the published runner-plumbing operations of `harness_fortran
 - `zero_extent`: `g_z1`, `g_z2`
 
 ## 4. Case-expansion rules
-The suite defines nine `case`s and nine `test_id`s (no sweep). The self-test's own runner commits each case's `final` record once, after the case ran; the `l0_capture_groups_pass` case alone commits `history` and `restart_point` records, and every other case one `series` row, which no predicate reads (`controlled_spec.md` §2 and §3). Every host-evaluated `predicate` of §6 reads the case's own captures and its declared `inputs` only. Every test is **single-target**: it names exactly one case, and that case's `case_id` equals the `test_id` — the nine `case.test_case_set[].case_id` are exactly those nine `test_id`s. Each `case_id` selects the plumbing aspect that case verifies. The multi-case run itself is the fan-out evidence: the host finds exactly one `final` record per case.
+The suite defines nine `case`s and nine `test_id`s (no sweep). The self-test's own runner commits each case's `final` record once, after the case ran; the `l0_capture_groups_pass` and `l0_case_fanout_pass` cases alone commit records of the other groups too (`controlled_spec.md` §2 and §3). Every host-evaluated `predicate` of §6 reads the case's own captures and its declared `inputs` only. Every test is **single-target**: it names exactly one case, and that case's `case_id` equals the `test_id` — the nine `case.test_case_set[].case_id` are exactly those nine `test_id`s. Each `case_id` selects the plumbing aspect that case verifies. The multi-case run itself is the fan-out evidence: the host finds exactly one `final` record per case.
 
 **Every `final` record holds every variable `controlled_spec.md` §2 declares**, plus the `step` and the time `t` its commit carries: `1` and `0.0` (a single `steps=1` step) in every case but `l0_capture_groups_pass`, whose own are §2's. A variable §2 lists under the case holds what the case computed; any other variable holds a shape-valid placeholder, `0.0` or an array of zeros of its declared shape (the empty array for a variable of the `zero_extent` line of §3), which no predicate of that case reads; a test's own predicates fail on a placeholder, so a case that does not fill its variables fails its test.
 
@@ -54,9 +54,9 @@ Each test of §6 judges one quantity, named by its `quantities` line and defined
   - `level`: `L0`
   - `operation_id`: `harness_fortran_cpu_netcdf__capture_commit`
   - `expected_outcome`: `pass`
-  - `judgment`: the case loop commits exactly one `final` record per case, each carrying every declared variable; `case_index` is this case's 1-based position in the case loop, so `1 <= case_index <= 9`.
+  - `judgment`: the case loop commits exactly one `final` record per case, each carrying every declared variable; `case_index` is this case's 1-based position in the case loop, so `1 <= case_index <= 9`. The case also commits, at step `1`, one `history` record and one `restart_point` record holding the placeholders and one `series` row with `g_a = 1.0` (`controlled_spec.md` §3), and each reads back as that one record: a writer that carries a group's record count from another case into this one, or from this one into `l0_capture_groups_pass`, fails this predicate or that case's.
   - `quantities`: `case_fanout`
-  - `predicate` (quantity `case_fanout`, `per_case: true`, two entries): `final.case_index >= 1.0` and `final.case_index <= 9.0`.
+  - `predicate` (quantity `case_fanout`, `per_case: true`, three entries): `final.case_index >= 1.0`, `final.case_index <= 9.0` and `max(maxabs(history.g_s.step - 1), maxabs(history.g_r3.step - 1), maxabs(history.g_s), maxabs(restart_point.step - 1), maxabs(restart_point.g_s), maxabs(series.step - 1), maxabs(series.g_a - 1)) == 0.0` (op `eq`).
 - `test_id`: `l0_perf_derived_pass`
   - `level`: `L0`
   - `operation_id`: `harness_fortran_cpu_netcdf__write_perf`
