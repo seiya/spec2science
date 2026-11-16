@@ -31595,10 +31595,6 @@ class DistributeLineGateTests(unittest.TestCase):
                      "is the operator's to correct)")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RestartLineGateTests(unittest.TestCase):
     """Gate (r) (issue #632, `_restart_line_violations`): the tests.md `restart:` line against
     the IR's continuation cases, as a set, in both polarities."""
@@ -31798,3 +31794,7 @@ class RestartRequiredGateTests(unittest.TestCase):
         found = _drive_stage("swe", drop, catalog=[{"spec_kind": "component", "spec_id": "shallow_water2d",
                                  "controlled_spec_path": cs}])
         self.assertFalse([v for v in found if "(q)" in v], found)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -127,6 +127,7 @@ class _Harness:
     compiler: list[str]
     defects: dict[str, tuple[str, str, set[int]]]
     unjudged: tuple[str, str]
+    selftest_defects: dict[str, tuple[str, str, set[int]]] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     launches: tuple[tuple[str, ...], ...] = ((),)
     env: dict[str, str] | None = None
@@ -151,12 +152,15 @@ def _stage(h: _Harness, out: Path, files: dict[str, bytes], source: str) -> None
                 shutil.copy(path, out)
 
 
-def _build(h: _Harness, model_text: str, out: Path) -> Path:
-    """The self-test over `model_text`, built in `out`; returns the binary."""
+def _build(h: _Harness, model_text: str, out: Path, selftest_text: str | None = None) -> Path:
+    """The self-test (`selftest_text`, else the fixture's) over `model_text`, built in `out`;
+    returns the binary."""
     out.mkdir(parents=True)
     _stage(h, out, {h.model.name: model_text.encode()}, h.model.name)
     modules = {p.name: p.read_bytes() for p in out.glob("*.mod")}
-    _stage(h, out, {**modules, h.selftest: (DATA / h.selftest).read_bytes()}, h.selftest)
+    _stage(h, out, {**modules, h.selftest: (selftest_text.encode() if selftest_text is not None
+                                              else (DATA / h.selftest).read_bytes())},
+           h.selftest)
     subprocess.run([*h.compiler, f"{h.model.stem}.o", f"{Path(h.selftest).stem}.o",
                     "-o", "selftest"], cwd=out, check=True, capture_output=True, text=True)
     return out / "selftest"
@@ -237,6 +241,31 @@ DEFECTS: dict[str, tuple[str, str, set[int]]] = {
 #: A defect no predicate of a complete run can show (`TODO.md`, the lost series): the rows
 #: committed before a restart point are written at the close, not before the restart point.
 #: The whole series is in its files once the case is closed, so the store reads the same.
+#: Seeded defects of the SELF-TEST over the clean model: a zero-extent variable left out of
+#: the `history` records. The two terms that read the steps of those records are what fails
+#: (review round 1 added them; without these rows the terms could be dropped unnoticed).
+def _selftest_defects(prefix: str) -> dict[str, tuple[str, str, set[int]]]:
+    return {
+        "g_z1_not_in_history": (
+            f"        call {prefix}__capture_array_r1('history', 'g_z1', z1)\n", "",
+            {HISTORY_A}),
+        "g_z2_not_in_history": (
+            f"        call {prefix}__capture_array_r2('history', 'g_z2', z2)\n", "",
+            {HISTORY_B}),
+    }
+
+
+#: The C++ self-test puts each stride's variables through one closure for every group, so its
+#: variant leaves the variable out of every record; the history term is still what fails.
+CUDA_SELFTEST_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
+    "g_z1_not_put": (
+        '        harness_cpp_gpu__capture_array_r1(group, "g_z1", view<1>(none, z1_extent));\n',
+        "", {HISTORY_A}),
+    "g_z2_not_put": (
+        '        harness_cpp_gpu__capture_array_r2(group, "g_z2", view<2>(none, z2_extent));\n',
+        "", {HISTORY_B}),
+}
+
 UNJUDGED = ("      if (cap_pending > 0) call cap_write_series()\n", "")
 
 #: The MPI hand model's capture writer is the Fortran one under the MPI harness's names (the
@@ -287,7 +316,7 @@ CUDA_UNJUDGED = ("        if (!cap_step.empty()) {\n            cap_write_series
 def _fortran_cpu() -> _Harness:
     return _Harness("harness_fortran_cpu", MODELS / "harness_fortran_cpu_model.f90",
                     "groups_selftest.f90", ["gfortran", "-O0", "-fcheck=bounds"],
-                    DEFECTS, UNJUDGED)
+                    DEFECTS, UNJUDGED, _selftest_defects("harness_fortran_cpu"))
 
 
 def _fortran_cpu_mpi() -> _Harness:
@@ -302,7 +331,8 @@ def _fortran_cpu_mpi() -> _Harness:
     return _Harness("harness_fortran_cpu_mpi", MODELS / "mpi" / "harness_fortran_cpu_mpi_model.f90",
                     "groups_selftest_mpi.f90",
                     [str(pair / wrapper.COMPILER_WRAPPER), "-O0", "-fcheck=bounds"],
-                    MPI_DEFECTS, UNJUDGED, launches=((), ranks), env=env)
+                    MPI_DEFECTS, UNJUDGED, _selftest_defects("harness_fortran_cpu_mpi"),
+                    launches=((), ranks), env=env)
 
 
 def _cpp_gpu() -> _Harness:
@@ -311,7 +341,7 @@ def _cpp_gpu() -> _Harness:
     from tools.tests.test_driver_render import _harness_public_api
     return _Harness("harness_cpp_gpu", MODELS / "harness_cpp_gpu_model.cu", "groups_selftest.cu",
                     [shutil.which("nvcc") or "nvcc", "-std=c++17", "-O2", "-I."],
-                    CUDA_DEFECTS, CUDA_UNJUDGED,
+                    CUDA_DEFECTS, CUDA_UNJUDGED, CUDA_SELFTEST_DEFECTS,
                     headers={"harness_cpp_gpu_model.cuh": header.render(
                         "harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure")})
 
@@ -357,6 +387,20 @@ class _CaptureGroupRows:
         for name, (old, new, expected) in self.h.defects.items():
             with self.subTest(defect=name):
                 run = self._variant(name, old, new)
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+                failed = {i for i, record in enumerate(run.records())
+                          if not record["satisfied"]}
+                self.assertEqual(failed, expected)
+
+    def test_each_self_test_defect_fails_the_term_that_reads_it(self) -> None:
+        source = (DATA / self.h.selftest).read_text(encoding="utf-8")
+        self.assertTrue(self.h.selftest_defects)
+        for name, (old, new, expected) in self.h.selftest_defects.items():
+            with self.subTest(defect=name):
+                self.assertEqual(source.count(old), 1, old)
+                binary = _build(self.h, self.h.model_text, self.root / name,
+                                source.replace(old, new))
+                run = _Run(self.h, binary, self.root / f"{name}_run", self.h.launches[-1])
                 self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
                 failed = {i for i, record in enumerate(run.records())
                           if not record["satisfied"]}

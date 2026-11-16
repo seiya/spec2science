@@ -989,8 +989,8 @@ def _table(value: Any) -> Any:
 class CaseEnv(NamedTuple):
     """Everything an expression can name inside one case. A capture table holds the declared
     variables the capture file carries; a variable it omits, and every ``initial.<var>`` of a
-    case with no ``initial/`` capture (``initial`` None — a harness self-test's own runner
-    writes none), is an evaluation error of the predicate that names it. ``history`` /
+    case with no ``initial/`` capture (``initial`` None — a harness self-test commits one
+    only in the cases its `tests.md` states), is an evaluation error of the predicate that names it. ``history`` /
     ``series`` / ``derived`` (grammar 6) are a mapping or a `Lazy` of one, None when nothing
     can answer them; ``state_rank`` is the state's rank (the coordinates' rank), None when not
     known, and lets a reduction tell a sampled field's leading axis from a state axis;

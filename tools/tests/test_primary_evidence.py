@@ -964,7 +964,8 @@ class EvaluationTest(unittest.TestCase):
 
     def test_capture_file_defects_are_structural(self) -> None:
         # Grammar 2 (Z6 PR-3): a capture carries the variables its writer holds for the case
-        # — a harness self-test's own runner writes no `initial/` and a per-case subset — so an
+        # — a harness self-test's own runner commits an `initial` record in the cases its
+        # `tests.md` states, and here none — so an
         # ABSENT initial capture or an absent variable fails the predicate that NAMES it, and
         # only that one. The final capture itself absent fails every predicate of the case.
         (self.run.sdir / "initial" / "b.json").unlink()
@@ -6351,10 +6352,6 @@ class DistributeGateTests(unittest.TestCase):
                             "in dummy 'U' it records [null, null, null]" in m for m in got), got)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # --- the continuation case (system tier Part 2, issue #632) ----------------------------------------
 
 
@@ -6950,3 +6947,7 @@ class InfrastructureSeriesTest(unittest.TestCase):
         v = pe.drive_violations(ir, kind="infrastructure")
         self.assertEqual(len(v), 1, v)
         self.assertIn("an infrastructure node carries no drive block", v[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
