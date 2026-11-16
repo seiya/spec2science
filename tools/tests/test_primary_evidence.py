@@ -46,8 +46,8 @@ import numpy as np
 
 from tools import capture_store
 from tools import primary_evidence as pe
-from tools.verdict_evaluator import PredicateError, evaluate_verdict
 from tools.tests.yaml_fixtures import load_yaml_fixture
+from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
 NX, NY = 8, 4
 

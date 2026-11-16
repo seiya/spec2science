@@ -2732,10 +2732,12 @@ class MpiBuild:
         for sub in CAPTURE_SUBDIRS:   # what `capture_store.run_dirs` creates
             (d / "raw" / "state_snapshots" / sub).mkdir(parents=True)
         env = {k: v for k, v in os.environ.items() if k != execution.PROCESS_GRID_VARIABLE}
-        # Open MPI's point-to-point layer is named rather than probed for: the probe is 0.2 s of
-        # a 0.5 s start (measured 2026-11-16 on 4.1.2, `MPI_Init` + `MPI_Finalize` alone), and
-        # these rows start about 320 binaries. Another MPI does not read the variable.
-        env.setdefault("OMPI_MCA_pml", "ob1")
+        # Open MPI opens its matching-transport components at start to see whether a fabric
+        # answers, and on a host without one that is 0.2 s of a 0.5 s start under the launcher
+        # (measured 2026-11-16 on 4.1.2, `MPI_Init` + `MPI_Finalize` alone, 4 ranks; 0.6 to
+        # 0.4 s bare). Excluded, not replaced: the selection among what remains is the
+        # installation's own. Intel MPI ran the same program with the variable set.
+        env.setdefault("OMPI_MCA_mtl", "^psm,psm2,ofi")
         argv = [str(self.tmp / "bin")]
         if grid != SINGLETON:
             env.update(execution.environment(1, process_grid=grid))
@@ -2791,9 +2793,17 @@ def _witness_expectation(ir: dict[str, Any], grid: tuple[int, int]) -> dict[str,
     return {"w": local, "wb": local, "wg": [float(nx)] * nx}
 
 
-#: How long a seeded-defect row waits for one grid's run. A defect that hangs is waited out in
-#: full, and two rows hang; every run that ends does so within 1.7 s (measured 2026-11-16, idle).
-_DEFECT_TIMEOUT_S = 10
+#: The seeded defects that HANG a grid, and how long their rows wait for one grid's run: a hang
+#: is waited out in full. Every other defect row keeps the 30 s bound, because a run killed at
+#: the bound counts as the defect detected: with its defect cancelled, a non-hanging row pinned
+#: to one loaded core passed at 10 s and failed, as it must, at 30 s (measured 2026-11-16).
+_HANGING_DEFECTS = frozenset({"the result is not reduced over the ranks",
+                              "a refusal before the exchange on one rank (a hang)"})
+_HANG_TIMEOUT_S = 10
+
+
+def _defect_timeout(label: str) -> int:
+    return _HANG_TIMEOUT_S if label in _HANGING_DEFECTS else 30
 
 
 class DistributedDriverEndToEndTest(unittest.TestCase):
@@ -3003,8 +3013,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 if run.rc == 0 else None, _witness_expectation(ir, (2, 1)), label)
             return
         reference = self._build(ir).run(SINGLETON).snapshots()
-        self.assertIsNotNone(self._first_disagreement(build, reference, timeout=_DEFECT_TIMEOUT_S),
-                             label)
+        self.assertIsNotNone(self._first_disagreement(
+            build, reference, timeout=_defect_timeout(label)), label)
 
     def _kernel_defect_fails_a_grid(self, sid: str, label: str,
                                     edits: tuple[tuple[str, str], ...], cases: list[str],
@@ -3023,7 +3033,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         self.assertEqual(single.rc, 0, single.stderr[-1000:])
         self.assertEqual(single.snapshots(), reference)
         self.assertIsNotNone(self._first_disagreement(
-            build, reference, grids, cases=cases, timeout=_DEFECT_TIMEOUT_S), label)
+            build, reference, grids, cases=cases, timeout=_defect_timeout(label)), label)
 
     def test_an_init_scalar_unequal_across_the_ranks_stops_the_run(self) -> None:
         """B8: after an accepted `init`, a rank-0 real or integer it wrote must agree across the

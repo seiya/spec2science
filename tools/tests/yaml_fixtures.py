@@ -1,9 +1,11 @@
 """One reader for the checked-in YAML fixtures the suite parses again and again.
 
-The evidence IRs are large (the `shallow_water2d_channel` one is 20263 lines) and the
-pure-Python loader takes 1.4-1.8 s for it; rows that sweep every evidence IR parsed each file
-once per row. Measured 2026-11-16 with every `yaml.safe_load` of the suite parsed once per
-text: 90 s of 1530 s of summed test time, most of it in the four files that sweep the IRs.
+The evidence IRs are large and the pure-Python loader is slow on them (the
+`shallow_water2d_channel` one: 1.5-1.9 s a parse), and the rows that sweep every evidence IR
+parsed each file once per row. Parsing once per process is what the rows share, so the gain
+is largest where a worker runs several of those modules: the five files that read through
+this, run together with 8 workers, 86 s before and 35 s after (measured 2026-11-16 at
+f639aea2).
 """
 
 from __future__ import annotations

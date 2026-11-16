@@ -36,9 +36,9 @@ from typing import Any, ClassVar
 def start_serving(server: BaseServer) -> threading.Thread:
     """Serve ``server`` on a daemon thread and return the thread.
 
-    `shutdown()` returns at the serving loop's next poll, and every test shuts its server down:
-    at `serve_forever`'s default of 0.5 s that wait averaged 0.45 s a test (measured 2026-11-16,
-    102 s of the suite's summed time)."""
+    `shutdown()` returns once the serving loop's current poll does, and every test shuts its
+    server down: at `serve_forever`'s default of 0.5 s the 222 shutdowns of the suite's stand-ins
+    waited about 90 s together (measured 2026-11-16 at f639aea2)."""
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01},
                               daemon=True)
     thread.start()
