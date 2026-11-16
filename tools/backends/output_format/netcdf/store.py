@@ -147,11 +147,10 @@ class _Case:
 
     def steps(self, group: str, var: str | None = None) -> list[int]:
         prefix = _SEP.join(p for p in (group, var) if p)
-        n = self.count(group, var)
-        return [int(x) for x in self.ds.variables[f"{prefix}{_SEP}step"][:n].tolist()]
+        return [int(x) for x in self.ds.variables[f"{prefix}{_SEP}step"][:].tolist()]
 
-    def column(self, name: str, n: int) -> list[float]:
-        return [float(x) for x in self.ds.variables[name][:n].tolist()]
+    def column(self, name: str) -> list[float]:
+        return [float(x) for x in self.ds.variables[name][:].tolist()]
 
     def value(self, name: str, index: int | None = None) -> Any:
         """A value variable's record, in declared index order (the file holds it reversed)."""
@@ -176,7 +175,8 @@ def _well_formed(case: _Case) -> None:
         want_dims, want_type = layout
         # A value, `t` or a series column of another type reads an unwritten cell as that
         # type's finite fill, and a `step` of a real type is truncated onto another step.
-        if var.dtype != np.dtype(want_type):
+        # A byte order is the format's to undo, not a type.
+        if var.dtype.newbyteorder("=") != np.dtype(want_type):
             raise case.refuse(f"variable {name} is of type {var.dtype}, the layout "
                               f"{np.dtype(want_type)}")
         if tuple(var.dimensions) != want_dims:
@@ -192,8 +192,6 @@ def _well_formed(case: _Case) -> None:
                                   "not NaN")
     record_dims = {RESTART_POINT: f"{RESTART_POINT}{_SEP}n", SERIES: f"{SERIES}{_SEP}n"}
     for group in (INITIAL, FINAL, RESTART_POINT, SERIES):
-        if f"{group}{_SEP}count" not in ds.variables:
-            raise case.refuse(f"it has no {group}{_SEP}count")
         count = case.count(group)
         if group in _SINGLE:
             if count not in (0, 1):
@@ -259,11 +257,14 @@ def _open(path: Path) -> Iterator[_Case]:
     except (OSError, RuntimeError, ValueError) as exc:
         raise CaptureError(path.name, f"unreadable: {exc}") from None
     try:
-        ds.set_auto_mask(False)
+        # No masking and no scaling: a value reads as the file holds it, an unwritten cell as
+        # its fill.
+        ds.set_auto_maskandscale(False)
         case = _Case(ds, path.name)
         try:
             marker = ds.variables[_COMPLETE][...].item() if _COMPLETE in ds.variables else None
-        except (OSError, RuntimeError, ValueError, IndexError) as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError,
+                IndexError) as exc:
             raise case.refuse(f"{_COMPLETE} cannot be read ({exc})") from None
         if marker != _COMPLETE_VALUE:
             raise CaptureError(path.name, f"incomplete: {_COMPLETE} is {marker!r}, not "
@@ -272,7 +273,8 @@ def _open(path: Path) -> Iterator[_Case]:
             _well_formed(case)
         except CaptureError:
             raise
-        except (KeyError, OSError, RuntimeError, ValueError, IndexError) as exc:
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError,
+                IndexError) as exc:
             raise case.refuse(f"{type(exc).__name__}: {exc}") from None
         yield case
     finally:
@@ -286,7 +288,8 @@ def _with_record(read):
             return read(case, *args)
         except CaptureError:
             raise
-        except (KeyError, OSError, RuntimeError, ValueError, IndexError) as exc:
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError,
+                IndexError) as exc:
             raise case.refuse(f"{type(exc).__name__}: {exc}") from None
     return wrapped
 
@@ -335,10 +338,9 @@ def _restart_point(case: _Case, step: int) -> dict[str, Any]:
 
 @_with_record
 def _series(case: _Case) -> dict[str, Any]:
-    n = case.count(SERIES)
-    doc = {s: case.column(f"{SERIES}{_SEP}{s}", n) for s in case.values_of(SERIES)}
-    doc["step"] = [int(x) for x in case.steps(SERIES)]
-    doc["t"] = case.column(f"{SERIES}{_SEP}t", n)
+    doc = {s: case.column(f"{SERIES}{_SEP}{s}") for s in case.values_of(SERIES)}
+    doc["step"] = case.steps(SERIES)
+    doc["t"] = case.column(f"{SERIES}{_SEP}t")
     return doc
 
 
@@ -376,7 +378,8 @@ def has_record(snap_dir: Path, group: str, case_id: str, step: int | None = None
             if group == HISTORY:
                 return any(int(step) in case.steps(HISTORY, v) for v in case.history_vars())
             return int(step) in case.steps(RESTART_POINT)
-    except (CaptureError, KeyError, OSError, RuntimeError, ValueError, IndexError):
+    except (AttributeError, CaptureError, KeyError, OSError, RuntimeError, TypeError,
+            ValueError, IndexError):
         return True
 
 
@@ -390,10 +393,8 @@ def _files(snap_dir: Path) -> list[Path]:
 def case_ids(snap_dir: Path, group: str = FINAL) -> list[str]:
     """The ids that have a record of `group` (final, initial or series), in file-name order: a
     case file holding one, and every case file that cannot be read as complete (its reader
-    refuses it)."""
-    if group in (HISTORY, RESTART_POINT):
-        raise ValueError(f"a {group} record's name does not determine its case; ask "
-                         "the steps of a case")
+    refuses it). A sample or a restart point is not asked of here: `record_path` refuses a
+    step-less one."""
     stems = [p.name[:-len(_SUFFIX)] for p in _files(snap_dir)]
     return [c for c in stems if has_record(snap_dir, group, c)]
 
@@ -408,9 +409,10 @@ def _stepped(snap_dir: Path, case_id: str, group: str) -> list[int]:
     try:
         with _open(path) as case:
             if group == RESTART_POINT:
-                return sorted(set(case.steps(RESTART_POINT)))
+                return case.steps(RESTART_POINT)
             return sorted({s for v in case.history_vars() for s in case.steps(HISTORY, v)})
-    except (CaptureError, KeyError, OSError, RuntimeError, ValueError, IndexError):
+    except (AttributeError, CaptureError, KeyError, OSError, RuntimeError, TypeError,
+            ValueError, IndexError):
         return []
 
 

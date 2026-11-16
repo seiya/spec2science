@@ -35,11 +35,11 @@ refuses a variable whose dimensions are not exactly these, in this order.
 
 - **Types.** A value, `t` and every series column are 64-bit reals (`double`); a `step` and a
   `count` are 32-bit integers (`int`); a rank-0 value is a scalar variable. The host refuses a
-  variable of another type.
+  variable of another type; the byte order is free.
 - **Fill values.** Every `double` variable is filled with NaN (the attribute `_FillValue` =
   NaN, fill mode on: no `nf90_set_fill(…, NF90_NOFILL, …)`), so a cell no commit wrote reads
   non-finite. `complete` is a scalar `int` with `_FillValue` = 0.
-- **Counts.** A commit writes its record's values at the next index of its group's record
+- **Counts.** Opening the case's output sets every `count` to 0. A commit writes its record's values at the next index of its group's record
   dimension (`initial` and `final` hold at most one record and have none), then its `step` and
   `t`, then sets the group's `count` to the records it now holds. A group's `count` equals the
   length of its record dimension; `initial__count` and `final__count` are 0 or 1. Each

@@ -40,6 +40,7 @@ DEFECTS = frozenset({
     "rp_t_own_dim",          # restart_point__t on a dimension of its own
     "series_step_own_dim",   # series__step on a dimension of its own
     "series_float32",        # the series columns are single precision
+    "series_column_own_dim", # each series column on a dimension of its own
     "complete_double",       # `complete` is a real (fill NaN) set to 1.0
     "not_netcdf",            # the file is not a netCDF file at all
 })
@@ -60,9 +61,11 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
                restart_points: Iterable[tuple[int, float, Mapping[str, Any]]] = (),
                series_names: Iterable[str] = (),
                series: Iterable[tuple[int, float, Mapping[str, float]]] = (),
-               defects: Iterable[str] = ()) -> Path:
+               defects: Iterable[str] = (),
+               overrides: Mapping[str, tuple[str, Any]] | None = None) -> Path:
     """Write one case file and return its path. ``shapes`` declares every variable's extents in
-    declared index order (`()` for a scalar)."""
+    declared index order (`()` for a scalar). ``overrides`` defines one variable, by name, with
+    another `(type, fill value)` than the layout's — a defect of that variable alone."""
     import netCDF4
 
     defects = set(defects)
@@ -80,6 +83,7 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
     series = list(series)
     nan = float("nan")
     fill = 0.0 if "fill_not_nan" in defects else nan
+    overrides = dict(overrides or {})
 
     ds = netCDF4.Dataset(str(path), "w", format="NETCDF4")
     try:
@@ -87,6 +91,11 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
             ds.set_fill_off()
 
         def dvar(name: str, dims: tuple[str, ...], kind: str = "f8") -> Any:
+            if name in overrides:
+                other, other_fill = overrides.pop(name)
+                endian = "big" if other.startswith(">") else "native"
+                return ds.createVariable(name, np.dtype(other), dims, fill_value=other_fill,
+                                         endian=endian)
             if "no_fill" in defects:
                 return ds.createVariable(name, kind, dims)
             role_t = name.endswith(f"{SEP}t")
@@ -192,7 +201,11 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
         ds.createDimension(f"series{SEP}n", None)
         s_dim = (f"series{SEP}n",)
         for name in series_names:
-            dvar(f"series{SEP}{name}", s_dim, "f4" if "series_float32" in defects else "f8")
+            dims = s_dim
+            if "series_column_own_dim" in defects:
+                dims = (f"series{SEP}{name}{SEP}own",)
+                ds.createDimension(dims[0], None)
+            dvar(f"series{SEP}{name}", dims, "f4" if "series_float32" in defects else "f8")
         s_step = svar(f"series{SEP}step", s_dim, "series_step_own_dim")
         s_t = dvar(f"series{SEP}t", s_dim)
         for i, (step, t, row) in enumerate(series):
@@ -212,6 +225,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
             elif "complete_unset" not in defects:
                 ds.sync()
                 done[...] = 1
+        if overrides:
+            raise ValueError(f"no variable {sorted(overrides)} to override")
     finally:
         ds.close()
     return path

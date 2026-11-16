@@ -174,6 +174,32 @@ class ReadTests(_Tmp):
             ds.variables["final__s"].missing_value = 2.5
         self.assertEqual(NC.read_record(self.sdir, cs.FINAL, "mv")["s"], 2.5)
 
+    def test_a_big_endian_double_reads_as_written(self) -> None:
+        # Kills: a byte order judged as a type (a conforming big-endian `double` refused).
+        import netCDF4
+        write = write_case(self.sdir / "be2.nc", shapes={"h": (2,)}, final={"h": [1.5, 2.5]},
+                           overrides={"final__h": (">f8", float("nan"))})
+        with netCDF4.Dataset(str(write)) as ds:
+            self.assertEqual(ds.variables["final__h"].dtype.byteorder, ">")
+        self.assertEqual(NC.read_record(self.sdir, cs.FINAL, "be2")["h"], [1.5, 2.5])
+
+    def test_a_scale_attribute_does_not_change_a_value(self) -> None:
+        # Kills: automatic scaling left on (`set_auto_mask` alone): the value would read
+        # multiplied by the attribute.
+        import netCDF4
+        path = _good_case(self.sdir, "sc")
+        with netCDF4.Dataset(str(path), "a") as ds:
+            ds.variables["final__s"].scale_factor = 10.0
+        self.assertEqual(NC.read_record(self.sdir, cs.FINAL, "sc")["s"], 2.5)
+
+    def test_a_name_with_another_separator_is_no_variable_of_the_group(self) -> None:
+        # Kills: `values_of` taking `final__a__b` as a variable `a__b` of the final record.
+        import netCDF4
+        path = _good_case(self.sdir, "sep")
+        with netCDF4.Dataset(str(path), "a") as ds:
+            ds.createVariable("final__a__b", "f8", (), fill_value=float("nan"))[...] = 1.0
+        self.assertNotIn("a__b", NC.read_record(self.sdir, cs.FINAL, "sep"))
+
     def test_an_unwritten_cell_reads_non_finite(self) -> None:
         # Kills: a fill value that reads as a number (the finiteness check is what sees it).
         write_case(self.sdir / "u.nc", shapes={"h": (3, 2)}, final={"h": H0},
@@ -239,6 +265,8 @@ class RefusalTests(_Tmp):
         "series_step_own_dim": "variable series__step has dimensions ('series__step__own',), "
                                "the layout ('series__n',)",
         "series_float32": "variable series__m is of type float32, the layout float64",
+        "series_column_own_dim": "variable series__m has dimensions ('series__m__own',), the "
+                                 "layout ('series__n',)",
         "complete_double": "variable complete is of type float64, the layout int32",
         "count_short": "history__h__count is 2, and its record dimension history__h__n has "
                        "length 3",
@@ -280,6 +308,34 @@ class RefusalTests(_Tmp):
             self.assertTrue(math.isnan(ds.variables["final__h"]._FillValue))
         with self.assertRaisesRegex(CaptureError, "fills unwritten cells with None"):
             NC.read_record(self.sdir, cs.FINAL, "nf")
+
+    def test_each_groups_variables_are_judged_one_at_a_time(self) -> None:
+        # Kills: a type, fill or dimension check that reaches only the first variable defined
+        # (`initial__*`): every other group's variable carries the defect alone here.
+        cases = {
+            "final__h": ("f8", 0.0), "final__s": ("f4", None), "final__t": ("f8", 0.0),
+            "history__h": ("f8", 0.0), "history__h__t": ("f8", 0.0),
+            "history__s": ("f4", None), "restart_point__h": ("f4", None),
+            "restart_point__s": ("f8", 0.0), "restart_point__t": ("f8", 0.0),
+            "series__m": ("f8", 0.0), "series__t": ("f4", None)}
+        for name, (kind, fill) in sorted(cases.items()):
+            with self.subTest(variable=name):
+                path = _good_case(self.sdir, "one", overrides={name: (kind, fill)})
+                with self.assertRaises(CaptureError) as ctx:
+                    NC.read_record(self.sdir, cs.FINAL, "one")
+                self.assertIn(f"variable {name} ", str(ctx.exception))
+                path.unlink()
+
+    def test_a_malformed_marker_is_refused_not_raised(self) -> None:
+        # Kills: decoding `complete` outside the refusal (a string marker raised
+        # AttributeError out of `read_record` and `has_record`).
+        path = _good_case(self.sdir, "sm", defects=["no_complete"])
+        import netCDF4
+        with netCDF4.Dataset(str(path), "a") as ds:
+            ds.createVariable("complete", str, ())[0] = "1"
+        with self.assertRaisesRegex(CaptureError, "complete cannot be read"):
+            NC.read_record(self.sdir, cs.FINAL, "sm")
+        self.assertTrue(NC.has_record(self.sdir, cs.INITIAL, "sm"))
 
     def test_the_defect_list_is_every_seeded_file_defect(self) -> None:
         from tools.tests.netcdf_capture_fixture import DEFECTS
