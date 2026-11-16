@@ -1486,6 +1486,10 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(names("0 ** final.h + final.h / final.h"),
                          ["final.h", "final.h", "final.h"])
         self.assertEqual(names("final.h * 0.0001"), ["final.h"])
+        # one argument of a call folded, the others as they were, in each position
+        self.assertEqual(names("max(1, final.h * 0)"), [])
+        self.assertEqual(names("max(final.u, final.h - final.h)"), ["final.u"])
+        self.assertEqual(names("max(final.h * 0, final.u)"), ["final.u"])
         tree = pe.parse_expr("final.h * 0")
         pe.effective_names(tree)
         self.assertEqual(names("final.h * 0"), [])

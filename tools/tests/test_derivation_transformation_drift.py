@@ -2025,7 +2025,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # parsed expression (`_pruned`, a non-mutating rewrite, replaces `_ConstantByFormPruner`).
     # Its result was compared with the shipped one over every expression of the tree's IRs and
     # specs and a generated family (31281 expressions, 13769 of them changed by the pruning):
-    # equal everywhere, the input tree unmodified. The digest main 68692c3c shipped is kept.
+    # equal on each, the input tree unmodified. Outside that set one input differs: an attribute
+    # chain of 250 to 980 components made main's deep copy raise `RecursionError` out of the
+    # gate, and is now read and refused as an unresolved input (a round-3 reviewer's
+    # measurement; no such chain is in the tree). The digest main 68692c3c shipped is kept.
     "execute-20@68692c3c": "519eb9f0d784cb08762164dc9150520e21357315dcfab38085ae4f1e9a1c7610",
     "execute-20": "c461a0027e23fa96f0751a98113d86979099a3d80f6a59a5630e72f249bf92aa",
 }
@@ -2245,7 +2248,10 @@ PINNED_VERDICT: dict[str, str] = {
     # parsed expression (`_pruned`, a non-mutating rewrite, replaces `_ConstantByFormPruner`).
     # Its result was compared with the shipped one over every expression of the tree's IRs and
     # specs and a generated family (31281 expressions, 13769 of them changed by the pruning):
-    # equal everywhere, the input tree unmodified. The digest main 68692c3c shipped is kept.
+    # equal on each, the input tree unmodified. Outside that set one input differs: an attribute
+    # chain of 250 to 980 components made main's deep copy raise `RecursionError` out of the
+    # gate, and is now read and refused as an unresolved input (a round-3 reviewer's
+    # measurement; no such chain is in the tree). The digest main 68692c3c shipped is kept.
     "verdict-18@68692c3c": "2c1862be224006f9ae7e99ba9c63d9ff20d749d3a5480b46dfbab9483d93b32a",
     "verdict-18": "5693e1d0f751d9d73280632f0b82fcda9736091437e23c6d96df31e02962eaa3",
 }
