@@ -429,7 +429,7 @@ with the block with the eight-argument writer,
 followed by `__block_size` (the threads per block the host imposes on the program's kernels,
 issue #512, which the CUDA C++ runner calls). `harness_fortran_cpu_netcdf@0.1.0` §5.1 is the
 single-process block without `__real_token` (issue #644): a format that stores a real as its IEEE
-value spells no token, and the host-rendered runner calls none.
+value spells no token, and neither the host-rendered runner nor the harness's own self-test calls one.
 The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified

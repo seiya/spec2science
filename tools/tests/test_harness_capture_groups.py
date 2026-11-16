@@ -387,6 +387,14 @@ NETCDF_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
         "    call nc(nf90_put_var(cap_ncid, ids(2), [t], start=[n], count=[1]), 'time')",
         "    call nc(nf90_put_var(cap_ncid, ids(2), [0.0_dp], start=[n], count=[1]), 'time')",
         {POINTS}),
+    # a record dimension sized by the capacity the case was opened with, not unlimited: the
+    # case that commits fewer rows than its capacity holds a count short of the dimension
+    "record_dimension_sized_by_capacity": (
+        "    call nc(nf90_def_dim(cap_ncid, 'series__n', nf90_unlimited, dim_s), 'dimension')",
+        "    call nc(nf90_def_dim(cap_ncid, 'series__n', series_capacity, dim_s), 'dimension')",
+        {UNREAD}),
+    # the record counters outlive their case: the next case's rows land after fill rows
+    "record_counters_carried": ("    cap_n_rp = 0\n    cap_n_s = 0\n", "", {UNREAD}),
     # the final record's count never set: the store finds no final record
     "final_count_unset": (
         "      call put_int(cap_single(g, 3), 1)\n",
@@ -435,8 +443,19 @@ def _fortran_cpu_netcdf() -> _Harness:
     the module directory of the library it declares and linked against it, run with the
     library's directory first on the loader path (`netcdf_harness`)."""
     from tools.tests import netcdf_harness
+    h = netcdf_harness.HARNESS
     selftest = (DATA / "groups_selftest.f90").read_text(encoding="utf-8").replace(
-        "harness_fortran_cpu", netcdf_harness.HARNESS)
+        "harness_fortran_cpu", h)
+    # this harness's §3: every other case opens with capacities above what it commits and
+    # commits one series row (so a record count carried across cases, or a record dimension
+    # sized by a capacity, leaves a file the store refuses)
+    opened = f"    call {h}__capture_open(case_id, variables(0, 0), 0, series_names, 0)\n"
+    assert selftest.count(opened) == 1
+    selftest = selftest.replace(opened, (
+        f"    call {h}__capture_open(case_id, variables(2, 2), 2, series_names, 2)\n"
+        f"    call {h}__capture_real('series', 'g_a', 0.0_dp)\n"
+        f"    call {h}__capture_real('series', series_names(2), 0.0_dp)\n"
+        f"    call {h}__capture_commit('series', 1, 0.0_dp)\n"))
     return _Harness(netcdf_harness.HARNESS, netcdf_harness.MODEL, "groups_selftest.f90",
                     ["gfortran", "-O0", "-fcheck=bounds", *netcdf_harness.compile_flags()],
                     NETCDF_DEFECTS, ("", ""), _selftest_defects(netcdf_harness.HARNESS),

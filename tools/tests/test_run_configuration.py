@@ -101,7 +101,8 @@ class NetcdfRunConfigurationTest(unittest.TestCase):
     loop node's driver built over the `netcdf` harness's hand model, certified for
     `fortran_cpu_netcdf`. The run takes the library directory its Build recorded ahead of the
     loader path (without it, a program using the binding loads another build of the library
-    on the development host and exits 127), its record reads the kernel's outcome out of the case file, and that file
+    on the development host and exits 127; on a host with one build only, CI's, the row passes
+    without the overlay too, so it kills that mutant only where another build comes first), its record reads the kernel's outcome out of the case file, and that file
     is a restart source at the step it records. A continuation that runs and passes the start
     check is `test_driver_render.NetcdfHarnessEndToEndTest`'s second pass."""
 

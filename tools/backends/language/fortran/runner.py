@@ -1447,8 +1447,9 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
 # --- harness interface signature pin (fail-closed, run before rendering) ------
 #
 # The harnesses this renderer targets are `_HARNESS_PINS`' keys: harness_fortran_cpu (the R1
-# (fortran, cpu) plumbing) and harness_fortran_cpu_mpi (the same plumbing under its own names,
-# plus the distributed-state operations, issue #316). The template is written against their
+# (fortran, cpu) plumbing), harness_fortran_cpu_mpi (the same plumbing under its own names,
+# plus the distributed-state operations, issue #316) and harness_fortran_cpu_netcdf (the
+# single-process plumbing under its own names without `__real_token`, issue #644). The template is written against their
 # §5.1 signatures, embedded below verbatim. `assert_harness_pin` checks that the *certified*
 # harness the consumer will build against still publishes those exact signatures — in both its
 # IR (`public_api.signatures`) and its generated model source — so a harness recert

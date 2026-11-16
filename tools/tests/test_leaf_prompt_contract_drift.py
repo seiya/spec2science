@@ -1192,7 +1192,11 @@ PINNED: dict[str, str] = {
     # leaf-102 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "leaf-102@ed14bd25": "0c82f01b3d93606f93982fa8206ed7b8e64ca397ffed7b53ccf99c4e682cc63d",
-    "leaf-102": "1e1ed2d2a0ba7a8edb9ff0eeb10f20bb3ba40b76289e29de7b9e8fe6721d672c",
+    # leaf-102 re-pinned in place by issue #644 P5b: the `netcdf` store refuses a series step
+    # out of order, and its layout says so; no target that a node is certified for selects
+    # netcdf. The digest `leaf-102` shipped with at 66d77304:
+    "leaf-102@66d77304": "1e1ed2d2a0ba7a8edb9ff0eeb10f20bb3ba40b76289e29de7b9e8fe6721d672c",
+    "leaf-102": "a506d49050c2880ba73eb44ea415837daa9dcb1a4eed3ab7cb6a4da7d3e41bbb",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1270,7 +1274,11 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-13 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "generate-verify-13@ed14bd25": "f9b04309fb8caabf2961d946a9ed4525ee9a983563212ca6d42ccaf2a1f3c1f6",
-    "generate-verify-13": "41866eabfa416adfeb181089a9ae30aee87d7f24a1fe2d33c8cc2310a377a7b1",
+    # generate-verify-13 re-pinned in place by issue #644 P5b: the `netcdf` store refuses a series step
+    # out of order, and its layout says so; no target that a node is certified for selects
+    # netcdf. The digest `generate-verify-13` shipped with at 66d77304:
+    "generate-verify-13@66d77304": "41866eabfa416adfeb181089a9ae30aee87d7f24a1fe2d33c8cc2310a377a7b1",
+    "generate-verify-13": "51f9cdc5d943ad3d5b0838b8659c962891f2e8341513cf0cd730238c6baa2f23",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",

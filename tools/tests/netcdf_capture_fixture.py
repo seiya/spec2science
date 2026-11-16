@@ -28,6 +28,7 @@ DEFECTS = frozenset({
     "final_count_two",       # final__count is 2
     "history_steps_repeat",  # a history variable's step column repeats a step
     "rp_steps_repeat",       # the restart points' step column repeats a step
+    "series_steps_repeat",   # the series' step column repeats a step
     "rp_count_short",        # restart_point__count one less than its record dimension
     "series_count_short",    # series__count one less than its record dimension
     "history_t_disagree",    # two variables' history t differ at one step
@@ -213,6 +214,8 @@ def write_case(path: Path, *, shapes: Mapping[str, tuple[int, ...]],
                 ds.variables[f"series{SEP}{name}"][i] = value
             s_step[i] = step
             s_t[i] = t
+        if "series_steps_repeat" in defects and len(series) >= 2:
+            s_step[len(series) - 1] = series[-2][0]
         ivar(f"series{SEP}count")[...] = len(series) - (
             1 if "series_count_short" in defects and series else 0)
 

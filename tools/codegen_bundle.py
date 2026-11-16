@@ -443,8 +443,8 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # `capture_format_<id>@1` (issue #644) names the output format the harness's capture
 # operations write, `<id>` a member of the `output_format` axis. The `netcdf` harness's
 # `sync_single_case@1` block is the single-process block without `__real_token` (18
-# operations): a format that stores a real as its IEEE value spells no token, and the
-# host-rendered runner, the block's one consumer, calls none. The launch gate holds it equal
+# operations): a format that stores a real as its IEEE value spells no token, and neither
+# the host-rendered runner nor the harness's own self-test calls one. The launch gate holds it equal
 # to the target's `output.format` (`target_profile._capture_format_violations`); no bundle
 # requires it, since the target decides the format and a bundle writes no capture.
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {

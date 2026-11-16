@@ -285,6 +285,7 @@ class RefusalTests(_Tmp):
         "final_count_two": "final__count is 2, not 0 or 1",
         "history_steps_repeat": "history__h__step [0, 2, 2] is not strictly ascending",
         "rp_steps_repeat": "restart_point__step [2, 2] is not strictly ascending",
+        "series_steps_repeat": "series__step [1, 1] is not strictly ascending",
         "rp_count_short": "restart_point__count is 1, and its record dimension "
                           "restart_point__n has length 2",
         "series_count_short": "series__count is 1, and its record dimension series__n has "
