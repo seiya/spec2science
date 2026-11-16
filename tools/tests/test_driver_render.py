@@ -666,7 +666,7 @@ class _DriverBehaviour:
                           .items() if k != "case_id"},
                          {k: v for k, v in run.snapshot("m0").items() if k != "case_id"})
 
-    def test_the_capacities_handed_to_capture_open_are_the_records_written(self) -> None:
+    def test_the_capacities_handed_to_capture_open_bound_the_records_written(self) -> None:
         """What the driver hands `capture_open` (each variable's history capacity, the restart
         point capacity, the series capacity) is the most the case may commit, and on a case
         that runs to its end equals what it commits, read off the captures (a case the kernel

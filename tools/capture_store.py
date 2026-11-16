@@ -53,7 +53,8 @@ SNAPSHOT_SCHEMA_FILENAME = "snapshot_schema.json"
 
 #: The groups a record belongs to. `INITIAL` and `FINAL` hold one record of a case's state
 #: each, `HISTORY` one per sampled step (the variables due at that step), `RESTART_POINT` one
-#: per restart point (the restart variables), `SERIES` the case's per-step series. The words are the group names of the harness's capture interface.
+#: per restart point (the restart variables), `SERIES` the case's per-step series. The words
+#: are the group names of the harness's capture interface.
 INITIAL = "initial"
 FINAL = "final"
 HISTORY = "history"

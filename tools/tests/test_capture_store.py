@@ -495,7 +495,7 @@ class CopyAndMoveTests(unittest.TestCase):
 
 
 class LocateTests(unittest.TestCase):
-    def test_a_final_record_and_a_sample_are_located(self) -> None:
+    def test_a_final_record_and_a_restart_point_are_located_and_a_sample_is_not(self) -> None:
         # Issue #644 P4b: a run restarts from a restart point (the records that hold every
         # restart variable) or its final record; a history sample holds only the variables due
         # at its step, so it is no longer located. Kills: `locate` left on `history/`.
@@ -506,8 +506,8 @@ class LocateTests(unittest.TestCase):
         self.assertIsNone(STORE.locate(sdir / "history" / "c__41.json", "c"))
 
     def test_another_cases_file_or_another_place_is_not(self) -> None:
-        # Kills: restarting from another case's capture, or from a sample-named file outside
-        # `history/`. (An `initial/<C>` file is named like a final record; the caller holds the
+        # Kills: restarting from another case's capture, or from a restart-point-named file
+        # outside `restart_point/`. (An `initial/<C>` file is named like a final record; the caller holds the
         # located directory to `<run>/raw/state_snapshots`, `run_configuration._restart_source`.)
         sdir = Path("/run/raw/state_snapshots")
         for path in (sdir / "d.json", sdir / "history" / "d__41.json", sdir / "c__41.json",
@@ -667,7 +667,7 @@ class CaptureStoreReachTests(unittest.TestCase):
         # a capture named like a final record that is not in a run's capture directory
         with self.assertRaisesRegex(rc.ConfigurationRefused, "not under <run>/raw/state_snap"):
             rc._restart_source(cs.snapshot_dir(own.root) / "initial" / "a.json", "a", "own")
-        with self.assertRaisesRegex(rc.ConfigurationRefused, "not a capture of 'b'"):
+        with self.assertRaisesRegex(rc.ConfigurationRefused, "no restart source of 'b'"):
             rc._restart_source(final, "b", "own")
 
 

@@ -1713,6 +1713,11 @@ class SchemaGateTest(unittest.TestCase):
 
 
 class StaticRankTest(unittest.TestCase):
+    """`expr_rank` is the Compile-time mirror of `_eval_node` / `_call` / `_shape_compatible`
+    over RANKS: its table is pinned by set identity against `FUNCTIONS`, and its answers by
+    parity with evaluation — the rank it infers is `np.ndim` of the value, and a refusal it
+    raises is the evaluator's own message."""
+
     def test_a_restart_point_variable_no_record_holds_is_named(self) -> None:
         """A `restart_point.<v>` the records do not hold is a structural error of the
         predicate naming it, worded for its root. Kills: `restart_point` missing from
@@ -1721,11 +1726,6 @@ class StaticRankTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                     r"restart_point\.v: not in the restart points in case 'a'"):
             pe.evaluate(pe.parse_expr("max(restart_point.v)"), env)
-
-    """`expr_rank` is the Compile-time mirror of `_eval_node` / `_call` / `_shape_compatible`
-    over RANKS: its table is pinned by set identity against `FUNCTIONS`, and its answers by
-    parity with evaluation — the rank it infers is `np.ndim` of the value, and a refusal it
-    raises is the evaluator's own message."""
 
     def _envs(self) -> tuple[pe.RankEnv, pe.CaseEnv]:
         h = np.arange(1.0, 1.0 + NX * NY).reshape(NX, NY) / (NX * NY)
@@ -6477,7 +6477,7 @@ class ContinuationGateTest(unittest.TestCase):
         self.assertNotEqual(list(cont["inputs"]), list(ir["case"]["test_case_set"][0]["inputs"]))
         self.assertEqual(self._p(ir), [])
 
-    def test_the_restart_point_is_a_sample_before_the_end(self) -> None:
+    def test_the_restart_point_is_a_record_before_the_end(self) -> None:
         # issue #644 P4b: the restart point is one of the base's restart points (its
         # `restart_points.every`), no longer a history sample
         for step, every, want in ((3, 2, "no multiple of its base's restart_points.every"),
@@ -6585,7 +6585,7 @@ class ContinuationGateTest(unittest.TestCase):
         path.write_text(json.dumps({k: v for k, v in doc.items() if v is not None}))
         return path
 
-    def test_the_writer_writes_the_base_s_payload_and_the_sample(self) -> None:
+    def test_the_writer_writes_the_base_s_payload_and_the_restart_point(self) -> None:
         ir = _continuation_ir()
         with tempfile.TemporaryDirectory() as tmp:
             self._sample(Path(tmp))

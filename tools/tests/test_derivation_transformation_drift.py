@@ -953,7 +953,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-36 (issue #644 P4a): `phase_01_compile.md` names the capture groups where it named capture files.
     "compile-docs-36": "b21bb5f7d526e5e9a23260e5e11f7beb092b6888d99df38e7709871f01568d2d",
     # compile-docs-37 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "compile-docs-37": "f61efbcc60b6edd561bcf73133499cc63bcce737944425eceace9b2631462d69",
+    "compile-docs-37": "700bc87fbd7537c9efea8c65d19da08b2314f9a71d4bd7072655b3b8ab6dc74d",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1425,7 +1425,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-21 (issue #644 P4a): the driver renderers write through the harness's capture interface (no file name, no token), and every node's run gets the capture store's directories.
     "render-21": "a9f04a6520758140ac05f95e783e1454f30c7c3b07b6c6de7b37db579eaf20d4",
     # render-22 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "render-22": "6e9bb2b6eeb7e1be445b680aea8f0f436c99ab219ddb381dbe2c7bbec61decb5",
+    "render-22": "8af4b980ada187e30a4df39e27f8a19160da92108cb07fd24371fb0a60d324d2",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -2036,7 +2036,7 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-20@68692c3c": "519eb9f0d784cb08762164dc9150520e21357315dcfab38085ae4f1e9a1c7610",
     "execute-20": "c461a0027e23fa96f0751a98113d86979099a3d80f6a59a5630e72f249bf92aa",
     # execute-21 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "execute-21": "a5ab040c1ea9d34f0a9b6c636554c7481f05be07c128ba1b56e4a159cf0d924a",
+    "execute-21": "ba611d7a69b8a38610f0923956160c63aea182c2072247feb108da90e0162bc3",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2261,7 +2261,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-18@68692c3c": "2c1862be224006f9ae7e99ba9c63d9ff20d749d3a5480b46dfbab9483d93b32a",
     "verdict-18": "5693e1d0f751d9d73280632f0b82fcda9736091437e23c6d96df31e02962eaa3",
     # verdict-19 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
-    "verdict-19": "f78ab9e31dc4d0ead6162716ec436c79acb453d09b8386af212deca21391ce88",
+    "verdict-19": "ecb0e2db6e8e3d1b3aa280205e9058f89f49ec2f6315b1d5c305e1e2dce58180",
 }
 
 

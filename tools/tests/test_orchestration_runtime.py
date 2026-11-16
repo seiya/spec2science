@@ -22258,7 +22258,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `drive.restart_points`, the `restart_points` evidence entry, the grammar 7 names
         # (`history.<v>.t` / `.step`, `restart_point.*`) with the one-stride rule, gate (m)'s
         # identity with the `history:` and `restart_points:` lines, and the reserved names.
-        # Measured 117477 with `wc -c` (117544 after review round 1, 117567 after round 2).
+        # Measured 117477 with `wc -c` (117544 after review round 1, 117567 after round 2, 117587 after round 3).
         "docs/workflow/phases/phase_01_compile.md": 117700,
     }
 

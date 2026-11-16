@@ -397,7 +397,7 @@ class RunConfigurationTest(unittest.TestCase):
         # under `history/` is refused by the store's placement
         sample = self.tmp / "full" / "raw" / "state_snapshots" / "history" / "m0__2.json"
         self.assertTrue(sample.is_file())
-        self.assertIn("not a capture of 'm0' (expected a restart point",
+        self.assertIn("no restart source of 'm0' (expected a restart point",
                       self.refused({"base_case": "m0"}, "x0", restart_from=sample))
         # another configuration than the source's
         why = self.refused({"base_case": "m0", "inputs": {"n_step": 8, "t_end": 3.0}},
@@ -409,7 +409,7 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertIn("not below n_step 4", str(ctx.exception))
         # a capture of another case, and one not laid out by a run
         shutil.copy(hist / "m0__2.json", hist / "m1__2.json")
-        self.assertIn("not a capture of 'm0'",
+        self.assertIn("no restart source of 'm0'",
                       self.refused({"base_case": "m0"}, "x3", restart_from=hist / "m1__2.json"))
         loose = self.tmp / "m0.json"
         shutil.copy(hist / "m0__2.json", loose)

@@ -70,7 +70,7 @@ What it does, in order (each refusal exits 2 before anything runs):
    status, the final capture's step and the kernel's outcome, the start check, and the
    statement that the run certifies nothing. A run that did not reach its end (a non-zero
    exit, a timeout, a signal) also records `kept`: the steps of the restart points it
-   committed and what its series holds up to the last of them (`rows`, `last_step`), where
+   committed that read and the rows of its series that read in order (`rows`, `last_step`), where
    the target's output format keeps records of an unfinished case. stdout and stderr go to `<out>/stdout.txt` and
    `<out>/stderr.txt`.
 
@@ -429,8 +429,10 @@ def _restart_source(capture: Path, base: str, output_format: str) -> RestartSour
     located = store.locate(capture, base)
     if located is None:
         raise ConfigurationRefused(
-            f"--restart-from {capture}: not a capture of {base!r} (expected a restart point "
-            f"or the final capture of that case under {snaps_label})")
+            f"--restart-from {capture}: no restart source of {base!r} (expected a restart point "
+            f"or the final capture of that case under {snaps_label}; a history sample holds "
+            "only the variables due at its step, and a run from before restart points were "
+            "their own records holds none)")
     snaps, group, step = located
     parts = capture_store.SNAPSHOT_DIR_PARTS
     if tuple(snaps.parts[-len(parts):]) != parts:
@@ -692,8 +694,8 @@ def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any] | N
     """What a run that did not reach its end kept, as the target's capture store reads it: the
     steps of the restart points that read (one a kill cut short is no restart point:
     `--restart-from` refuses it) and the rows of its series up to where they stop being
-    readable in order; None when the capture directory cannot be read at all (its mode
-    forbids it), so that the run record is still written."""
+    readable in order; None when the capture directory cannot be read at all (an `OSError`
+    from it), so that the run record is still written."""
     store = capture_store.store(output_format)
     snaps = capture_store.snapshot_dir(out)
     try:
