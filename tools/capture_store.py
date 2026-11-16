@@ -88,14 +88,16 @@ def store(output_format: str) -> Any:
 
 def run_dirs(output_format: str) -> tuple[tuple[str, ...], ...]:
     """The directories created under a run's working directory before the binary runs, each as
-    its path parts: the store's own directories below the capture directory (`run_dirs()`),
-    for every node. Every runner writes its captures through the harness's capture
+    its path parts: the store's own directories below the capture directory (`run_dirs()`;
+    `""` is the capture directory itself, given without an empty part, which a remote job's
+    directory list refuses), for every node. Every runner writes its captures through the harness's capture
     interface, and the harness opens each file relatively and creates no directory, a harness
     self-test's included (issue #644 P4; before it only the host-rendered runner got them,
     issue #368, when a self-test wrote its own files and could list the directory strictly).
     One answer, read by `Validate.execute`, its remote job, a `workshop leaf`'s wrapper `run`,
     the build control file's `test` recipe and `tools/run_configuration.py`."""
-    return tuple((*SNAPSHOT_DIR_PARTS, sub) for sub in store(output_format).run_dirs())
+    return tuple((*SNAPSHOT_DIR_PARTS, sub) if sub else SNAPSHOT_DIR_PARTS
+                 for sub in store(output_format).run_dirs())
 
 
 def capture_paths(output_format: str, run_dir: Path) -> list[Path]:

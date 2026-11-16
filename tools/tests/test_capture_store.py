@@ -35,7 +35,7 @@ class SeamTests(unittest.TestCase):
     def test_an_undeclared_format_has_no_store(self) -> None:
         # Kills: a fallback to json for a format nobody declared.
         with self.assertRaises(registry.UnsupportedBackend):
-            cs.store("netcdf")
+            cs.store("hdf5")
 
     def test_run_dirs_are_the_stores_directories_for_every_node(self) -> None:
         # Kills: dropping a group directory (`restart_point/` among them), or reordering them
@@ -45,6 +45,16 @@ class SeamTests(unittest.TestCase):
             cs.run_dirs("json"),
             (("raw", "state_snapshots", "initial"), ("raw", "state_snapshots", "history"),
              ("raw", "state_snapshots", "restart_point"), ("raw", "state_snapshots", "series")))
+        # Kills: a netcdf run whose capture directory nobody creates (its case files sit in
+        # the capture directory itself, and the harness creates no directory).
+        # A remote job's directory list refuses an empty element (`run/raw/state_snapshots/`).
+        from tools.remote_execution import _relative
+        self.assertEqual(cs.run_dirs("netcdf"), (("raw", "state_snapshots"),))
+        with tempfile.TemporaryDirectory() as tmp:
+            for parts in cs.run_dirs("netcdf"):
+                Path(tmp).joinpath(*parts).mkdir(parents=True)
+                _relative("/".join(("run", *parts)), "directory")
+            self.assertTrue(cs.snapshot_dir(Path(tmp)).is_dir())
 
     def test_capture_paths_drops_the_snapshot_schema_at_the_top_only(self) -> None:
         # Kills: hashing the host-written schema into a comparand's evidence; and dropping a
@@ -100,11 +110,14 @@ class StartupModuleTests(unittest.TestCase):
             with self.subTest(language=language):
                 reader = registry.capability_module(
                     "language", language, "source_reading").REQUIRED_PYTHON_MODULES
-                self.assertEqual(required_python_modules({"language": language}), tuple(reader))
+                netcdf = cs.store("netcdf").REQUIRED_PYTHON_MODULES
+                self.assertEqual(netcdf, (("netCDF4", "netCDF4"),))
+                self.assertEqual(required_python_modules({"language": language}),
+                                 (*reader, *netcdf))
                 with mock.patch.object(STORE, "REQUIRED_PYTHON_MODULES",
                                        (("store_mod", "store-dist"),)):
                     self.assertEqual(required_python_modules({"language": language}),
-                                     (*reader, ("store_mod", "store-dist")))
+                                     (*reader, ("store_mod", "store-dist"), *netcdf))
 
 
 class LayoutTests(unittest.TestCase):
@@ -648,6 +661,7 @@ class CaptureStoreReachTests(unittest.TestCase):
             stub, cs.snapshot_dir(own.root), ["a", "b", "c"], ["state_snapshots"],
             initial_required=True)
         self.assertIn("missing=['c.json', 'initial/c.json']", gap)
+        self.assertNotIn("or commit no record", gap)
         self.assertEqual(wc.Conductor._run_raw_dirs(stub, None), cs.run_dirs("theirs"))
         self.assertEqual({n for n, _fn, _a in self.log}, {"theirs"})
         self.assertEqual({fn for _n, fn, _a in self.log}

@@ -38,10 +38,12 @@ pip install -r requirements.txt
 | `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` (measured at 0.26.0) |
 | `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (measured at, and written against, 0.6.0) |
 | `numpy` | the array arithmetic behind `tools/primary_evidence.py`: `Validate.execute` values every `io_contract.predicates` expression over the captured state with it (Z6, [issue #255](https://github.com/seiya/spec2science/issues/255); measured at 1.26.4) |
+| `netCDF4` | the reader of the `netcdf` output format's capture files (`tools/backends/output_format/netcdf/store.py`, [issue #644](https://github.com/seiya/spec2science/issues/644)); required on every host, since any run may read another target's captures (measured at 1.7.3) |
 
 **Install from the file, not from the names.** The two `tree-sitter` versions in the table are a
 measured property of this repository, not a free choice: they are `MEASURED_PACKAGE_VERSIONS` in
-the module the table names above, which is the single definition this table, `requirements.txt`
+the module the table names above (the `netCDF4` version likewise in the `netcdf` capture store;
+no check compares the installed version with it at startup), which is the single definition this table, `requirements.txt`
 and that module's own grammar refusal are all checked against, and a bump is accepted only after
 re-running `tools/backends/language/fortran/structure_differential.py` (both halves). Typing the
 names instead resolves whatever is newest, and the `Generate.gate` structure read that follows has
@@ -59,8 +61,8 @@ launch instead. The check has two halves: `numpy` is refused for every run (`too
 sources through it — each language backend declares its own (`source_reading`
 `REQUIRED_PYTHON_MODULES`), and the check runs once the target is resolved, so a run for a language
 that declares none requires neither. The modules an output format's capture store declares
-(`capture_store` `REQUIRED_PYTHON_MODULES`; none for `json`) are checked with it, every declared
-format's for every target.
+(`capture_store` `REQUIRED_PYTHON_MODULES`; none for `json`, `netCDF4` for `netcdf`) are checked
+with it, every declared format's for every target.
 
 (`PyYAML` is listed here because a run needs it, but it is not a member of
 `REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`
@@ -766,8 +768,9 @@ Operations rules:
 - A run is `ok` only when the binary exits 0 and its final capture holds, true, every state the drive binds an operation's result to in the case. A kernel that refuses the configuration exits 0 and stops before `n_step`; the record then says `failed`, with the step it stopped at.
 - No time bound applies unless `--timeout-sec` is given. On the bound, on Ctrl-C, and on `kill` (SIGTERM) or a closed terminal (SIGHUP) to the tool, the binary's process group is killed and the record says `interrupted` or `failed`. `kill -9` to the tool leaves the binary running and the record at `running` for good: kill the binary's process group (`kill -KILL -<binary_pgid>`, the group id the record carries) before continuing the run. A continuation from a run whose record says `running` is refused while that group is alive.
 - `--restart-from` continues an earlier run of this tool, under the same node, target, IR, binary and configuration, from a restart point of it (`docs/GLOSSARY.md` §4; the path above is the `json` output format's); the earlier run's case file must be this run's evaluated one. Every later capture equals the uninterrupted run's; the host checks after the run that the continuation started at the restart point's step, time and state. A run is continued only to its own `n_step`: a finished run is not extended, a run is not stopped on purpose at a chosen step, and a continuation with another configuration is refused. On the `json` output format the layout has the harness write the series rows before each restart point, so a killed segment keeps its series up to its last restart point where the harness does so (shown on the hand-written harness models; no harness suite judges it yet, `TODO.md`), and the record's `kept` states the restart points that read and the series rows that read in order; the continuation's series covers its own steps.
-- A run can be continued only from a restart point, so a base case whose `restart_points.every` is `0` commits none: set it in the configuration before a long run, since a continuation admits no other configuration. A restart point cut short by the kill is refused as unreadable; continue from the one before it.
-- `failed` (a non-zero exit, a timeout, a kernel that stopped short, a failed start check) and `interrupted` keep the captures written so far; a timed-out or interrupted run is continued like a killed one. `not_started` means the binary could not be executed (the record's `error`); `--out` is then not empty, so a retry names a new directory.
+- On the `netcdf` output format a case is one file, which counts only once the binary ended the case's output: a killed segment keeps nothing, its restart points and series included, so it cannot be continued (`TODO.md`). `--restart-from` names that file and reads its final record; the only run that ends its output short of `n_step` is one whose kernel refused the configuration, which a continuation, under the same configuration, refuses again. A restart point inside the file cannot be named.
+- A run can be continued only from a restart point, so a base case whose `restart_points.every` is `0` commits none: set it in the configuration before a long run, since a continuation admits no other configuration. On `json`, a restart point cut short by the kill is refused as unreadable; continue from the one before it.
+- `failed` (a non-zero exit, a timeout, a kernel that stopped short, a failed start check) and `interrupted` keep the captures written so far; a timed-out or interrupted run is continued like a killed one (on `json`; on `netcdf` it keeps nothing). `not_started` means the binary could not be executed (the record's `error`); `--out` is then not empty, so a retry names a new directory.
 - Local site only: `sites.yaml` must map the target to the local site, and the launch shape is that site's. A target whose parallel backend starts the binary under a launcher, and a binary built at another site, are refused.
 
 ## 4. Minimal operational checklist

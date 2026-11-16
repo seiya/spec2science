@@ -659,9 +659,15 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             backend_provides=frozenset({"job_submit"}),
         ),
         # The format a run's captures are written in (issue #644, Part 3 P3): one JSON object
-        # per record. The only member until the second format lands with its own harness.
+        # per record.
         Backend(
             "output_format", "json", "tools.backends.output_format.json",
+            backend_provides=frozenset({"capture_store"}),
+        ),
+        # ... and one netCDF-4 file per case (issue #644, Part 3 P5), complete only when its
+        # writer ended the case's output.
+        Backend(
+            "output_format", "netcdf", "tools.backends.output_format.netcdf",
             backend_provides=frozenset({"capture_store"}),
         ),
     )
