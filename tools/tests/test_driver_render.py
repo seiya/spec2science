@@ -2693,8 +2693,10 @@ class MpiBuild:
         # Open MPI opens its matching-transport components at start to see whether a fabric
         # answers, and on a host without one that is 0.2 s of a 0.5 s start under the launcher
         # (measured 2026-11-16 on 4.1.2, `MPI_Init` + `MPI_Finalize` alone, 4 ranks; 0.6 to
-        # 0.4 s bare). Excluded, not replaced: the selection among what remains is the
-        # installation's own. Intel MPI ran the same program with the variable set.
+        # 0.4 s bare). The variable REPLACES the installation's own `mtl` setting (`^ofi` in this
+        # host's configuration file, which is why `ofi` is repeated here); the point-to-point
+        # layer and the byte-transfer layers selected are the same with and without it (ob1;
+        # self, tcp, vader). Intel MPI ran the same program with the variable set.
         env.setdefault("OMPI_MCA_mtl", "^psm,psm2,ofi")
         argv = [str(self.tmp / "bin")]
         if grid != SINGLETON:
@@ -2752,9 +2754,12 @@ def _witness_expectation(ir: dict[str, Any], grid: tuple[int, int]) -> dict[str,
 
 
 #: The seeded defects that HANG a grid, and how long their rows wait for one grid's run: a hang
-#: is waited out in full. Every other defect row keeps the 30 s bound, because a run killed at
-#: the bound counts as the defect detected: with its defect cancelled, a non-hanging row pinned
-#: to one loaded core passed at 10 s and failed, as it must, at 30 s (measured 2026-11-16).
+#: is waited out in full. The other rows of the two helpers keep the 30 s they have always had
+#: (the witness row runs one grid under `MpiBuild.run`'s default), because a run killed at the
+#: bound counts as the defect detected. A round-1 reviewer's measurement (2026-11-16, f639aea2):
+#: "the record gather is dropped" with its defect cancelled, pinned to one core beside 14 busy
+#: loops (`OMPI_MCA_hwloc_base_binding_policy=none`, or the launcher rebinds the ranks), passed
+#: at a 10 s bound on a (2, 2) run killed at 10.05 s and failed, as it must, at 30 s.
 _HANGING_DEFECTS = frozenset({"the result is not reduced over the ranks",
                               "a refusal before the exchange on one rank (a hang)"})
 _HANG_TIMEOUT_S = 10

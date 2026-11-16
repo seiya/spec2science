@@ -2,10 +2,8 @@
 
 The evidence IRs are large and the pure-Python loader is slow on them (the
 `shallow_water2d_channel` one: 1.5-1.9 s a parse), and the rows that sweep every evidence IR
-parsed each file once per row. Parsing once per process is what the rows share, so the gain
-is largest where a worker runs several of those modules: the five files that read through
-this, run together with 8 workers, 86 s before and 35 s after (measured 2026-11-16 at
-f639aea2).
+parsed each file once per row. What the rows share is one parse per process, so a worker that
+runs several of those modules gains most.
 """
 
 from __future__ import annotations

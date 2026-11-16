@@ -14,11 +14,11 @@ import yaml
 from tools import primary_evidence as pe
 from tools import runner_ir as r
 from tools.host_render import RenderError
-from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.tests.test_driver_render import (_lst_entry, list_record_ir, lst_init_procedure_ir,
                                             lst_ir, procedure_ir)
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
+from tools.tests.yaml_fixtures import load_yaml_fixture
 
 
 def _swe2d() -> dict:
