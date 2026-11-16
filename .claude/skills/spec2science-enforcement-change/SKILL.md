@@ -715,6 +715,18 @@ recipes are in `references/input-surfaces.md`:
   for a producer: check that the leaf is seeded it. Do the enumeration once for the whole
   section you are moving**, since a second round on the same family means the first fix
   answered one sentence. Episode: `references/input-surfaces.md` §Surface 12, "A fourth form".
+  **A fifth form: giving a PRODUCER a document changes what its REVIEWER must believe, and the
+  reviewer's texts are not in the diff.** A reviewer's template and its seeded rubric say which
+  defects are the producer's to repair and which are an input's, and they say it from what the
+  producer was handed when they were written. Issue #644 P4b-2 seeded the harness producer
+  sections of its `controlled_spec.md`; the reviewer's severity rubric still graded a
+  requirement only the spec carries as a defect of the IR, and its checklist still read
+  behaviour the IR omits as an addition. Rounds 1 and 2 read the producer's prompt and
+  found nothing; round 3 rendered the reviewer's. **Rule: when a leaf's seed set gains or loses
+  a document, list every OTHER leaf whose template or seeded rubric states what that leaf
+  reads (`git grep` the templates and the seeded slices for the document's name and for
+  "reads only", "cannot read", "omits"), render each, and say what it now tells its reader
+  about the first leaf.** Episode: `references/input-surfaces.md` §Surface 12, "A fifth form".
 - **Surface 13 — a gate that refuses a SPELLING does not refuse a POINTER to where that spelling
   lives.** Every guard in this repository that protects a leaf-read surface decides by reading the
   text for a token: the severity allowlist refuses a severity VALUE, the restatement scans refuse a

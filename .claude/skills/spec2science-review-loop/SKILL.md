@@ -1415,6 +1415,19 @@ that tells you how it closed.
   #178 did this to one comment twice in two rounds; what closed it was the same move as the
   spread — delete the quantifier and state the MECHANISM (which files a short-circuit drops and
   why), which has a witness the set never had (`references/signs-episodes.md`)
+- **You changed a RANGE or a SET that several documents state (which sections are seeded,
+  which versions moved), by search and replace** → the replace updates the range and leaves the
+  words beside it, and those words are what a reader relies on: who decided it, why, which
+  member cites which. Issue #644 P4b-2 widened a seeded range twice ("§2 to §4", then "§1 to
+  §4", then "§1 to §4 and §6") across twelve files; after the second replace three sites
+  attributed the whole range to an operator decision that names two sections, a test comment
+  described a slice the code no longer cut, and two commit messages said "§3 and §4 cite both"
+  of something one harness in three does. The disclosure round found all of it. **Criterion:
+  after the replace, read every hit in full and ask of each what else the sentence asserts
+  about the range. Keep the reason and the attribution in ONE place (the function that cuts
+  the range) and let the other sites state the range alone.** This is the "sweep the FACT, not
+  the spelling" rule above, for a fact that has a reason attached
+  (`references/signs-episodes.md` §"A range replaced in twelve files")
 - **A comment or docstring RESTATES a measurement the assertion beside it already carries** →
   delete the restatement; do not correct it. Criterion: could this sentence and the line under it
   disagree? Then they will, and the sentence is the one that will be wrong, because nothing runs
