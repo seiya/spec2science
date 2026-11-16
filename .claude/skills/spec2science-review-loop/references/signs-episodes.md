@@ -692,3 +692,29 @@ The function's docstring was right throughout, because it was written by hand ea
 it is where the reason lives. The sites that only state the range (the runbook, the
 orchestration document) were right too. The wrong ones were the sites that restated a reason
 or an attribution beside the range.
+
+## A suite that closed a writer family one shape at a time (issue #644 P5b, PR #657, 2026-11-16)
+
+The `netcdf` harness's nine-case suite judges the harness's own capture writer, and each review
+round's security reviewer wrote hand-model writers that passed it and broke a consumer IR of the
+tree.
+
+- Round 1: a record dimension sized by the capacity, and record counters carried from one case
+  to the next. The fix gave every other case capacities above its commits and a series row.
+- Round 2: the same carry for restart points and history, because no other case committed them.
+  Both round-1 defects also passed again under a self-test that skipped round 1's new
+  obligations, because nothing judged those. The fix: the store refuses a record dimension that
+  is not unlimited, and `l0_case_fanout_pass` commits one record of each stacked group, which
+  its predicate reads.
+- Round 3: nine writers, each wrong only on a shape no case held: a sampled variable never
+  committed, a first step other than 1, history defined for restart variables only, counts
+  written from capacities. The fanout case took most of the shapes, and the store refused a
+  negative step; one writer was left open (below).
+
+The changes that held were the store refusals and the predicate. The case shapes held only for
+the shapes listed. The PR stopped at the default budget, called the review not converged, and
+named the check outside the suite: running the generated model under
+`run_fortran(..., harness=<model>)` over the driver rows. One writer stayed open: it defines the
+series group only when the series has names, and only a consumer whose series has no column
+shows it.
+
