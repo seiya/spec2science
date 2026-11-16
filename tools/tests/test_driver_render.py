@@ -34,6 +34,7 @@ from tools.backends.language.cuda_cpp import runner as cpp_runner
 from tools.backends.language.fortran import runner as f_runner
 from tools.host_render import RenderError
 from tools.tests import skip_probes
+from tools.tests.object_cache import compile_cached as _compile_cached
 from tools.tests.yaml_fixtures import load_yaml_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -350,49 +351,6 @@ def _harness_public_api() -> dict[str, Any]:
     return {"module_parameters": block["module_parameters"],
             "signatures": [{"symbol": t["name"], "signature": t} for t in block["types"]]
             + [{"symbol": p["name"], "signature": p} for p in block["procedures"]]}
-
-
-_OBJECT_CACHE: list[Path] = []
-
-
-def _compile_cached(argv: list[str], cwd: Path) -> None:
-    """Run the compile ``argv`` in ``cwd``, or copy in what an identical compile left before.
-
-    The key is the command line and every file directly in ``cwd`` (name and bytes), so no
-    caller lists what a compile reads and none can leave an input out: a row that edits a
-    source, a header or a `.mod`-producing dependency misses and compiles. Callers put each
-    source in the directory just before its own compile, which keeps a stage's key to the
-    stages before it (and its hits to the rows that share them). What an entry holds is every
-    file the compile created or rewrote in ``cwd`` (the object, a Fortran compile's `.mod`
-    files). For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc`
-    build and 1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds
-    each entry once and no two workers share a directory."""
-    import atexit
-    import hashlib
-    if not _OBJECT_CACHE:
-        _OBJECT_CACHE.append(Path(tempfile.mkdtemp(prefix="spec2science-objcache-")))
-        atexit.register(shutil.rmtree, _OBJECT_CACHE[0], True)
-    digest = hashlib.sha256("\0".join(argv).encode())
-    for path in sorted(p for p in cwd.iterdir() if p.is_file()):
-        digest.update(b"\0" + path.name.encode() + b"\0" + path.read_bytes())
-    entry = _OBJECT_CACHE[0] / digest.hexdigest()
-    if not entry.is_dir():
-        def stamps() -> dict[str, tuple[int, int, int]]:
-            return {e.name: (e.stat().st_ino, e.stat().st_mtime_ns, e.stat().st_size)
-                    for e in os.scandir(cwd) if e.is_file()}
-        before = stamps()
-        build = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
-        if build.returncode != 0:
-            raise AssertionError(" ".join(argv) + build.stdout[:2000] + build.stderr[:3000])
-        staging = Path(tempfile.mkdtemp(dir=_OBJECT_CACHE[0]))
-        # new files, and files the compile rewrote (an output that was already there)
-        for name, stamp in stamps().items():
-            if before.get(name) != stamp:
-                shutil.copy2(cwd / name, staging / name)
-        staging.rename(entry)
-        return
-    for item in entry.iterdir():
-        shutil.copy2(item, cwd / item.name)
 
 
 def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:

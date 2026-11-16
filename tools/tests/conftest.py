@@ -147,7 +147,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.tests import suite_env_guard
+from tools.tests import object_cache, suite_env_guard
 
 # The rule, the declared table and the record all live in `suite_env_guard`, a PLAIN
 # module. Not here: `tools/tests` has no `__init__.py`, so pytest imports THIS file as
@@ -204,6 +204,13 @@ def pytest_configure(config) -> None:
     config._spec2science_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
                                    tempfile.mkdtemp(prefix="spec2science-suite-", dir="/tmp"))
     os.environ["XDG_RUNTIME_DIR"] = config._spec2science_runtime_dir[1]
+    # One object cache for the run: a worker's inherited value is the controller's directory,
+    # which outlives every worker and is removed by the controller's `pytest_unconfigure`.
+    inherited = config._spec2science_runtime_dir[0]
+    shared = (inherited if os.environ.get("PYTEST_XDIST_WORKER") and inherited
+              and Path(inherited).name.startswith("spec2science-suite-")
+              else config._spec2science_runtime_dir[1])
+    object_cache.ROOT = Path(shared) / "objcache"
     if config.getoption("--keep-operator-env"):
         suite_env_guard.decline_strip()
         return
