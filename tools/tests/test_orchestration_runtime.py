@@ -28936,9 +28936,10 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "
             "in it as a `component` is, and its `operations` are non-empty (re-keyed 2026-11-11, "
             "the system tier's Part 1)",
-        "docs/GLOSSARY.md:a03f3d618914d955":
+        "docs/GLOSSARY.md:c2bc9dfd19560bb4":
             "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
-            "the host adds it as a direct dependency after Compile (issue #284)",
+            "the host adds it as a direct dependency after Compile (issue #284; re-keyed "
+            "2026-11-16, issue #644 P5b named the fourth harness, the statement unchanged)",
         # The two block labels are byte-identical to the pure templates' (same digests), so
         # only the surface moved with issue #534 PR-J4-b.
         "tools/prompt_templates/workshop_compile_generate.txt:7deb92ccbdc3bee3":

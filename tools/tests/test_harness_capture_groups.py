@@ -407,6 +407,15 @@ NETCDF_DEFECTS: dict[str, tuple[str, str, set[int]]] = {
     # a variable's samples start at the previous case's row count, not at 0
     "history_count_carried": ("      cap_vars(k)%h_count = 0\n",
                               "      cap_vars(k)%h_count = cap_n_s\n", {UNREAD}),
+    # a sampled variable's count left unwritten when the case opens: a variable the case
+    # samples and commits no record of reads its count as the integer fill
+    "history_count_unset_at_open": (
+        "      if (cap_vars(k)%sampled) call put_int(cap_vars(k)%vid_h_roles(3), 0)\n", "",
+        {UNREAD}),
+    # a series row written at the index of its step, not of its order: a case whose first
+    # committed step is not 1 leaves fill rows ahead of it
+    "series_row_at_its_step": ("      cap_n_s = cap_n_s + 1\n", "      cap_n_s = step\n",
+                               {UNREAD}),
     # the final record's count never set: the store finds no final record
     "final_count_unset": (
         "      call put_int(cap_single(g, 3), 1)\n",
@@ -457,27 +466,39 @@ FANOUT_OPEN_JSON = ("    call harness_fortran_cpu_netcdf__capture_open(case_id, 
 
 
 def fanout_commits(h: str) -> str:
-    """The netcdf §3's `l0_case_fanout_pass` commits, at step 1 and time 0: one `history`
-    record and one `restart_point` record of the seven restart variables' placeholders, one
-    series row with `g_a = 1`. Every other placeholder case opens as the json self-test's."""
+    """The netcdf §3's `l0_case_fanout_pass` opens with capacities 2 (every variable sampled,
+    the seven restart variables in its restart points) and commits, at step 2 and time 0, one
+    `history` record of `g_s` and `g_never`, one `restart_point` record of the seven restart
+    variables and one series row with `g_a = 1`, each a placeholder. Every other placeholder
+    case opens as the json self-test's."""
     out = [f"    if (trim(case_id) /= '{OTHER}') then\n",
            "  " + FANOUT_OPEN_JSON.replace("harness_fortran_cpu_netcdf", h),
            "    else\n",
-           f"    call {h}__capture_open(case_id, variables(1, 1), 1, series_names, 1)\n"]
-    for group in ("history", "restart_point"):
-        out += [f"    call {h}__capture_real('{group}', 'g_s', 0.0_dp)\n",
-                f"    call {h}__capture_array_r1('{group}', 'g_r1', r1)\n",
-                f"    call {h}__capture_array_r2('{group}', 'g_r2', r2)\n",
-                f"    call {h}__capture_array_r3('{group}', 'g_r3', r3)\n",
-                f"    call {h}__capture_array_r4('{group}', 'g_r4', r4)\n",
-                f"    call {h}__capture_array_r1('{group}', 'g_z1', z1)\n",
-                f"    call {h}__capture_array_r2('{group}', 'g_z2', z2)\n",
-                f"    call {h}__capture_commit('{group}', 1, 0.0_dp)\n"]
-    out += [f"    call {h}__capture_real('series', 'g_a', 1.0_dp)\n",
-            f"    call {h}__capture_real('series', series_names(2), 0.0_dp)\n",
-            f"    call {h}__capture_commit('series', 1, 0.0_dp)\n",
-            "    end if\n"]
+           "    fv = variables(2, 2)\n",
+           "    fv(6)%history_capacity = 2\n",
+           f"    call {h}__capture_open(case_id, fv, 2, series_names, 2)\n",
+           f"    call {h}__capture_real('history', 'g_s', 0.0_dp)\n",
+           f"    call {h}__capture_array_r1('history', 'g_never', never)\n",
+           f"    call {h}__capture_commit('history', 2, 0.0_dp)\n",
+           f"    call {h}__capture_real('restart_point', 'g_s', 0.0_dp)\n",
+           f"    call {h}__capture_array_r1('restart_point', 'g_r1', r1)\n",
+           f"    call {h}__capture_array_r2('restart_point', 'g_r2', r2)\n",
+           f"    call {h}__capture_array_r3('restart_point', 'g_r3', r3)\n",
+           f"    call {h}__capture_array_r4('restart_point', 'g_r4', r4)\n",
+           f"    call {h}__capture_array_r1('restart_point', 'g_z1', z1)\n",
+           f"    call {h}__capture_array_r2('restart_point', 'g_z2', z2)\n",
+           f"    call {h}__capture_commit('restart_point', 2, 0.0_dp)\n",
+           f"    call {h}__capture_real('series', 'g_a', 1.0_dp)\n",
+           f"    call {h}__capture_real('series', series_names(2), 0.0_dp)\n",
+           f"    call {h}__capture_commit('series', 2, 0.0_dp)\n",
+           "    end if\n"]
     return "".join(out)
+
+
+#: The placeholder case's declarations, and the netcdf self-test's with the fanout case's
+#: variable list.
+PLACEHOLDER_DECL = ("    real(dp) :: r1(3), r2(2, 3), r3(2, 3, 4), r4(2, 3, 4, 5), never(2), "
+                    "z1(0), z2(3, 0)\n")
 
 
 def fanout_predicates() -> list[str]:
@@ -506,6 +527,8 @@ def _fortran_cpu_netcdf() -> _Harness:
     # of the two cases' records wrong
     assert selftest.count(FANOUT_OPEN_JSON) == 1
     selftest = selftest.replace(FANOUT_OPEN_JSON, fanout_commits(h))
+    assert selftest.count(PLACEHOLDER_DECL) == 1
+    selftest = selftest.replace(PLACEHOLDER_DECL, PLACEHOLDER_DECL + f"    type({h}__h_var) :: fv(8)\n")
     return _Harness(netcdf_harness.HARNESS, netcdf_harness.MODEL, "groups_selftest.f90",
                     ["gfortran", "-O0", "-fcheck=bounds", *netcdf_harness.compile_flags()],
                     NETCDF_DEFECTS, ("", ""), _selftest_defects(netcdf_harness.HARNESS),
@@ -635,6 +658,20 @@ class FortranCpuNetcdfCaptureGroupTests(_CaptureGroupRows, unittest.TestCase):
         self.assertEqual(satisfied(run), [False])
         carried = self._variant("fanout_carried", "    cap_n_rp = 0\n", "")
         self.assertEqual(satisfied(carried), [False])
+        # each stacked group's commit is read by its own terms: a self-test that leaves out
+        # one group's record fails the predicate
+        for group in ("history", "restart_point", "series"):
+            with self.subTest(left_out=group):
+                text = self.h.selftest_text.replace(fanout_commits(self.h.spec_id), "".join(
+                    line for line in fanout_commits(self.h.spec_id).splitlines(keepends=True)
+                    if f"('{group}'," not in line))
+                self.assertNotEqual(text, self.h.selftest_text)
+                binary = _build(self.h, self.h.model_text, self.root / f"fanout_no_{group}",
+                                text)
+                run = _Run(self.h, binary, self.root / f"fanout_no_{group}_run",
+                           self.h.launches[-1])
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+                self.assertEqual(satisfied(run), [False])
         first = self.h.model_text.replace("    cap_n_rp = 0\n", "")
         binary = _build(self.h, first, self.root / "fanout_first")
         run = _Run(self.h, binary, self.root / "fanout_first_run", self.h.launches[-1],
@@ -674,7 +711,7 @@ PADDING = re.compile(r" It passes the `name` of the `g_a` put.*?as a literal\.")
 
 
 class CaptureGroupDocumentTests(unittest.TestCase):
-    def test_the_three_harnesses_state_the_case_identically(self) -> None:
+    def test_the_four_harnesses_state_the_case_identically(self) -> None:
         """The case's §2 bullet and §6 test in `tests.md`, and its §2 bullet and §3 paragraph
         in `controlled_spec.md`, are one text across the harnesses but for the harness's name
         and the Fortran harnesses' sentence on the padded series name."""
@@ -692,7 +729,8 @@ class CaptureGroupDocumentTests(unittest.TestCase):
                      PADDING.sub("", paragraph)]
             # the `netcdf` harness's captures write no JSON, so its documents name the case
             # file's nesting where the others name the one the capture operations produce
-            texts = [t.replace(NETCDF_NESTING, JSON_NESTING) for t in texts]
+            if spec_id == "harness_fortran_cpu_netcdf":
+                texts = [t.replace(NETCDF_NESTING, JSON_NESTING) for t in texts]
             return [t.replace(spec_id, "H") for t in texts], padding
 
         reference, padding = slices(HARNESSES[0])

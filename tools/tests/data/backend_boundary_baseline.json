@@ -49,14 +49,14 @@
       "linter-fortitude": 1
     },
     "docs/GLOSSARY.md": {
-      "fortran": 7
+      "fortran": 9
     },
     "docs/ORCHESTRATION.md": {
       "fortran": 4
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 31,
+      "fortran": 33,
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
       "linter-ruff": 3

@@ -287,6 +287,9 @@ class RefusalTests(_Tmp):
         "rp_steps_repeat": "restart_point__step [2, 2] is not strictly ascending",
         "series_steps_repeat": "series__step [1, 1] is not strictly ascending",
         "series_dim_fixed": "record dimension series__n is not unlimited",
+        "history_dim_fixed": "record dimension history__h__n is not unlimited",
+        "rp_dim_fixed": "record dimension restart_point__n is not unlimited",
+        "series_step_unwritten": "series__step [-2147483647, 2] holds a step no commit wrote",
         "rp_count_short": "restart_point__count is 1, and its record dimension "
                           "restart_point__n has length 2",
         "series_count_short": "series__count is 1, and its record dimension series__n has "

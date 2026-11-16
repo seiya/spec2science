@@ -31398,7 +31398,7 @@ class DistributeLineGateTests(unittest.TestCase):
         with unittest.mock.patch.object(vps, "_distribute_line_violations", spy):
             self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
         self.assertEqual(seen, ["component", "problem"])
-        # the corpus: one line on each of the 20 physics nodes, none on the 3 harnesses
+        # the corpus: one line on each of the 20 physics nodes, none on the 4 harnesses
         repo = Path(__file__).resolve().parents[2]
         catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
         catalog = [e for e in catalog if e.get("tests_path")]   # a profile has no tests.md
