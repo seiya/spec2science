@@ -1043,7 +1043,7 @@ def schema_variables(schema: dict[str, Any]) -> dict[str, list[str]]:
 
 def is_zero_token(token: str) -> bool:
     """Whether a `shape_expr` token is an unsigned integer whose VALUE is 0 (`0`, `00`)."""
-    return token.isdigit() and int(token) == 0
+    return token.isascii() and token.isdigit() and int(token) == 0
 
 
 def zero_extent_variables(schema: dict[str, Any]) -> frozenset[str]:

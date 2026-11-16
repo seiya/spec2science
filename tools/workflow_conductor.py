@@ -1140,9 +1140,9 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
 
 
 def _harness_controlled_spec_sections(text: str) -> str:
-    """§1 through §4 of a harness node's `controlled_spec.md` — its responsibility and scope,
-    its input/output contract, its operation definitions and its failure conditions — as the
-    harness `generate.generate` producer is seeded them (issue #644 P4b, an operator decision
+    """§1 through §4 and §6 of a harness node's `controlled_spec.md` — its responsibility and
+    scope, its input/output contract, its operation definitions, its failure conditions and
+    its prohibitions — as the harness `generate.generate` producer is seeded them (issue #644 P4b, an operator decision
     recorded on the issue).
 
     Every other producer reads no `controlled_spec.md` (`phase_02_generate.md` §2-1): the IR
@@ -1153,11 +1153,15 @@ def _harness_controlled_spec_sections(text: str) -> str:
     found in review twice. The decision named §3 and §4; §1 and §2 are seeded with them
     because §3 and §4 cite both — §2 for the case-file rules, the tokens of a non-finite real
     and the variables each case captures, §1 for which operations are rank-agnostic and who
-    serializes the output on the distributed harness. §5 is not: the
+    serializes the output on the distributed harness — and §6 because its reviewer, seeded the
+    whole document, holds the source to prohibitions stated nowhere else (a body that treats a
+    name, a case id or a group's content specially; review round 1). §5 is not: the
     published surface it pins is the IR's `public_api`. `ValueError` on a missing heading
     (`_numbered_section_range`), which the caller turns into a named fail-closed contract;
-    no line of the three specs between the two headings is a fenced `## <n>.`."""
-    return _numbered_section_range(text, "1", "5", subject="the harness controlled_spec.md")
+    no line of the three specs inside either range is a fenced `## <n>.`."""
+    subject = "the harness controlled_spec.md"
+    return (_numbered_section_range(text, "1", "5", subject=subject) + "\n\n"
+            + _numbered_section_range(text, "6", "7", subject=subject))
 
 
 _GATE_GUARDS_HEADING_RE = re.compile(r"^## (?:\d+\.\s+)?Legality and gate guards\s*$")
@@ -6488,7 +6492,7 @@ class Conductor:
         rather than the language's, which is why "author to the standard the profile names" is
         not a substitute. See the slicer's docstring for the full history.
 
-        The EIGHTH document is §1 to §4 of the node's own `controlled_spec.md`
+        The EIGHTH document is §1 to §4 and §6 of the node's own `controlled_spec.md`
         (`_harness_controlled_spec_sections`, which says why this producer alone reads it).
 
         Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
@@ -13001,7 +13005,7 @@ class Conductor:
                 # issue #589) — the initial capture, the samples and the series. An earlier
                 # attempt's sample or series is removed, so it is not read as this run's; a
                 # directory the run left empty is not made (a harness self-test's run leaves
-                # each case's rowless series and nothing else beside its final records).
+                # records of the other groups only for the cases its `tests.md` states).
                 snaps_ref = f"{node_ref}/{'/'.join(capture_store.SNAPSHOT_DIR_PARTS)}"
                 for name in capture_store.store(self.target.output_format).copy_run(
                         capture_store.snapshot_dir(run_tmp), sdst):

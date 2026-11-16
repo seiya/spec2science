@@ -954,8 +954,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-36": "b21bb5f7d526e5e9a23260e5e11f7beb092b6888d99df38e7709871f01568d2d",
     # compile-docs-37 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "compile-docs-37": "700bc87fbd7537c9efea8c65d19da08b2314f9a71d4bd7072655b3b8ab6dc74d",
-    # compile-docs-38 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 of the controlled spec seeded to the harness producer.
-    "compile-docs-38": "934e83c0ab011830a22e0dcb740308aa384796083f75dc231d10bf3c11546b40",
+    # compile-docs-38 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
+    "compile-docs-38": "6d484d50a7a4259101a203cd49d2f039e3352e61ac8709daf7cc6514b568eb99",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -2039,8 +2039,8 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-20": "c461a0027e23fa96f0751a98113d86979099a3d80f6a59a5630e72f249bf92aa",
     # execute-21 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "execute-21": "ba611d7a69b8a38610f0923956160c63aea182c2072247feb108da90e0162bc3",
-    # execute-22 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 of the controlled spec seeded to the harness producer.
-    "execute-22": "0ebb4c0826eae04d4b03d07c60d6e2ff5f854957908b04a05f4312ff60b3421e",
+    # execute-22 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
+    "execute-22": "f245dc039cb3ab9c6d720450e00a70e08d78ea47d317bec33b7431f138725786",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2266,8 +2266,8 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-18": "5693e1d0f751d9d73280632f0b82fcda9736091437e23c6d96df31e02962eaa3",
     # verdict-19 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "verdict-19": "ecb0e2db6e8e3d1b3aa280205e9058f89f49ec2f6315b1d5c305e1e2dce58180",
-    # verdict-20 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 of the controlled spec seeded to the harness producer.
-    "verdict-20": "ad785a59d3f279fb9df738391e72e03e11982c089e2f6f69d2b40bd4a75c21fd",
+    # verdict-20 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
+    "verdict-20": "020f1011733dc06cd013a54412ce4f41adb239fecc5a3e5b35151c66572e6d71",
 }
 
 
@@ -2377,7 +2377,7 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "runner_output_contract_document": "contract",
     "gate_guards_document": "contract",
     "lint_rules_document": "contract",
-    # §1 to §4 of the harness node's own spec (issue #644 P4b): `spec.controlled_spec`
+    # §1 to §4 and §6 of the harness node's own spec (issue #644 P4b): `spec.controlled_spec`
     "controlled_spec_sections_document": "input",
     "diagnosis_document": "diagnosis",
 }

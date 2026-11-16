@@ -343,6 +343,10 @@ class _CaptureGroupRows:
         for launch, run in zip(self.h.launches, self.clean):
             with self.subTest(launch=launch):
                 self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+                if len(self.h.launches) > 1:
+                    # the launch ran the ranks it names: the self-test prints the size of
+                    # its communicator (a launcher that started one rank passes otherwise)
+                    self.assertIn(f"ranks {launch[-1] if launch else 1}\n", run.proc.stdout)
                 records = run.records()
                 self.assertEqual(len(records), len(predicates(self.h.spec_id)))
                 for record in records:

@@ -10137,7 +10137,7 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     # generate rules (`workflow_conductor._gate_guards_section`) — the deterministic gate's rule
     # set for every leaf-authored source. The AGENTIC leaf force-read it; a pure leaf force-reads
     # nothing, so it is inlined here or the leaf is held to rules no document it receives states.
-    # `controlled_spec_sections_document` is §1 to §4 of the node's own `controlled_spec.md`
+    # `controlled_spec_sections_document` is §1 to §4 and §6 of the node's own `controlled_spec.md`
     # (`workflow_conductor._harness_controlled_spec_sections`, issue #644 P4b).
     ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
                                           "ir_document", "tests_document",

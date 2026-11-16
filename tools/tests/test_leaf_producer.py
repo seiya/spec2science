@@ -2876,7 +2876,8 @@ _HARNESS_SPEC_TEXT = (
     "# spec\n\n## 1. Responsibility and scope\nSCOPE-MARK\n\n"
     "## 2. input/output contract\nIO-MARK\n\n## 3. Operation definition\nOPERATION-MARK\n\n"
     "### 3.2 Published operations\nplumbing\n\n## 4. Failure conditions and constraints\n"
-    "FAILURE-MARK\n\n## 5. Public API and compatibility\nSURFACE-MARK\n")
+    "FAILURE-MARK\n\n## 5. Public API and compatibility\nSURFACE-MARK\n\n"
+    "## 6. Prohibitions\nPROHIBITION-MARK\n\n## 7. Traceability\nTRACE-MARK\n")
 
 
 def _harness_bundle() -> dict:
@@ -3052,21 +3053,26 @@ class PureHarnessShapeTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as caught:
                     self.c._build_leaf_harness_context(self.refs)
             self.assertIn(reason, str(caught.exception))
-        # §1 to §4 of the node's own controlled spec (issue #644 P4b, the operator's decision
+        # §1 to §4 and §6 of the node's own controlled spec (issue #644 P4b, the operator's decision
         # for a harness producer): from `## 1.` up to `## 5.`, verbatim. Kills: seeding the
         # whole document, or §3 alone.
         self.assertEqual(
             ctx["controlled_spec_sections_document"],
             _HARNESS_SPEC_TEXT[_HARNESS_SPEC_TEXT.index("## 1."):
-                               _HARNESS_SPEC_TEXT.index("## 5.")].rstrip("\n"))
+                               _HARNESS_SPEC_TEXT.index("## 5.")].rstrip("\n") + "\n\n"
+            + _HARNESS_SPEC_TEXT[_HARNESS_SPEC_TEXT.index("## 6."):
+                                 _HARNESS_SPEC_TEXT.index("## 7.")].rstrip("\n"))
         self.assertTrue(ctx["controlled_spec_sections_document"].startswith("## 1. "))
         for mark, held in (("SCOPE-MARK", True), ("IO-MARK", True), ("OPERATION-MARK", True),
-                           ("FAILURE-MARK", True), ("SURFACE-MARK", False)):
+                           ("FAILURE-MARK", True), ("SURFACE-MARK", False),
+                           ("PROHIBITION-MARK", True), ("TRACE-MARK", False)):
             self.assertEqual(mark in ctx["controlled_spec_sections_document"], held, mark)
         # A spec the slice cannot be cut from is a named refusal, not a shorter seed.
         spec_file = self.repo / self.refs.spec_path / "controlled_spec.md"
         for broken in (_HARNESS_SPEC_TEXT.replace("## 1. ", "## One. "),
-                       _HARNESS_SPEC_TEXT.replace("## 5. ", "## Five. ")):
+                       _HARNESS_SPEC_TEXT.replace("## 5. ", "## Five. "),
+                       _HARNESS_SPEC_TEXT.replace("## 6. ", "## Six. "),
+                       _HARNESS_SPEC_TEXT.replace("## 7. ", "## Seven. ")):
             spec_file.write_text(broken, encoding="utf-8")
             with self.assertRaises(RuntimeError) as caught:
                 self.c._build_leaf_harness_context(self.refs)

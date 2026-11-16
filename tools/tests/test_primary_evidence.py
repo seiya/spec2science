@@ -6709,7 +6709,9 @@ class ZeroExtentTest(unittest.TestCase):
         # `token == "0"` (`[00]` left out); a `zero_extent_variables` reading the first token
         # alone (`[3,0]` left out).
         for token, want in (("0", True), ("00", True), ("10", False), ("1", False),
-                            ("n", False), ("nx", False), ("-0", False), ("", False)):
+                            ("n", False), ("nx", False), ("-0", False), ("", False),
+                            # a digit `int()` refuses raised out of the Compile gate (round 1)
+                            ("\u00b2", False)):
             with self.subTest(token=token):
                 self.assertIs(pe.is_zero_token(token), want)
         schema = {"variables": [{"name": "p", "shape_expr": "[0]"},
@@ -6718,6 +6720,10 @@ class ZeroExtentTest(unittest.TestCase):
                                 {"name": "u", "shape_expr": "[10]"},
                                 {"name": "v", "shape_expr": "[n]"},
                                 {"name": "w", "shape_expr": "scalar"}]}
+        self.assertEqual(pe.zero_extent_variables(schema), frozenset({"p", "q", "r"}))
+        # a shape the schema gate refuses declares no zero extent here, and does not raise
+        # (gate (s) and post-execute read this set before that gate's finding is acted on)
+        schema["variables"].append({"name": "x", "shape_expr": "nx*ny"})
         self.assertEqual(pe.zero_extent_variables(schema), frozenset({"p", "q", "r"}))
         self.assertEqual(pe.zero_extent_variables({}), frozenset())
 

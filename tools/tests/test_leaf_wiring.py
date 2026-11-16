@@ -658,7 +658,7 @@ class PureRenderTests(unittest.TestCase):
         # The template's own bytes carry no controlled_spec surface either.
         self.assertNotIn("controlled_spec", composed_pure_template("workshop generate.generate"))
         # The harness producer is the exception (issue #644 P4b, the operator's decision): it
-        # is seeded §1 to §4 of its own node's spec under a name of its own, and its template
+        # is seeded §1 to §4 and §6 of its own node's spec under a name of its own, and its template
         # names that seed and no slot of the whole document.
         harness = composed_pure_template("workshop generate.generate.harness")
         self.assertIn("In your tree: `controlled_spec_sections.md`.", harness)

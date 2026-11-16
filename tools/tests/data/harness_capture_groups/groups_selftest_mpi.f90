@@ -17,7 +17,7 @@ program groups_selftest
     harness_fortran_cpu_mpi__capture_array_r3, harness_fortran_cpu_mpi__capture_array_r4, &
     harness_fortran_cpu_mpi__capture_commit, harness_fortran_cpu_mpi__capture_close, &
     harness_fortran_cpu_mpi__init, harness_fortran_cpu_mpi__finalize, &
-    harness_fortran_cpu_mpi__comm_rank
+    harness_fortran_cpu_mpi__comm_rank, harness_fortran_cpu_mpi__comm_size
   implicit none
   character(len=4096) :: tokens(64)
   character(len=case_id_len) :: case_ids(64)
@@ -41,6 +41,8 @@ program groups_selftest
       call placeholder_case(case_ids(i))
     end if
   end do
+  if (harness_fortran_cpu_mpi__comm_rank() == 0) &
+    & write(*, '(a, i0)') 'ranks ', harness_fortran_cpu_mpi__comm_size()
   call harness_fortran_cpu_mpi__finalize()
 
 contains
