@@ -380,7 +380,7 @@ integer version. The version is part of the token, not a range.
 
 | capability | meaning |
 |---|---|
-| `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`, `harness_fortran_cpu_mpi`) |
+| `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`, `harness_fortran_cpu_mpi`, `harness_fortran_cpu_netcdf`) |
 | `async_device_resident` | device-resident state with asynchronous capture (reserved) |
 | `distributed_state` | state partitioned across ranks, with the harness's partition, halo exchange, gather and reductions (`harness_fortran_cpu_mpi`, [issue #316](https://github.com/seiya/spec2science/issues/316)) |
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
@@ -404,6 +404,7 @@ in generated behavior.
 "infrastructure/harness_fortran_cpu@0.11.0": {"sync_single_case@1", "capture_format_json@1"}
 "infrastructure/harness_cpp_gpu@0.5.0":      {"sync_single_case@1", "capture_format_json@1"}
 "infrastructure/harness_fortran_cpu_mpi@0.5.0": {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}
+"infrastructure/harness_fortran_cpu_netcdf@0.1.0": {"sync_single_case@1", "capture_format_netcdf@1"}
 ```
 
 `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
@@ -426,7 +427,9 @@ shared-memory runtime gives the program itself (issue #512); `harness_fortran_cp
 begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.5.0` §5.1 likewise begins
 with the block with the eight-argument writer,
 followed by `__block_size` (the threads per block the host imposes on the program's kernels,
-issue #512, which the CUDA C++ runner calls).
+issue #512, which the CUDA C++ runner calls). `harness_fortran_cpu_netcdf@0.1.0` §5.1 is the
+single-process block without `__real_token` (issue #644): a format that stores a real as its IEEE
+value spells no token, and the host-rendered runner calls none.
 The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified

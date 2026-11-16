@@ -33,7 +33,7 @@ from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import runner as cpp_runner
 from tools.backends.language.fortran import runner as f_runner
 from tools.host_render import RenderError
-from tools.tests import skip_probes
+from tools.tests import netcdf_harness, skip_probes
 from tools.tests.object_cache import compile_cached as _compile_cached
 from tools.tests.yaml_fixtures import load_yaml_fixture
 
@@ -253,11 +253,13 @@ class Run:
     """One driver built and run in a temporary directory; `snapshot(name)` reads a capture,
     `series(case_id)` a case's series."""
 
-    def __init__(self, directory: Path, proc: subprocess.CompletedProcess) -> None:
+    def __init__(self, directory: Path, proc: subprocess.CompletedProcess,
+                 output_format: str = "json") -> None:
         self.dir = directory
         self.proc = proc
+        self.output_format = output_format
         self.snapshots = directory / "run" / "raw" / "state_snapshots"
-        self.captures = pe._Captures.of(directory / "run", "json")
+        self.captures = pe._Captures.of(directory / "run", output_format)
 
     def snapshot(self, name: str) -> dict[str, Any]:
         return json.loads((self.snapshots / f"{name}.json").read_text())
@@ -269,12 +271,13 @@ class Run:
         return json.loads((self.dir / "run" / "perf.json").read_text())
 
 
-def _prepare(tmp: Path, ir: dict[str, Any], case_ids: list[str] | None) -> list[str]:
+def _prepare(tmp: Path, ir: dict[str, Any], case_ids: list[str] | None,
+             output_format: str = "json") -> list[str]:
     (tmp / "ir").mkdir()
     (tmp / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, tmp / "ir")
-    for sub in CAPTURE_SUBDIRS:
-        (tmp / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+    for sub in capture_store.store(output_format).run_dirs():
+        (tmp / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
     # the first pass: every case that is no continuation (issue #632), in declaration order
     return case_ids if case_ids is not None else [
         c["case_id"] for c in ir["case"]["test_case_set"] if not pe.is_continuation(c)]
@@ -290,42 +293,57 @@ _OMP_ENV = {"OMP_NUM_THREADS": "4",
             **({"OMP_WAIT_POLICY": "passive"} if len(os.sched_getaffinity(0)) < 8 else {})}
 
 
-def _exec(tmp: Path, ids: list[str], env: dict[str, str] | None = None) -> Run:
+def _exec(tmp: Path, ids: list[str], env: dict[str, str] | None = None,
+          output_format: str = "json") -> Run:
     proc = subprocess.run([str(tmp / "bin"), "--cases", str(tmp / "ir" / "spec.ir.yaml"), *ids],
                           cwd=tmp / "run", capture_output=True, text=True, timeout=300,
                           env={**os.environ, **_OMP_ENV, **(env or {})})
-    return Run(tmp, proc)
+    return Run(tmp, proc, output_format)
+
+
+#: The harness a Fortran driver is rendered against, by the output format its captures take:
+#: `run_fortran` links that harness's hand model (`data/driver_e2e/<harness>_model.f90`).
+FORTRAN_HARNESS = {"json": "harness_fortran_cpu", "netcdf": netcdf_harness.HARNESS}
 
 
 def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
                 deps: tuple[str, ...] = (), case_ids: list[str] | None = None,
-                model: str | None = None, harness: str | None = None) -> Run:
-    """Build and run ``ir``'s Fortran driver; ``harness`` is the harness model's source in
-    place of the fixture's (`counting_harness`)."""
-    ids = _prepare(tmp, ir, case_ids)
+                model: str | None = None, harness: str | None = None,
+                output_format: str = "json") -> Run:
+    """Build and run ``ir``'s Fortran driver against the harness of ``output_format``
+    (`FORTRAN_HARNESS`); ``harness`` is the harness model's source in place of the fixture's
+    (`counting_harness`). The `netcdf` harness takes its library's compile and link words and
+    the loader overlay (`netcdf_harness`)."""
+    ids = _prepare(tmp, ir, case_ids, output_format)
+    harness_id = FORTRAN_HARNESS[output_format]
+    netcdf = output_format == "netcdf"
     objs = []
     flags = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
     # each source enters the directory just before its own compile (`_compile_cached`)
-    for stem in ("harness_fortran_cpu", *deps, model or sid):
-        if stem == "harness_fortran_cpu" and harness is not None:
+    for stem in (harness_id, *deps, model or sid):
+        if stem == harness_id and harness is not None:
             (tmp / f"{stem}_model.f90").write_text(harness)
         else:
             shutil.copy(DATA / f"{stem}_model.f90", tmp)
-        _compile_cached(["gfortran", *flags, "-c", f"{stem}_model.f90", "-o", f"{stem}.o"], tmp)
+        extra = netcdf_harness.compile_flags() if netcdf and stem == harness_id else []
+        _compile_cached(["gfortran", *flags, *extra, "-c", f"{stem}_model.f90", "-o",
+                         f"{stem}.o"], tmp)
         objs.append(f"{stem}.o")
-    text = f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU)
+    text = f_runner.render_runner(ir, sid, harness_id, target=CPU)
     (tmp / "runner.f90").write_text(text)
     build = subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "runner.o"], cwd=tmp,
                            capture_output=True, text=True)
     if build.returncode != 0:
         raise AssertionError(build.stderr[:3000] + text[:3000])
-    subprocess.run(["gfortran", *flags, *objs, "runner.o", "-o", "bin"], cwd=tmp, check=True,
-                   capture_output=True)
-    return _exec(tmp, ids)
+    link = netcdf_harness.link_words() if netcdf else []
+    subprocess.run(["gfortran", *flags, *objs, "runner.o", *link, "-o", "bin"], cwd=tmp,
+                   check=True, capture_output=True)
+    return _exec(tmp, ids, netcdf_harness.run_env() if netcdf else None, output_format)
 
 
 def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
-                env: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
+                env: dict[str, str] | None = None,
+                output_format: str = "json") -> tuple[list[str], list[str]]:
     """`Validate.execute`'s second pass over one execution shape (issue #632), for a test row or
     an evidence bench that judges a whole IR: the real continuation writer reads the shape's
     pass-1 restart points under ``shape_dir``, each continuation runs ``binary`` in a process of its
@@ -335,12 +353,12 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
     start check, a refused merge); both are empty on an IR without a continuation."""
     from tools.workflow_conductor import Conductor
     files, refused = pe.write_continuation_inputs(
-        ir, shape_dir, pe.restart_point_reader(shape_dir, "json"))
+        ir, shape_dir, pe.restart_point_reader(shape_dir, output_format))
     problems = [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
     if not files:
         return [], problems
     rdir = shape_dir / pe.RESTART_DIRNAME
-    for sub in CAPTURE_SUBDIRS:
+    for sub in capture_store.store(output_format).run_dirs():
         (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
     (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     merged = []
@@ -349,8 +367,9 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
                               cwd=rdir, capture_output=True, text=True, timeout=3000,
                               check=False, env=env)
         why = (f"second-pass rc={proc.returncode}: {proc.stderr[-400:]}" if proc.returncode
-               else pe.continuation_start_violation(ir, rdir, cf, "json")
-               or Conductor._merge_continuation_captures(rdir, shape_dir, cf.case_id, "json"))
+               else pe.continuation_start_violation(ir, rdir, cf, output_format)
+               or Conductor._merge_continuation_captures(rdir, shape_dir, cf.case_id,
+                                                         output_format))
         if why:
             problems.append(f"{cf.case_id}: {why}")
         else:
@@ -360,7 +379,9 @@ def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
 
 def run_second_pass(run: Run, ir: dict[str, Any]) -> list[str]:
     """`second_pass` over ``run``'s directory, raising on any continuation it did not merge."""
-    merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin")
+    merged, problems = second_pass(
+        ir, run.dir / "run", run.dir / "bin",
+        netcdf_harness.run_env() if run.output_format == "netcdf" else None, run.output_format)
     if problems:
         raise AssertionError("; ".join(problems))
     return merged
@@ -1888,6 +1909,91 @@ class ProblemOverProblemEndToEndTest(unittest.TestCase):
             run = _exec(out, ids)
             self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
             self.assertEqual(run.snapshot(ids[0])["ok"], 1.0)
+
+
+def rotating_netcdf_ir() -> dict[str, Any]:
+    """The composite over three cases of the member's IR with rotation on: the 64-cell case, its
+    continuation (a restart point at step 90 of the base, read back to start the second pass)
+    and the guard case (the kernel refuses a step, so the final record holds `ok = 0`). Each
+    test the IR keeps names only these cases."""
+    member = shallow_water2d_ir()["case"]["test_case_set"]
+    ids = ("swe2d_ref_n064_sx000_sy000_dts100", "swe2d_ref_n064_sx000_sy000_dts100_cont",
+           "swe2d_guard_n032_sx000_sy000_dts240")
+    cases = []
+    for c in member:
+        if c["case_id"] not in ids:
+            continue
+        if pe.is_continuation(c):   # the base's state, `f` included, is its initial state
+            c = copy.deepcopy(c)
+            c["inputs"]["rotation"] = {"on": 1, "every": 3, "f0": 0.5}
+            cases.append(c)
+        else:
+            cases.append(with_rotation(c, on=1, every=3, f0=0.5))
+    ir = shallow_water2d_rotating_ir(cases)
+    io = ir["io_contract"]
+    io["tests"] = [t for t in io["tests"] if set(t["target_cases"]) <= set(ids)]
+    kept = {t["test_id"] for t in io["tests"]}
+    io["predicates"] = [p for p in io["predicates"] if p["test_id"] in kept]
+    return ir
+
+
+def every_record(output_format: str, snap_dir: Path, case_ids: list[str]) -> dict[str, Any]:
+    """Every record of each case through the store of ``output_format``: the initial and final
+    records, the series, each sample and each restart point, by group and step."""
+    store = capture_store.store(output_format)
+    out: dict[str, Any] = {}
+    for cid in case_ids:
+        for group in (capture_store.INITIAL, capture_store.FINAL, capture_store.SERIES):
+            out[(cid, group)] = store.read_record(snap_dir, group, cid)
+        for step in store.history_steps(snap_dir, cid):
+            out[(cid, "history", step)] = store.read_record(snap_dir, capture_store.HISTORY,
+                                                            cid, step)
+        for step in store.restart_point_steps(snap_dir, cid):
+            out[(cid, "restart_point", step)] = store.read_record(
+                snap_dir, capture_store.RESTART_POINT, cid, step)
+    return out
+
+
+class NetcdfHarnessEndToEndTest(unittest.TestCase):
+    """The `netcdf` harness's hand model (issue #644 P5b) under the host-rendered driver of the
+    composite `shallow_water2d_rotating`, run with its second pass as `Validate.execute` runs
+    it, against the same driver over the `json` harness's hand model: every record the two
+    stores read is equal, bit for bit, and every test has the same status. The netcdf run is
+    the first a Fortran writer of the layout made under the driver: the restart-point reader,
+    `write_continuation_inputs`, `continuation_start_violation` and the continuation merge
+    read and move its files here, and `evaluate_primary_predicates` judges them."""
+
+    def test_the_netcdf_harness_writes_what_the_json_harness_writes(self) -> None:
+        ir = rotating_netcdf_ir()
+        cases = [c["case_id"] for c in ir["case"]["test_case_set"]]
+        statuses, records = {}, {}
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            for fmt, tmp in (("json", Path(a)), ("netcdf", Path(b))):
+                run = run_fortran(tmp, copy.deepcopy(ir), sid=ROTATING, deps=ROTATING_LINK,
+                                  output_format=fmt)
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+                self.assertEqual(run_second_pass(run, ir),
+                                 ["swe2d_ref_n064_sx000_sy000_dts100_cont"])
+                verdict = verdict_evaluator.evaluate_verdict(
+                    ir["io_contract"]["tests"],
+                    pe.evaluate_primary_predicates(ir, tmp / "run", output_format=fmt))
+                statuses[fmt] = {t["test_id"]: t["status"] for t in verdict["per_test"]}
+                records[fmt] = every_record(fmt, run.snapshots, cases)
+            self.assertEqual(sorted(p.name for p in Path(b, "run/raw/state_snapshots").iterdir()
+                                    if p.suffix == ".nc"), sorted(f"{c}.nc" for c in cases))
+        self.assertTrue(statuses["json"])
+        self.assertEqual(statuses["netcdf"], statuses["json"])
+        self.assertEqual(set(records["netcdf"]), set(records["json"]))
+        # the run holds every kind of record: samples and restart points of the base, the
+        # continuation's own, a refused step's final record
+        kinds = {key[1] for key in records["json"]}
+        self.assertEqual(kinds, {"initial", "final", "series", "history", "restart_point"})
+        for key, doc in records["json"].items():
+            with self.subTest(record=key):
+                got = records["netcdf"][key]
+                self.assertEqual(set(got), set(doc))
+                for name, value in doc.items():
+                    np.testing.assert_array_equal(np.asarray(got[name]), np.asarray(value))
 
 
 class ComposingModelGateTest(unittest.TestCase):

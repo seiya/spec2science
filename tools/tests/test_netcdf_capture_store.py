@@ -12,20 +12,23 @@ What each class pins:
 - `ReaderParityTests` — the readers of a run's captures driven here (the verdict and a
   comparand, the post-execute gate's `_validate_raw_evidence`, the judge's excerpt, the
   conductor's promotion / schema / deliverable / continuation-merge helpers,
-  `tools/run_configuration.py`'s restart source and kept records) gives over a `netcdf` run exactly what it gives over the `json`
-  run holding the same records: a reader that still builds a `json` path finds nothing in the
-  `netcdf` run and is caught. Not driven over `netcdf`: the restart-point and continuation
-  readers of `primary_evidence`, `_final_records`, `run_configuration`'s run, and the
-  conductor's restart commands and remote paths (they reach the store through the same
-  `read_record` / `locate` the rows drive).
+  `tools/run_configuration.py`'s restart source and kept records, `_final_records`) gives over
+  a `netcdf` run exactly what it gives over the `json` run holding the same records: a reader
+  that still builds a `json` path finds nothing in the `netcdf` run and is caught. The
+  restart-point and continuation readers of `primary_evidence` and `run_configuration`'s run
+  are driven over files a Fortran writer made (`test_driver_render.NetcdfHarnessEndToEndTest`,
+  `test_run_configuration.NetcdfRunConfigurationTest`, issue #644 P5b). Not driven over
+  `netcdf`: the conductor's restart commands, remote paths and `_captured` (they reach the
+  store through the same `read_record` / `case_ids` / `run_dirs` the rows drive).
 - `StackedGroupParityTests` — samples, restart points and a chunked series read the same in
   both formats through the store, `load_case_env` and `kept_records`.
 - `ReaderRefusesAnIncompleteCaseTests` — the same readers over a `netcdf` run one of whose case
   files was never completed (`complete` not 1: the program stopped before its output ended,
   issue #644 O12): each refuses it or reports it unread; none reads it as a case.
 
-The files here are written by the reader's own binding. A Fortran writer, the harness that
-writes this layout and its end-to-end run are the harness side's (P5b).
+The files here are written by the reader's own binding. A Fortran writer of the layout, the
+hand model of the harness that writes it, is driven by `test_driver_render`,
+`test_harness_capture_groups` and `test_run_configuration` (P5b).
 """
 
 from __future__ import annotations
@@ -472,6 +475,21 @@ class ReaderParityTests(unittest.TestCase):
         self.assertEqual(rc.kept_records(nc, "a", "netcdf"),
                          {"restart_points": [], "series": {"rows": 0, "last_step": None}})
 
+    def test_the_final_records_of_a_harness_run(self) -> None:
+        """`validate_pipeline_semantics._final_records`, the reader of a harness self-test's
+        reported block size and grid (issue #644 P5b): the same members on both runs."""
+        import types
+
+        from tools import validate_pipeline_semantics as vps
+        js, nc, _ir = _twin_runs(self)
+
+        def finals(run: Path, fmt: str) -> list[tuple[str, dict]]:
+            target = types.SimpleNamespace(output_format=fmt)
+            return [(p.name, doc) for p, doc in vps._final_records(target, cs.snapshot_dir(run))]
+        got = finals(nc, "netcdf")
+        self.assertEqual([name for name, _doc in got], ["a.nc", "b.nc"])
+        self.assertEqual([doc for _n, doc in got], [doc for _n, doc in finals(js, "json")])
+
     def test_the_post_execute_gate(self) -> None:
         js, nc, ir = _twin_runs(self)
         self.assertEqual(_post_execute(self, nc, ir, "netcdf"), _post_execute(self, js, ir, "json"))
@@ -617,6 +635,14 @@ class ReaderRefusesAnIncompleteCaseTests(unittest.TestCase):
         self.assertIn("incomplete", why)
         self.assertEqual(rc.kept_records(self.nc, "a", "netcdf"),
                          {"restart_points": [], "series": {"rows": 0, "last_step": None}})
+
+    def test_the_final_records_of_a_harness_run_leave_it_out(self) -> None:
+        import types
+
+        from tools import validate_pipeline_semantics as vps
+        target = types.SimpleNamespace(output_format="netcdf")
+        self.assertEqual([p.name for p, _doc in vps._final_records(
+            target, cs.snapshot_dir(self.nc))], ["b.nc"])
 
     def test_the_post_execute_gate_passes_it_to_the_verdict(self) -> None:
         # The shape checks pass over a record they cannot decode (`_decoded_state_records`);

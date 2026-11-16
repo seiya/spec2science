@@ -1,0 +1,7 @@
+spec_id: harness_fortran_cpu_netcdf
+spec_kind: infrastructure
+dependencies:
+  components: []
+  profiles: []
+  libraries:
+    - library_id: netcdf_fortran

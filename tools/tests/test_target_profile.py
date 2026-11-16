@@ -106,7 +106,8 @@ def _distributed_harness_x() -> Any:
 
 class CheckedInProfileTests(unittest.TestCase):
     def test_the_checked_in_profile_loads_gates_clean_and_names_the_catalog_harness(self) -> None:
-        self.assertEqual(tp.list_target_ids(REPO_ROOT), ["cpp_gpu", "fortran_cpu", "fortran_cpu_mpi"])
+        self.assertEqual(tp.list_target_ids(REPO_ROOT),
+                         ["cpp_gpu", "fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_netcdf"])
         profile = tp.resolve_run_target(REPO_ROOT, "fortran_cpu")
         self.assertEqual(profile.target_id, "fortran_cpu")
         self.assertRegex(profile.sha256, r"^sha256:[0-9a-f]{64}$")

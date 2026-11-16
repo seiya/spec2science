@@ -1430,7 +1430,12 @@ PINNED_RENDER: dict[str, str] = {
     # render-22 re-pinned in place by issue #644 P5a: the slice gains the netcdf output format's
     # records (no target selects it), and no json-target node's bytes move.
     "render-22@ed14bd25": "8af4b980ada187e30a4df39e27f8a19160da92108cb07fd24371fb0a60d324d2",
-    "render-22": "8e9be2c2d7695586278f02ff0a1c01d8c443f7057182cf70cfa03da292b67522",
+    # render-22 re-pinned in place again by issue #644 P5b: `fortran/runner.py` gains the
+    # `netcdf` harness's pin (`_HARNESS_PINS`), which only a node built for a target naming that
+    # harness renders against; a json-target node's rendered bytes do not move. The digest
+    # `render-22` shipped with at 66d77304:
+    "render-22@66d77304": "8e9be2c2d7695586278f02ff0a1c01d8c443f7057182cf70cfa03da292b67522",
+    "render-22": "c934866f1cdcfc82a71eb5329c83747d4841fc701f87eeccdb9804f459513e7b",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

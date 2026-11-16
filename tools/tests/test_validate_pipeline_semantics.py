@@ -11375,7 +11375,7 @@ end program shallow_water2d_runner
             self.assertGreater(len(passes), 0, f)
             self.assertEqual(judged, passes, f)
             judged_total += len(judged)
-        self.assertEqual(len(files), 23)
+        self.assertEqual(len(files), 24)
         self.assertGreater(judged_total, 40)
 
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
@@ -31407,7 +31407,7 @@ class DistributeLineGateTests(unittest.TestCase):
             text = (repo / entry["tests_path"]).read_text(encoding="utf-8")
             counts[entry["spec_kind"]].append(sum(
                 1 for ln in text.splitlines() if vps.TEST_DISTRIBUTE_LINE.match(ln.strip())))
-        self.assertEqual(counts.pop("infrastructure"), [0, 0, 0])
+        self.assertEqual(counts.pop("infrastructure"), [0, 0, 0, 0])
         self.assertEqual(sorted(sum(counts.values(), [])), [1] * 20)
 
     def test_none_pins_an_empty_axis_list(self) -> None:

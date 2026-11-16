@@ -1,0 +1,6 @@
+library_version: 1
+library_id: netcdf_fortran
+language: fortran
+modules: [netcdf]
+procedures: []
+link: [netcdff]

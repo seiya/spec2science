@@ -1,0 +1,27 @@
+# Target profile (issue #644, Part 3 P5b). Operator-authored data: `fortran_cpu`'s values with the
+# captures written in the `netcdf` output format, through the harness that writes it. Loader and
+# gate: tools/target_profile.py. Schema (declarative copy):
+# spec/schema/targets/target_profile.schema.json.
+#
+# A node's Compile is target-free, so the IRs `fortran_cpu`'s runs certify are the ones a run on
+# this target reads; its Generate, Build and Validate are its own.
+target_profile_version: 1
+target_id: fortran_cpu_netcdf
+hardware:
+  class: cpu
+  architecture: x86_64
+toolchain:
+  language: fortran
+  standard: f2008
+  build_system: make
+parallel:
+  backend: openmp
+execution:
+  threads_per_rank: 4
+  sweep:
+    threads_per_rank: [2, 3]
+output:
+  format: netcdf
+harness:
+  infrastructure_id: harness_fortran_cpu_netcdf
+  version_constraint: ">=0.1.0 <1.0.0"

@@ -1756,6 +1756,20 @@ end subroutine harness_fortran_cpu__write_perf
 _SINGLE_PROCESS_INTERFACE = _HARNESS_V3_INTERFACE.replace(
     _V3_WRITE_PERF_THREADS, _SINGLE_PROCESS_WRITE_PERF)
 
+#: The single-process harness that writes the `netcdf` output format (issue #644 P5b): the
+#: single-process block under its own names, without `__real_token` — a format that stores a
+#: real as its IEEE value spells no token, and the driver calls none (`_HARNESS_CORE_OPS`).
+NETCDF_HARNESS_SPEC_ID = "harness_fortran_cpu_netcdf"
+_REAL_TOKEN_STANZA = """\
+function harness_fortran_cpu__real_token(x) result(s)
+  real(dp), intent(in) :: x
+  character(len=:), allocatable :: s
+end function harness_fortran_cpu__real_token
+
+"""
+_NETCDF_INTERFACE = _SINGLE_PROCESS_INTERFACE.replace(_REAL_TOKEN_STANZA, "").replace(
+    f"{EXPECTED_HARNESS_SPEC_ID}__", f"{NETCDF_HARNESS_SPEC_ID}__")
+
 
 @dataclass(frozen=True)
 class _HarnessPin:
@@ -1778,7 +1792,9 @@ _HARNESS_PINS: dict[str, _HarnessPin] = {
             f"{EXPECTED_HARNESS_SPEC_ID}__", f"{DISTRIBUTED_HARNESS_SPEC_ID}__")
         + "\n" + _DISTRIBUTED_STATE_INTERFACE,
         distributed=True),
+    NETCDF_HARNESS_SPEC_ID: _HarnessPin(interface=_NETCDF_INTERFACE, distributed=False),
 }
+assert _REAL_TOKEN_STANZA in _SINGLE_PROCESS_INTERFACE, "the netcdf pin's removal must apply"
 
 
 def _harness_pin(harness_spec_id: str) -> _HarnessPin:

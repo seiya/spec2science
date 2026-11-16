@@ -395,6 +395,7 @@ CAPABILITY_VOCABULARY: frozenset[str] = frozenset({
     "full_state_capture",      # A4 / Z6 reserved
     "trusted_reductions",      # A4 / Z6 reserved
     "capture_format_json",     # the output format a harness's capture operations write (#644)
+    "capture_format_netcdf",   # the same, for the `netcdf` member of the axis (#644)
 })
 # Every bundle states how it expects to be driven: exactly one of these.
 EXECUTION_MODEL_CAPABILITIES: frozenset[str] = frozenset(
@@ -440,7 +441,10 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # `sync_single_case@1` has: the harness's own `Generate.static` pin of §5.1, and the language
 # backend's `assert_harness_pin` for a physics source's operations on that harness.
 # `capture_format_<id>@1` (issue #644) names the output format the harness's capture
-# operations write, `<id>` a member of the `output_format` axis. The launch gate holds it equal
+# operations write, `<id>` a member of the `output_format` axis. The `netcdf` harness's
+# `sync_single_case@1` block is the single-process block without `__real_token` (18
+# operations): a format that stores a real as its IEEE value spells no token, and the
+# host-rendered runner, the block's one consumer, calls none. The launch gate holds it equal
 # to the target's `output.format` (`target_profile._capture_format_violations`); no bundle
 # requires it, since the target decides the format and a bundle writes no capture.
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
@@ -450,6 +454,8 @@ HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
         {"sync_single_case@1", "capture_format_json@1"}),
     "infrastructure/harness_fortran_cpu_mpi@0.5.0": frozenset(
         {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}),
+    "infrastructure/harness_fortran_cpu_netcdf@0.1.0": frozenset(
+        {"sync_single_case@1", "capture_format_netcdf@1"}),
 }
 
 

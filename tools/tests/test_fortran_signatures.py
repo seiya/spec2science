@@ -390,7 +390,7 @@ class FortranStanzaParserTests(unittest.TestCase):
         # The runner's embedded pins are the other host text the splitter reads
         # (`assert_harness_pin`, `_parse_stanzas`): no line of theirs may be unplaceable.
         from tools.backends.language.fortran import runner
-        self.assertEqual(len(runner._HARNESS_PINS), 2)
+        self.assertEqual(len(runner._HARNESS_PINS), 3)
         for spec_id, pin in runner._HARNESS_PINS.items():
             with self.subTest(spec_id=spec_id):
                 ops, types, _ifaces, errors = parse_interface_stanzas(pin.interface)
