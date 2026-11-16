@@ -667,3 +667,28 @@ alone had passed every run under `-n 12` beforehand, and the round-3 reviewer di
 hang in 5 tries under `-n 2`. The tool runs one thread, so the tool was right and the rows
 were not; they now use `signal.pthread_kill(threading.get_ident(), SIGTERM)`. The signal rows
 that start the tool as a subprocess were never affected: that process has one thread.
+
+## A range replaced in twelve files (issue #644 P4b-2, PR #654, 2026-11-16)
+
+The branch seeded sections of a harness `controlled_spec.md` to its producer. The first
+commit said "§2 to §4" in the conductor's docstring, the template's label, documents, test
+comments and the pin comments (twelve files held the range at the second replace, by `git grep -l`). Before that commit, a check of what the slice
+cites showed the distributed harness's §3 citing §1, and a search and replace made it "§1 to
+§4". Review round 1 found §6 holding rules only the reviewer saw, and a second replace made
+it "§1 to §4 and §6".
+
+What the replaces left, all found by the round-3 disclosure reviewer:
+
+- `phase_02_generate.md` §2-1 and two test comments said the producer is seeded "§1 to §4
+  and §6 ... an operator decision". The decision names §3 and §4.
+- A test comment said the slice runs "from `## 1.` up to `## 5.`" and listed the mutants it
+  kills without the one that drops §6. The assertion under it was correct.
+- Two commit messages said "§3 and §4 cite both" §1 and §2. §1 is cited by one harness.
+- One edit script asserted the old docstring text, which the first replace had already
+  changed, raised, and skipped the edits after it; the next command showed the slice still
+  starting at `## 2.`.
+
+The function's docstring was right throughout, because it was written by hand each time and
+it is where the reason lives. The sites that only state the range (the runbook, the
+orchestration document) were right too. The wrong ones were the sites that restated a reason
+or an attribution beside the range.

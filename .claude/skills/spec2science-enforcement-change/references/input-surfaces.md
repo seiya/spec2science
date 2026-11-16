@@ -661,6 +661,39 @@ fix ran. A self-test that judges only the `final` group made the gap invisible t
 certification too: a harness with a wrong `series` path passes its own suite and fails its
 consumers at `Validate.execute`, where no leaf can repair it.
 
+### A fifth form: the producer was given a document and its reviewer was not told (issue #644 P4b-2, PR #654, 2026-11-16)
+
+The operator decided that a harness `generate.generate` producer is seeded §3 and §4 of its
+own `controlled_spec.md`, which reverses `phase_02_generate.md` §2-1 for harness nodes. The
+branch added the seed, a label for it in the producer's template, and the exception in §2-1.
+The harness `generate.verify` reviewer is seeded the whole spec and the severity rubric of
+§2-2. Neither was edited. The rubric's `major` example is "`spec.ir.yaml` drops or distorts a
+requirement that `controlled_spec.md` carries", and checklist item H4 fails code that adds
+"an operation, iteration, branch the IR omits". Both were true of a producer that read no
+spec. With the seed, a source that departs from §3 is the producer's defect and a producer
+re-run resolves it, and a stop condition §4 states is no addition. A reviewer following its
+own text would send such a finding to a Compile re-derivation, after a billed Generate.
+
+The reviewers of rounds 1 and 2 read the producer's prompt and seeds and reported them consistent.
+The round-3 disclosure reviewer rendered the reviewer's prompt with the real MPI spec and
+searched it for any mention of the seed: none. It also read 6 of the 7 `fail/major` harness
+verdicts in the local `workspace/`: each cited `ir_inconsistency` for a requirement the IR
+lacked, so the reviewer applies that example as written. No leaf was run on the changed
+text. The fix was one sentence in the reviewer's label for the spec, in the same branch, so
+the reader version already bumped for other reasons carried it.
+
+Two more facts from the same branch belong to this surface:
+
+- The decided range grew twice in review. §3 and §4 cite §2 on every harness and §1 on the
+  distributed one, and §6 holds prohibitions the reviewer holds the source to that no other
+  seed states. Check a slice by listing every `§<n>` and document it cites and naming the
+  seed that carries each, and by reading the sections the OTHER reader is seeded that the
+  slice leaves out.
+- Two templates said "every record holds every declared variable" and one said a harness
+  self-test "has no `initial/` capture". The new suite case contradicted each. They were
+  found by searching the templates for the old rule's words after writing the new case, not
+  by any test.
+
 ## Surface 13 — the guard reads for a spelling; a pointer walks past it (issue #168)
 
 **What happened.** A `docs/RUNBOOK.md` bullet quoted a wrong number for what a blind `--resume`
