@@ -18,10 +18,11 @@ from tools.tests.test_driver_render import (_lst_entry, list_record_ir, lst_init
                                             lst_ir, procedure_ir)
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
+from tools.tests.yaml_fixtures import load_yaml_fixture
 
 
 def _swe2d() -> dict:
-    return yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())
+    return load_yaml_fixture(_DRIVE_DIR / "shallow_water2d_0.4.7" / "spec.ir.yaml")
 
 
 class BindingTest(unittest.TestCase):
@@ -171,7 +172,7 @@ class DriveAgreementTest(unittest.TestCase):
         over its entry parser) and the renderer's (`runner_ir.distribute_layouts`, over the
         render readers) give equal layouts over every bench IR and the two renamed-prototype
         rk4 variants, where a lookup of the recorded dummy's name among the states differs."""
-        irs = {p.stem: yaml.safe_load(p.read_text()) for p in sorted(_BENCH_DIR.glob("*.yaml"))}
+        irs = {p.stem: load_yaml_fixture(p) for p in sorted(_BENCH_DIR.glob("*.yaml"))}
         irs.update({f"rk4_{new}": _rk4_renamed(new) for new in ("V", "stage_t")})
         irs.update(self._fixtures())
         with_axes = 0
@@ -319,7 +320,7 @@ _LAYOUTS = {
 
 
 def _bench_ir(spec_id: str) -> dict:
-    return yaml.safe_load((_BENCH_DIR / f"{spec_id}.yaml").read_text())
+    return load_yaml_fixture(_BENCH_DIR / f"{spec_id}.yaml")
 
 
 def _variables(ir: dict) -> dict:
@@ -354,7 +355,7 @@ class DistributeBlockTests(unittest.TestCase):
                 self.assertEqual(r.distribute_layouts(ir, _variables(ir)), (want, []))
         for path in sorted(_BENCH_DIR.glob("*.yaml")):
             if path.stem not in _LAYOUTS:
-                ir = yaml.safe_load(path.read_text())
+                ir = load_yaml_fixture(path)
                 self.assertEqual(r.drive_distribute_axes(ir), (), path.stem)
 
     def test_a_dims_token_naming_an_axis_input_in_another_form_is_refused(self) -> None:
@@ -485,7 +486,7 @@ class DistributeBlockTests(unittest.TestCase):
     def test_distribute_plan_matches_the_census_table(self) -> None:
         never: dict[str, list[str]] = {}
         for path in sorted(_BENCH_DIR.glob("*.yaml")):
-            ir = yaml.safe_load(path.read_text())
+            ir = load_yaml_fixture(path)
             passing = {c for t in ir["io_contract"]["tests"]
                        if str(t["expected_outcome"]).strip().lower() == "pass"
                        for c in t["target_cases"]}
@@ -543,7 +544,7 @@ class DistributedDriverPlanTests(unittest.TestCase):
 
     def test_the_replication_table_is_distribute_plan_per_grid(self) -> None:
         for path in sorted(_BENCH_DIR.glob("*.yaml")):
-            ir = yaml.safe_load(path.read_text())
+            ir = load_yaml_fixture(path)
             grids = _GRIDS + ((1, 1),)
             with self.subTest(spec_id=path.stem):
                 table = dict(r.replication_table(ir, grids))

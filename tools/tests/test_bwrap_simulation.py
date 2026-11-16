@@ -47,7 +47,7 @@ from tools.orchestration_runtime import (
     render_bwrap_command,
 )
 from tools.tests import skip_probes
-from tools.tests.http_stand_ins import ScriptedMessagesApi
+from tools.tests.http_stand_ins import ScriptedMessagesApi, start_serving
 from tools.tests.llm_samples import sample_config_with, workshop_yaml
 
 
@@ -84,7 +84,7 @@ class _Loopback400:
         self.hits = hits
         self.bodies = bodies  # one raw request body per hit, same order
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        start_serving(self._server)
         self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
 
     def close(self) -> None:
@@ -2252,7 +2252,7 @@ class _ScriptedResponsesApi:
         self.bodies = bodies
         self.child_bodies = child_bodies
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        start_serving(self._server)
         self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
         self.port = self._server.server_address[1]
 

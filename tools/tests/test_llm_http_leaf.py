@@ -44,6 +44,7 @@ from tools import llm_http_leaf as hl
 from tools import llm_workshop_loop as loop
 from tools import workflow_conductor as wc
 from tools.leaf_contract import HTTP_FILE_TOOL_DECLARATIONS
+from tools.tests.http_stand_ins import start_serving
 from tools.tests.llm_samples import workshop_yaml
 
 KEY_ENV = "SPEC2SCIENCE_TEST_HTTP_KEY"
@@ -1086,7 +1087,6 @@ class TransportBoundsTests(unittest.TestCase):
     def test_a_redirect_reaches_the_caller_as_a_transport_error(self) -> None:
         """End to end over a real socket, so the claim does not rest on the handler alone."""
         import http.server
-        import threading
 
         seen: list[dict] = []
 
@@ -1103,8 +1103,7 @@ class TransportBoundsTests(unittest.TestCase):
 
         server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
         self.addCleanup(server.server_close)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        thread = start_serving(server)
         self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=5)))
         base = f"http://127.0.0.1:{server.server_address[1]}/v1"
         out = _launch(

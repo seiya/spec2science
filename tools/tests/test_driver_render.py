@@ -34,6 +34,8 @@ from tools.backends.language.cuda_cpp import runner as cpp_runner
 from tools.backends.language.fortran import runner as f_runner
 from tools.host_render import RenderError
 from tools.tests import skip_probes
+from tools.tests.object_cache import compile_cached as _compile_cached
+from tools.tests.yaml_fixtures import load_yaml_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).parent / "data" / "driver_e2e"
@@ -272,10 +274,20 @@ def _prepare(tmp: Path, ir: dict[str, Any], case_ids: list[str] | None) -> list[
         c["case_id"] for c in ir["case"]["test_case_set"] if not pe.is_continuation(c)]
 
 
+#: The threads of a built driver, and how they wait where cores are scarce. Two such runs on the
+#: four cores of a CI runner (`-n 4`) are eight spinning threads: the two swe2d rows, 24 s each
+#: alone, both ran into the 300 s bound together and took 36 s and 40 s with a passive wait (a
+#: round-3 reviewer, 2026-11-16 at 088e714a; reproduced: both killed at 303 s, then 38.5 s for
+#: the pair). With cores to spare the default wait is kept: passive, the longer of the two rows
+#: took 52 s against 30 s on 48 cores.
+_OMP_ENV = {"OMP_NUM_THREADS": "4",
+            **({"OMP_WAIT_POLICY": "passive"} if len(os.sched_getaffinity(0)) < 8 else {})}
+
+
 def _exec(tmp: Path, ids: list[str], env: dict[str, str] | None = None) -> Run:
     proc = subprocess.run([str(tmp / "bin"), "--cases", str(tmp / "ir" / "spec.ir.yaml"), *ids],
                           cwd=tmp / "run", capture_output=True, text=True, timeout=300,
-                          env={**os.environ, "OMP_NUM_THREADS": "4", **(env or {})})
+                          env={**os.environ, **_OMP_ENV, **(env or {})})
     return Run(tmp, proc)
 
 
@@ -349,49 +361,6 @@ def _harness_public_api() -> dict[str, Any]:
     return {"module_parameters": block["module_parameters"],
             "signatures": [{"symbol": t["name"], "signature": t} for t in block["types"]]
             + [{"symbol": p["name"], "signature": p} for p in block["procedures"]]}
-
-
-_OBJECT_CACHE: list[Path] = []
-
-
-def _compile_cached(argv: list[str], cwd: Path) -> None:
-    """Run the compile ``argv`` in ``cwd``, or copy in what an identical compile left before.
-
-    The key is the command line and every file directly in ``cwd`` (name and bytes), so no
-    caller lists what a compile reads and none can leave an input out: a row that edits a
-    source, a header or a `.mod`-producing dependency misses and compiles. Callers put each
-    source in the directory just before its own compile, which keeps a stage's key to the
-    stages before it (and its hits to the rows that share them). What an entry holds is every
-    file the compile created or rewrote in ``cwd`` (the object, a Fortran compile's `.mod`
-    files). For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc`
-    build and 1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds
-    each entry once and no two workers share a directory."""
-    import atexit
-    import hashlib
-    if not _OBJECT_CACHE:
-        _OBJECT_CACHE.append(Path(tempfile.mkdtemp(prefix="spec2science-objcache-")))
-        atexit.register(shutil.rmtree, _OBJECT_CACHE[0], True)
-    digest = hashlib.sha256("\0".join(argv).encode())
-    for path in sorted(p for p in cwd.iterdir() if p.is_file()):
-        digest.update(b"\0" + path.name.encode() + b"\0" + path.read_bytes())
-    entry = _OBJECT_CACHE[0] / digest.hexdigest()
-    if not entry.is_dir():
-        def stamps() -> dict[str, tuple[int, int, int]]:
-            return {e.name: (e.stat().st_ino, e.stat().st_mtime_ns, e.stat().st_size)
-                    for e in os.scandir(cwd) if e.is_file()}
-        before = stamps()
-        build = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
-        if build.returncode != 0:
-            raise AssertionError(" ".join(argv) + build.stdout[:2000] + build.stderr[:3000])
-        staging = Path(tempfile.mkdtemp(dir=_OBJECT_CACHE[0]))
-        # new files, and files the compile rewrote (an output that was already there)
-        for name, stamp in stamps().items():
-            if before.get(name) != stamp:
-                shutil.copy2(cwd / name, staging / name)
-        staging.rename(entry)
-        return
-    for item in entry.iterdir():
-        shutil.copy2(item, cwd / item.name)
 
 
 def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
@@ -847,8 +816,8 @@ class _DriverBehaviour:
         for cf in files:
             proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
                                    cf.case_id], cwd=rdir, capture_output=True, text=True,
-                                  timeout=300, check=False, env={**os.environ, "OMP_NUM_THREADS": "4",
-                                                    "SPEC2SCIENCE_CUDA_BLOCK": "64"})
+                                  timeout=300, check=False,
+                                  env={**os.environ, **_OMP_ENV, "SPEC2SCIENCE_CUDA_BLOCK": "64"})
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         return files, refused, rdir
 
@@ -1352,7 +1321,7 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
     its own as `Validate.execute` does, so its restart test is judged on the certified model."""
 
     def _verdict(self, ir_path: Path, sid: str, deps: tuple[str, ...]) -> dict[str, Any]:
-        ir = yaml.safe_load(ir_path.read_text())
+        ir = load_yaml_fixture(ir_path)
         with tempfile.TemporaryDirectory() as tmp:
             run = run_fortran(Path(tmp), ir, sid=sid, deps=deps)
             self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
@@ -1407,7 +1376,7 @@ ROTATING_LINK = (*SW2D_COMPONENTS, "shallow_water2d", CORIOLIS, RK4)
 
 
 def shallow_water2d_ir() -> dict[str, Any]:
-    return yaml.safe_load((DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())
+    return load_yaml_fixture(DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml")
 
 
 def shallow_water2d_rotating_ir(cases: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2085,7 +2054,7 @@ class CppGpuPackageSecondPassTest(unittest.TestCase):
                                                       DATA / "package_cpp_gpu.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        ir = yaml.safe_load(module.NODES["swe"][0].read_text())
+        ir = load_yaml_fixture(module.NODES["swe"][0])
         conts = sorted(pe.continuation_cases(ir))
         self.assertEqual(conts, ["swe2d_ref_n064_sx000_sy000_dts100_cont"])
         with tempfile.TemporaryDirectory() as tmp:
@@ -2333,7 +2302,7 @@ SINGLETON = (1, 1)
 
 
 def _mpi_target() -> dict[str, Any]:
-    return yaml.safe_load((ROOT / "spec/targets/fortran_cpu_mpi.yaml").read_text())
+    return load_yaml_fixture(ROOT / "spec/targets/fortran_cpu_mpi.yaml")
 
 
 def _mpi_flag_sets() -> dict[str, list[str]]:
@@ -2731,6 +2700,14 @@ class MpiBuild:
         for sub in CAPTURE_SUBDIRS:   # what `capture_store.run_dirs` creates
             (d / "raw" / "state_snapshots" / sub).mkdir(parents=True)
         env = {k: v for k, v in os.environ.items() if k != execution.PROCESS_GRID_VARIABLE}
+        # Open MPI opens its matching-transport components at start to see whether a fabric
+        # answers, and on a host without one that is 0.2 s of a 0.5 s start under the launcher
+        # (measured 2026-11-16 on 4.1.2, `MPI_Init` + `MPI_Finalize` alone, 4 ranks; 0.6 to
+        # 0.4 s bare). The variable REPLACES the installation's own `mtl` setting (`^ofi` in this
+        # host's configuration file, which is why `ofi` is repeated here); the point-to-point
+        # layer and the byte-transfer layers selected are the same with and without it (ob1;
+        # self, tcp, vader). Intel MPI ran the same program with the variable set.
+        env.setdefault("OMPI_MCA_mtl", "^psm,psm2,ofi")
         argv = [str(self.tmp / "bin")]
         if grid != SINGLETON:
             env.update(execution.environment(1, process_grid=grid))
@@ -2784,6 +2761,22 @@ def _witness_expectation(ir: dict[str, Any], grid: tuple[int, int]) -> dict[str,
     else:
         local = [float(nx)] * nx
     return {"w": local, "wb": local, "wg": [float(nx)] * nx}
+
+
+#: The seeded defects that HANG a grid, and how long their rows wait for one grid's run: a hang
+#: is waited out in full. The other rows of the two helpers keep the 30 s they have always had
+#: (the witness row runs one grid under `MpiBuild.run`'s default), because a run killed at the
+#: bound counts as the defect detected. A round-1 reviewer's measurement (2026-11-16, f639aea2):
+#: "the record gather is dropped" with its defect cancelled, pinned to one core beside 14 busy
+#: loops (`OMPI_MCA_hwloc_base_binding_policy=none`, or the launcher rebinds the ranks), passed
+#: at a 10 s bound on a (2, 2) run killed at 10.05 s and failed, as it must, at 30 s.
+_HANGING_DEFECTS = frozenset({"the result is not reduced over the ranks",
+                              "a refusal before the exchange on one rank (a hang)"})
+_HANG_TIMEOUT_S = 10
+
+
+def _defect_timeout(label: str) -> int:
+    return _HANG_TIMEOUT_S if label in _HANGING_DEFECTS else 30
 
 
 class DistributedDriverEndToEndTest(unittest.TestCase):
@@ -2993,7 +2986,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 if run.rc == 0 else None, _witness_expectation(ir, (2, 1)), label)
             return
         reference = self._build(ir).run(SINGLETON).snapshots()
-        self.assertIsNotNone(self._first_disagreement(build, reference, timeout=30), label)
+        self.assertIsNotNone(self._first_disagreement(
+            build, reference, timeout=_defect_timeout(label)), label)
 
     def _kernel_defect_fails_a_grid(self, sid: str, label: str,
                                     edits: tuple[tuple[str, str], ...], cases: list[str],
@@ -3012,7 +3006,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         self.assertEqual(single.rc, 0, single.stderr[-1000:])
         self.assertEqual(single.snapshots(), reference)
         self.assertIsNotNone(self._first_disagreement(
-            build, reference, grids, cases=cases, timeout=30), label)
+            build, reference, grids, cases=cases, timeout=_defect_timeout(label)), label)
 
     def test_an_init_scalar_unequal_across_the_ranks_stops_the_run(self) -> None:
         """B8: after an accepted `init`, a rank-0 real or integer it wrote must agree across the

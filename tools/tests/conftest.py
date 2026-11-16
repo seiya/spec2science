@@ -147,7 +147,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.tests import suite_env_guard
+from tools.tests import object_cache, suite_env_guard
 
 # The rule, the declared table and the record all live in `suite_env_guard`, a PLAIN
 # module. Not here: `tools/tests` has no `__init__.py`, so pytest imports THIS file as
@@ -177,8 +177,8 @@ def pytest_cmdline_main(config) -> None:
     the file's 145 rows were about 40% of the suite's CPU, and the suite took 469 s wall under
     `load` and 133 s under `worksteal`, the same 7646 rows.
 
-    In a conftest, not in `pytest.ini`'s `addopts`: xdist is optional here (CI runs the
-    suite serially without it), and `--dist` is an unknown option when the plugin is absent.
+    In a conftest, not in `pytest.ini`'s `addopts`: xdist is optional here (a run
+    without the plugin installed still works), and `--dist` is an unknown option when the plugin is absent.
     An explicit `--dist`, `-n 0` and a serial run are left alone. Runs before xdist's own
     `tryfirst` hook (a conftest registers later, and pluggy calls the later one first),
     which would otherwise turn the default `no` into `load`. Returns None: the hook is
@@ -204,6 +204,13 @@ def pytest_configure(config) -> None:
     config._spec2science_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
                                    tempfile.mkdtemp(prefix="spec2science-suite-", dir="/tmp"))
     os.environ["XDG_RUNTIME_DIR"] = config._spec2science_runtime_dir[1]
+    # One object cache for the run: a worker's inherited value is the controller's directory,
+    # which outlives every worker and is removed by the controller's `pytest_unconfigure`.
+    inherited = config._spec2science_runtime_dir[0]
+    shared = (inherited if os.environ.get("PYTEST_XDIST_WORKER") and inherited
+              and Path(inherited).name.startswith("spec2science-suite-")
+              else config._spec2science_runtime_dir[1])
+    object_cache.ROOT = Path(shared) / "objcache"
     if config.getoption("--keep-operator-env"):
         suite_env_guard.decline_strip()
         return

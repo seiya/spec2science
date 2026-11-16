@@ -36,6 +36,7 @@ from tools.host_render import RenderError
 from tools.structured_signatures import load_structured_signatures
 from tools.tests import skip_probes
 from tools.tests import test_fortran_runner as ft_tests
+from tools.tests.object_cache import compile_cached
 from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir
 
 HARNESS = "harness_cpp_gpu"
@@ -512,8 +513,21 @@ class NvccSmokeTest(unittest.TestCase):
         (d / f"{sid}_model.cu").write_text(model if model is not None else _smoke_model())
 
     def _build(self, d: Path, sid: str) -> None:
-        r = subprocess.run([NVCC, "-std=c++17", "-O2", "-I.", f"{sid}_runner.cu",
-                            f"{sid}_model.cu", "harness_cpp_gpu_model.cu", "-o", "runner"],
+        # One compile per source through the object cache, each in a directory holding only
+        # what that source includes: the harness stub and the smoke model are the same bytes in
+        # most rows, and were 4 s of each row's 7 s single-command build.
+        harness = ["harness_cpp_gpu_model.cuh", "harness_cpp_gpu_model.cu"]
+        stages = {"harness_cpp_gpu_model": harness,
+                  f"{sid}_model": [harness[0], f"{sid}_model.cuh", f"{sid}_model.cu"],
+                  f"{sid}_runner": [harness[0], f"{sid}_model.cuh", f"{sid}_runner.cu"]}
+        for stem, sources in stages.items():
+            with tempfile.TemporaryDirectory() as stage:
+                for name in sources:
+                    shutil.copy(d / name, stage)
+                compile_cached([NVCC, "-std=c++17", "-O2", "-I.", "-c", f"{stem}.cu",
+                                "-o", f"{stem}.o"], Path(stage))
+                shutil.copy(Path(stage) / f"{stem}.o", d)
+        r = subprocess.run([NVCC, *(f"{stem}.o" for stem in stages), "-o", "runner"],
                            cwd=d, capture_output=True, text=True, check=False)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
         for parts in capture_store.run_dirs("json"):

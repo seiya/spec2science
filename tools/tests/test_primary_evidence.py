@@ -46,6 +46,7 @@ import numpy as np
 
 from tools import capture_store
 from tools import primary_evidence as pe
+from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
 NX, NY = 8, 4
@@ -1485,10 +1486,24 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(names("0 ** final.h + final.h / final.h"),
                          ["final.h", "final.h", "final.h"])
         self.assertEqual(names("final.h * 0.0001"), ["final.h"])
+        # one argument of a call folded, the others as they were, in each position
+        self.assertEqual(names("max(1, final.h * 0)"), [])
+        self.assertEqual(names("max(final.u, final.h - final.h)"), ["final.u"])
+        self.assertEqual(names("max(final.h * 0, final.u)"), ["final.u"])
         tree = pe.parse_expr("final.h * 0")
         pe.effective_names(tree)
         self.assertEqual(names("final.h * 0"), [])
         self.assertEqual([r.name for r in pe.expr_names(tree)], ["h"])   # input untouched
+        # ... also where the replaced term sits under nodes that are rebuilt around it
+        import ast
+        for src in ("abs((final.h - final.h) * final.u + initial.u)",
+                    "max(-(-final.h), final.u * 0) / (initial.u ** 0)"):
+            tree = pe.parse_expr(src)
+            before = ast.dump(tree, include_attributes=True)
+            first = pe.effective_names(tree)
+            self.assertEqual(ast.dump(tree, include_attributes=True), before, src)
+            self.assertEqual(pe.effective_names(tree), first, src)
+            self.assertNotEqual(pe.expr_names(tree), first, src)   # the pruning did act
 
     def test_coordinates_resolve_in_every_case(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
@@ -2590,8 +2605,7 @@ _DRIVE_DIR = Path(__file__).resolve().parent / "data" / "drive_ir"
 
 
 def _coriolis() -> dict:
-    import yaml
-    return yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
+    return load_yaml_fixture(_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml")
 
 
 def _arg(name: str, intent: str | None, typ: str, rank: int = 0,
@@ -5106,8 +5120,7 @@ class LoopTimeArgumentsTest(unittest.TestCase):
 
     @staticmethod
     def _swe() -> dict:
-        import yaml
-        return yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        return load_yaml_fixture(_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml")
 
     @staticmethod
     def _guard_toy(dt: dict[str, float], outcome: str = "xfail", n_step: float = 1,
@@ -5539,8 +5552,7 @@ _CELL_CELL = (None, (0, "cell"), (1, "cell"))
 
 
 def _bench(spec_id: str) -> dict:
-    import yaml
-    return yaml.safe_load((_BENCH_DIR / f"{spec_id}.yaml").read_text())
+    return load_yaml_fixture(_BENCH_DIR / f"{spec_id}.yaml")
 
 
 def _gate_n(ir: dict) -> list[str]:

@@ -28,9 +28,9 @@ What this script reproduces:
   report in the SAME environment, which is the host the check must run on (its docstring says
   why).
 
-What it does NOT reproduce: CI runs the suite serially and this script runs it under
-pytest-xdist by default (`--jobs 24`), so an order dependence red only serially is missed —
-pass `--jobs 0` for CI's serial order. Every other host difference is inherited: other
+What it does NOT reproduce: CI runs the suite with four xdist workers and this script with 24
+by default (`--jobs 4` for CI's count; `--jobs 0` runs serially, which neither does and which
+is what shows an order dependence). Every other host difference is inherited: other
 compilers and profilers on PATH, which MPI comes first, and the rest of the environment.
 A green result therefore means "green without the skip-probe dependencies and without the
 operator's home", not "green in CI".
@@ -144,7 +144,7 @@ def verdict(suite_rc: int, counted: tuple[int, int] | None, expected: int,
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--jobs", type=int, default=24,
-                        help="pytest-xdist workers (default 24; 0 runs serially, as CI does)")
+                        help="pytest-xdist workers (default 24; CI uses 4; 0 runs serially)")
     parser.add_argument("--keep", action="store_true",
                         help="keep the temporary HOME, shim and report (removed by default)")
     args = parser.parse_args(argv)
