@@ -983,8 +983,10 @@ class DriverEvidencePromotionTests(unittest.TestCase):
 
 #: A loop driver in miniature (issue #632): the toy loop of `test_driver_render.loop_ir` (`u += dt`,
 #: `w = u`), reading each case's file as the host-rendered driver does — `restart.step` and, when
-#: it is positive, `restart.u` / `restart.w` — and writing the initial, history, series and final
-#: captures. `IGNORE_RESTART` makes it read `restart.step` as 0 (the instrument control: a
+#: it is positive, `restart.u` / `restart.w` — and writing the initial, history, restart point,
+#: series and final captures as the rendered driver over the json harness does (issue #644 P4b):
+#: `loop_ir` samples every variable and commits its restart points (the restart variables `u`,
+#: `w`) at the one stride `inputs.every`, and a restart point closes the series chunk before it. `IGNORE_RESTART` makes it read `restart.step` as 0 (the instrument control: a
 #: continuation that re-runs its base); `FAIL_CASE` exits 3 after that case.
 _LOOP_RUNNER = textwrap.dedent('''\
     #!/usr/bin/env python3
@@ -1007,7 +1009,8 @@ _LOOP_RUNNER = textwrap.dedent('''\
             u, w = list(d["restart.u"]), list(d["restart.w"])
         cap = lambda k: {"u": u, "w": w, "ok": ok, "step": k, "t": t0 + k * dt}
         dump("initial/" + c, cap(k0))
-        series = {"step": [], "t": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
+        fresh = lambda: {"step": [], "t": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
+        series, chunk = fresh(), 0
         scale = (int(os.environ.get("OMP_NUM_THREADS") or 1)
                  if os.environ.get("STEP_BY_THREADS") else 1)
         for k in range(k0 + 1, n + 1):
@@ -1018,8 +1021,13 @@ _LOOP_RUNNER = textwrap.dedent('''\
                 series[name] += col
             if every and k % every == 0:
                 dump("history/" + c + "__" + str(k), cap(k))
+                dump("series/" + c + "__" + str(chunk), series)
+                series, chunk = fresh(), chunk + 1
+                dump("restart_point/" + c + "__" + str(k),
+                     {"u": u, "w": w, "step": k, "t": t0 + k * dt})
         dump(c, cap(n))
-        dump("series/" + c + "__0", series)
+        if series["step"] or chunk == 0:
+            dump("series/" + c + "__" + str(chunk), series)
         steps += n - k0
         if k0 == 0 and os.environ.get("FAIL_BASE_THREADS") == os.environ.get("OMP_NUM_THREADS"):
             sys.exit(5)
@@ -1038,7 +1046,7 @@ _LOOP_RUNNER = textwrap.dedent('''\
 class ContinuationAtExecuteTests(unittest.TestCase):
     """The second pass of `Validate.execute` (issue #632), driven through `_execute_inproc` with
     the post-execute gate answered 0: the first pass runs the base cases, then each shape runs
-    each continuation in a process of its own from that shape's own sample, the host checks
+    each continuation in a process of its own from that shape's own restart point, the host checks
     where it started, and only then are its captures merged."""
 
     def _node(self, tmp: str, *, remote: bool = False) -> _Node:
@@ -1062,6 +1070,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
              "value": 0.0} for v in ("u", "w")]
         ir["io_contract"]["raw_requirements"]["required_evidence"] += [
             {"artifact": "state_history", "required": True},
+            {"artifact": "restart_points", "required": True},
             {"artifact": "step_series", "required": True,
              "names": ["step", "u_min", "u_max", "w_min", "w_max"]}]
         (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
@@ -1082,6 +1091,9 @@ class ContinuationAtExecuteTests(unittest.TestCase):
         initial = json.loads((snaps / "initial" / "m0_cont.json").read_text())
         self.assertEqual((initial["step"], initial["t"]), (2.0, 1.5))
         self.assertEqual(sorted(p.name for p in (snaps / "history").glob("m0_cont__*")),
+                         ["m0_cont__3.json", "m0_cont__4.json"])
+        # the continuation's own restart points after its start, merged beside its base's
+        self.assertEqual(sorted(p.name for p in (snaps / "restart_point").glob("m0_cont__*")),
                          ["m0_cont__3.json", "m0_cont__4.json"])
         meta = json.loads((n.node_dir / "trial_meta.json").read_text())
         self.assertTrue(meta["runner_command"].endswith(" m0"), meta["runner_command"])
@@ -1184,7 +1196,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
 
     def test_each_shape_continues_from_its_own_sample(self) -> None:
         """Round 2 (axis A, X1 / C17): the state a step commits depends on the shape (here on
-        its thread count), so a shape continuing from another shape's sample would end apart
+        its thread count), so a shape continuing from another shape's restart point would end apart
         from its own base; each continuing from its own, every shape agrees with itself and the
         quality check passes. Locally and at a site, whose second job brings each shape's
         `restart/` home to that shape."""
@@ -1266,6 +1278,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             for rel in ("m0_cont2.json", "initial/m0_cont2.json", "series/m0_cont2__0.json"):
                 self.assertFalse((snaps / rel).exists(), rel)
             self.assertEqual(list((snaps / "history").glob("m0_cont2__*")), [])
+            self.assertEqual(list((snaps / "restart_point").glob("m0_cont2__*")), [])
             self.assertIn("continuation 'm0_cont2' has no captures", out["stderr"])
             self.assertNotIn("continuation 'm0_cont' has no captures", out["stderr"])
 
@@ -1349,7 +1362,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             out = self._execute(n)
             self.assertIn("continuation 'm0_cont' has no captures: no restart point",
                           out["stderr"])
-            self.assertIn("a multiple of the base's history.every", out["stderr"])
+            self.assertIn("a multiple of the base's restart_points.every", out["stderr"])
 
     def test_a_second_pass_process_that_fails_fails_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

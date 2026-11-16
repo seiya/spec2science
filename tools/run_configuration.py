@@ -27,7 +27,7 @@ What it does, in order (each refusal exits 2 before anything runs):
    runs at the local site, one process.
 2. Applies the overrides to the base case and evaluates it with the host's evaluator
    (`primary_evidence.evaluate_case_inputs`), so every refusal a certified case meets (`n_step`,
-   `dt`, the 4-ulp `t_end` rule, `history.every`, the extents) applies here too. Refused: a
+   `dt`, the 4-ulp `t_end` rule, the strides, the extents) applies here too. Refused: a
    `base_case` that is no case of the IR or is a continuation; an override of a path that is
    not a numeric leaf of the base's `inputs`; a type change (an integer leaf given a real, a
    real given an integer, anything given a boolean); an override of an input the case reads
@@ -50,8 +50,8 @@ What it does, in order (each refusal exits 2 before anything runs):
    written. The run is `ok` only when the binary exits 0 and its final capture holds every
    state an entry's result dummy is bound to in the case, true: a kernel that refuses a
    configuration exits 0 and stops short of `n_step`.
-4. `--restart-from <capture>` continues an earlier run of this tool: the capture (a history
-   sample of the base case, or its final capture, as the target's capture store lays them out
+4. `--restart-from <capture>` continues an earlier run of this tool: the capture (a restart
+   point of the base case, or its final capture, as the target's capture store lays them out
    under `<prev>/raw/state_snapshots/`) must sit in an output directory of
    this tool whose `run_record.json` names the same node, target, IR, binary and
    configuration, and whose case file, its `restart.*` keys aside, is this run's evaluated case
@@ -68,7 +68,10 @@ What it does, in order (each refusal exits 2 before anything runs):
    selected ids, the binary's sha256, the configuration verbatim, the restart source with its
    sha256 and step, the command, the launch environment the tool set over its own, the exit
    status, the final capture's step and the kernel's outcome, the start check, and the
-   statement that the run certifies nothing. stdout and stderr go to `<out>/stdout.txt` and
+   statement that the run certifies nothing. A run that did not reach its end (a non-zero
+   exit, a timeout, a signal) also records `kept`: the steps of the restart points it
+   committed that read and the rows of its series that read in order (`rows`, `last_step`), where
+   the target's output format keeps records of an unfinished case. stdout and stderr go to `<out>/stdout.txt` and
    `<out>/stderr.txt`.
 
 Exit status: 0 when the run is `ok` (and, on a continuation, the start check held); 1 when the
@@ -81,8 +84,7 @@ file and the record); 128 + the signal number on SIGINT, SIGTERM or SIGHUP (130,
 What it does not do (issue #632 §3): stop a run at a chosen step; extend a finished run (a
 final capture is refused by `K < n_step` where `n_step` is host data, and by the driver at run
 time, exit 1, where `init` writes it); continue with another
-configuration or `dt`; run at a remote site or under a launcher; keep the series of a killed
-segment (the driver writes the series at the end of a case). `docs/RUNBOOK.md` §"Running a
+configuration or `dt`; run at a remote site or under a launcher. `docs/RUNBOOK.md` §"Running a
 person-written configuration" is the operator's procedure.
 """
 from __future__ import annotations
@@ -324,7 +326,7 @@ def evaluate_configuration(ir: dict[str, Any], base: str, overrides: dict[str, A
 def read_input_paths(ir: dict[str, Any], case: dict[str, Any], payload: dict[str, Any]
                      ) -> frozenset[str]:
     """The `inputs.*` paths the base case's evaluation reads by name: each `inputs.<path>` key
-    of its case file (what the drive binds, `history.every`, a procedure's inputs), each
+    of its case file (what the drive binds, the strides, a procedure's inputs), each
     `inputs` name of its `initial_state` and `derived` expressions, and each coordinate's
     `count` / `length` given as `inputs.<path>`. An override of one of them is never refused
     as a no-op, whatever the evaluated values (a `min()` whose other branch binds still reads
@@ -411,7 +413,7 @@ def select_certified(repo_root: Path, spec_ref: str, target_id: str) -> Selectio
 
 class RestartSource(NamedTuple):
     """Where a `--restart-from` capture sits: the tool output directory it is in, its kind (the
-    capture group: `history` or `final`), and the record it is — the members as the target's
+    capture group: `restart_point` or `final`), and the record it is — the members as the target's
     capture store reads them."""
     run_dir: Path
     kind: str
@@ -420,15 +422,17 @@ class RestartSource(NamedTuple):
 
 def _restart_source(capture: Path, base: str, output_format: str) -> RestartSource:
     """The `RestartSource` of a capture path; refuses a path the target's capture store does
-    not place as a history sample or the final capture of ``base`` in a run's capture
+    not place as a restart point or the final capture of ``base`` in a run's capture
     directory, and one it cannot read."""
     store = capture_store.store(output_format)
     snaps_label = "<run>/" + "/".join(capture_store.SNAPSHOT_DIR_PARTS) + "/"
     located = store.locate(capture, base)
     if located is None:
         raise ConfigurationRefused(
-            f"--restart-from {capture}: not a capture of {base!r} (expected a history sample "
-            f"or the final capture of that case under {snaps_label})")
+            f"--restart-from {capture}: no restart source of {base!r} (expected a restart point "
+            f"or the final capture of that case under {snaps_label}; a history sample holds "
+            "only the variables due at its step, and a run from before restart points were "
+            "their own records holds none)")
     snaps, group, step = located
     parts = capture_store.SNAPSHOT_DIR_PARTS
     if tuple(snaps.parts[-len(parts):]) != parts:
@@ -686,6 +690,30 @@ def _kernel_outcome(ir: dict[str, Any], out: Path, base: str,
     return step, None
 
 
+def kept_records(out: Path, base: str, output_format: str) -> dict[str, Any] | None:
+    """What a run that did not reach its end kept, as the target's capture store reads it: the
+    steps of the restart points that read (one a kill cut short is no restart point:
+    `--restart-from` refuses it) and the rows of its series up to where they stop being
+    readable in order; None when the capture directory cannot be read at all (an `OSError`
+    from it), so that the run record is still written."""
+    store = capture_store.store(output_format)
+    snaps = capture_store.snapshot_dir(out)
+    try:
+        rows, last = store.read_series_prefix(snaps, base)
+        points = []
+        for step in store.restart_point_steps(snaps, base):
+            try:
+                store.read_record(snaps, capture_store.RESTART_POINT, base, step)
+            except capture_store.CaptureError:
+                continue
+            points.append(step)
+    except OSError:
+        return None
+    return {"restart_points": points,
+            "series": {"rows": max((len(v) for v in rows.values()), default=0),
+                       "last_step": last}}
+
+
 def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Path, out: Path,
                       restart_from: Path | None = None, timeout_sec: float | None = None
                       ) -> int:
@@ -780,6 +808,8 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
             return EXIT_REFUSED
         record.update(exit_status=rc, timed_out=timed_out, finished_at=_now())
         failed = rc != 0
+        if failed:
+            record["kept"] = kept_records(out, base, output_format)
         if not failed:
             record["final_step"], why = _kernel_outcome(ir, out, base, output_format)
             record["kernel"] = why or "reached its end"
@@ -795,7 +825,8 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         # Whatever was recorded before the signal is kept; the status says the tool was
         # stopped before it finished judging the run.
         record.update(status="interrupted", finished_at=_now(),
-                      signal=exc.signum if isinstance(exc, Terminated) else int(signal.SIGINT))
+                      signal=exc.signum if isinstance(exc, Terminated) else int(signal.SIGINT),
+                      kept=kept_records(out, base, output_format))
         _write_json(out / RUN_RECORD, record)
         raise
     finally:
@@ -818,7 +849,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, type=Path,
                     help="a new or empty directory outside workspace/")
     ap.add_argument("--restart-from", type=Path, default=None,
-                    help="a history sample (or final capture) an earlier run of this tool wrote "
+                    help="a restart point (or final capture) an earlier run of this tool wrote "
                          "for the same configuration: continue from it")
     ap.add_argument("--timeout-sec", type=float, default=None,
                     help="kill the run after this many seconds (default: no bound)")

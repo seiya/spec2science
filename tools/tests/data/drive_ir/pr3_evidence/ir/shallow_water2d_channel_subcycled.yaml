@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/shallow_water2d_channel_subcycled@0.1.0
+  node_key: problem/shallow_water2d_channel_subcycled@0.1.1
   spec_kind: problem
   spec_id: shallow_water2d_channel_subcycled
-  spec_version: 0.1.0
+  spec_version: 0.1.1
   source_refs:
     controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/controlled_spec.md
     tests: spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/tests.md
@@ -45,8 +45,10 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 0
+      restart_points:
         every: 0
       subcycle:
         substeps: 2
@@ -88,8 +90,10 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 0
+      restart_points:
         every: 0
       subcycle:
         substeps: 0
@@ -131,8 +135,10 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 0
+      restart_points:
         every: 0
       subcycle:
         substeps: -1
@@ -174,9 +180,11 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 441
+      restart_points:
+        every: 0
       subcycle:
         substeps: 1
     derived:
@@ -217,9 +225,11 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 221
+      restart_points:
+        every: 0
       subcycle:
         substeps: 1
     derived:
@@ -260,9 +270,11 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 221
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -303,8 +315,10 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 0
+      restart_points:
         every: 0
       subcycle:
         substeps: 2
@@ -346,9 +360,11 @@ case:
         flow_profile_id: 3
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 443
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -389,9 +405,11 @@ case:
         flow_profile_id: 3
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 443
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -432,9 +450,11 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 142
+      restart_points:
+        every: 0
       subcycle:
         substeps: 1
     derived:
@@ -475,9 +495,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 1086
+      restart_points:
+        every: 0
       subcycle:
         substeps: 1
     derived:
@@ -518,9 +540,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 543
+      restart_points:
+        every: 0
       subcycle:
         substeps: 1
     derived:
@@ -561,8 +585,10 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 272
+      restart_points:
         every: 272
       subcycle:
         substeps: 1
@@ -604,8 +630,10 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 272
+      restart_points:
         every: 272
       subcycle:
         substeps: 2
@@ -647,8 +675,10 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 272
+      restart_points:
         every: 272
       subcycle:
         substeps: 2
@@ -693,8 +723,10 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
+        every: 272
+      restart_points:
         every: 272
       subcycle:
         substeps: 4
@@ -736,9 +768,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 544
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -779,9 +813,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 576
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -822,9 +858,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 576
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -865,9 +903,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 544
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -908,9 +948,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 544
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -951,9 +993,11 @@ case:
         eta0: 0.0
         shift_x_fraction: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 1087
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -994,9 +1038,11 @@ case:
         shift_x_fraction: 0.0
         u_jet: 0.0
       test_profile_id: shallow_water2d_channel_subcycled_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       history:
         every: 221
+      restart_points:
+        every: 0
       subcycle:
         substeps: 2
     derived:
@@ -1642,10 +1688,10 @@ algorithm:
   diagnostics_from_state: true
   fallback_policy: fail_closed
 dependency:
-  node_key: problem/shallow_water2d_channel_subcycled@0.1.0
+  node_key: problem/shallow_water2d_channel_subcycled@0.1.1
   direct_deps:
   - kind: problem
-    node_key: problem/shallow_water2d_channel@0.4.1
+    node_key: problem/shallow_water2d_channel@0.4.2
     operations:
     - shallow_water2d_channel__init
     - shallow_water2d_channel__step
@@ -1833,6 +1879,7 @@ io_contract:
           length: inputs.grid.L_y
           placement: cell_center
     - artifact: state_history
+    - artifact: restart_points
     - artifact: step_series
       names:
       - step
@@ -10386,4 +10433,8 @@ drive:
     t_start: inputs.time.t_start
     t_end: inputs.time.t_end
   history:
-    every: inputs.history.every
+    h: inputs.history.every
+    hu: inputs.history.every
+    hv: inputs.history.every
+  restart_points:
+    every: inputs.restart_points.every

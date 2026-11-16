@@ -42,7 +42,7 @@ from tools.backends.language.fortran.runner import (
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
-from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir
+from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir, sampled
 from tools.tests.yaml_fixtures import load_yaml_fixture
 
 HARNESS = "harness_fortran_cpu"
@@ -127,6 +127,18 @@ def _rename_state(ir: dict, old: str, new: str) -> None:
 
 
 BOUNDARY_OP = f"{BOUNDARY_SID}__fill"
+
+
+def _unwrap(text: str) -> str:
+    """``text`` with each Fortran continuation (`&` at a line's end, the next line's leading
+    blanks) joined into one line, so a row reads a rendered statement whatever its wrap."""
+    return re.sub(r" ?&\n\s*", " ", text)
+
+
+def _variables_of(ir: dict) -> list[str]:
+    """The snapshot schema variable names of ``ir``, in schema order."""
+    schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+    return [v["name"] for v in schema["variables"]]
 
 
 def _boundary_ir() -> dict:
@@ -1123,6 +1135,7 @@ class LineWidthTest(unittest.TestCase):
                 name = "w" * width
                 schema["variables"][1]["name"] = name
                 ir["drive"]["step"]["arguments"]["w"] = f"state.{name}"
+                ir["drive"]["history"][name] = ir["drive"]["history"].pop("w")
                 if refused:
                     with self.assertRaises(RenderError) as cm:
                         render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
@@ -1531,6 +1544,10 @@ class HarnessPinTest(unittest.TestCase):
         def scalarless(ir: dict) -> dict:
             schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
             schema["variables"] = [v for v in schema["variables"] if v["shape_expr"] != "scalar"]
+            if "history" in ir["drive"]:
+                kept = {v["name"] for v in schema["variables"]}
+                ir["drive"]["history"] = {k: p for k, p in ir["drive"]["history"].items()
+                                          if k in kept}
             return ir
         symbol = "harness_fortran_cpu__capture_real"
         one_call, looped = scalarless(call_ir(0)), scalarless(loop_ir(0))
@@ -1551,7 +1568,7 @@ class HarnessPinTest(unittest.TestCase):
         looped = copy.deepcopy(self.ir)
         looped["drive"]["loop"] = {"n_step": "inputs.n_step", "dt": "inputs.dt",
                                    "t_start": "inputs.t_start", "t_end": "inputs.t_end"}
-        looped["drive"]["history"] = {"every": "inputs.every"}
+        looped["drive"].update(sampled(_variables_of(looped)))
         for ir in (self.ir, looped):
             self.assertNotIn("capture_array_r1", _used_harness_ops(ir))
             assert_harness_pin(ir, BOUNDARY_SID, HARNESS, self.sigs, cut)
@@ -1592,7 +1609,9 @@ class HarnessPinTest(unittest.TestCase):
 
 class CaptureOpenRenderTest(unittest.TestCase):
     """What the driver declares to `capture_open` (issue #644 P4a): the json store reads none of
-    it, so no run observes it and these rows hold the text."""
+    it, so a json run does not observe it and these rows hold the text (the counts a run hands
+    over, against what it writes, are `test_driver_render`'s capacity row, over a harness model
+    that records them)."""
 
     @staticmethod
     def _flags(text: str) -> dict[str, str]:
@@ -1609,8 +1628,10 @@ class CaptureOpenRenderTest(unittest.TestCase):
                       "    'u_min', &\n    'u_max', &\n    'w_min', &\n    'w_max' &\n    ]\n",
                       loop)
         self.assertNotIn("'step'", loop)
-        self.assertIn(f"call {HARNESS}__capture_open(cid, &\n"
-                      "      cvars, 0, series_names, max(n_c - step0, 0))", loop)
+        points = ("merge(n_c / max(restart_every_c, 1) - step0 / max(restart_every_c, 1), 0, "
+                  "restart_every_c > 0 .and. n_c > step0)")
+        self.assertIn(f"call {HARNESS}__capture_open(cid, cvars, {points}, series_names, "
+                      "max(n_c - step0, 0))\n", _unwrap(loop))
         one = render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("  character(len=1), parameter :: series_names(0) = &\n", one)
         self.assertIn(f"call {HARNESS}__capture_open(cid, &\n"
@@ -1634,20 +1655,57 @@ class CaptureOpenRenderTest(unittest.TestCase):
 
     def test_the_history_capacity_is_the_sample_count_on_a_loop_node_and_0_otherwise(
             self) -> None:
-        """`n_c / every_c` when `every_c > 0`, else 0, on a loop node (the serial and the
-        distributed form); 0 on a one-call node. The json harness does not read `h_var`, so no
-        json run observes it: a text row."""
+        """Per variable (issue #644 P4b), the multiples of ITS stride `E` in `step0 + 1 .. n_c`
+        when `E > 0`, else 0, on a loop node (the serial and the distributed form); 0 for a
+        variable `drive.history` leaves out, and 0 on a one-call node. The json harness does
+        not read `h_var`, so no json run observes it: a text row (the counts a run writes are
+        `test_driver_render`'s capacity rows)."""
         from tools.tests.test_driver_render import _mpi_runner_text
 
-        def capacities(text: str) -> set[str]:
-            return set(re.findall(r"cvars\(\d+\)%history_capacity = (.+)\n", text))
+        def capacities(text: str) -> dict[str, str]:
+            text = _unwrap(text)
+            names = dict(re.findall(r"cvars\((\d+)\)%name = '(\w+)'", text))
+            return {names[k]: v for k, v in
+                    re.findall(r"cvars\((\d+)\)%history_capacity = (.+)\n", text)}
 
-        loop_capacity = {"merge(n_c / max(every_c, 1), 0, every_c > 0)"}
-        self.assertEqual(loop_capacity, capacities(
+        def count(every: str) -> str:
+            return (f"merge(n_c / max({every}, 1) - step0 / max({every}, 1), 0, "
+                    f"{every} > 0 .and. n_c > step0)")
+
+        one = count("history_every_c(1)")
+        self.assertEqual({"u": one, "w": one, "ok": one}, capacities(
             render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
-        self.assertEqual(loop_capacity, capacities(_mpi_runner_text("fx_loop")))
-        self.assertEqual({"0"}, capacities(
-            render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
+        self.assertEqual(set(capacities(_mpi_runner_text("fx_loop")).values()), {one})
+        self.assertEqual({"0"}, set(capacities(
+            render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)).values()))
+        # two strides, one variable sampled by neither: each its own group's count
+        ir = loop_ir(0)
+        ir["drive"]["history"] = {"w": "inputs.ew", "u": "inputs.eu"}
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"].update(eu=2, ew=3)
+        caps = capacities(render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc))
+        self.assertEqual(caps["ok"], "0")
+        self.assertEqual({caps["u"], caps["w"]},
+                         {count("history_every_c(1)"), count("history_every_c(2)")})
+        self.assertNotEqual(caps["u"], caps["w"])
+
+    def test_the_restart_point_capacity_is_the_restart_stride_s_count(self) -> None:
+        """`capture_open`'s restart point capacity is the multiples of `restart_every_c` in
+        `step0 + 1 .. n_c` (kills the literal 0 it was before issue #644 P4b, and a count over
+        a history stride), on the serial and the distributed form; 0 on a one-call node."""
+        from tools.tests.test_driver_render import _mpi_runner_text
+        want = ("merge(n_c / max(restart_every_c, 1) - step0 / max(restart_every_c, 1), 0, "
+                "restart_every_c > 0 .and. n_c > step0)")
+        for label, text in (
+                ("serial", render_runner(loop_ir(0), "drv_toy", HARNESS,
+                                         target=_TARGET_PROFILE.doc)),
+                ("distributed", _mpi_runner_text("fx_loop"))):
+            with self.subTest(label):
+                self.assertRegex(_unwrap(text), r"__capture_open\(cid, cvars, "
+                                 + re.escape(want) + r", series_names, ")
+        self.assertRegex(_unwrap(render_runner(call_ir(0), "drv_toy", HARNESS,
+                                               target=_TARGET_PROFILE.doc)),
+                         r"__capture_open\(cid, cvars, 0, series_names, 0\)")
 
     def test_the_distributed_form_declares_the_global_extents(self) -> None:
         # A partitioned state the kernel writes is held on each rank as its own block; the

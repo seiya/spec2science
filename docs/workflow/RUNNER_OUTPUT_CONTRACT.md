@@ -120,8 +120,8 @@ never refused by the harness.
   shape-checked like the `final` record. A harness self-test commits none, and nothing requires
   it to.
 - **`history`** (a host-rendered runner on a node whose `drive` declares `loop`, when the IR
-  requires `state_history`) — a record of the full state at committed step `<k>`, every `every`
-  committed steps (`every` = 0: none), of the shape above.
+  requires `state_history`) — at committed step `<k>`, the variables whose stride
+  (`drive.history`; 0: never) divides `<k>`, of the shape above; no record if none is due.
 - **`series`** (the same node, when the IR requires `step_series`) — one row per committed step
   the case ran, holding exactly the names the IR's `step_series` entry declares: `step`, and
   `<v>_min` and `<v>_max` of every array state. Each row also carries its `t`, which is not a
@@ -129,19 +129,18 @@ never refused by the harness.
   committed cell into the row as `NaN`, and the host's series reader refuses such a row. Every
   case has a series, with no row where it committed none; on a node that declares no
   `step_series` the host does not read it.
-- **`restart_point`** — a record of a case's restart variables at a committed step. The capture
-  interface carries the group and no runner commits to it: a `restart point` is a `history`
-  record (`docs/GLOSSARY.md`).
+- **`restart_point`** (the same node, when the IR requires `restart_points`) — the
+  restart variables every `drive.restart_points.every` committed steps (0: none).
 
-**What the driver captures.** A record of a host-rendered driver holds every state variable, with
-the `step` and the `t` of its commit. Per case the driver reads the case through `__read_case` and the getters
+**What the driver captures.** An `initial` or `final` record of a host-rendered driver holds every
+state variable; every record carries the `step` and the `t` of its commit. Per case the driver reads the case through `__read_case` and the getters
 (§6), allocates each state and fills it from the case's `initial_state`, and calls `init` if `drive`
 declares one on the state itself; a false `init` result leaves the case with both records committed
 and no step. It then commits the `initial` record. On a node whose `drive` declares `loop` it calls
 `step` up to `n_step` times through work copies: an `inout` dummy receives a copy of the state and every `out`
 array a NaN-filled work array. A true result commits the call: the state is copied back, `step`
-advances, `t = t_start + step * dt`, a `series` row is committed and a `history` record every `every`
-steps. A false result ends the loop on the last committed state. After `init` a loop node's driver
+advances, `t = t_start + step * dt`, a `series` row is committed, then the `history` and `restart_point` records due at
+that step. A false result ends the loop on the last committed state. After `init` a loop node's driver
 reads `restart.step`; at `K` > 0 (a continuation case: another case continued from its step `K`,
 `phase_04_validate.md` §4-1) it restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
 state itself, each `out` starting at its `initial_state` content, and `step` becomes 1 only on a true

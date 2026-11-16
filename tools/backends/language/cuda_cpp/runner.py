@@ -241,7 +241,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f'#include "{hm}.cuh"')
     a(f'#include "{md}.cuh"')
     a("")
-    for header in ("algorithm", "chrono", "cmath", "cstddef", "cstdint", "cstdio", "cstdlib",
+    for header in ("algorithm", "array", "chrono", "cmath", "cstddef", "cstdint", "cstdio", "cstdlib",
                    "iostream", "limits", "string", "type_traits", "vector"):
         a(f"#include <{header}>")
     a("")
@@ -293,14 +293,30 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("")
     for proc in (p for entry in plan.entries for p in entry.procedures):
         _render_procedure(a, plan, proc)
-    a("// One record of `group`: every declared state variable, closed with the committed `step`")
-    a("// and `t` — the same set at every capture point of every case.")
+    nvar = len(plan.variables)
+    if plan.loop:
+        a("// One record of `group`: the state variables `csel` selects — every one at the")
+        a("// initial and final captures, those due at a sampled step, the restart variables at a")
+        a("// restart point — closed with the committed `step` and `t`.")
+        marks = ", ".join("true" if v in plan.restart_vars else "false" for v in plan.variables)
+        a(f"std::array<bool, {nvar}> csel;")
+        a(f"const std::array<bool, {nvar}> crestart = {{")
+        a(f"    {marks}}};")
+    else:
+        a("// One record of `group`: every declared state variable, closed with the committed")
+        a("// `step` and `t` — the same set at every capture point of every case.")
     a("void capture_state(const std::string& group) {")
-    for var, rank in plan.variables.items():
+    for k, (var, rank) in enumerate(plan.variables.items()):
+        ind = "  "
+        if plan.loop:
+            a(f"  if (csel[{k}]) {{")
+            ind = "    "
         if rank == 0:
-            a(f'  {H("capture_real")}(group, "{_clit(var)}", st_{var});')
+            a(f'{ind}{H("capture_real")}(group, "{_clit(var)}", st_{var});')
         else:
-            a(f'  {H(f"capture_array_r{rank}")}(group, "{_clit(var)}", cv(st_{var}));')
+            a(f'{ind}{H(f"capture_array_r{rank}")}(group, "{_clit(var)}", cv(st_{var}));')
+        if plan.loop:
+            a("  }")
     a(f"  {H('capture_commit')}(group, step_c, t_c);")
     a("}")
     a("")
@@ -363,7 +379,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     if plan.loop:
         a("    int n_c = 0;")
         a("    int step0 = 0;")
-        a("    int every_c = 0;")
+        a("    int restart_every_c = 0;")
+        groups = len(plan.entries[0].loop_values["history"])
+        if groups:
+            a(f"    std::array<int, {groups}> history_every_c{{}};")
         a("    double dt_c = 0.0;")
         a("    double t_start_c = 0.0;")
     if plan.list_form:
@@ -645,7 +664,11 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         form, ref = entry.loop_values["n_step"]
         a(f"{ind}n_c = "
           f"{'static_cast<int>(std::lround(' + ref.local + '))' if form == 'host' else '0'};")
-        a(f"{ind}every_c = static_cast<int>(std::lround({entry.loop_values['every'][1].local}));")
+        for g, (value, _vars) in enumerate(entry.loop_values["history"]):
+            a(f"{ind}history_every_c[{g}] = static_cast<int>(std::lround({value.local}));")
+        a(f"{ind}restart_every_c = static_cast<int>(")
+        a(f"{ind}    std::lround({entry.loop_values['restart_every'][1].local}));")
+        a(f"{ind}csel.fill(true);")
         a(f"{ind}t_c = t_start_c;")
     if entry.init is not None:
         a(f"{ind}// --- init, on the state itself; a false result refuses the case ---")
@@ -674,7 +697,7 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
             a(f"{ind}}}")
     if plan.loop:
         _render_restart(a, plan, entry, H, ind)
-    _render_capture_open(a, plan, H, ind)
+    _render_capture_open(a, plan, entry, H, ind)
     a(f"{ind}// --- the initial capture ---")
     a(f'{ind}capture_state("initial");')
     if plan.loop:
@@ -697,10 +720,25 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
             a(f'{in1}{H("capture_real")}("series", "{_clit(var)}_min", fold(st_{var}, false));')
             a(f'{in1}{H("capture_real")}("series", "{_clit(var)}_max", fold(st_{var}, true));')
         a(f'{in1}{H("capture_commit")}("series", n, t_c);')
-        a(f"{in1}if (every_c > 0 && n % every_c == 0) {{")
-        a(f'{in1}  capture_state("history");')
+        index = {var: k for k, var in enumerate(plan.variables)}
+        if entry.loop_values["history"]:
+            a(f"{in1}csel.fill(false);")
+        for g, (_value, sampled) in enumerate(entry.loop_values["history"]):
+            a(f"{in1}if (history_every_c[{g}] > 0 && n % history_every_c[{g}] == 0) {{")
+            for var in sampled:
+                a(f"{in1}  csel[{index[var]}] = true;")
+            a(f"{in1}}}")
+        if entry.loop_values["history"]:
+            a(f"{in1}if (std::any_of(csel.begin(), csel.end(), [](bool b) {{ return b; }})) {{")
+            a(f'{in1}  capture_state("history");')
+            a(f"{in1}}}")
+        a(f"{in1}// --- a restart point: the restart variables, after the row of its step ---")
+        a(f"{in1}if (restart_every_c > 0 && n % restart_every_c == 0) {{")
+        a(f"{in1}  csel = crestart;")
+        a(f'{in1}  capture_state("restart_point");')
         a(f"{in1}}}")
         a(f"{ind}}}")
+        a(f"{ind}csel.fill(true);")
     else:
         a(f"{ind}if (!case_refused) {{")
         a(f"{ind}  // --- one call on the state itself: what it leaves is the captured state ---")
@@ -714,17 +752,24 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
     a(f"{ind}{H('capture_close')}();")
 
 
-def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, H: Any, ind: str) -> None:
+def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
+                         H: Any, ind: str) -> None:
     """The start of the case's output: what the harness's format may need defined before the
     first record — each state variable's name, rank and extents, the number of samples it may
-    hold, whether a restart point holds it — and the series' names (without `step`, which the
-    commit carries) and row count. No restart point is committed (a restart point is a history
-    sample), so its capacity is 0."""
+    hold, whether a restart point holds it — the number of restart points, and the series'
+    names (without `step`, which the commit carries) and row count. A count is the multiples
+    of the stride in `step0 + 1 .. n_c`, the steps this process may commit."""
     a(f"{ind}// --- the case's output: its variables and the records it may hold ---")
     restart = set(plan.restart_vars)
-    samples = "every_c > 0 ? n_c / every_c : 0" if plan.loop else "0"
+    group_of = {var: g for g, (_value, sampled) in enumerate(entry.loop_values["history"])
+                for var in sampled} if plan.loop else {}
+    if plan.loop:
+        a(f"{ind}const auto due = [&](int every) {{")
+        a(f"{ind}  return every > 0 && n_c > step0 ? n_c / every - step0 / every : 0;")
+        a(f"{ind}}};")
     a(f"{ind}const std::vector<{H('h_var')}> cvars = {{")
     for var, rank in plan.variables.items():
+        samples = f"due(history_every_c[{group_of[var]}])" if var in group_of else "0"
         if rank == 1:
             extents = [f"static_cast<int>(st_{var}.size())"]
         else:
@@ -735,7 +780,9 @@ def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, H: Any, ind: str) -
     a(f"{ind}}};")
     names = ", ".join(f'"{_clit(name)}"' for name in plan.series_names[1:])
     rows = "std::max(n_c - step0, 0)" if plan.loop else "0"
-    a(f"{ind}{H('capture_open')}(cid, cvars, 0, {{{names}}}, {rows});")
+    points = "due(restart_every_c)" if plan.loop else "0"
+    a(f"{ind}{H('capture_open')}(cid, cvars, {points},")
+    a(f"{ind}    {{{names}}}, {rows});")
 
 
 # --- harness interface signature pin (fail-closed, run before rendering) -----------------------

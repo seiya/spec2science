@@ -35,7 +35,9 @@ contains
   end subroutine drv_toy__init
 
   ! One committed step: u += dt, w = u. mode 1 refuses at step 3 after writing its work copy,
-  ! 2 leaves w(1) unassigned, 3 never assigns ok, 4 puts a NaN into u at step 2, 5 records dt in u.
+  ! 2 leaves w(1) unassigned, 3 never assigns ok, 4 puts a NaN into u at step 2, 5 records dt in u,
+  ! 6 stops the program (exit 7) in step 6 and 7 blocks in step 6 until it is killed (or 120 s
+  ! pass): a run that does not reach its end after committing five steps.
   subroutine drv_toy__step(nx, mode, dt, t, stepno, u, w, ok)
     integer, intent(in) :: nx
     integer, intent(in) :: mode
@@ -45,6 +47,8 @@ contains
     real(dp), intent(inout) :: u(nx)
     real(dp), intent(out) :: w(nx)
     logical, intent(out) :: ok
+    if (mode == 6 .and. stepno == 5) error stop 7
+    if (mode == 7 .and. stepno == 5) call execute_command_line('timeout --foreground 120 tail -f /dev/null')
     u = u + dt
     if (mode == 5) u = dt
     if (mode == 2) then

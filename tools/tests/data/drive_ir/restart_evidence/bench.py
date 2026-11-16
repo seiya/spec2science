@@ -24,14 +24,16 @@ calls (issue #644 P4a).
   `../pr3_evidence/ir/shallow_water2d_rotating.yaml` (the generated procedure's argument list is
   that IR's `drive.step` binding set: the pairing builds, and its baseline row moves no test).
   Restart test: base
-  `swr_shear_n064_restart` (`history.every` 61, `rotation.every` 2, 183 steps), continuation at
-  K = 61.
+  `swr_shear_n064_restart` (`restart_points.every` 61, `rotation.every` 2, 183 steps),
+  continuation at K = 61.
 * `chan_gen` — the GENERATED `problem/shallow_water2d_channel@0.3.1` model
   (`.../problem__shallow_water2d_channel__0.3.1/fortran_cpu/shallow-water2d-channel_20261106_001`)
   under its own certified IR (its lineage `ir_ref`), to which this bench adds in memory the
   continuation `chan_tc4_ref_n032_dts100_cont` (the base's entry with `restart: {from:
   chan_tc4_ref_n032_dts100, step: 272}` and no `initial_state`), and the test
-  `l3_restart_equivalence` with its predicates copied from the hand channel IR.
+  `l3_restart_equivalence` with its predicates copied from the hand channel IR, and which it
+  then converts to the drive shape of issue #644 P4b (`p4b_shape`: the base and the
+  continuation commit a restart point every 272 steps).
 * `chan_hand` — the HAND-WRITTEN 0.4.x model `../pr3_evidence/models/
   shallow_water2d_channel_model.f90` under `../pr3_evidence/ir/shallow_water2d_channel.yaml`
   (which carries the continuation and the test), linked against the closure of the `chan_gen`
@@ -42,12 +44,13 @@ with `--subjects rot_r,chan_r,chan_hand_r` (the default stays the P2 three, the 
 
 * `rot_r` — the GENERATED `problem/shallow_water2d_rotating@0.1.1` model of R
   (`.../problem__shallow_water2d_rotating__0.1.1/fortran_cpu/shallow-water2d-rotating_20261113_001`,
-  its lineage `source_id`) under that pipeline's CERTIFIED IR, unchanged (it carries the
-  continuation and the restart test); mutants `mutants_rot_r.yaml` (the `rot` rows re-expressed
+  its lineage `source_id`) under that pipeline's CERTIFIED IR, unchanged but for its
+  conversion to the drive shape of issue #644 P4b (`p4b_shape`; it carries the continuation and
+  the restart test); mutants `mutants_rot_r.yaml` (the `rot` rows re-expressed
   on this text); the order and placement controls of `rot`.
 * `chan_r` — the GENERATED `problem/shallow_water2d_channel@0.4.1` model of R
   (`.../problem__shallow_water2d_channel__0.4.1/fortran_cpu/shallow-water2d-channel_20261113_001`)
-  under its CERTIFIED IR, unchanged; mutants `mutants_chan_r.yaml`.
+  under its CERTIFIED IR, unchanged but for `p4b_shape`; mutants `mutants_chan_r.yaml`.
 * `chan_hand_r` — the HAND-WRITTEN model of `chan_hand` under the same certified IR, linked
   against the `chan_r` closure; mutants `mutants_chan_hand.yaml` as they are.
 
@@ -90,8 +93,8 @@ Rows (declared before the bench ran; ids and classes are in the mutant files' he
   (`expect_axis_first: caught`) — the mechanism the declaration names, isolated from the suite's
   order, in which the first firing 64 x 64 case before the base has the base's own f;
 * placement control (`rot` only, informational): every `rot` model mutant and the baseline again
-  under a variant IR built in memory with the base's (and continuation's) `history.every` 62 and
-  K = 62, a MULTIPLE of the call interval `rotation.every` 2, recording caught/missed per row.
+  under a variant IR built in memory with the base's (and continuation's) `restart_points.every`
+  62 and K = 62, a MULTIPLE of the call interval `rotation.every` 2, recording caught/missed per row.
 
 A row is CAUGHT when any judged test's status differs from its `expected_outcome`, pass 1 exits
 non-zero, or the second pass reports a problem (no restart point, a non-zero exit, a failed start
@@ -156,6 +159,8 @@ def _part1_bench():
 
 _P1 = _part1_bench()
 apply_patches, failed_records = _P1.apply_patches, _P1.failed_records
+#: an IR written before issue #644 P4b, in the drive shape the host now renders and judges
+p4b_shape = _P1.p4b_shape
 
 FLAGS = ["-std=f2008", "-O2", "-fopenmp"]
 THREADS = "1"
@@ -242,8 +247,6 @@ def chan_gen_ir() -> dict[str, Any]:
     print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml")
     hand = yaml.safe_load((PR3 / "ir" / "shallow_water2d_channel.yaml").read_text())
     base = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == CHAN_BASE)
-    if base["inputs"]["history"]["every"] != CHAN_K:
-        raise SystemExit(f"{CHAN_BASE}: history.every is not {CHAN_K}")
     cont = copy.deepcopy(base)
     cont.pop("initial_state", None)
     cont["case_id"] = f"{CHAN_BASE}_cont"
@@ -253,25 +256,30 @@ def chan_gen_ir() -> dict[str, Any]:
         next(t for t in hand["io_contract"]["tests"] if t["test_id"] == RESTART_TEST)))
     ir["io_contract"]["predicates"] += copy.deepcopy(
         [p for p in hand["io_contract"]["predicates"] if p["test_id"] == RESTART_TEST])
-    return ir
+    # the base commits its restart point at K (issue #644 P4b): `p4b_shape` gives the base and
+    # the continuation `restart_points.every` K, as the hand IR does
+    return p4b_shape(ir, like=hand)
 
 
 def certified_ir(pipe: Path) -> dict[str, Any]:
-    """The IR the pipeline's own lineage names (`ir_ref`), unchanged: the IRs R certified carry
-    the continuation and `l3_restart_equivalence` themselves (issue #632 P2's `tests.md`)."""
+    """The IR the pipeline's own lineage names (`ir_ref`), unchanged but for its conversion to
+    the drive shape of issue #644 P4b (`p4b_shape`): the IRs R certified carry the continuation
+    and `l3_restart_equivalence` themselves (issue #632 P2's `tests.md`)."""
     lin = _lineage(pipe)
-    print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml")
-    return yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
+    print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml (in the P4b drive shape)")
+    ir = yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
+    sid = ir["meta"]["spec_id"]
+    return p4b_shape(ir, like=yaml.safe_load((PR3 / "ir" / f"{sid}.yaml").read_text()))
 
 
 def multiple_variant(ir: dict[str, Any], every: int = 62) -> dict[str, Any]:
-    """The placement control's IR: the restart base and its continuation with `history.every`
-    `every` and K = `every`."""
+    """The placement control's IR: the restart base and its continuation with
+    `restart_points.every` `every` and K = `every`."""
     ir = copy.deepcopy(ir)
     base, cont = _restart_ids(ir)
     for c in ir["case"]["test_case_set"]:
         if c["case_id"] in (base, cont):
-            c["inputs"]["history"]["every"] = every
+            c["inputs"]["restart_points"]["every"] = every
         if c["case_id"] == cont:
             c["restart"]["step"] = every
     return ir

@@ -49,7 +49,8 @@ class BindingTest(unittest.TestCase):
 
 class ReadersTest(unittest.TestCase):
     def test_the_block(self) -> None:
-        self.assertEqual(set(r.drive_block(_toy())), {"step", "loop", "history", "distribute"})
+        self.assertEqual(set(r.drive_block(_toy())),
+                         {"step", "loop", "history", "restart_points", "distribute"})
         with self.assertRaisesRegex(RenderError, "IR has no drive block"):
             r.drive_block({})
         ir = _toy()
@@ -107,9 +108,11 @@ class ReadersTest(unittest.TestCase):
             "n_step": ("derived", "n_step"), "dt": ("derived", "dt"),
             "t_start": ("inputs", "time.t_start"), "t_end": ("inputs", "time.t_end")})
         self.assertEqual(r.drive_loop(_toyi())["n_step"], ("state", "n_plan"))
-        self.assertEqual(r.drive_history_every(_toy()), "history.every")
+        self.assertEqual(r.drive_history(_toy()), {"h": "history.every", "ok": "history.every"})
+        self.assertEqual(r.drive_restart_points_every(_toy()), "history.every")
         self.assertIsNone(r.drive_loop(_coriolis()))
-        self.assertIsNone(r.drive_history_every(_coriolis()))
+        self.assertIsNone(r.drive_history(_coriolis()))
+        self.assertIsNone(r.drive_restart_points_every(_coriolis()))
         for fn, msg in ((lambda d: d["loop"].pop("t_end"), "drive.loop must carry exactly"),
                         (lambda d: d["loop"].update(dt="time"), "drive.loop.dt must be"),
                         (lambda d: d["loop"].update(dt=0.1), "drive.loop.dt must be")):
@@ -118,12 +121,134 @@ class ReadersTest(unittest.TestCase):
                 fn(ir["drive"])
                 with self.assertRaisesRegex(RenderError, msg):
                     r.drive_loop(ir)
-        for every in ("derived.k", {"every": "derived.k"}, {"every": "inputs.a", "x": 1}):
-            with self.subTest(every=every):
+        # `drive.history` (issue #644 P4b): a mapping of a state variable to an `inputs` path
+        for history, msg in (("inputs.a", "drive.history must be"),
+                             (["h"], "drive.history must be"),
+                             ({"h": "derived.k"}, r"drive.history.h must be inputs"),
+                             ({"h": "state.h"}, r"drive.history.h must be inputs"),
+                             ({"h": 2}, r"drive.history.h must be inputs"),
+                             ({1: "inputs.a"}, r"drive.history.1 must be inputs"),
+                             # a value no binding spells is refused by the binding reader
+                             ({"h": {"every": "inputs.a"}}, "drive binding")):
+            with self.subTest(history=history):
                 ir = _toy()
-                ir["drive"]["history"] = every
-                with self.assertRaisesRegex(RenderError, "drive.history must be"):
-                    r.drive_history_every(ir)
+                ir["drive"]["history"] = history
+                with self.assertRaisesRegex(RenderError, msg):
+                    r.drive_history(ir)
+        for points in ("derived.k", {"every": "derived.k"}, {"every": "inputs.a", "x": 1},
+                       {"h": "inputs.a"}, "inputs.a", {}):
+            with self.subTest(points=points):
+                ir = _toy()
+                ir["drive"]["restart_points"] = points
+                with self.assertRaisesRegex(RenderError, "drive.restart_points must be"):
+                    r.drive_restart_points_every(ir)
+
+    def test_the_history_map_keeps_its_order_and_an_empty_map_samples_nothing(self) -> None:
+        """`drive.history` reads as variable -> stride path in the block's order, two
+        variables at two strides each keep their own; `{}` is a declared history sampling
+        nothing (not None, which is no history). Kills reading `{}` as absent (`if not raw`)
+        and dropping or merging an entry."""
+        ir = _toy()
+        ir["drive"]["history"] = {"ok": "inputs.history.b", "h": "inputs.history.a"}
+        self.assertEqual(list(r.drive_history(ir).items()),
+                         [("ok", "history.b"), ("h", "history.a")])
+        ir["drive"]["history"] = {}
+        self.assertEqual(r.drive_history(ir), {})
+
+    def test_the_old_history_shape_is_refused_by_the_plan(self) -> None:
+        """The pre-P4b shape `history: {every: inputs.<path>}` reads as a variable named
+        `every`, which no snapshot variable is (`every` is a reserved name): `driver_plan`
+        refuses it, with `restart_points` declared (so the refusal is the history's, not the
+        declared-together one) and without it. Kills dropping the `names no snapshot
+        variable` check of `driver_plan`."""
+        from tools.tests.test_driver_render import loop_ir
+        for with_points in (True, False):
+            with self.subTest(with_points=with_points):
+                ir = loop_ir(0)
+                ir["drive"]["history"] = {"every": "inputs.every"}
+                if not with_points:
+                    del ir["drive"]["restart_points"]
+                variables = _variables(ir)
+                msg = ("drive.history.every names no snapshot variable" if with_points
+                       else "declared exactly when drive.loop is")
+                with self.assertRaisesRegex(RenderError, msg):
+                    r.driver_plan(ir, variables)
+
+    def test_history_and_restart_points_are_declared_exactly_with_the_loop(self) -> None:
+        """Either key without the loop, or the loop without either key, is refused by
+        `driver_plan` (kills dropping either half of the declared-together check)."""
+        from tools.tests.test_driver_render import call_ir, loop_ir
+        cases = []
+        for key in ("history", "restart_points"):
+            ir = loop_ir(0)
+            del ir["drive"][key]
+            cases.append((f"loop without {key}", ir))
+        for key, value in (("history", {"a": "inputs.mode"}),
+                           ("restart_points", {"every": "inputs.mode"})):
+            ir = call_ir(0)
+            ir["drive"][key] = value
+            cases.append((f"{key} without loop", ir))
+        for label, ir in cases:
+            with self.subTest(label):
+                with self.assertRaisesRegex(RenderError, "declared exactly when drive.loop is"):
+                    r.driver_plan(ir, _variables(ir))
+
+    def test_the_plan_groups_the_sampled_variables_by_stride(self) -> None:
+        """`loop_values["history"]` is one (host value, variables) group per stride path, its
+        variables in schema order, a variable absent from the map in no
+        group; `restart_every` is the restart stride's host value (kills merging two strides,
+        dropping an absent variable's exclusion, or binding the restart stride to a history
+        one)."""
+        from tools.tests.test_driver_render import loop_ir
+        ir = loop_ir(0)
+        ir["drive"]["history"] = {"w": "inputs.ew", "u": "inputs.eu"}
+        ir["drive"]["restart_points"] = {"every": "inputs.er"}
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"].update(eu=2, ew=3, er=5)
+        (entry,) = r.driver_plan(ir, _variables(ir)).entries
+        groups = entry.loop_values["history"]
+        self.assertEqual({v.key: names for v, names in groups},
+                         {"inputs.ew": ("w",), "inputs.eu": ("u",)})
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(entry.loop_values["restart_every"][1].key, "inputs.er")
+        ir["drive"]["history"] = {"w": "inputs.ew", "u": "inputs.ew"}
+        (entry,) = r.driver_plan(ir, _variables(ir)).entries
+        self.assertEqual([(v.key, names) for v, names in entry.loop_values["history"]],
+                         [("inputs.ew", ("u", "w"))])
+        ir["drive"]["history"] = {}
+        (entry,) = r.driver_plan(ir, _variables(ir)).entries
+        self.assertEqual(entry.loop_values["history"], ())
+
+
+class AgreementWithPrimaryEvidenceTest(unittest.TestCase):
+    """Constants the render side and the verdict side each define (they do not import each
+    other): a test holds them equal."""
+
+    def test_the_drive_keys_agree(self) -> None:
+        """Kills a key added to or dropped from one of the two `drive` key lists."""
+        self.assertEqual(r.DRIVE_KEYS, pe._DRIVE_KEYS)
+
+    def test_the_render_refuses_a_reserved_snapshot_variable(self) -> None:
+        """`runner_ir.snapshot_schema`, the renderers' reader, refuses a variable with a
+        reserved name or a `__` (issue #644 O13). Kills: the reader left on the three old keys."""
+        for name in ("count", "restart_point", "none", "a__b"):
+            with self.subTest(name=name):
+                ir = copy.deepcopy(_toy())
+                entry = next(e for e in ir["io_contract"]["raw_requirements"]
+                             ["required_evidence"] if e["artifact"] == "state_snapshots")
+                entry["schema"]["variables"].append({"name": name, "shape_expr": "scalar"})
+                with self.assertRaisesRegex(RenderError, f"snapshot variable '{name}' is refused"):
+                    r.snapshot_schema(ir)
+
+    def test_the_reserved_names_agree(self) -> None:
+        """Kills a word dropped from or added to one reserved set, and the `__` clause dropped
+        from one `reserved_name_reason`."""
+        self.assertEqual(r.HARNESS_RESERVED_SNAPSHOT_KEYS, pe.RESERVED_VARIABLE_NAMES)
+        self.assertEqual(r.RESERVED_NAME_SEPARATOR, pe.RESERVED_NAME_SEPARATOR)
+        for name in sorted(pe.RESERVED_VARIABLE_NAMES) + ["a__b", "__h", "h__", "h", "a_b"]:
+            with self.subTest(name=name):
+                self.assertEqual(r.reserved_name_reason(name) is None,
+                                 pe.reserved_name_reason(name) is None)
 
 
 def _binding(b: pe.Binding) -> tuple:
@@ -165,7 +290,8 @@ class DriveAgreementTest(unittest.TestCase):
                 loop = r.drive_loop(ir)
                 self.assertEqual(loop, None if block.loop is None
                                  else {k: _binding(b) for k, b in block.loop.items()})
-                self.assertEqual(r.drive_history_every(ir), block.history_every)
+                self.assertEqual(r.drive_history(ir), block.history)
+                self.assertEqual(r.drive_restart_points_every(ir), block.restart_points_every)
 
     def test_the_layouts_agree(self) -> None:
         """Issue #610 (plan §3.2): gate (n)'s derivation (`primary_evidence.distribute_layouts`,

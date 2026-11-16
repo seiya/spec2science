@@ -9304,8 +9304,9 @@ end program shallow_water2d_runner
         violations = _violations(required=True)
         enum_hits = [v for v in violations if "required_evidence[0].artifact 'execution_trace.json' must be one of" in v]
         self.assertEqual(1, len(enum_hits), violations)
-        # Issue #589 admitted the driver's two loop artifacts beside the snapshots.
-        self.assertIn("['state_history', 'state_snapshots', 'step_series']", enum_hits[0])
+        # Issue #589 admitted the driver's two loop artifacts beside the snapshots, and issue
+        # #644 P4b its restart points.
+        self.assertIn("['restart_points', 'state_history', 'state_snapshots', 'step_series']", enum_hits[0])
         # The enum message says the members and then the remedy; split on the separator.
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
@@ -11896,8 +11897,8 @@ end program shallow_water2d_runner
                 v = stage(lambda io: io["raw_requirements"]["required_evidence"].append(
                     {"artifact": "metrics_basis.json", "required": required}))
                 self.assertTrue(any("required_evidence[1].artifact 'metrics_basis.json' must be "
-                                    "one of ['state_history', 'state_snapshots', 'step_series']"
-                                    in x for x in v), v)
+                                    "one of ['restart_points', 'state_history', "
+                                    "'state_snapshots', 'step_series']" in x for x in v), v)
         for token in ("raw/metrics_basis.json", "metrics_basis.json", "RAW\\Metrics_Basis.JSON"):
             with self.subTest(token=token):
                 v = stage(lambda io: io["outputs"][0].update(evidence_ref=token))
@@ -21384,7 +21385,9 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
 class DriverEvidencePerArtifactTests(unittest.TestCase):
     """Issue #589 D8, through the whole validator over the shared execution fixture: what the
     host-rendered driver writes is held per artifact. A capture (the final one, `initial/`, a
-    `history/` sample) holds every declared variable and `step`; on a node that declares
+    `history/` sample, a `restart_point/` record) holds `step`, and every variable it holds has
+    its declared shape; the initial and the final capture hold every declared variable, a
+    sample and a restart point only the ones due there (issue #644 P4b); on a node that declares
     `step_series` its series (`series/<C>__0.json`, the json store's first chunk) holds exactly
     the IR's `step_series` names and each commit's `t`, every one a list of numbers of one
     length, one per final capture. Whether the driver wrote the captures is the node's kind
@@ -21435,14 +21438,17 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
                 _write_json(final, doc)
                 _write_json(snapshots / "initial" / final.name, {**doc, "step": 0})
                 _write_json(snapshots / "history" / "snapshot000__1.json", {**doc, "step": 1})
+                _write_json(snapshots / "restart_point" / "snapshot000__1.json",
+                            {**doc, "step": 1})
             else:
                 del doc["step"]
                 _write_json(final, doc)
             # every case has a series (issue #644 P4): rows where the node declares one, and
-            # empty lists where it declares none
+            # empty lists where it declares none; its `step` column is the committed steps
+            # after the initial capture's 0, up to the final one's 2 (issue #644 P4b)
             _write_json(snapshots / self._SERIES, {
-                "t": [0.5, 1.0], **{n: [0.0, 1.0] for n in self._NAMES}} if step_series
-                else {"step": [], "t": []})
+                "t": [0.5, 1.0], **{n: [0.0, 1.0] for n in self._NAMES}, "step": [1, 2]}
+                if step_series else {"step": [], "t": []})
             change(snapshots)
             with _harness_validated_elsewhere():
                 return validate(repo_root=repo_root, workspace_root="workspace")
@@ -21490,7 +21496,7 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
             _write_json(snapshots / "snapshot000_cont.json", base)
             _write_json(snapshots / "initial" / "snapshot000_cont.json", {**base, "step": 1})
             _write_json(snapshots / "series" / "snapshot000_cont__0.json", {
-                "t": [1.0], **{n: [1.0] for n in self._NAMES}})
+                "t": [1.0], **{n: [1.0] for n in self._NAMES}, "step": [2]})
         self.assertEqual(self._violations(change), [])
 
         # control: the validator reads them — the continuation's series dropped is named
@@ -21502,17 +21508,40 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         self.assertIn("series/snapshot000_cont__0.json: missing", found[0])
 
     def test_a_capture_missing_a_declared_variable_is_refused_per_artifact(self) -> None:
-        for relative in ("snapshot000.json", "initial/snapshot000.json",
-                         "history/snapshot000__1.json"):
+        for relative in ("snapshot000.json", "initial/snapshot000.json"):
             with self.subTest(relative=relative):
                 v = self._violations(self._drop(relative, "h"))
                 self.assertEqual(len(v), 1, v)
                 self.assertIn(f"{{'{Path(relative).name}': ['h']}}", v[0])
                 self.assertIn("declared state_variables missing", v[0])
 
+    def test_a_sample_and_a_restart_point_hold_the_variables_due_there(self) -> None:
+        """Issue #644 P4b: a history record holds the variables sampled at its step and a
+        restart point the restart variables, so neither is asked for every declared variable
+        (re-expressed from the grammar-6 row that refused a sample missing one); the shape of
+        each variable it does hold is still checked, and so is its `step`. Kills: asking every
+        group for every variable (`whole` dropped), or skipping the shape check outside the
+        initial and the final capture."""
+        for relative in ("history/snapshot000__1.json", "restart_point/snapshot000__1.json"):
+            with self.subTest(relative=relative):
+                self.assertEqual(self._violations(self._drop(relative, "h")), [])
+
+                def bad_shape(snapshots: Path, relative=relative) -> None:
+                    path = snapshots / relative
+                    doc = json.loads(path.read_text(encoding="utf-8"))
+                    doc["h"] = [1.0]
+                    _write_json(path, doc)
+                v = self._violations(bad_shape)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("does not match declared shape_expr", v[0])
+                v = self._violations(self._drop(relative, "step"))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(relative, v[0])
+                self.assertIn("the driver's capture carries no 'step'", v[0])
+
     def test_a_capture_without_step_is_refused_per_artifact(self) -> None:
         for relative in ("snapshot000.json", "initial/snapshot000.json",
-                         "history/snapshot000__1.json"):
+                         "history/snapshot000__1.json", "restart_point/snapshot000__1.json"):
             with self.subTest(relative=relative):
                 v = self._violations(self._drop(relative, "step"))
                 self.assertEqual(len(v), 1, v)
@@ -21525,7 +21554,7 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         # post_execute one (issue #644 P3 keeps main's). Kills: a violation per undecodable
         # record, and reading "no record decoded" as "no record".
         for relative in ("snapshot000.json", "initial/snapshot000.json",
-                         "history/snapshot000__1.json"):
+                         "history/snapshot000__1.json", "restart_point/snapshot000__1.json"):
             with self.subTest(relative=relative):
                 self.assertEqual(self._violations(
                     lambda snapshots, relative=relative:
@@ -21651,8 +21680,102 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         # The other half of the per-artifact split: a series holds no declared variable, and
         # the capture walk that would refuse it for that is told so. `test_the_whole...` is the
         # witness; this one is that a capture's own refusal does not ask of the series.
-        v = self._violations(self._drop("history/snapshot000__1.json", "hu"))
+        # (a sample may omit a variable since issue #644 P4b: the initial capture may not)
+        v = self._violations(self._drop("initial/snapshot000.json", "hu"))
+        self.assertTrue(v)
         self.assertFalse(any("series/" in x for x in v), v)
+
+    def test_the_series_step_column_is_the_committed_steps(self) -> None:
+        """Issue #644 P4b: on the driver's run the series' `step` column is exactly the steps
+        after the initial capture's up to the final one's, in order — a lost, doubled or
+        reordered chunk is refused, though every chunk decodes. Kills: dropping the check,
+        starting the range at the initial step, or stopping it before the final one."""
+        for steps in ([1], [2, 1], [1, 1], [0, 1], [1, 2, 3], [2, 3]):
+            with self.subTest(steps=steps):
+                rows = {n: [0.0] * len(steps) for n in self._NAMES if n != "step"}
+                v = self._violations(self._series(step=steps, t=[0.5] * len(steps), **rows))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(f"{self._SERIES}: its step column is not the committed steps "
+                              "1 .. 2 in order", v[0])
+        # numbers spelled as floats are the same steps
+        self.assertEqual(self._violations(self._series(step=[1.0, 2.0])), [])
+
+    def test_a_final_step_that_is_not_finite_does_not_stop_the_gate(self) -> None:
+        """The json store decodes `NaN` and `Infinity`: a final record whose `step` is one of
+        them leaves the step column uncompared and the gate standing (`int(nan)` raised out
+        of it before the finiteness test). Kills: dropping `math.isfinite` in `_record_step`."""
+        for bad in (float("nan"), float("inf")):
+            def change(snapshots: Path, bad: float = bad) -> None:
+                path = snapshots / "snapshot000.json"
+                _write_json(path, {**json.loads(path.read_text(encoding="utf-8")), "step": bad})
+            with self.subTest(step=bad):
+                v = self._violations(change)
+                self.assertFalse(any("step column" in x for x in v), v)
+
+    def test_a_refused_case_s_series_is_its_committed_steps_too(self) -> None:
+        """A case the kernel refused commits fewer steps: its final capture's step is the
+        count it committed and its series the rows up to it — none when it refused the first
+        step. Kills: a range held to the loop's n_step instead of the final capture's step."""
+        def stopped(final_step: int, steps: list[int]):
+            def change(snapshots: Path) -> None:
+                path = snapshots / "snapshot000.json"
+                _write_json(path, {**json.loads(path.read_text(encoding="utf-8")),
+                                   "step": final_step})
+                for group in ("history", "restart_point"):
+                    (snapshots / group / "snapshot000__1.json").unlink()
+                _write_json(snapshots / self._SERIES, {
+                    "t": [0.5] * len(steps), **{n: [0.0] * len(steps) for n in self._NAMES},
+                    "step": steps})
+            return change
+        self.assertEqual(self._violations(stopped(0, [])), [])
+        self.assertEqual(self._violations(stopped(1, [1])), [])
+        v = self._violations(stopped(1, [1, 2]))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("its step column is not the committed steps 1 .. 1", v[0])
+
+    def test_the_step_column_is_the_driver_s_alone(self) -> None:
+        """A harness's own run commits its rows itself: its column is not held to the driver's
+        steps (`driver_wrote` False). Kills: the check run whatever wrote the captures."""
+        def harness(snapshots: Path) -> None:
+            _write_json(snapshots / "initial" / "snapshot000.json",
+                        {**json.loads((snapshots / "snapshot000.json").read_text()), "step": 0})
+            _write_json(snapshots / "snapshot000.json",
+                        {**json.loads((snapshots / "snapshot000.json").read_text()), "step": 2})
+            _write_json(snapshots / self._SERIES, {
+                "t": [0.5, 1.0], **{n: [0.0, 1.0] for n in self._NAMES}, "step": [7, 3]})
+        with unittest.mock.patch.object(vps, "_execution_m3c_language", return_value=None):
+            self.assertEqual(self._violations(harness), [])
+        self.assertTrue(any("its step column" in x for x in self._violations(harness)))
+
+    def test_a_continuation_s_step_column_starts_after_its_restart_step(self) -> None:
+        """Issue #644 P4b on the second pass: a continuation's initial capture is at its
+        restart step, so its series rows are the steps after it. Kills: a range that starts at
+        1 whatever the initial step says."""
+        def cont(steps):
+            def change(snapshots: Path) -> None:
+                base = json.loads((snapshots / "snapshot000.json").read_text(encoding="utf-8"))
+                workspace = next(p for p in snapshots.parents if p.name == "workspace")
+                ir_path = (workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                           / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+                ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+                cases = ir_doc["case"]["test_case_set"]
+                cases.append({**{k: v for k, v in cases[0].items() if k != "initial_state"},
+                              "case_id": "snapshot000_cont",
+                              "restart": {"from": cases[0]["case_id"], "step": 1}})
+                _write_json(ir_path, ir_doc)
+                _write_json(snapshots / "snapshot000_cont.json", base)
+                _write_json(snapshots / "initial" / "snapshot000_cont.json", {**base, "step": 1})
+                _write_json(snapshots / "series" / "snapshot000_cont__0.json", {
+                    "t": [1.0] * len(steps), **{n: [1.0] * len(steps) for n in self._NAMES},
+                    "step": steps})
+            return change
+        self.assertEqual(self._violations(cont([2])), [])
+        for steps in ([1, 2], [1]):
+            with self.subTest(steps=steps):
+                v = self._violations(cont(steps))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("snapshot000_cont__0.json: its step column is not the committed "
+                              "steps 2 .. 2", v[0])
 
 
 class SpecKindNormalizationParityTests(unittest.TestCase):
@@ -30298,8 +30421,12 @@ class DriveGateStageTests(unittest.TestCase):
             del ir["drive"]
         self.assertFalse([x for x in _drive_stage("coriolis", bare, catalog=catalog)
                           if "drive" in x.split(":", 1)[1][:8]])
-        # the driver's loop artifacts are refused on an IR with no drive block at all
-        for artifact in ("state_history", "step_series"):
+        # the driver's loop artifacts are refused on an IR with no drive block at all (the
+        # restart points among them, issue #644 P4b: kills dropping it from
+        # DRIVE_LOOP_EVIDENCE_ARTIFACTS)
+        self.assertEqual(vps.DRIVE_LOOP_EVIDENCE_ARTIFACTS,
+                         frozenset({"state_history", "step_series", "restart_points"}))
+        for artifact in ("state_history", "step_series", "restart_points"):
             def loop_artifact(ir, artifact=artifact):
                 bare(ir)
                 ir["io_contract"]["raw_requirements"]["required_evidence"].append(
@@ -30545,84 +30672,172 @@ class DriveGateStageTests(unittest.TestCase):
                              "lists (the call's result, the zero-step closure of a one-call "
                              "node)"])
 
-    # --- (m), the tests.md `history:` line --------------------------------------------------------
+    # --- (m), the tests.md `history:` / `restart_points:` lines --------------------------------
     # The fixture states a per-case stride (`ceil(n_step / 2)`, CONVERSION.md); the one-number
-    # forms run with every case's `inputs.history.every` set to one value, 30: a divisor of the
-    # continuation's step 90 (gate (p) asks the base's stride to divide it, issue #632 P2) and
-    # at most the guard's 38 steps, so every case still takes a sample.
-    _ONE = "- history: every = 30 (history.every)\n"
+    # forms run with every case's stride inputs set to one value, 30: a divisor of the
+    # continuation's step 90 (gate (p) asks the base's `restart_points.every` to divide it,
+    # issue #632 P2) and at most the guard's 38 steps, so every case still takes a sample.
+    # Issue #644 P4b: the lines are generated from the fixture's own `drive.history` (one
+    # `history:` line per stride input, its variables) and `drive.restart_points`, so a row
+    # states the form and not the fixture's text; `HistoryLinesGateTests` probes each branch
+    # of the gate on an IR of its own.
 
     @staticmethod
-    def _swe_line() -> str:
-        text = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
-        lines = [ln for ln in text.splitlines(keepends=True) if ln.startswith("- history:")]
-        assert len(lines) == 1, lines
-        return lines[0]
-
-    def _swe_tests(self, line: str) -> str:
-        text = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
-        return text.replace(self._swe_line(), line)
+    def _swe_text() -> str:
+        return (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
 
     @staticmethod
-    def _every(value: int):
+    def _is_stride_line(line: str) -> bool:
+        return bool(vps.TEST_HISTORY_LINE.match(line.strip())
+                    or vps.TEST_RESTART_POINTS_LINE.match(line.strip()))
+
+    def _swe_tests(self, lines: str) -> str:
+        """The fixture's tests.md with its `history:` and `restart_points:` lines replaced by
+        ``lines``, at the place of the first of them."""
+        out, placed = [], False
+        for ln in self._swe_text().splitlines(keepends=True):
+            if self._is_stride_line(ln):
+                if not placed:
+                    out.append(lines)
+                    placed = True
+                continue
+            out.append(ln)
+        assert placed
+        return "".join(out)
+
+    def _lineno(self) -> int:
+        """The line number the first generated line takes."""
+        return next(n for n, ln in enumerate(self._swe_text().splitlines(), start=1)
+                    if self._is_stride_line(ln))
+
+    @staticmethod
+    def _groups() -> list[tuple[str, list[str]]]:
+        """`(stride input without inputs., [variables])` of the fixture's `drive.history`."""
+        groups: dict[str, list[str]] = {}
+        for var, ref in _drive_fixture("swe")["drive"]["history"].items():
+            groups.setdefault(ref.removeprefix("inputs."), []).append(var)
+        return list(groups.items())
+
+    @staticmethod
+    def _rp_input() -> str:
+        return _drive_fixture("swe")["drive"]["restart_points"]["every"].removeprefix("inputs.")
+
+    @staticmethod
+    def _values(path: str) -> dict[str, float]:
+        out = {}
+        for case in _drive_fixture("swe")["case"]["test_case_set"]:
+            cur = case["inputs"]
+            for seg in path.split("."):
+                cur = cur[seg]
+            out[case["case_id"]] = cur
+        return out
+
+    def _line(self, kind: str, path: str, variables: list[str] | None = None, *,
+              one: object = None, values: dict | None = None, bullet: str = "- ") -> str:
+        """One generated line: ``one`` the one-number form's number, else the per-case form
+        over ``values`` (default: each case's input)."""
+        head = f"{bullet}{kind}: " + (", ".join(variables) + " " if variables else "")
+        if one is not None:
+            return f"{head}every = {one} ({path})\n"
+        values = self._values(path) if values is None else values
+        return (f"{head}every = ({path}) "
+                + ", ".join(f"{c} = {m:g}" if isinstance(m, (int, float)) else f"{c} = {m}"
+                            for c, m in values.items()) + "\n")
+
+    def _all(self, *, one: object = None, rp_one: object = None) -> str:
+        return "".join(self._line("history", path, names, one=one)
+                       for path, names in self._groups()) + self._line(
+            "restart_points", self._rp_input(), one=rp_one)
+
+    def _every(self, value: int):
+        paths = [path for path, _ in self._groups()] + [self._rp_input()]
+
         def mutate(ir: dict) -> None:
             for case in ir["case"]["test_case_set"]:
-                case["inputs"]["history"]["every"] = value
+                for path in paths:
+                    *head, last = path.split(".")
+                    cur = case["inputs"]
+                    for seg in head:
+                        cur = cur[seg]
+                    cur[last] = value
         return mutate
 
-    @staticmethod
-    def _strides() -> dict[str, int]:
-        return {c["case_id"]: c["inputs"]["history"]["every"]
-                for c in _drive_fixture("swe")["case"]["test_case_set"]}
+    def _strides(self) -> dict[str, int]:
+        return self._values(self._groups()[0][0])
 
     def test_the_history_line_states_the_stride(self) -> None:   # (m), admitted
         strides = self._strides()
         self.assertGreater(len(set(strides.values())), 1)   # the fixture's own per-case form
         self.assertEqual(_drive_stage("swe"), [])
-        for label, line in (
-                ("bullet", self._ONE),
-                ("plain", "history: every = 30 (history.every)\n"),
-                ("star, backticks", "* `history`: every = `30` (`history.every`)\n"),
-                ("per case, one value", "- history: every = (history.every) "
-                 + ", ".join(f"{c} = 30" for c in strides) + "\n")):
+        self.assertEqual(_drive_stage("swe", tests_md=self._swe_tests(self._all())), [])
+        ids = list(strides)
+        star = "".join(f"* `history`: {', '.join(f'`{n}`' for n in names)} every = `30` (`{path}`)\n"
+                       for path, names in self._groups())
+        for label, lines in (
+                ("bullet", self._all(one=30, rp_one=30)),
+                ("plain", "".join(self._line("history", path, names, one=30, bullet="")
+                                  for path, names in self._groups())
+                 + self._line("restart_points", self._rp_input(), one=30, bullet="")),
+                ("star, backticks", star + f"* `restart_points`: every = `30` "
+                 f"(`{self._rp_input()}`)\n"),
+                ("per case, one value", "".join(
+                    self._line("history", path, names, values={c: 30 for c in ids})
+                    for path, names in self._groups()) + self._line(
+                    "restart_points", self._rp_input(), values={c: 30 for c in ids}))):
             with self.subTest(admitted=label):
                 self.assertEqual(_drive_stage("swe", self._every(30),
-                                              tests_md=self._swe_tests(line)), [])
+                                              tests_md=self._swe_tests(lines)), [])
 
     def test_a_history_line_that_does_not_state_the_stride_is_refused(self) -> None:   # (m)
+        groups = self._groups()
+        (path0, names0), rest = groups[0], groups[1:]
         strides = self._strides()
         ids = list(strides)
-        per_case = ", ".join(f"{c} = {m}" for c, m in strides.items())
         first = ids[0]
-        for label, mutate, line, fragment, count in (
-                ("absent", None, "", "(m) tests.md carries 0 `history:` lines", 1),
-                ("twice", None, self._swe_line() * 2, "(m) tests.md carries 2 `history:` lines",
-                 1),
-                ("not a number", None, "- history: every = N (history.every)\n",
-                 "is not `every = <number> (<input name>)`", 1),
-                ("one number against per-case inputs", None, self._ONE,
-                 "and the tests.md `history:` line (line 145) states 30",
-                 sum(1 for m in strides.values() if m != 30)),
-                ("another number", self._every(30), self._ONE.replace("30", "29"),
-                 "inputs.history.every is 30, and the tests.md `history:` line (line 145) "
+        n0 = self._lineno()
+        others = "".join(self._line("history", p, n) for p, n in rest) + self._line(
+            "restart_points", self._rp_input())
+        # (one number, 30) against the fixture's per-case inputs: a finding per case whose
+        # input differs, on the first line
+        mismatched = sum(1 for m in strides.values() if m != 30)
+        for label, mutate, lines, fragment, count in (
+                ("absent", None, self._line("restart_points", self._rp_input()),
+                 "(m) tests.md carries no `history:` line", 1),
+                ("twice", None, self._all() + "".join(
+                    self._line("history", p, n) for p, n in groups),
+                 "too; one `history:` line per stride input", len(groups)),
+                ("not a number", None,
+                 self._line("history", path0, names0, one="N") + others,
+                 "the stride is a NUMBER the gate compares", 1),
+                ("one number against per-case inputs", None, self._all(one=30),
+                 f"and the tests.md `history:` line (line {n0}) states 30", mismatched),
+                ("another number", self._every(30), self._all(one=29, rp_one=30),
+                 f"inputs.{path0} is 30, and the tests.md `history:` line (line {n0}) "
                  "states 29", len(ids)),
                 ("another number for one case", None,
-                 self._swe_line().replace(f"{first} = {strides[first]}",
-                                          f"{first} = {strides[first] + 1}"),
-                 f"inputs.history.every is {strides[first]}", 1),
+                 self._line("history", path0, names0,
+                            values={**strides, first: strides[first] + 1}) + others,
+                 f"(m) case '{first}': inputs.{path0} is {strides[first]}", 1),
                 ("another input", None,
-                 self._swe_line().replace("(history.every)", "(history.stride)"),
-                 "the `history:` line names the input 'history.stride', and "
-                 "drive.history.every is inputs.history.every", 1),
+                 self._line("history", "history.stride", names0, values=strides) + others,
+                 "(m) drive.history is not what the tests.md `history:` lines state", 1),
                 ("a case left out", None,
-                 "- history: every = (history.every) " + ", ".join(
-                     f"{c} = {strides[c]}" for c in ids[1:]) + "\n",
+                 self._line("history", path0, names0,
+                            values={c: strides[c] for c in ids[1:]}) + others,
                  f"cases ['{first}'] are not listed", 1),
                 ("a case listed twice", None,
-                 f"- history: every = (history.every) {per_case}, {first} = {strides[first]}\n",
-                 f"case '{first}' is listed twice", 1)):
+                 self._line("history", path0, names0, values=strides).rstrip("\n")
+                 + f", {first} = {strides[first]}\n" + others,
+                 f"case '{first}' is listed twice", 1),
+                # issue #644 P4b: the restart_points line, through the stage
+                ("no restart_points line", None,
+                 "".join(self._line("history", p, n) for p, n in groups),
+                 "(m) tests.md carries 0 `restart_points:` lines", 1),
+                ("another restart_points number", self._every(30),
+                 self._all(one=30, rp_one=29),
+                 "the tests.md `restart_points:` line", len(ids))):
             with self.subTest(refused=label):
-                v = _drive_stage("swe", mutate, tests_md=self._swe_tests(line))
+                v = _drive_stage("swe", mutate, tests_md=self._swe_tests(lines))
                 self.assertEqual(len(self._hits(v, fragment)), count, v)
 
     def test_a_node_without_a_loop_carries_no_history_line(self) -> None:   # (m)
@@ -30632,6 +30847,12 @@ class DriveGateStageTests(unittest.TestCase):
         v = _drive_stage("coriolis", tests_md=cor_tests + "\n- history: every = 1 (history.every)\n")
         self.assertEqual(len(v), 1, v)
         self.assertIn("a `history:` line is refused on a node whose drive declares no loop", v[0])
+        # issue #644 P4b: and a `restart_points:` line
+        v = _drive_stage("coriolis",
+                         tests_md=cor_tests + "\n- restart_points: every = 1 (history.every)\n")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("a `restart_points:` line is refused on a node whose drive declares no "
+                      "loop", v[0])
 
     def test_the_stage_hands_the_predicate_gate_its_drive_context(self) -> None:
         """The wiring itself: `_validate_tests_and_predicates` calls
@@ -30654,6 +30875,221 @@ class DriveGateStageTests(unittest.TestCase):
         self.assertIsNotNone(seen[0]["case_inputs"])
         self.assertTrue(seen[0]["history_declared"])
         self.assertEqual(seen[0]["series_names"], context["series_names"])
+
+
+class HistoryLinesGateTests(unittest.TestCase):
+    """Gate (m) (issue #644 P4b), `_history_line_violations` over a tests.md written here and
+    the loop IR of `test_driver_render.loop_ir` (cases m0, m1; `u`, `w`, `ok`), so each
+    branch is probed apart from the converted fixture: one `history:` line per stride input
+    naming the variables it samples, or `history: none`; exactly one `restart_points:` line;
+    an identity both ways with `drive.history` / `drive.restart_points.every`, and every
+    case's input equal to the stated number."""
+
+    @staticmethod
+    def _ir(history: dict | None = None, every: dict | None = None, rp_every: dict | None = None,
+            rp: str = "inputs.rp_every") -> dict:
+        """``history`` the drive.history map; ``every`` / ``rp_every`` per-case values of the
+        inputs `every` / `w_every` and `rp_every` (case -> value; default 2 / 3 / 4)."""
+        from tools.tests.test_driver_render import loop_ir
+        ir = loop_ir(0, 1)
+        ir["drive"]["history"] = ({"u": "inputs.every", "w": "inputs.w_every"}
+                                  if history is None else history)
+        ir["drive"]["restart_points"] = {"every": rp}
+        for case in ir["case"]["test_case_set"]:
+            cid = case["case_id"]
+            case["inputs"].update(every=(every or {}).get(cid, 2), w_every=3,
+                                  rp_every=(rp_every or {}).get(cid, 4))
+        return ir
+
+    _GOOD = ("- history: u every = 2 (every)\n- history: w every = 3 (w_every)\n"
+             "- restart_points: every = 4 (rp_every)\n")
+
+    def _v(self, text: str, ir: dict | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text("# tests\n\n" + text, encoding="utf-8")
+            return vps._history_line_violations(path, ir if ir is not None else self._ir())
+
+    def _one(self, text: str, fragment: str, ir: dict | None = None) -> None:
+        v = self._v(text, ir)
+        self.assertEqual(len([m for m in v if fragment in m]), 1, v)
+
+    def test_the_admitted_forms(self) -> None:
+        for label, text, ir in (
+                ("one line per stride", self._GOOD, None),
+                ("the other order, plain, star and backticks",
+                 "* `history`: `w` every = `3` (`w_every`)\nhistory: u every = 2 (every).\n"
+                 "restart_points: every = 4 (rp_every)\n", None),
+                ("two variables on one line",
+                 "- history: u, w every = 2 (every)\n- restart_points: every = 4 (rp_every)\n",
+                 self._ir({"u": "inputs.every", "w": "inputs.every"})),
+                ("per-case forms",
+                 "- history: u every = (every) m0 = 2, m1 = 5\n"
+                 "- history: w every = 3 (w_every)\n"
+                 "- restart_points: every = (rp_every) m1 = 1, m0 = 4\n",
+                 self._ir(every={"m1": 5}, rp_every={"m1": 1})),
+                ("nothing sampled", "- history: none\n- restart_points: every = 4 (rp_every)\n",
+                 self._ir({})),
+                ("nothing sampled, a full stop",
+                 "- `history`: `none`.\n- restart_points: every = 4 (rp_every)\n",
+                 self._ir({}))):
+            with self.subTest(label):
+                self.assertEqual(self._v(text, ir), [])
+
+    def test_the_history_lines_are_drive_history_both_ways(self) -> None:
+        """Kills: an identity that compares one direction only, ignores the input, or is
+        skipped for `history: none`."""
+        rp = "- restart_points: every = 4 (rp_every)\n"
+        rows = (
+            ("a variable in tests.md that drive does not sample",
+             "- history: u, ok every = 2 (every)\n- history: w every = 3 (w_every)\n" + rp,
+             None, "'ok' (tests.md: inputs.every, drive: not sampled)"),
+            ("a variable drive samples that tests.md leaves out",
+             "- history: u every = 2 (every)\n" + rp, None,
+             "'w' (tests.md: not sampled, drive: inputs.w_every)"),
+            ("another input for a variable",
+             "- history: u, w every = 2 (every)\n" + rp, None,
+             "'w' (tests.md: inputs.every, drive: inputs.w_every)"),
+            ("`history: none` while drive samples", "- history: none\n" + rp, None,
+             "'u' (tests.md: not sampled, drive: inputs.every)"),
+            ("a history line while drive samples nothing",
+             "- history: u every = 2 (every)\n" + rp, self._ir({}),
+             "'u' (tests.md: inputs.every, drive: not sampled)"),
+        )
+        for label, text, ir, fragment in rows:
+            with self.subTest(label):
+                self._one(text, fragment, ir)
+                self._one(text, "(m) drive.history is not what the tests.md `history:` lines "
+                                "state", ir)
+
+    def test_each_malformed_history_line_is_refused(self) -> None:
+        """Kills: dropping the variable-list check (the grammar-6 line without variables, an
+        empty body, `every` among the names), the one-line-per-input and one-stride-per-variable
+        checks, or the `none`-alone rule."""
+        rp = "- restart_points: every = 4 (rp_every)\n"
+        w = "- history: w every = 3 (w_every)\n"
+        rows = (
+            ("no history line", rp, "(m) tests.md carries no `history:` line"),
+            ("the grammar-6 line, no variable", "- history: every = 2 (every)\n" + w + rp,
+             "is not `<var>[, <var>...]` followed by"),
+            ("an empty body", "- history:\n" + w + rp, "is not `<var>[, <var>...]` followed by"),
+            ("`every` among the names", "- history: u, every every = 2 (every)\n" + w + rp,
+             "is not `<var>[, <var>...]` followed by"),
+            ("a name that is no identifier", "- history: u-x every = 2 (every)\n" + w + rp,
+             "is not `<var>[, <var>...]` followed by"),
+            ("no number", "- history: u every = N (every)\n" + w + rp,
+             "the stride is a NUMBER the gate compares"),
+            ("one input on two lines",
+             "- history: u every = 2 (every)\n- history: w every = 2 (every)\n" + rp,
+             "the input 'every' is the stride of line 3 too"),
+            ("a variable on two lines",
+             "- history: u every = 2 (every)\n- history: u, w every = 3 (w_every)\n" + rp,
+             "variable 'u' is in two `history:` lines"),
+            ("a variable twice on one line", "- history: u, u every = 2 (every)\n" + w + rp,
+             "variable 'u' is in two `history:` lines"),
+            ("`none` beside another line", "- history: none\n" + w + rp,
+             "carries `history: none` beside 1 other"),
+        )
+        for label, text, fragment in rows:
+            with self.subTest(label):
+                if label == "a variable twice on one line":
+                    # the gate names it once per repetition, two findings for one fault (a
+                    # cosmetic duplicate, reported to the author); the refusal is the subject
+                    v = self._v(text)
+                    self.assertTrue([m for m in v if fragment in m], v)
+                    continue
+                self._one(text, fragment)
+
+    def test_every_case_s_input_is_the_stated_number(self) -> None:
+        """Both forms, both line kinds. Kills: a per-case check that skips the one-number form,
+        a per-case list that may leave a case out or list one twice."""
+        w = "- history: w every = 3 (w_every)\n"
+        rp = "- restart_points: every = 4 (rp_every)\n"
+        rows = (
+            ("one number, history", "- history: u every = 5 (every)\n" + w + rp, None,
+             "(m) case 'm0': inputs.every is 2, and the tests.md `history:` line (line 3) "
+             "states 5", 1),
+            ("one number against per-case inputs", "- history: u every = 2 (every)\n" + w + rp,
+             self._ir(every={"m1": 5}),
+             "(m) case 'm1': inputs.every is 5, and the tests.md `history:` line", 1),
+            ("per case, one differs", "- history: u every = (every) m0 = 2, m1 = 3\n" + w + rp,
+             None, "(m) case 'm1': inputs.every is 2", 1),
+            ("per case, a case left out", "- history: u every = (every) m0 = 2\n" + w + rp, None,
+             "cases ['m1'] are not listed", 1),
+            ("per case, a case twice",
+             "- history: u every = (every) m0 = 2, m1 = 2, m0 = 2\n" + w + rp, None,
+             "case 'm0' is listed twice", 1),
+            ("per case, an unknown case",
+             "- history: u every = (every) m0 = 2, m1 = 2, zz = 2\n" + w + rp, None,
+             "case 'zz' is not a case of case.test_case_set", 1),
+            ("one number, restart_points",
+             "- history: u every = 2 (every)\n" + w + "- restart_points: every = 3 (rp_every)\n",
+             None, "inputs.rp_every is 4, and the tests.md `restart_points:` line (line 5) "
+             "states 3", 2),
+            ("per case, restart_points",
+             "- history: u every = 2 (every)\n" + w
+             + "- restart_points: every = (rp_every) m0 = 4, m1 = 2\n", None,
+             "(m) case 'm1': inputs.rp_every is 4, and the tests.md `restart_points:` line", 1),
+            ("per case, restart_points, a case left out",
+             "- history: u every = 2 (every)\n" + w
+             + "- restart_points: every = (rp_every) m0 = 4\n", None,
+             "cases ['m1'] are not listed", 1),
+        )
+        for label, text, ir, fragment, count in rows:
+            with self.subTest(label):
+                v = self._v(text, ir)
+                self.assertEqual(len([m for m in v if fragment in m]), count, v)
+
+    def test_the_restart_points_line(self) -> None:
+        """Exactly one, in one of the two forms, naming `drive.restart_points.every`'s input.
+        Kills: a count other than one admitted, the input left unchecked, or a malformed line
+        read as no line."""
+        h = "- history: u every = 2 (every)\n- history: w every = 3 (w_every)\n"
+        rows = (
+            ("absent", h, "(m) tests.md carries 0 `restart_points:` lines"),
+            ("twice", h + "- restart_points: every = 4 (rp_every)\n" * 2,
+             "(m) tests.md carries 2 `restart_points:` lines"),
+            ("no number", h + "- restart_points: every = N (rp_every)\n",
+             "the `restart_points:` line: 'every = N (rp_every)' is not"),
+            ("a variable list", h + "- restart_points: u every = 4 (rp_every)\n",
+             "the `restart_points:` line: 'u every = 4 (rp_every)' is not"),
+            ("another input", h + "- restart_points: every = 2 (every)\n",
+             "the `restart_points:` line names the input 'every', and "
+             "drive.restart_points.every is inputs.rp_every"),
+        )
+        for label, text, fragment in rows:
+            with self.subTest(label):
+                self._one(text, fragment)
+
+    def test_a_node_without_loop_carries_neither_line(self) -> None:
+        """Kills: the no-loop refusal of either kind dropped."""
+        from tools.tests.test_driver_render import call_ir
+        ir = call_ir(0)
+        v = self._v("- history: none\n- restart_points: every = 1 (every)\n", ir)
+        self.assertEqual(v, [
+            "(m) tests.md line 3: a `history:` line is refused on a node whose drive declares "
+            "no loop (it takes no state_history samples)",
+            "(m) tests.md line 4: a `restart_points:` line is refused on a node whose drive "
+            "declares no loop (it commits no restart point)"])
+        self.assertEqual(self._v("- distribute: none\n", ir), [])
+
+    def test_the_line_patterns_do_not_read_each_other(self) -> None:
+        """`restart:` (gate (p)'s line) and `restart_points:` (gate (m)'s) are two lines: each
+        pattern matches its own alone. Kills: a `TEST_RESTART_LINE` that would read a
+        `restart_points:` line as a continuation statement, or the converse."""
+        for line in ("restart_points: every = 4 (rp_every)", "- `restart_points`: every = 4 (x)"):
+            with self.subTest(line):
+                self.assertIsNone(vps.TEST_RESTART_LINE.match(line))
+                self.assertIsNotNone(vps.TEST_RESTART_POINTS_LINE.match(line))
+                self.assertIsNone(vps.TEST_HISTORY_LINE.match(line))
+        for line in ("restart: m0_cont = m0 @ 2", "- `restart`: m0_cont = m0 @ 2"):
+            with self.subTest(line):
+                self.assertIsNotNone(vps.TEST_RESTART_LINE.match(line))
+                self.assertIsNone(vps.TEST_RESTART_POINTS_LINE.match(line))
+        # and the gate reads neither a `restart:` line as a restart_points line
+        h = "- history: u every = 2 (every)\n- history: w every = 3 (w_every)\n"
+        self._one(h + "- restart: m0_cont = m0 @ 2\n",
+                  "(m) tests.md carries 0 `restart_points:` lines")
 
 
 class DistributeLineGateTests(unittest.TestCase):

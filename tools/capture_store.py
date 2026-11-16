@@ -19,9 +19,10 @@ that target's `output_format` (`TargetProfile.output_format`), never a format gu
 directory's content.
 
 What a store is: a module with `REQUIRED_PYTHON_MODULES` and these functions, which the host
-calls (`restart_point_steps` by no reader yet: no runner commits a restart point) —
+calls —
 `run_dirs`, `record_path`, `has_record`, `read_record`, `case_ids`, `history_steps`,
-`restart_point_steps`, `case_paths`, `all_case_paths`, `copy_run`, `move_case`, `locate`,
+`restart_point_steps`, `read_series_prefix`, `case_paths`, `all_case_paths`, `copy_run`,
+`move_case`, `locate`,
 `expected_layout`, and `capture_layout_document`, the layout as a harness's author is told it
 (`tools/backends/output_format/json/store.py` states each). A record is what
 one commit of the harness's capture interface closed, except a case's series, which is every
@@ -51,8 +52,9 @@ SNAPSHOT_DIR_PARTS: tuple[str, ...] = ("raw", "state_snapshots")
 SNAPSHOT_SCHEMA_FILENAME = "snapshot_schema.json"
 
 #: The groups a record belongs to. `INITIAL` and `FINAL` hold one record of a case's state
-#: each, `HISTORY` one per sampled step, `RESTART_POINT` one per restart point, `SERIES` the
-#: case's per-step series. The words are the group names of the harness's capture interface.
+#: each, `HISTORY` one per sampled step (the variables due at that step), `RESTART_POINT` one
+#: per restart point (the restart variables), `SERIES` the case's per-step series. The words
+#: are the group names of the harness's capture interface.
 INITIAL = "initial"
 FINAL = "final"
 HISTORY = "history"

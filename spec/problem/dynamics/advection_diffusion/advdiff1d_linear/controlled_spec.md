@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.5.2`
+- `spec_version`: `0.5.3`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -145,16 +145,16 @@ The runtime input requires the following.
 - `initial_condition`
 - `t_start`, `t_end`
 - `dt_rule`
-- `history.every`
+- `restart_points.every`
 
-`dt_rule` decides the step count and `dt`. The host evaluates it for each case and passes `dt` to each call, and the operation of §5.1 does not compute either. `history.every` is the number of committed steps between two state samples of the host's driver; `tests.md` §3 fixes its value.
+`dt_rule` decides the step count and `dt`. The host evaluates it for each case and passes `dt` to each call, and the operation of §5.1 does not compute either. `restart_points.every` is the number of committed steps between two restart points of the host's driver; `tests.md` §3 fixes its value.
 
 `a=0`, `nx<2` and `dt<=0` are not allowed on a case that is to pass; `tests.md` 2-3 carries `a=0`, `nx=1` and `dt<0` on refusal cases, to judge the `false` result of §5. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filter`. Forbid the runtime automatic switching of the discretization scheme. Forbid computing a case with $a<0$ by reflecting its state to $a>0$, computing there and reflecting the result back: the kernel evaluates `a` as given, and the flux `component` chooses the upwind side by its sign. `tests.md` compares the reflected case of §5 with its original as a symmetry pair (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself.
 
-Forbid carrying anything from one call of `advdiff1d_linear__step` to the next outside the state of §5: no step counter, clock, tendency, stage value or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is set by `advdiff1d_linear__step` from its own arguments at every call before it is read. `tests.md` continues a case from a state sample in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
+Forbid carrying anything from one call of `advdiff1d_linear__step` to the next outside the state of §5: no step counter, clock, tendency, stage value or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is set by `advdiff1d_linear__step` from its own arguments at every call before it is read. `tests.md` continues a case from a restart point in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
 
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
@@ -162,7 +162,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is LeVeque (2002). The signed advection velocity and the equivariance of §5 are those of [issue #513](https://github.com/seiya/spec2science/issues/513).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.9.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.10.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $u_{next}=F(u_{now}, params)$, and the periodic-index wrap is made explicit as a non-differentiable operation. The `ceil` of the step rule is the host's (`tests.md` §3), outside the operation of §5.1.

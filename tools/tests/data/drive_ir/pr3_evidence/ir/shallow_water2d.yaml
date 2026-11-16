@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/shallow_water2d@0.5.2
+  node_key: problem/shallow_water2d@0.5.3
   spec_kind: problem
   spec_id: shallow_water2d
-  spec_version: 0.5.2
+  spec_version: 0.5.3
   source_refs:
     controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md
     tests: spec/problem/dynamics/shallow_water/shallow_water2d/tests.md
@@ -22,6 +22,8 @@ case:
         t_end: 0.2
       history:
         every: 45
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -45,7 +47,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -100,6 +102,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 90
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -123,7 +127,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -178,6 +182,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -201,7 +207,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (y / inputs.grid.L_y
         - inputs.initial.shift_y_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -256,6 +262,8 @@ case:
         t_end: 0.2
       history:
         every: 179
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 0.5
@@ -279,7 +287,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -334,6 +342,8 @@ case:
         t_end: 5.0
       history:
         every: 2230
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -357,7 +367,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -412,6 +422,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -435,7 +447,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -490,6 +502,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -513,7 +527,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -568,6 +582,8 @@ case:
         t_end: 0.2
       history:
         every: 179
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -591,7 +607,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -646,6 +662,8 @@ case:
         t_end: 0.2
       history:
         every: 357
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -669,7 +687,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -724,6 +742,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -746,7 +766,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x
         - inputs.topography.x_c_fraction * inputs.grid.L_x), inputs.grid.L_x - abs(x
@@ -789,6 +809,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -811,7 +833,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x
         - inputs.topography.x_c_fraction * inputs.grid.L_x), inputs.grid.L_x - abs(x
@@ -854,6 +876,8 @@ case:
         t_end: 0.2
       history:
         every: 112
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -876,7 +900,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x
         - inputs.topography.x_c_fraction * inputs.grid.L_x), inputs.grid.L_x - abs(x
@@ -919,6 +943,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -941,7 +967,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         + y / inputs.grid.L_y - inputs.initial.shift_x_fraction - inputs.initial.shift_y_fraction))
@@ -986,6 +1012,8 @@ case:
         t_end: 0.2
       history:
         every: 45
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1007,7 +1035,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1038,6 +1066,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1059,7 +1089,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1090,6 +1120,8 @@ case:
         t_end: 0.2
       history:
         every: 112
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1111,7 +1143,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1142,6 +1174,8 @@ case:
         t_end: 0.2
       history:
         every: 112
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1163,7 +1197,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (y / inputs.grid.L_y
         - inputs.initial.shift_y_fraction))
@@ -1194,6 +1228,8 @@ case:
         t_end: 0.2
       history:
         every: 112
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1215,7 +1251,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (y / inputs.grid.L_y
         - inputs.initial.shift_y_fraction))
@@ -1246,6 +1282,8 @@ case:
         t_end: 0.2
       history:
         every: 112
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1267,7 +1305,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (y / inputs.grid.L_y
         - inputs.initial.shift_y_fraction))
@@ -1298,6 +1336,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1319,7 +1359,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1350,6 +1390,8 @@ case:
         t_end: 0.2
       history:
         every: 179
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1371,7 +1413,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1402,6 +1444,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1422,7 +1466,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         + y / inputs.grid.L_y - inputs.initial.shift_x_fraction - inputs.initial.shift_y_fraction))
@@ -1450,6 +1494,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1470,7 +1516,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         + y / inputs.grid.L_y - inputs.initial.shift_x_fraction - inputs.initial.shift_y_fraction))
@@ -1498,6 +1544,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1518,7 +1566,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         + y / inputs.grid.L_y - inputs.initial.shift_x_fraction - inputs.initial.shift_y_fraction))
@@ -1546,6 +1594,8 @@ case:
         t_end: 0.2
       history:
         every: 19
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 2.4
@@ -1567,7 +1617,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1598,6 +1648,8 @@ case:
         t_end: 0.2
       history:
         every: 9
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 5.0
@@ -1621,7 +1673,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction)) - (0.2 * inputs.constants.H_0 * max(0,
@@ -1676,6 +1728,8 @@ case:
         t_end: -0.2
       history:
         every: 0
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: -1.0
@@ -1697,7 +1751,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1728,6 +1782,8 @@ case:
         t_end: 0.2
       history:
         every: 0
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1749,7 +1805,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1778,6 +1834,8 @@ case:
         t_end: 0.2
       history:
         every: 0
+      restart_points:
+        every: 0
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1799,7 +1857,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x
         - inputs.initial.shift_x_fraction))
@@ -1828,6 +1886,8 @@ case:
         t_end: 0.2
       history:
         every: 90
+      restart_points:
+        every: 90
       dt_rule:
         kind: cfl_ceil_n_step
         dt_scale: 1.0
@@ -1851,7 +1911,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
         profile_version: 0.1.1
       test_profile_id: shallow_water2d_baseline
-      test_profile_version: 0.10.0
+      test_profile_version: 0.11.0
     derived:
       dx: inputs.grid.L_x / inputs.grid.nx
       dy: inputs.grid.L_y / inputs.grid.ny
@@ -2453,7 +2513,7 @@ algorithm:
   diagnostics_from_state: true
   fallback_policy: fail_closed
 dependency:
-  node_key: problem/shallow_water2d@0.5.2
+  node_key: problem/shallow_water2d@0.5.3
   direct_deps:
   - node_key: component/dynamics_shallow_water_boundary_2d_periodic_copy@0.2.1
     kind: component
@@ -2617,6 +2677,7 @@ io_contract:
           length: inputs.grid.L_y
           placement: cell_center
     - artifact: state_history
+    - artifact: restart_points
     - artifact: step_series
       names:
       - step
@@ -7442,4 +7503,8 @@ drive:
     t_start: inputs.time.t_start
     t_end: inputs.time.t_end
   history:
-    every: inputs.history.every
+    h: inputs.history.every
+    hu: inputs.history.every
+    hv: inputs.history.every
+  restart_points:
+    every: inputs.restart_points.every

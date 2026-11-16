@@ -17,12 +17,12 @@ Per subject, every run goes through the tool's command line (`python3 tools/run_
 2. `override`: one input changed (`OVERRIDE` below). The run must be `ok` and its final state must
    differ from the control's in at least one of the state fields: the override reached the run.
 3. the chain: `U`, the configuration `CHAIN` run uninterrupted; `A`, the same configuration
-   continued (`--restart-from`) from U's history sample at `K1`; `B`, continued from A's OWN
-   history sample at `K2 > K1`. Each of A and B must be `ok` with the tool's start check held,
-   (the record's `status`, `start_check` and `restart.step` are asserted, not only printed), and
-   every capture it writes must equal U's: the final capture; each history sample (A and B
-   write the samples after their start; the sample at the start step is the restored state,
-   which the start check compares); and the series, which covers only the continuation's own
+   continued (`--restart-from`) from U's restart point at `K1`; `B`, continued from A's OWN
+   restart point at `K2 > K1` (a restart point, not a history sample, since issue #644 P4b).
+   Each of A and B must be `ok` with the tool's start check held, (the record's `status`,
+   `start_check` and `restart.step` are asserted, not only printed), and every capture it
+   writes must equal U's: the final capture; each history sample after its start (the state
+   at the start step is the restored one, which the start check compares); and the series, which covers only the continuation's own
    steps, against the tail of U's series (every field; `t` is now one entry per row, so it is
    compared as a tail like every other field, where the older layout's scalar `t` — the time
    of the last entry — was compared whole); each restart point after the start likewise.
@@ -72,7 +72,8 @@ SUBJECTS: dict[str, dict[str, Any]] = {
         "base": "swr_shear_n064_restart",
         # f0 20 -> 25: the Coriolis parameter of the non-uniform f the case evaluates
         "override": {"rotation.f0": 25.0},
-        # the certified case as it is: history.every 61, n_step 183 -> samples 61, 122
+        # the case as it is (issue #644 P4b): restart_points.every 61, n_step 183 -> restart
+        # points 61, 122
         "chain": {},
         "cuts": (61, 122),
     },
@@ -81,9 +82,9 @@ SUBJECTS: dict[str, dict[str, Any]] = {
         "base": "chan_tc4_ref_n032_dts100",
         # the jet speed of the TC4 initial flow, 40 -> 30
         "override": {"initial.u_jet": 30.0},
-        # n_step 543; the certified history.every 272 gives one sample, so the chain's
-        # configuration sets 181 -> samples 181, 362
-        "chain": {"history.every": 181},
+        # n_step 543; the case's restart_points.every 272 gives one restart point, so the
+        # chain's configuration sets 181 -> restart points 181, 362
+        "chain": {"restart_points.every": 181},
         "cuts": (181, 362),
     },
 }
@@ -216,14 +217,15 @@ def run_subject(key: str, cfg: dict[str, Any], root: Path) -> list[str]:
         return findings + [f"{key}: U failed"]
     st = capture_store.store("json")
     sample = lambda seg, k: st.record_path(capture_store.snapshot_dir(seg),  # noqa: E731
-                                           capture_store.HISTORY, base, k)
+                                           capture_store.RESTART_POINT, base, k)
     if tool(spec_ref, conf, a, sample(u, k1)):
         return findings + [f"{key}: A failed"]
     if tool(spec_ref, conf, b, sample(a, k2)):
         return findings + [f"{key}: B failed"]
     ucap = captures(u / "raw" / "state_snapshots", base)
-    if missing_required(ucap) or len([n for n in ucap if n.startswith("history/")]) < 2:
-        findings.append(f"{key} U: lacks {missing_required(ucap)} or the two cuts' samples")
+    if missing_required(ucap) or len([n for n in ucap if n.startswith("restart_point/")]) < 2:
+        findings.append(f"{key} U: lacks {missing_required(ucap)} or the two cuts' restart "
+                        "points")
     for label, seg, start in (("A", a, k1), ("B", b, k2)):
         rec = record(seg)
         rstep = (rec.get("restart") or {}).get("step")

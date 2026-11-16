@@ -164,8 +164,8 @@ workspace/
                 state_snapshots/
                   # the directories of the target's output format (json shown; docs/backends/output_format/json/CAPTURE_LAYOUT.md)
                   initial/          # a host-rendered runner's capture before the first call, per case
-                  history/          # a host-rendered runner's samples on a loop node
-                  restart_point/    # restart points (no runner commits one yet)
+                  history/          # a host-rendered runner's samples on a loop node (the variables due at each step)
+                  restart_point/    # a host-rendered runner's restart points on a loop node
                   series/           # every case's series: per-step extrema on a loop node, no row elsewhere
               verdict.json
               aggregate_verdict.json

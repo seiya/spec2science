@@ -14,7 +14,8 @@ the rendered driver calls (issue #644 P4a). Run from the repository root:
   (issue #632 P2) add [--at <spec_id>@<version>]... to read a node at another version (see AT)
 
 `--ir certified` judges with the CERTIFIED IR of the node (the `ir_ref` of its latest
-`fortran_cpu` pipeline whose run's aggregate verdict is `pass`) in place of the hand-authored one; `--model generated` builds the
+`fortran_cpu` pipeline whose run's aggregate verdict is `pass`, converted to the drive shape of
+issue #644 P4b by `p4b_shape`) in place of the hand-authored one; `--model generated` builds the
 certified generated model of that pipeline in place of the hand-written one; `--mutants` names
 the patch file (default `mutants.yaml`, written against the hand-written model;
 `mutants_generated.yaml` re-expresses the same defects on the generated text). A mutant whose
@@ -51,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import copy
 import glob
 import json
 import os
@@ -101,7 +103,79 @@ HAND_HARNESS = REPO / "tools/tests/data/driver_e2e/harness_fortran_cpu_model.f90
 #: #632 P2 moved the member to `0.5.2` and this node to `0.1.1` (a restart case each, no scheme
 #: change) before any pipeline exists at either, so until they are certified this bench runs with
 #: `--at shallow_water2d@0.5.1 --at shallow_water2d_rotating@0.1.0`, and prints what it read.
+#: Issue #644 P4b moved the member to `0.5.3`, RK4 to `0.1.2` and this node to `0.1.2` (the
+#: sampled variables and the restart points, no scheme change): until those are certified, pass
+#: `--at shallow_water2d@0.5.2 --at dynamics_shallow_water_time_update_2d_rk4@0.1.1` (and
+#: `--at shallow_water2d_rotating@0.1.1` with `--ir certified` / `--model generated`).
 AT: dict[str, str] = {}
+
+
+def p4b_shape(ir: dict[str, Any], like: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A copy of an IR written before issue #644 P4b (`drive.history: {every: <input>}`, a
+    continuation started from its base's history sample), in the P4b drive shape the host now
+    renders and judges: `drive.history` samples, at that input's stride, exactly the variables
+    the predicates read as `history.<v>` (in schema order); `drive.restart_points.every` is the
+    case input `restart_points.every`: the value the P4b hand IR ``like`` gives a case of the same
+    id (its `tests.md` `restart_points` line: a case restated input for input from a member case
+    carries the member's), else `K` on each restart base and its continuation and `0` on every
+    other case; the `restart_points`
+    evidence entry is declared beside `state_history`; and `history.t` / `history.step` read the
+    first sampled variable's axis (every sampled variable has one stride). A case's history
+    stride is ``like``'s for a case of the same id too (the rotating restart base and its
+    continuation sample every 20 steps since P4b, where the certified IR says 61), else the
+    IR's own. Every other key is the IR's own. An IR already in the P4b shape is returned
+    as a copy, unchanged. The certified IRs of `workspace/` predate P4b, so a bench that judges
+    one judges this copy of it."""
+    import re
+    ir = copy.deepcopy(ir)
+    drive = ir["drive"]
+    hist = drive.get("history")
+    if not (isinstance(hist, dict) and set(hist) == {"every"}) or "restart_points" in drive:
+        return ir
+    every = hist["every"]
+    evidence = ir["io_contract"]["raw_requirements"]["required_evidence"]
+    schema = next(e for e in evidence if e.get("artifact") == "state_snapshots")["schema"]
+    names = [v["name"] for v in schema["variables"]]
+    text = yaml.safe_dump(ir["io_contract"]["predicates"])
+    read = set(re.findall(r"\bhistory\.([A-Za-z_]\w*)", text)) - {"t", "step"}
+    sampled = [n for n in names if n in read]
+    drive["history"] = {v: every for v in sampled}
+    keys = list(drive)
+    drive["restart_points"] = {"every": "inputs.restart_points.every"}
+    order = keys[:keys.index("history") + 1] + ["restart_points"] + keys[keys.index("history") + 1:]
+    ir["drive"] = {k: drive[k] for k in order}
+    at = next(i for i, e in enumerate(evidence) if e.get("artifact") == "state_history")
+    evidence.insert(at + 1, {"artifact": "restart_points"})
+    points = {}
+    for c in ir["case"]["test_case_set"]:
+        if isinstance(c.get("restart"), dict):
+            points[c["case_id"]] = points[c["restart"]["from"]] = c["restart"]["step"]
+    strides = {}
+    for c in (like or {}).get("case", {}).get("test_case_set", []):
+        points[c["case_id"]] = c["inputs"]["restart_points"]["every"]
+        if isinstance(c["inputs"].get("history"), dict):
+            strides[c["case_id"]] = c["inputs"]["history"]["every"]
+    for c in ir["case"]["test_case_set"]:
+        inp = c["inputs"]
+        k = list(inp)
+        new = {}
+        for key in k:
+            new[key] = inp[key]
+            if key == "history" and c["case_id"] in strides:
+                new[key] = {**inp[key], "every": strides[c["case_id"]]}
+            if key == "history":
+                new["restart_points"] = {"every": points.get(c["case_id"], 0)}
+        c["inputs"] = new if "history" in inp else {**inp, "restart_points": {
+            "every": points.get(c["case_id"], 0)}}
+    axis = sampled[0] if sampled else None
+    for p in ir["io_contract"]["predicates"]:
+        for where in [p] + ([p["bind"]] if isinstance(p.get("bind"), dict) else []):
+            for key, value in list(where.items()):
+                if (where is p and key != "expr") or not isinstance(value, str):
+                    continue
+                where[key] = re.sub(r"\bhistory\.(t|step)\b(?!\w)",
+                                    lambda m: f"history.{axis}.{m.group(1)}", value)
+    return ir
 
 
 def catalog_version(sid: str) -> str:
@@ -143,8 +217,10 @@ def certified_pipeline() -> Path:
 def certified_ir() -> dict[str, Any]:
     lineage = json.loads((certified_pipeline() / "lineage.json").read_text())
     path = REPO / lineage["ir_ref"] / "spec.ir.yaml"
-    print(f"certified IR: {path.relative_to(REPO)}", flush=True)
-    return yaml.safe_load(path.read_text())
+    print(f"certified IR: {path.relative_to(REPO)} (in the P4b drive shape, `p4b_shape`)",
+          flush=True)
+    return p4b_shape(yaml.safe_load(path.read_text()),
+                     like=yaml.safe_load(build_ir.TRANSCRIPTION.read_text()))
 
 
 def generated_model() -> Path:

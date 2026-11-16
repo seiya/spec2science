@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/advdiff1d_linear@0.5.2
+  node_key: problem/advdiff1d_linear@0.5.3
   spec_kind: problem
   spec_id: advdiff1d_linear
-  spec_version: 0.5.2
+  spec_version: 0.5.3
   source_refs:
     controlled_spec: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md
     tests: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md
@@ -18,7 +18,7 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
+      restart_points:
         every: 41
       dt_rule:
         dt_scale: 1.0
@@ -37,7 +37,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -54,8 +54,8 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
-        every: 54
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.0
         cfl_adv: 0.6
@@ -73,7 +73,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -90,8 +90,8 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
-        every: 164
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.0
         cfl_adv: 0.6
@@ -109,7 +109,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -126,8 +126,8 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
-        every: 656
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.0
         cfl_adv: 0.6
@@ -145,7 +145,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -162,8 +162,8 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
-        every: 164
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.0
         cfl_adv: 0.6
@@ -181,7 +181,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -198,8 +198,8 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
-        every: 35
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.2
         cfl_adv: 0.6
@@ -217,7 +217,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -234,8 +234,8 @@ case:
       time:
         t_start: 0.0
         t_end: 2.0
-      history:
-        every: 656
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.0
         cfl_adv: 0.6
@@ -253,7 +253,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -270,8 +270,8 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
-        every: 164
+      restart_points:
+        every: 0
       dt_rule:
         dt_scale: 1.0
         cfl_adv: 0.6
@@ -289,7 +289,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -306,7 +306,7 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
+      restart_points:
         every: 0
       dt_rule:
         dt_scale: 1.0
@@ -325,7 +325,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -341,7 +341,7 @@ case:
       time:
         t_start: 0.0
         t_end: -0.5
-      history:
+      restart_points:
         every: 0
       dt_rule:
         dt_scale: -1.0
@@ -360,7 +360,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -377,7 +377,7 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
+      restart_points:
         every: 0
       dt_rule:
         dt_scale: 1.0
@@ -396,7 +396,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -413,7 +413,7 @@ case:
       time:
         t_start: 0.0
         t_end: 0.5
-      history:
+      restart_points:
         every: 41
       dt_rule:
         dt_scale: 1.0
@@ -432,7 +432,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.9.0
+      test_profile_version: 0.10.0
     derived:
       dx: inputs.grid.L / inputs.grid.nx
       dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a),
@@ -737,8 +737,8 @@ io_contract:
   - name: every
     shape_expr: scalar
     evidence_ref: spec.ir.yaml
-    description: "case inputs.history.every: the driver writes a state_history sample every `every` committed steps (tests.md\
-      \ \xA73 history line)"
+    description: "case inputs.restart_points.every: the driver commits a restart point every `every` committed steps (tests.md\
+      \ \xA73 restart_points line)"
   outputs:
   - name: u
     shape_expr: '[nx]'
@@ -778,6 +778,7 @@ io_contract:
           length: inputs.grid.L
           placement: cell_center
     - artifact: state_history
+    - artifact: restart_points
     - artifact: step_series
       names:
       - step
@@ -1779,7 +1780,7 @@ io_contract:
     op: le
     value: 1.0e-12
 dependency:
-  node_key: problem/advdiff1d_linear@0.5.2
+  node_key: problem/advdiff1d_linear@0.5.3
   direct_deps:
   - node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
     kind: component
@@ -1885,5 +1886,6 @@ drive:
     dt: derived.dt
     t_start: inputs.time.t_start
     t_end: inputs.time.t_end
-  history:
-    every: inputs.history.every
+  history: {}
+  restart_points:
+    every: inputs.restart_points.every

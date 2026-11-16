@@ -3,14 +3,14 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.9.0`
+- `test_profile_version`: `0.10.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.5.2`
+- `spec_ref.spec_version`: `0.5.3`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies, for the discrete implementation of the 1D linear advection-diffusion equation, accuracy in three norms with the order of each, conservation, translation equivariance, the mirror equivariance of the Controlled Spec §5 by a symmetry pair, agreement with the theoretical solution at a `dt` the advective bound decides, the run continued from a state sample in a process of its own against the uninterrupted run, the CFL guard, and the result of the step on the refusal of a `component` (`docs/TESTS.md` §Refinement judgment, §Symmetry pairs). A one-dimensional problem has no axis exchange, so the suite carries no axis-exchange pair. The judgment targets are `L0` to `L3`, and include expected failures (`xfail`).
+This suite verifies, for the discrete implementation of the 1D linear advection-diffusion equation, accuracy in three norms with the order of each, conservation, translation equivariance, the mirror equivariance of the Controlled Spec §5 by a symmetry pair, agreement with the theoretical solution at a `dt` the advective bound decides, the run continued from a restart point in a process of its own against the uninterrupted run, the CFL guard, and the result of the step on the refusal of a `component` (`docs/TESTS.md` §Refinement judgment, §Symmetry pairs). A one-dimensional problem has no axis exchange, so the suite carries no axis-exchange pair. The judgment targets are `L0` to `L3`, and include expected failures (`xfail`).
 
 The step count and `dt` of 3 are the host's, evaluated from the case's inputs by the `derived` expressions a Compile leaf transcribes from that procedure; the kernel computes and reports neither. `run.n_step` therefore compares the driver's committed step count with the count the same transcription gives, and no second author computes the procedure. Its value rests on the review of that transcription (`Compile.verify`); the host pins its consistency alone, by the `t_end` check and the zero-step closure (a `dt<0` case is spared the first, and a refusal case carries no `run.n_step`). This suite accepts that gap on the kernel side. A defect in the procedure itself is not a kernel defect: it has no kernel line to mutate, and it shows in the judgments as a wrong `dt`.
 
@@ -37,7 +37,7 @@ The step count and `dt` of 3 are the host's, evaluated from the case's inputs by
 The Controlled Spec §5 states the mirror equivariance: the case with `a` → `-a` and the initial state reflected, $u'(x,0)=u(L-x,0)$, has the reflected state at every step. The initial condition of 2-1 at `shift_fraction=0.0` is odd under the reflection, $u(L-x,0)=-u(x,0)$, so the equation's sign reversal (`docs/TESTS.md` §Symmetry pairs) lets the mirror case keep the base's initial condition: `advdiff1d_ref_nx128_shift000_dts100_amir` (4-3) is `advdiff1d_ref_nx128_shift000_dts100` with `a=-1.0` alone, and its state at $t_{end}$ is $u'_i=-u_{nx-1-i}$ of the base's (the array reversed, the grammar's `flip(·, 0)`, with the sign reversed). The pair is judged by `errors.mirror.l2_rel` (5-4) with the bound `1.0e-12`, the suite's own round-off bound (that of `symmetry_l2_rel` and the cross-target judgment): the update for $a<0$ is the update for $a>0$ with the two neighbours exchanged, so a conforming kernel gives round-off. On the reference implementation of the Controlled Spec §5 update it reads `5.6e-16` (`2.0e-16` and `3.4e-16` at `nx=64` and `256`), with the same `n_step`, `328`. A kernel that takes the upwind cell from the left whatever the sign of `a` reads `0.25` (its mirror case alone reads `0.151` in `errors.analytic.l2_rel_tend`, against `0.0826` for its base; 6-5 judges the pair and not that band). The mirror case also judges `mode_scheme_fidelity` with the amplification rate of the $a<0$ update (5-4), which fixes its update to round-off on its own.
 
 ### 2-3. The refusal cases
-The Controlled Spec §5 makes `ok` false when the `guard_pass` of a `component` is false. A refusal case carries one input that a `component` refuses, or on the `dt<0` case the pair of inputs that gives a negative `dt`, and is otherwise valid. The Controlled Spec §6 does not allow `a=0`, `nx<2` or `dt<=0` on a case that is to pass; a refusal case carries one to judge the false result of §5. Only `xfail` tests target it, so the host admits an invalid `dt` on it (`docs/workflow/phases/phase_01_compile.md`, the host's evaluation of a case). The driver ends the loop on the first false result, so a conforming kernel leaves `0` committed steps. The judgment of a refusal case is the flag alone, and its `history.every` is `0`.
+The Controlled Spec §5 makes `ok` false when the `guard_pass` of a `component` is false. A refusal case carries one input that a `component` refuses, or on the `dt<0` case the pair of inputs that gives a negative `dt`, and is otherwise valid. The Controlled Spec §6 does not allow `a=0`, `nx<2` or `dt<=0` on a case that is to pass; a refusal case carries one to judge the false result of §5. Only `xfail` tests target it, so the host admits an invalid `dt` on it (`docs/workflow/phases/phase_01_compile.md`, the host's evaluation of a case). The driver ends the loop on the first false result, so a conforming kernel leaves `0` committed steps. The judgment of a refusal case is the flag alone.
 
 | case | input | $\text{dt\_raw}$ | $\text{n\_step}$ | $dt$ | refused by |
 | --- | --- | --- | --- | --- | --- |
@@ -52,7 +52,7 @@ Measured on the certified `fortran_cpu` kernel of version `0.5.0` of this node, 
 No test separates three kernel changes, because the guards overlap: `nx<2` fails the boundary and flux guards, and `dt<=0` fails the flux and time-update guards. A kernel that does not read the time-update guard, and one that does not read the boundary guard, each return the flux guard's false result. In a kernel whose final result combines the guards, removing the return after a false guard leaves the result false. Each moves no capture on any input the host admits. The Controlled Spec §5 still requires a kernel to read the boundary and time-update guards; that requirement rests on `Generate.verify`, and no test stands behind it. A kernel that refuses the input itself without reading the guard also passes these tests; that too rests on `Generate.verify`.
 
 ### 2-4. The restart case
-`advdiff1d_ref_nx064_shift000_dts100_cont` is a `continuation case` (`docs/GLOSSARY.md`) of `advdiff1d_ref_nx064_shift000_dts100`: its inputs are its base's, and the host runs it in a process of its own from the base's state sample at committed step `41` of `82` (3, the `restart` line), the driver's step count and time continuing from that step. A kernel that keeps anything between two calls of `advdiff1d_linear__step` outside the state of the Controlled Spec §5 — a step counter, a clock, a tendency of an earlier call, a value cached once per process — ends the continuation in another state than the uninterrupted run, and 6-10 judges the two final states equal exactly. The placement (`docs/TESTS.md`, the `restart` line): the base runs both the advective and the diffusive term; the scheme has no call interval, so there is no multiple to avoid; `41` and `82 - 41` are both at least `2`; and the base sorts after `advdiff1d_guard_nx064_shift000_dts120`, whose `dt` differs, so a value a kernel caches once per process is the guard's in the base's process and the base's own in the continuation's.
+`advdiff1d_ref_nx064_shift000_dts100_cont` is a `continuation case` (`docs/GLOSSARY.md`) of `advdiff1d_ref_nx064_shift000_dts100`: its inputs are its base's, and the host runs it in a process of its own from the base's restart point at committed step `41` of `82` (3, the `restart` line), the driver's step count and time continuing from that step. A kernel that keeps anything between two calls of `advdiff1d_linear__step` outside the state of the Controlled Spec §5 — a step counter, a clock, a tendency of an earlier call, a value cached once per process — ends the continuation in another state than the uninterrupted run, and 6-10 judges the two final states equal exactly. The placement (`docs/TESTS.md`, the `restart` line): the base runs both the advective and the diffusive term; the scheme has no call interval, so there is no multiple to avoid; `41` and `82 - 41` are both at least `2`; and the base sorts after `advdiff1d_guard_nx064_shift000_dts120`, whose `dt` differs, so a value a kernel caches once per process is the guard's in the base's process and the base's own in the continuation's.
 
 ## 3. Execution-control rules
 - $t_{start}=0.0$, and $t_{end}=0.5$ on every case but those of 4-3 that override `t_end`.
@@ -65,10 +65,11 @@ No test separates three kernel changes, because the guards overlap: `nx<2` fails
 - The `a=0` case of 2-3 evaluates step 1 of the procedure as that section states it.
 - The stop condition is $n = \text{n\_step}$. The host evaluates $dx$, $\text{dt\_raw}$, $\text{n\_step}$ and $dt$ of this procedure for each case, in this form (the `a=0` case of 2-3 in the form that section states); the host's driver calls `advdiff1d_linear__step` once per step for $n=1,\dots,\text{n\_step}$ and commits each step whose result `ok` is true.
 - The state the host captures before the first step and after the last consists of `u` and `ok`, with the time `t` and the committed step count `step`. The state captured after the last step is at $t_{end}$, which is the evaluation time of every metric of 5-4. On a refusal case of 2-3 no step commits, and the final capture is at $t_{start}$ with `step` `0`.
-- history: every = (history.every) advdiff1d_guard_nx064_shift000_dts120 = 35, advdiff1d_ref_nx064_shift000_dts100 = 41, advdiff1d_ref_nx064_shift000_dts100_cont = 41, advdiff1d_ref_nx064_shift000_dts100_a000 = 0, advdiff1d_ref_nx064_shift000_dts100_a200 = 54, advdiff1d_ref_nx064_shift000_dts100_dtneg = 0, advdiff1d_ref_nx128_shift000_dts100 = 164, advdiff1d_ref_nx128_shift000_dts100_amir = 164, advdiff1d_ref_nx128_shift000_dts100_tend200 = 656, advdiff1d_ref_nx256_shift000_dts100 = 656, advdiff1d_refuse_nx001_shift000_dts100 = 0, advdiff1d_sym_nx128_shift025_dts100 = 164
+- history: none
+- restart_points: every = (restart_points.every) advdiff1d_guard_nx064_shift000_dts120 = 0, advdiff1d_ref_nx064_shift000_dts100 = 41, advdiff1d_ref_nx064_shift000_dts100_cont = 41, advdiff1d_ref_nx064_shift000_dts100_a000 = 0, advdiff1d_ref_nx064_shift000_dts100_a200 = 0, advdiff1d_ref_nx064_shift000_dts100_dtneg = 0, advdiff1d_ref_nx128_shift000_dts100 = 0, advdiff1d_ref_nx128_shift000_dts100_amir = 0, advdiff1d_ref_nx128_shift000_dts100_tend200 = 0, advdiff1d_ref_nx256_shift000_dts100 = 0, advdiff1d_refuse_nx001_shift000_dts100 = 0, advdiff1d_sym_nx128_shift025_dts100 = 0
 - restart: advdiff1d_ref_nx064_shift000_dts100_cont = advdiff1d_ref_nx064_shift000_dts100 @ 41
 - distribute: x = grid.nx (min_block 2)
-- The driver takes a state sample every `history.every` committed steps, about half of each case's $\text{n\_step}$; a refusal case of 2-3 takes no sample, and the continuation case of 2-4 takes its base's stride. No judgment of 5-4 reads a state between two samples: the metrics read the states at $t_{start}$ and $t_{end}$.
+- No judgment of 5-4 reads a state between the two captures: the metrics read the states at $t_{start}$ and $t_{end}$, so the driver samples no variable (the `history` line). The driver commits a restart point every `restart_points.every` committed steps: `41` on the base case of 2-4 and on its continuation, whose inputs are its base's, and `0`, no restart point, on every other case. The `restart_points` line fixes the value of each case; an override case of 4-3 whose base is the base of 2-4 carries `0`, as the line states.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -96,11 +97,11 @@ The sweep and fixed values per `family` are defined below.
 - Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_a200`.
 - The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `a` to $2.0$ (the advection-limited case). The advective bound of 3 is the smaller of the two exactly when $|a|>\text{cfl\_adv}\,\nu/(\text{cfl\_dif}\,dx)$, so this case, alone among the cases that commit a step, has its `dt` decided by the advective bound: its $\text{dt\_raw}$ is $4.6875e{-3}$ against a diffusive bound of $6.1035e{-3}$. Every other case that commits a step has $|a|=1$ and a `dt` the diffusive bound decides, the guard included.
 - Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_a000`.
-- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `a` to $0.0$ and `history.every` to $0$ (a refusal case of 2-3, with the $\text{dt\_raw}$ that section states).
+- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `a` to $0.0$ (a refusal case of 2-3, with the $\text{dt\_raw}$ that section states).
 - Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_dtneg`.
-- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `dt_scale` to $-1.0$, `t_end` to $-0.5$ and `history.every` to $0$ (a refusal case of 2-3).
+- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `dt_scale` to $-1.0$, `t_end` to $-0.5$ (a refusal case of 2-3).
 - Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_cont`.
-- The continuation of 2-4: the `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and nothing is overridden; it starts from the base's state sample at committed step `41` (3, the `restart` line). The `case_id` keeps its base's and carries the suffix `_cont`, so it sorts after its base.
+- The continuation of 2-4: the `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and nothing is overridden; it starts from the base's restart point at committed step `41` (3, the `restart` line). The `case_id` keeps its base's and carries the suffix `_cont`, so it sorts after its base.
 
 ## 5. Judged quantities
 ### 5-1. How a quantity is judged
@@ -205,7 +206,7 @@ $$
 $$
 Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is evaluated by the host from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously.
 
-`restart.u` is the largest absolute difference of the continuation's final `u` from its base's, $\max_i|u^{cont}_i-u^{base}_i|$, `maxabs(final.u - at('advdiff1d_ref_nx064_shift000_dts100').final.u)` (2-4). It is exactly `0` under a kernel that keeps nothing between two steps outside the state: the continuation's arithmetic from the sample is the uninterrupted run's, step for step.
+`restart.u` is the largest absolute difference of the continuation's final `u` from its base's, $\max_i|u^{cont}_i-u^{base}_i|$, `maxabs(final.u - at('advdiff1d_ref_nx064_shift000_dts100').final.u)` (2-4). It is exactly `0` under a kernel that keeps nothing between two steps outside the state: the continuation's arithmetic from the restart point is the uninterrupted run's, step for step.
 
 ### 5-5. Default thresholds
 - $\text{cfl\_combined\_max} \le 1.0$
@@ -368,7 +369,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
 
 ### 6-10. `l3_restart_equivalence`
 - `level`: `L3`
-- `objective`: confirm that the run continued from a state sample, in a process of its own, ends in the state of the uninterrupted run (2-4).
+- `objective`: confirm that the run continued from a restart point, in a process of its own, ends in the state of the uninterrupted run (2-4).
 - target cases:
   - `advdiff1d_ref_nx064_shift000_dts100`
   - `advdiff1d_ref_nx064_shift000_dts100_cont`

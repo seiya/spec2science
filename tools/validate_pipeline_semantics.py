@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import copy
 import os
 import re
@@ -132,15 +133,17 @@ FORBIDDEN_RUNNER_OUTPUTS = (
 LLM_REVIEW_FILENAME = "semantic_review.json"
 RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
-    # Issue #589: the driver's samples of the whole state every `drive.history.every` committed
+    # Issue #589: the driver's samples of the variables `drive.history` names, each at its stride of committed
     # steps, and its per-step series (`names`). Each is declared iff `drive.loop` / `drive.history`
     # is (`primary_evidence.drive_violations` (h)); neither carries a `schema`. Admission is
     # `raw_evidence_excerpt.RAW_EVIDENCE_ALIASES`, which carries the same two names.
     "state_history",
     "step_series",
+    # Issue #644 P4b: the driver's restart points, declared iff `drive.restart_points` is.
+    "restart_points",
 }
 #: The artifacts only the host-rendered driver of a node with `drive.loop` produces.
-DRIVE_LOOP_EVIDENCE_ARTIFACTS = frozenset({"state_history", "step_series"})
+DRIVE_LOOP_EVIDENCE_ARTIFACTS = frozenset({"state_history", "step_series", "restart_points"})
 # Where a runtime value goes when an IR reaches for a raw-evidence artifact the
 # workflow does not produce. Defined here and RESTATED verbatim by
 # phase_01_compile.md (`evidence_ref` bullet) so a warm retry converges on the
@@ -1762,11 +1765,12 @@ def _validate_raw_evidence(
             store = capture_store.store(_execution_output_format(repo_root, execution))
             state_keys = _state_record_files(store, snapshots_dir)
             state_paths = [path for path, *_key in state_keys]
-            _validate_series_files(repo_root, execution, snapshots_dir, store, violations)
             # Whether the host-rendered driver wrote the captures is the node's own fact (its
             # kind and toolchain), not what the directory holds: a harness self-test may
             # commit an initial record too.
             driver_wrote_snapshots = _execution_m3c_language(repo_root, execution) is not None
+            _validate_series_files(repo_root, execution, snapshots_dir, store, violations,
+                                   driver_wrote=driver_wrote_snapshots)
             if driver_wrote_snapshots:
                 _validate_driver_step_key(
                     _decoded_state_records(store, snapshots_dir, state_keys), violations)
@@ -1854,14 +1858,22 @@ def _validate_raw_evidence(
                     elif state_variables and time_variable:
                         missing_state_by_file: dict[str, list[str]] = {}
                         missing_time = set()
-                        # Every declared variable in every snapshot of every node (issue
-                        # #582, D7): a host-rendered runner emits each one for each case, and a
-                        # harness self-test emits a shape-valid placeholder on its guard case.
-                        # (an undecodable record is passed over, `_decoded_state_records`)
-                        for snapshot, data in _decoded_state_records(
+                        # Every declared variable in the initial and the final capture of
+                        # every node (issue #582, D7): a host-rendered runner emits each one for
+                        # each case, and a harness self-test emits a shape-valid placeholder on
+                        # its guard case. A sample holds the variables due at its step and a
+                        # restart point the restart variables (issue #644 P4b): which those are
+                        # is the host-rendered driver's, so neither is asked for every
+                        # variable; the continuation writer refuses a restart point that lacks
+                        # one. The shape of each variable a record does hold is checked in
+                        # every group. (An undecodable record is passed over,
+                        # `_decoded_state_records`.)
+                        for snapshot, group, data in _decoded_state_records(
                                 store, snapshots_dir, state_keys):
                             keys = set(data.keys())
-                            missing_state = sorted(name for name in state_variables if name not in keys)
+                            whole = group in (capture_store.INITIAL, capture_store.FINAL)
+                            missing_state = sorted(name for name in state_variables
+                                                   if whole and name not in keys)
                             if missing_state:
                                 missing_state_by_file[snapshot.name] = missing_state
                             if time_variable not in keys:
@@ -1973,7 +1985,8 @@ def _execution_output_format(repo_root: Path, execution: NodeExecution) -> str:
 
 def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, int | None]]:
     """`(group, case_id, step)` of every state record the store finds: per case with a final
-    capture, the final one, the initial one when there is one, and each sample."""
+    capture, the final one, the initial one when there is one, each sample and each restart
+    point."""
     keys: list[tuple[str, str, int | None]] = []
     for case_id in store.case_ids(snapshots_dir):
         keys.append((capture_store.FINAL, case_id, None))
@@ -1981,6 +1994,8 @@ def _state_record_keys(store: Any, snapshots_dir: Path) -> list[tuple[str, str, 
             keys.append((capture_store.INITIAL, case_id, None))
         keys += [(capture_store.HISTORY, case_id, step)
                  for step in store.history_steps(snapshots_dir, case_id)]
+        keys += [(capture_store.RESTART_POINT, case_id, step)
+                 for step in store.restart_point_steps(snapshots_dir, case_id)]
     return keys
 
 
@@ -1994,33 +2009,48 @@ def _state_record_files(store: Any, snapshots_dir: Path
 
 def _decoded_state_records(store: Any, snapshots_dir: Path,
                            keys: list[tuple[Path, str, str, int | None]]
-                           ) -> Iterator[tuple[Path, dict[str, Any]]]:
-    """`(file, members)` of each of those records the store decodes, one at a time — a run's
-    samples are not held together. A record that does not decode is passed over by the shape
-    checks; the verdict's reader refuses it."""
+                           ) -> Iterator[tuple[Path, str, dict[str, Any]]]:
+    """`(file, group, members)` of each of those records the store decodes, one at a time — a
+    run's samples are not held together. A record that does not decode is passed over by the
+    shape checks; the verdict's reader refuses it."""
     for path, group, case_id, step in keys:
         try:
-            yield path, dict(store.read_record(snapshots_dir, group, case_id, step))
+            yield path, group, dict(store.read_record(snapshots_dir, group, case_id, step))
         except capture_store.CaptureError:
             continue
 
 
-def _validate_driver_step_key(captures: Iterable[tuple[Path, dict[str, Any]]],
+def _validate_driver_step_key(captures: Iterable[tuple[Path, str, dict[str, Any]]],
                               violations: list[str]) -> None:
     """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
-    for path, data in captures:
+    for path, _group, data in captures:
         if "step" not in data:
             violations.append(f"{path}: the driver's capture carries no 'step'")
 
 
+def _record_step(store: Any, snapshots_dir: Path, group: str, case_id: str) -> int | None:
+    """The `step` a case's initial or final record carries, None when the record is absent or
+    holds no finite integer there; the caller then makes no comparison."""
+    try:
+        step = dict(store.read_record(snapshots_dir, group, case_id)).get("step")
+    except capture_store.CaptureError:
+        return None
+    if isinstance(step, bool) or not isinstance(step, (int, float)) \
+            or not math.isfinite(step) or step != int(step):
+        return None
+    return int(step)
+
+
 def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_dir: Path,
-                           store: Any, violations: list[str]) -> None:
+                           store: Any, violations: list[str], *,
+                           driver_wrote: bool = False) -> None:
     """The series records (issue #589 D8) of a node that declares `step_series`: exactly its
     names and the commits' `t`, each a list of numbers of one length, and one record per final
     capture. `step_series` is declared iff `drive.loop` is (`primary_evidence.drive_violations`
     (h)). On a node that declares none the records are not read: every case has a series, an
     empty one where the case committed no row (the harness's `capture_close`, issue #644 P4),
-    and no predicate of such a node can name it."""
+    and no predicate of such a node can name it. With ``driver_wrote`` (the host-rendered
+    driver wrote the captures) the `step` column is held to the committed steps."""
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     entries = raw_requirements.get("required_evidence") if isinstance(
         raw_requirements, dict) else None
@@ -2057,6 +2087,20 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
                for c in columns) or len({len(c) for c in columns}) > 1:
             violations.append(f"{path}: every series name is a list of numbers, all of one "
                               "length")
+            continue
+        # The driver commits one row per committed step (issue #644 P4b): a series whose
+        # rows are not the steps after the initial capture's up to the final one's is a
+        # series that lost a chunk, or holds one twice or out of order — which a format that
+        # keeps the rows in several files can do without any file being damaged.
+        first = _record_step(store, snapshots_dir, capture_store.INITIAL, case_id)
+        last = _record_step(store, snapshots_dir, capture_store.FINAL, case_id)
+        steps = data.get("step")
+        if driver_wrote and isinstance(steps, list) and first is not None \
+                and last is not None and steps != list(range(first + 1, last + 1)):
+            violations.append(
+                f"{path}: its step column is not the committed steps {first + 1} .. {last} "
+                f"in order ({len(steps)} rows"
+                + (f", from {steps[0]:g} to {steps[-1]:g}" if steps else "") + ")")
 
 
 def _validate_execution_json_outputs(execution: NodeExecution, violations: list[str]) -> None:
@@ -3912,11 +3956,16 @@ def _tests_md_reported_lines(tests_path: Path) -> list[tuple[int, str]] | None:
             if TEST_REPORTED_LINE.match(line.strip())]
 
 
-#: The `history` line of a `tests.md` whose node runs a time loop (issue #589,
-#: `docs/TESTS.md` §Description format): `history: every = <N> (<input name>)`, or the per-case
-#: form `history: every = (<input name>) <case_id> = <M>, ...`. A leading `- ` / `* ` bullet and
-#: backticks are admitted like the other definition lines (`TEST_QUANTITIES_LINE`).
+#: The `history` lines of a `tests.md` whose node runs a time loop (issue #589; a stride per
+#: variable since issue #644 P4b, `docs/TESTS.md` §Description format): one line per stride
+#: input, `history: <var>[, <var>...] every = <N> (<input name>)`, or the per-case form
+#: `history: <var>[, <var>...] every = (<input name>) <case_id> = <M>, ...`; a node that samples
+#: nothing carries the one line `history: none`. A leading `- ` / `* ` bullet and backticks are
+#: admitted like the other definition lines (`TEST_QUANTITIES_LINE`).
 TEST_HISTORY_LINE = re.compile(r"^[-*]?\s*`?history`?\s*:\s*(.*)$")
+#: The `restart_points` line of such a node: `restart_points: every = <N> (<input name>)`, or
+#: the per-case form. `TEST_RESTART_LINE` does not match it.
+TEST_RESTART_POINTS_LINE = re.compile(r"^[-*]?\s*`?restart_points`?\s*:\s*(.*)$")
 _HISTORY_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 _HISTORY_INPUT = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
 _HISTORY_ONE_FORM = re.compile(
@@ -3924,16 +3973,77 @@ _HISTORY_ONE_FORM = re.compile(
 _HISTORY_PER_CASE_FORM = re.compile(
     rf"^every\s*=\s*\(\s*({_HISTORY_INPUT})\s*\)\s*(.+?)\s*\.?$")
 _HISTORY_CASE_PAIR = re.compile(rf"^([A-Za-z0-9._][A-Za-z0-9._-]*)\s*=\s*({_HISTORY_NUMBER})$")
+#: The variable list before `every` on a `history:` line: `every` delimits it from the stride.
+_HISTORY_VARS = re.compile(r"^(?P<vars>.*?)\s*\b(?P<stride>every\b.*)$")
+_HISTORY_NONE = "none"
+_STRIDE_FORMS = ("`every = <number> (<input name>)` or `every = (<input name>) <case_id> = "
+                 "<number>, ...`")
+
+
+def _stride_statement(body: str, cases: dict[str, Any]
+                      ) -> tuple[str, dict[str, float]] | list[str]:
+    """``(input name, case_id -> the stated number)`` of the stride part of a line (from
+    `every` on), in either form, or the problems that keep it from being read. The per-case
+    form lists every case exactly once."""
+    one = _HISTORY_ONE_FORM.match(body)
+    if one:
+        return one.group(2), {cid: float(one.group(1)) for cid in cases}
+    per_case = _HISTORY_PER_CASE_FORM.match(body)
+    if per_case is None:
+        return [f"{body!r} is not {_STRIDE_FORMS} — the stride is a NUMBER the gate compares "
+                "with every case's input"]
+    stated: dict[str, float] = {}
+    problems: list[str] = []
+    for item in per_case.group(2).split(","):
+        pair = _HISTORY_CASE_PAIR.match(item.strip())
+        if pair is None:
+            problems.append(f"{item.strip()!r} is not `<case_id> = <number>`")
+            continue
+        cid = pair.group(1)
+        if cid in stated:
+            problems.append(f"case {cid!r} is listed twice")
+        elif cid not in cases:
+            problems.append(f"case {cid!r} is not a case of case.test_case_set")
+        stated[cid] = float(pair.group(2))
+    absent = sorted(set(cases) - set(stated))
+    if absent:
+        problems.append(f"cases {absent} are not listed")
+    return problems or (per_case.group(1), stated)
+
+
+def _stride_input_violations(cases: dict[str, Any], name: str, stated: dict[str, float],
+                             what: str, lineno: int) -> list[str]:
+    """Every case's `inputs.<name>` equals the number the line states for it."""
+    v: list[str] = []
+    for cid in sorted(cases):
+        if cid not in stated:
+            continue
+        cur: Any = cases[cid].get("inputs")
+        for seg in name.split("."):
+            cur = cur.get(seg) if isinstance(cur, dict) else None
+        if isinstance(cur, bool) or not isinstance(cur, (int, float)) \
+                or float(cur) != stated[cid]:
+            v.append(f"(m) case {cid!r}: inputs.{name} is {cur!r}, and the tests.md {what} "
+                     f"line (line {lineno}) states {stated[cid]:g}")
+    return v
 
 
 def _history_line_violations(tests_path: Path, ir: dict) -> list[str]:
-    """Gate (m) (issue #589): the `tests.md` `history:` line against `drive`. A node whose
-    `drive` declares `loop` carries exactly ONE line (`TEST_HISTORY_LINE`) in one of its two
-    forms, with a NUMBER — the input name equals `drive.history.every` without `inputs.`, and
-    every case's `inputs.<name>` equals the line's number (the per-case form lists every case
-    once). A node without `loop` (an IR with no `drive` included) carries no such line. A
-    malformed `drive` is `drive_violations`' to report, and this gate then reads nothing.
-    Whether the number is an integer >= 0 is the case evaluator's (`drive_violations` (c))."""
+    """Gate (m) (issue #589; issue #644 P4b): the `tests.md` `history:` and `restart_points:`
+    lines against `drive`, an identity both ways, so the Compile leaf chooses no stride and
+    drops no variable. A node whose `drive` declares `loop` carries
+
+    * one `history:` line per stride input (`TEST_HISTORY_LINE`), each a variable list and a
+      stride in one of the two forms with a NUMBER, or the one line `history: none`: no input
+      and no variable is in two lines, the variable -> input map of the lines IS
+      `drive.history`, and every case's `inputs.<name>` equals the line's number (the per-case
+      form lists every case once);
+    * exactly one `restart_points:` line (`TEST_RESTART_POINTS_LINE`) in one of the two forms:
+      its input is `drive.restart_points.every` and every case's input equals its number.
+
+    A node without `loop` (an IR with no `drive` included) carries neither line. A malformed
+    `drive` is `drive_violations`' to report, and this gate then reads nothing. Whether a
+    number is an integer >= 0 is the case evaluator's (`drive_violations` (c))."""
     from tools.primary_evidence import PrimaryEvidenceError, drive_block
 
     try:
@@ -3944,69 +4054,95 @@ def _history_line_violations(tests_path: Path, ir: dict) -> list[str]:
         block = drive_block(ir)
     except PrimaryEvidenceError:
         return []
-    lines = [(n, m.group(1).replace("`", "").strip())
-             for n, raw in enumerate(text.splitlines(), start=1)
-             if (m := TEST_HISTORY_LINE.match(raw.strip()))]
+
+    def lines_of(pattern: re.Pattern[str]) -> list[tuple[int, str]]:
+        return [(n, m.group(1).replace("`", "").strip())
+                for n, raw in enumerate(text.splitlines(), start=1)
+                if (m := pattern.match(raw.strip()))]
+
+    lines, point_lines = lines_of(TEST_HISTORY_LINE), lines_of(TEST_RESTART_POINTS_LINE)
     loop = block is not None and block.loop is not None
     if not loop:
         return [f"(m) tests.md line {n}: a `history:` line is refused on a node whose drive "
-                "declares no loop (it takes no state_history samples)" for n, _ in lines]
-    if len(lines) != 1:
-        return [f"(m) tests.md carries {len(lines)} `history:` lines; a node whose drive declares "
-                "a loop carries exactly one (`history: every = <N> (<input name>)`, or `history: "
-                "every = (<input name>) <case_id> = <M>, ...`), docs/TESTS.md"]
-    lineno, body = lines[0]
+                "declares no loop (it takes no state_history samples)" for n, _ in lines] + [
+                f"(m) tests.md line {n}: a `restart_points:` line is refused on a node whose "
+                "drive declares no loop (it commits no restart point)" for n, _ in point_lines]
     case_block = ir.get("case")
     tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
     cases = {c["case_id"].strip(): c for c in (tcs if isinstance(tcs, list) else [])
              if isinstance(c, dict) and isinstance(c.get("case_id"), str)
              and c["case_id"].strip()}
-    stated: dict[str, float] = {}
-    one = _HISTORY_ONE_FORM.match(body)
-    per_case = None if one else _HISTORY_PER_CASE_FORM.match(body)
-    if one:
-        name = one.group(2)
-        stated = {cid: float(one.group(1)) for cid in cases}
-    elif per_case:
-        name = per_case.group(1)
-        problems: list[str] = []
-        for item in per_case.group(2).split(","):
-            pair = _HISTORY_CASE_PAIR.match(item.strip())
-            if pair is None:
-                problems.append(f"{item.strip()!r} is not `<case_id> = <number>`")
-                continue
-            cid = pair.group(1)
-            if cid in stated:
-                problems.append(f"case {cid!r} is listed twice")
-            elif cid not in cases:
-                problems.append(f"case {cid!r} is not a case of case.test_case_set")
-            stated[cid] = float(pair.group(2))
-        absent = sorted(set(cases) - set(stated))
-        if absent:
-            problems.append(f"cases {absent} are not listed")
-        if problems:
-            return [f"(m) tests.md line {lineno}: the per-case `history:` line {body!r}: "
-                    + "; ".join(problems)]
-    else:
-        return [f"(m) tests.md line {lineno}: `history:` {body!r} is not `every = <number> "
-                "(<input name>)` or `every = (<input name>) <case_id> = <number>, ...` — the "
-                "stride is a NUMBER the gate compares with every case's input"]
     v: list[str] = []
-    every = block.history_every
+    # --- the history lines
+    stated_map: dict[str, str] = {}   # variable -> input name, as the lines state it
+    readable = True
+    if not lines:
+        v.append("(m) tests.md carries no `history:` line; a node whose drive declares a loop "
+                 "carries one per stride input (`history: <var>[, <var>...] every = <N> "
+                 "(<input name>)`, or the per-case form), or the one line `history: none`, "
+                 "docs/TESTS.md")
+        readable = False
+    elif any(body.rstrip(".").strip() == _HISTORY_NONE for _n, body in lines):
+        if len(lines) != 1:
+            v.append(f"(m) tests.md carries `history: none` beside {len(lines) - 1} other "
+                     "`history:` line(s); a node that samples nothing carries that line alone")
+            readable = False
+    else:
+        inputs_seen: dict[str, int] = {}
+        for lineno, body in lines:
+            split = _HISTORY_VARS.match(body)
+            names = [n.strip() for n in split.group("vars").split(",")] if split else []
+            if split is None or not names or any(
+                    not re.fullmatch(r"[A-Za-z_]\w*", n) for n in names):
+                v.append(f"(m) tests.md line {lineno}: `history:` {body!r} is not `<var>[, "
+                         f"<var>...]` followed by {_STRIDE_FORMS}, nor `none`")
+                readable = False
+                continue
+            found = _stride_statement(split.group("stride"), cases)
+            if isinstance(found, list):
+                v.append(f"(m) tests.md line {lineno}: the `history:` line: "
+                         + "; ".join(found))
+                readable = False
+                continue
+            name, stated = found
+            if name in inputs_seen:
+                v.append(f"(m) tests.md line {lineno}: the input {name!r} is the stride of "
+                         f"line {inputs_seen[name]} too; one `history:` line per stride input")
+            inputs_seen.setdefault(name, lineno)
+            for var in dict.fromkeys(names):
+                if var in stated_map or names.count(var) > 1:
+                    v.append(f"(m) tests.md line {lineno}: variable {var!r} is in two "
+                             "`history:` lines (or twice in one); a variable has one stride")
+                stated_map.setdefault(var, name)
+            v.extend(_stride_input_violations(cases, name, stated, "`history:`", lineno))
+    declared = block.history
+    if readable and declared is not None and stated_map != declared:
+        differ = sorted(k for k in set(stated_map) | set(declared)
+                        if stated_map.get(k) != declared.get(k))
+        v.append("(m) drive.history is not what the tests.md `history:` lines state, for "
+                 + "; ".join(
+                     f"{k!r} (tests.md: "
+                     f"{'inputs.' + stated_map[k] if k in stated_map else 'not sampled'}, "
+                     f"drive: {'inputs.' + declared[k] if k in declared else 'not sampled'})"
+                     for k in differ))
+    # --- the restart_points line
+    if len(point_lines) != 1:
+        v.append(f"(m) tests.md carries {len(point_lines)} `restart_points:` lines; a node "
+                 "whose drive declares a loop carries exactly one (`restart_points: every = "
+                 "<N> (<input name>)`, or `restart_points: every = (<input name>) <case_id> = "
+                 "<M>, ...`), docs/TESTS.md")
+        return v
+    lineno, body = point_lines[0]
+    found = _stride_statement(body, cases)
+    if isinstance(found, list):
+        return [*v, f"(m) tests.md line {lineno}: the `restart_points:` line: "
+                + "; ".join(found)]
+    name, stated = found
+    every = block.restart_points_every
     if every is not None and name != every:
-        v.append(f"(m) tests.md line {lineno}: the `history:` line names the input {name!r}, and "
-                 f"drive.history.every is inputs.{every}")
-    for cid in sorted(cases):
-        if cid not in stated:
-            continue
-        inputs = cases[cid].get("inputs")
-        cur: Any = inputs
-        for seg in name.split("."):
-            cur = cur.get(seg) if isinstance(cur, dict) else None
-        if isinstance(cur, bool) or not isinstance(cur, (int, float)) \
-                or float(cur) != stated[cid]:
-            v.append(f"(m) case {cid!r}: inputs.{name} is {cur!r}, and the tests.md `history:` "
-                     f"line (line {lineno}) states {stated[cid]:g}")
+        v.append(f"(m) tests.md line {lineno}: the `restart_points:` line names the input "
+                 f"{name!r}, and drive.restart_points.every is inputs.{every}")
+    v.extend(_stride_input_violations(cases, name, stated, "`restart_points:`", lineno))
     return v
 
 

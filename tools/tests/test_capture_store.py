@@ -266,6 +266,86 @@ class SeriesChunkTests(unittest.TestCase):
                          {"step": [], "t": [], "h_min": []})
 
 
+class SeriesPrefixTests(unittest.TestCase):
+    """`read_series_prefix` (issue #644 P4b): what a case that did not finish kept of its
+    series — the rows of its chunks from chunk 0 up to the first that is absent, does not
+    decode, holds other members than chunk 0, or whose `step` column does not continue the one
+    before it by 1 — and the last step among them."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.sdir = Path(self._tmp.name)
+
+    def _chunk(self, i: int, rows: list, case: str = "c", **extra: object) -> None:
+        _write(self.sdir / "series" / f"{case}__{i}.json",
+               {"step": rows, "t": [0.5] * len(rows), "h_min": [1.0] * len(rows), **extra})
+
+    def test_every_chunk_in_order_is_kept(self) -> None:
+        for i, rows in enumerate(([1, 2], [3], [4, 5])):
+            self._chunk(i, rows)
+        self._chunk(0, [7], case="cc")
+        rows, last = STORE.read_series_prefix(self.sdir, "c")
+        self.assertEqual(rows["step"], [1, 2, 3, 4, 5])
+        self.assertEqual(len(rows["h_min"]), 5)
+        self.assertEqual(last, 5)
+
+    def test_it_stops_at_the_first_chunk_it_cannot_continue_with(self) -> None:
+        """Kills: dropping any one stop: the gap, the undecodable chunk, the member set, the
+        non-list member, the step that does not continue by 1 (a repeat or a jump), or a
+        boolean step."""
+        def undecodable() -> None:
+            (self.sdir / "series" / "c__1.json").write_text("{")
+            self._chunk(2, [3])   # a later chunk that would continue the rows is not read
+        for label, write in (
+                ("a gap", lambda: self._chunk(2, [3])),
+                ("undecodable", undecodable),
+                ("other members", lambda: self._chunk(1, [3], h_max=[1.0])),
+                ("a member no list", lambda: self._chunk(1, [3], h_min=1.0)),
+                ("a repeated step", lambda: self._chunk(1, [2, 3])),
+                ("a jump", lambda: self._chunk(1, [4])),
+                ("a boolean step", lambda: self._chunk(1, [True])),
+                ("a boolean step equal to the next", None),
+                ("a step no number", lambda: self._chunk(1, ["3"])),
+                # the layout writes `step` as an integer token: a float is no step, and a
+                # non-finite one must not raise (a reviewer's crash on `int(nan)`)
+                ("a fractional step", lambda: self._chunk(1, [3.5])),
+                ("a step that is not finite", lambda: self._chunk(1, [float("nan")])),
+                ("an infinite step", lambda: self._chunk(1, [float("inf")]))):
+            with self.subTest(label):
+                for path in (self.sdir / "series").glob("*") if (self.sdir / "series").exists() \
+                        else []:
+                    path.unlink()
+                if write is None:
+                    # `True == 1`: a boolean is no step even where it equals the next one
+                    self._chunk(0, [0])
+                    self._chunk(1, [True])
+                    self.assertEqual(STORE.read_series_prefix(self.sdir, "c"),
+                                     ({"step": [0], "t": [0.5], "h_min": [1.0]}, 0))
+                    continue
+                self._chunk(0, [1, 2])
+                write()
+                rows, last = STORE.read_series_prefix(self.sdir, "c")
+                self.assertEqual(rows["step"], [1, 2])
+                self.assertEqual(last, 2)
+
+    def test_nothing_kept_is_no_last_step(self) -> None:
+        """Kills: a `last_step` read from a series with no row or no `step` column."""
+        self.assertEqual(STORE.read_series_prefix(self.sdir, "c"), ({}, None))
+        # a first chunk whose one step is no integer keeps nothing, and does not raise
+        for bad in (float("nan"), float("inf"), 2.5):
+            self._chunk(0, [bad])
+            self.assertEqual(STORE.read_series_prefix(self.sdir, "c"), ({}, None), bad)
+            (self.sdir / "series" / "c__0.json").unlink()
+        self._chunk(0, [])
+        self.assertEqual(STORE.read_series_prefix(self.sdir, "c")[1], None)
+        _write(self.sdir / "series" / "d__0.json", {"t": [0.5], "h_min": [1.0]})
+        rows, last = STORE.read_series_prefix(self.sdir, "d")
+        self.assertEqual((rows, last), ({"t": [0.5], "h_min": [1.0]}, None))
+        (self.sdir / "series" / "e__0.json").write_text("{")
+        self.assertEqual(STORE.read_series_prefix(self.sdir, "e"), ({}, None))
+
+
 class EnumerationTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -415,20 +495,26 @@ class CopyAndMoveTests(unittest.TestCase):
 
 
 class LocateTests(unittest.TestCase):
-    def test_a_final_record_and_a_sample_are_located(self) -> None:
+    def test_a_final_record_and_a_restart_point_are_located_and_a_sample_is_not(self) -> None:
+        # Issue #644 P4b: a run restarts from a restart point (the records that hold every
+        # restart variable) or its final record; a history sample holds only the variables due
+        # at its step, so it is no longer located. Kills: `locate` left on `history/`.
         sdir = Path("/run/raw/state_snapshots")
         self.assertEqual(STORE.locate(sdir / "c.json", "c"), (sdir, cs.FINAL, None))
-        self.assertEqual(STORE.locate(sdir / "history" / "c__41.json", "c"),
-                         (sdir, cs.HISTORY, 41))
+        self.assertEqual(STORE.locate(sdir / "restart_point" / "c__41.json", "c"),
+                         (sdir, cs.RESTART_POINT, 41))
+        self.assertIsNone(STORE.locate(sdir / "history" / "c__41.json", "c"))
 
     def test_another_cases_file_or_another_place_is_not(self) -> None:
-        # Kills: restarting from another case's capture, or from a sample-named file outside
-        # `history/`. (An `initial/<C>` file is named like a final record; the caller holds the
+        # Kills: restarting from another case's capture, or from a restart-point-named file
+        # outside `restart_point/`. (An `initial/<C>` file is named like a final record; the caller holds the
         # located directory to `<run>/raw/state_snapshots`, `run_configuration._restart_source`.)
         sdir = Path("/run/raw/state_snapshots")
         for path in (sdir / "d.json", sdir / "history" / "d__41.json", sdir / "c__41.json",
                      sdir / "series" / "c__41.json", sdir / "history" / "c__x.json",
-                     sdir / "c.txt", sdir / "history" / "c__1__41.json"):
+                     sdir / "c.txt", sdir / "history" / "c__1__41.json",
+                     sdir / "restart_point" / "d__41.json", sdir / "restart_point" / "c__x.json",
+                     sdir / "restart_point" / "c__1__41.json", sdir / "initial" / "c__41.json"):
             self.assertIsNone(STORE.locate(path, "c"), path)
 
 
@@ -581,7 +667,7 @@ class CaptureStoreReachTests(unittest.TestCase):
         # a capture named like a final record that is not in a run's capture directory
         with self.assertRaisesRegex(rc.ConfigurationRefused, "not under <run>/raw/state_snap"):
             rc._restart_source(cs.snapshot_dir(own.root) / "initial" / "a.json", "a", "own")
-        with self.assertRaisesRegex(rc.ConfigurationRefused, "not a capture of 'b'"):
+        with self.assertRaisesRegex(rc.ConfigurationRefused, "no restart source of 'b'"):
             rc._restart_source(final, "b", "own")
 
 
