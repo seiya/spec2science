@@ -1,6 +1,7 @@
 # Issue #644 R3 (billed), 2026-11-16..17: every stage run by
 #   python3 tools/run_workflow.py <spec_ref> validate --target <target> --with-deps \
 #     --llm-config docs/examples/llm_claude.example.yaml --stdout-format jsonl --wait-usage-reset
+# Run at main 2b60b8c4 before the stop (s1, s2, s3a) and at main b601eccc after PR #659 (the rest).
 # cost_usd: collect_token_cost_summary (tools/audit_orchestration.py) over each orchestration.
 # A stage cost is the sum of its nodes, rounded per node. Sum of the nodes: 153.65; after PR #659: 98.07 (55.58 before the stop).
 - stage: s1_harness

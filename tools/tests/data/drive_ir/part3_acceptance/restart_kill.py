@@ -19,7 +19,7 @@ record (`kept`).
 3. `inside`: killed while a restart point is being written: the file of the next restart point is
    polled and the group killed as soon as the file exists and is shorter than U's file of that point.
    That is retried (`--attempts`) until a run leaves a restart point that does not read; the
-   tool's `kept` must leave it out, `--restart-from` it must be refused (exit 2), and the run is
+   tool's `kept` must leave it out, `--restart-from` it must be refused (exit 2) with the message `<torn file>: unreadable`, and the run is
    continued from the last one that reads.
 For each continuation: the final capture equals U's, every history sample and restart point after
 `K` equals U's, the continuation's series equals the tail of U's series, and the killed run's
