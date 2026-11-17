@@ -82,6 +82,16 @@ class LaunchSelectionTests(unittest.TestCase):
             selection["linter"], backend_registry.linter_for_language(selection["language"])
         )
 
+    def test_a_language_with_no_linter_is_refused_at_launch(self) -> None:
+        """The refusal before any phase that issue #643 left as the one statement of this
+        precondition: it deleted the conductor's two copies (the gate's and the workshop
+        wrapper context's), so a language no linter declares must stop here, by name."""
+        with mock.patch.object(backend_registry, "linter_for_language", return_value=None), \
+                self.assertRaises(RuntimeError) as ctx:
+            hp.resolve_launch_axis_selection(FORTRAN_CPU)
+        self.assertIn("has no static lint preset", str(ctx.exception))
+        self.assertIn(repr(FORTRAN_CPU.toolchain["language"]), str(ctx.exception))
+
     def test_every_selected_axis_value_is_a_registered_implemented_member(self) -> None:
         """The probe asks the registry the question it means (`unimplemented_reason` — is this
         value runnable), so a value nothing implements refuses rather than being probed."""
