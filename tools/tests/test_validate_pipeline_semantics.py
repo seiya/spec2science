@@ -1227,39 +1227,6 @@ def _create_minimal_orchestration_tree(
         )
 
 
-class LegacyLaunchPromptMarkerTests(unittest.TestCase):
-    def test_marker_present_accepts_english_and_legacy_japanese(self) -> None:
-        # Backward compatibility: a launch_prompt_ref persisted before the English
-        # translation contains Japanese template markers. pre_judge / full
-        # validation must accept both the current English marker and its legacy form.
-        from tools.validate_pipeline_semantics import (
-            _launch_prompt_marker_present,
-            _required_launch_prompt_markers_for_role,
-        )
-
-        legacy_step_prompt = (
-            "あなたは step agent である。\n"
-            "対象 node_key: component/x@0.1.0\n"
-            "対象 step: compile\n"
-            "orchestration_id: o\nagent_run_id: a\nparent_agent_run_id: p\n"
-            "ir_ref: i\npipeline_ref: pp\ndependency_ref: spec/x/deps.yaml\n"
-            "skill_name: s\nskill_ref: sr\nskill_must_read_refs: smr\n"
-            "必須要件:\n- x\n"
-        )
-        markers = _required_launch_prompt_markers_for_role("step")
-        missing = [m for m in markers if not _launch_prompt_marker_present(m, legacy_step_prompt)]
-        self.assertEqual(missing, [], f"legacy Japanese prompt rejected: {missing}")
-
-        # The current English prompt markers are still accepted.
-        english_step_prompt = legacy_step_prompt.replace(
-            "あなたは step agent である。", "You are a step agent."
-        ).replace("対象 node_key:", "Target node_key:").replace(
-            "対象 step:", "Target step:"
-        ).replace("必須要件:", "Required requirements:")
-        missing_en = [m for m in markers if not _launch_prompt_marker_present(m, english_step_prompt)]
-        self.assertEqual(missing_en, [], f"english prompt rejected: {missing_en}")
-
-
 class PipelineHarnessDagTests(unittest.TestCase):
     """The target's harness is a closure node of every physics pipeline (issue #284, R4-a
     PR-3), so the whole-workspace DAG checks require it: validated in its OWN pipeline for the
@@ -10028,54 +9995,6 @@ end program shallow_water2d_runner
                 ),
             )
 
-    def test_detects_non_template_launch_prompt_when_orchestration_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            _create_minimal_orchestration_tree(repo_root)
-            prompt_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "launches"
-                / "step_run_build_001.prompt.txt"
-            )
-            prompt_path.write_text(
-                "Build step for node problem/shallow_water2d@0.3.0\n",
-                encoding="utf-8",
-            )
-            violations = validate(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                require_orchestration=True,
-            )
-            self.assertTrue(
-                any("launch_prompt_ref missing launch-prompt template markers" in v for v in violations)
-            )
-
     def test_validate_compile_stage_passes_for_resolved_plan_directory(self) -> None:
         # A fully-formed IR (`tests` + the host `predicates` that judge them) passes the compile
         # stage cleanly.
@@ -15423,25 +15342,7 @@ def _pure_judge_context_for_marker_test() -> dict[str, str]:
 
 class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
     """Build / Validate.execute run in-process (no leaf, no skill): their minimal
-    deterministic launch prompt satisfies a reduced marker set (no skill markers)."""
-
-    def test_sentinel_constants_match_across_modules(self) -> None:
-        # The validator detects deterministic prompts by text (sentinel in launch_text);
-        # the runtime renders them. A desync would silently break the marker exemption.
-        from tools.validate_pipeline_semantics import DETERMINISTIC_PROMPT_SENTINEL as V
-        from tools.orchestration_runtime import DETERMINISTIC_PROMPT_SENTINEL as R
-        self.assertEqual(V, R)
-
-    def test_reduced_markers_exclude_skill(self) -> None:
-        from tools.validate_pipeline_semantics import (
-            _required_launch_prompt_markers_for_role, DETERMINISTIC_PROMPT_SENTINEL)
-        det = _required_launch_prompt_markers_for_role("step", deterministic=True)
-        self.assertIn(DETERMINISTIC_PROMPT_SENTINEL, det)
-        self.assertNotIn("skill_ref:", det)
-        self.assertNotIn("skill_name:", det)
-        # the leaf set still requires skill markers
-        leaf = _required_launch_prompt_markers_for_role("step", deterministic=False)
-        self.assertIn("skill_ref:", leaf)
+    deterministic launch prompt carries no skill field."""
 
     def test_prepare_payload_keeps_every_launch_skill_free(self) -> None:
         # Regression: prepare_launch_request_payload (the real record-launch path) must
@@ -15491,16 +15392,14 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
     # deterministic nor workshop. (The request validator's own refusal of a forged
     # `deterministic` flag, and its test, went in issue #643: the conductor sets the flag.)
 
-    def test_deterministic_prompt_satisfies_reduced_markers(self) -> None:
+    def test_a_deterministic_launch_renders_the_deterministic_prompt(self) -> None:
         import tools.workflow_conductor as wc
-        from tools.orchestration_runtime import render_launch_prompt_text
-        from tools.validate_pipeline_semantics import (
-            _required_launch_prompt_markers_for_role, _launch_prompt_marker_present,
-            DETERMINISTIC_PROMPT_SENTINEL)
+        from tools.orchestration_runtime import (
+            DETERMINISTIC_PROMPT_SENTINEL, render_launch_prompt_text)
         refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                            run_id="run_1", source_binary_id="bin_1")
-        for step, substep, role in [("build", None, "step"), ("validate", "execute", "substep")]:
+        for step, substep in [("build", None), ("validate", "execute")]:
             req = wc.build_launch_request(
                 refs, step=step, substep=substep, orchestration_id="o",
                 orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
@@ -15510,172 +15409,12 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
             self.assertNotIn("skill_ref", req)
             prompt = render_launch_prompt_text(req)
             self.assertIn(DETERMINISTIC_PROMPT_SENTINEL, prompt)
-            markers = _required_launch_prompt_markers_for_role(role, deterministic=True)
-            self.assertEqual([m for m in markers
-                              if not _launch_prompt_marker_present(m, prompt)], [])
 
 
-class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
-    """A warm-resume slim repair turn (Generate.lint / Generate.static / Compile.static
-    finding) was rendered directly by the conductor with a REDUCED body — no skill /
-    must-read / requirements markers, since the resumed producer leaf already held them.
-    The pipeline-semantic re-check must apply the same reduced marker set so it does not
-    false-reject the recorded slim launch_prompt_ref. Regression: orch_20260702T065946Z_f05a7224
-    (validate.post_judge -> validate_pre_judge_violation).
-
-    HISTORICAL since Z4 (issue #171). Nothing renders a slim — or any other agentic — prompt
-    any more; `_render_launch_prompt_template` refuses a request that is neither deterministic
-    nor pure. The validator keeps both arms because its subject is a PERSISTED record and an
-    operator's `workspace/` holds orchestrations launched before Z4, for the same reason
-    `_LEGACY_LAUNCH_PROMPT_MARKERS` still maps an even older one's Japanese markers: `--stage
-    full` is the documented CI pass-condition, so a stale artifact the sweep cannot classify
-    fails the gate with no artifact saying why (the `_global/` sink episode, one class below).
-    So these tests no longer mirror a renderer — there is none to drift from. They drive the
-    validator against `tools/tests/data/historical_launch_prompts/`, two prompts rendered at
-    `2b8db403`, the last commit before the cut. Re-authoring either by hand would pin what
-    someone believed the old renderer emitted, which is why they are a frozen record."""
-
-    _HISTORICAL_PROMPTS = (Path(vps.__file__).resolve().parent.parent
-                           / "tools" / "tests" / "data" / "historical_launch_prompts")
-
-    @classmethod
-    def _historical_prompt(cls, name: str) -> str:
-        text = (cls._HISTORICAL_PROMPTS / f"{name}.prompt.txt").read_text(encoding="utf-8")
-        assert text.strip(), f"{name}: the frozen historical prompt is empty"
-        return text
-
-    def _slim_payload(self) -> dict:
-        # A minimal request that satisfies _is_slim_repair_request (warm_resume + reuse +
-        # non-empty findings) for a generate.generate producer repair.
-        return {
-            "node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
-            "step": "generate",
-            "substep": "generate",
-            "orchestration_id": "orch_test_slim_001",
-            "agent_run_id": "arid_slim_001",
-            "parent_agent_run_id": "orch_run_001",
-            "source_id": "src_20260702_002",
-            "warm_resume": True,
-            "repair_strategy": "reuse",
-            "repair_reason": "lint_lint_findings",
-            "repair_target_agent_run_id": "arid_prev_000",
-            "repair_findings": "runner.f90:270:19: C072 assumed size without intent(in)",
-            "allowed_output_paths": [
-                "workspace/pipelines/component__x__0.1.0/p_001/source/src_20260702_002/"
-                "src/dynamics_shallow_water_flux_2d_rusanov_p0_model.f90",
-            ],
-        }
-
-    def test_sentinel_constants_match_the_frozen_record(self) -> None:
-        # The validator detects slim prompts by text. Its two literals were a MIRROR of the
-        # renderer's until Z4 deleted it; what they are checked against now is the record they
-        # have to classify, which is the thing that was always at stake.
-        from tools.validate_pipeline_semantics import (
-            SLIM_REPAIR_PROMPT_SENTINEL, SLIM_REPAIR_FINDINGS_HEADER)
-        prompt = self._historical_prompt("slim_repair")
-        self.assertTrue(prompt.startswith(SLIM_REPAIR_PROMPT_SENTINEL))
-        self.assertIn(SLIM_REPAIR_FINDINGS_HEADER, prompt)
-
-    def test_slim_request_predicate_classifies_the_shapes_it_names(self) -> None:
-        # The validator gates the reduced marker set on the structured launch request via
-        # `_launch_request_is_slim_repair`. It was a copied mirror of the renderer's own
-        # predicate and the drift guard compared the two; with the renderer gone, the payload
-        # shapes are spelled out here — which is what the mirror was standing in for.
-        from tools.validate_pipeline_semantics import _launch_request_is_slim_repair as V
-        base = {"warm_resume": True, "repair_strategy": "reuse", "repair_findings": "x"}
-        cases = [
-            (base, True),
-            ({**base, "warm_resume": False}, False),        # not warm-resumed
-            ({**base, "repair_strategy": "restart"}, False),  # not reuse
-            ({**base, "repair_findings": "   "}, False),    # empty findings
-            ({**base, "repair_findings": ""}, False),       # missing findings
-            ({**base, "deterministic": True}, False),       # deterministic never slim
-            ({}, False),                                    # empty payload
-            # A PURE warm-resume repair satisfies the slim shape and is not slim: it has its
-            # own marker set. This is the one live shape the predicate still sees, and the
-            # only reason it is not dead code.
-            ({**base, "leaf_mode": "pure"}, False),
-        ]
-        for payload, expected in cases:
-            self.assertEqual(V(payload), expected, f"slim-request predicate on {payload}")
-
-    def test_reduced_markers_exclude_skill(self) -> None:
-        from tools.validate_pipeline_semantics import (
-            _required_launch_prompt_markers_for_role, SLIM_REPAIR_PROMPT_SENTINEL,
-            SLIM_REPAIR_FINDINGS_HEADER)
-        slim = _required_launch_prompt_markers_for_role("substep", slim=True)
-        self.assertIn(SLIM_REPAIR_PROMPT_SENTINEL, slim)
-        self.assertIn(SLIM_REPAIR_FINDINGS_HEADER, slim)
-        for excluded in ("skill_ref:", "skill_name:", "skill_must_read_refs:",
-                         "Required requirements:", "You are a substep agent."):
-            self.assertNotIn(excluded, slim)
-        # the full (non-slim, non-deterministic) set — the historical leaf arm — requires them
-        full = _required_launch_prompt_markers_for_role("substep")
-        self.assertIn("skill_ref:", full)
-        self.assertIn("Required requirements:", full)
-
-    def test_recorded_slim_prompt_satisfies_reduced_markers(self) -> None:
-        # The real reproduction: take a genuine recorded slim prompt and run the validator's
-        # actual marker logic against it. Before the fix (slim=False) the slim prompt is
-        # reported as missing the full markers; with slim detection it passes.
-        from tools.validate_pipeline_semantics import (
-            _required_launch_prompt_markers_for_role, _launch_prompt_marker_present,
-            _is_slim_launch_prompt_text, _launch_request_is_slim_repair,
-            SLIM_REPAIR_PROMPT_SENTINEL, DETERMINISTIC_PROMPT_SENTINEL)
-        payload = self._slim_payload()
-        self.assertTrue(_launch_request_is_slim_repair(payload))
-        prompt = self._historical_prompt("slim_repair")
-        self.assertIn(SLIM_REPAIR_PROMPT_SENTINEL, prompt)
-        # Drive the SAME detection the validator call site uses.
-        is_slim = _is_slim_launch_prompt_text(prompt)
-        is_det = DETERMINISTIC_PROMPT_SENTINEL in prompt
-        self.assertTrue(is_slim)
-        self.assertFalse(is_det)
-        slim_markers = _required_launch_prompt_markers_for_role(
-            "substep", deterministic=is_det, slim=is_slim)
-        self.assertEqual(
-            [m for m in slim_markers if not _launch_prompt_marker_present(m, prompt)],
-            [],
-            "rendered slim prompt must satisfy the reduced slim marker set",
-        )
-        # Guard against the branch being too permissive: treated as a FULL prompt (the
-        # pre-fix behavior), the slim prompt IS missing the full skill/requirements markers.
-        full_markers = _required_launch_prompt_markers_for_role("substep")
-        self.assertTrue(
-            [m for m in full_markers if not _launch_prompt_marker_present(m, prompt)],
-            "slim prompt should still be missing the FULL marker set (bug reproduction)",
-        )
-
-    def test_full_substep_prompt_not_misclassified_as_slim(self) -> None:
-        # Regression: the FULL substep template documents the slim mechanism in its
-        # always-rendered boilerplate, so the slim SENTINEL STRING appears inside every full
-        # substep prompt. A whole-body substring `SENTINEL in launch_text` would misclassify
-        # the full prompt as slim and false-reject it (missing the slim-only findings header).
-        # Detection must anchor on the sentinel's position (first line), matching the call
-        # site's `launch_text.lstrip().startswith(...)`.
-        from tools.validate_pipeline_semantics import (
-            _required_launch_prompt_markers_for_role, _launch_prompt_marker_present,
-            _is_slim_launch_prompt_text,
-            SLIM_REPAIR_PROMPT_SENTINEL, DETERMINISTIC_PROMPT_SENTINEL)
-        prompt = self._historical_prompt("full_substep")
-        # The sentinel string IS present (in boilerplate) but NOT at the prompt's start —
-        # so the production detection must NOT classify this full prompt as slim. Driving the
-        # real _is_slim_launch_prompt_text here makes this a true regression test: reverting
-        # the call site to a whole-body substring check fails this assertion.
-        self.assertIn(SLIM_REPAIR_PROMPT_SENTINEL, prompt)
-        is_slim = _is_slim_launch_prompt_text(prompt)
-        is_det = DETERMINISTIC_PROMPT_SENTINEL in prompt
-        self.assertFalse(is_slim)
-        self.assertFalse(is_det)
-        markers = _required_launch_prompt_markers_for_role(
-            "substep", deterministic=is_det, slim=is_slim)
-        # It is classified full and satisfies the full marker set (no false-reject).
-        self.assertIn("skill_ref:", markers)
-        self.assertEqual(
-            [m for m in markers if not _launch_prompt_marker_present(m, prompt)],
-            [],
-            "full substep prompt must satisfy the full marker set (not misclassified as slim)",
-        )
+class OrchestrationHierarchySweepTest(unittest.TestCase):
+    """The hierarchy sweep over `workspace/orchestrations/`. (This class held the
+    slim-repair launch-prompt marker tests and their frozen historical prompts until issue
+    #643 removed the launch-prompt marker audit.)"""
 
     def test_every_directory_under_orchestrations_is_swept_as_a_run(self) -> None:
         """No name is exempt from the hierarchy sweep. The `_global/` hook-refusal sink was,
@@ -15705,86 +15444,6 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
                 current_orchestration_id=None)
             self.assertTrue(
                 any("no orchestration run found" in str(v) for v in violations), violations)
-
-    def test_slim_marker_list_is_satisfied_by_the_frozen_record(self) -> None:
-        # Drift guard on the marker LIST (not just the sentinel constants). It compared the
-        # validator's reduced set against the renderer's slim branch; with the renderer gone,
-        # the comparison is against the recorded prompt itself — every marker of the reduced
-        # set is present in it, and the marker names are not a subset of some other shape's.
-        from tools.validate_pipeline_semantics import (
-            _required_launch_prompt_markers_for_role, _launch_prompt_marker_present)
-        prompt = self._historical_prompt("slim_repair")
-        validator_slim = _required_launch_prompt_markers_for_role("substep", slim=True)
-        self.assertTrue(validator_slim, "the reduced slim marker set is empty")
-        self.assertEqual(
-            [m for m in validator_slim if not _launch_prompt_marker_present(m, prompt)], [])
-
-    def test_end_to_end_validate_marker_check_uses_request_and_prompt(self) -> None:
-        # Integration: drive the real _validate_orchestration_hierarchy call site (not just
-        # the detection helpers in isolation) by seeding a substep launch_prompt_ref + its
-        # launch request on disk and running validate(require_orchestration=True). Cases:
-        #   full     : RECORDED FULL prompt (carries the slim sentinel in its
-        #              always-rendered boilerplate), full request -> not slim -> no violation.
-        #              Catches the R1 substring bug + R2 wiring end-to-end.
-        #   slim     : RECORDED SLIM prompt, request confirms warm-resume reuse repair
-        #              -> slim -> reduced markers -> no violation (the original bug).
-        #   mismatch : RECORDED SLIM-looking prompt but a FULL (non-slim) request -> must
-        #              NOT be downgraded -> full markers required -> violation (the Codex P2:
-        #              the exemption is gated on the structured request, not prompt text alone).
-        import json as _json
-        model_text = "module m\nimplicit none\nend module m\n"
-        runner_text = "program r\nimplicit none\nend program r\n"
-        full_prompt = self._historical_prompt("full_substep")
-        slim_prompt = self._historical_prompt("slim_repair")
-        # (label, prompt body, seed a slim request?, expect a missing-markers violation)
-        cases = [
-            ("full", full_prompt, False, False),
-            ("slim", slim_prompt, True, False),
-            ("mismatch", slim_prompt, False, True),
-        ]
-        for label, prompt_text, request_is_slim, expect_violation in cases:
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                _seed_shape_expr_schema_into(repo_root)
-                _create_minimal_execution_tree(
-                    repo_root,
-                    dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                    model_text=model_text,
-                    runner_text=runner_text,
-                    run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                )
-                _create_minimal_orchestration_tree(repo_root)
-                launches = (repo_root / "workspace" / "orchestrations" / "orch_test_001"
-                            / "launches")
-                # Overwrite the generate.generate substep's recorded launch prompt.
-                prompt_path = launches / "substep_run_generate_generate_001.prompt.txt"
-                self.assertTrue(prompt_path.exists())
-                prompt_path.write_text(prompt_text, encoding="utf-8")
-                if request_is_slim:
-                    # Make the structured request confirm a warm-resume slim repair so the
-                    # marker check downgrades to the reduced set (as a real slim record does).
-                    req_path = launches / "substep_run_generate_generate_001.request.json"
-                    req = _json.loads(req_path.read_text(encoding="utf-8"))
-                    req.update({"warm_resume": True, "repair_strategy": "reuse",
-                                "repair_findings": "runner.f90:1:1: C000 x"})
-                    req_path.write_text(_json.dumps(req), encoding="utf-8")
-                violations = validate(
-                    repo_root=repo_root, workspace_root="workspace",
-                    require_orchestration=True,
-                )
-                marker_violations = [
-                    v for v in violations
-                    if "missing launch-prompt template markers" in v]
-                if expect_violation:
-                    self.assertTrue(
-                        marker_violations,
-                        f"{label}: slim-looking prompt with a non-slim request must be flagged",
-                    )
-                else:
-                    self.assertEqual(
-                        marker_violations, [],
-                        f"{label} substep prompt must not be flagged for missing markers",
-                    )
 
 
 class MakefileBinNotPinnedTest(unittest.TestCase):
@@ -26328,8 +25987,7 @@ class IrFixtureShapeTests(unittest.TestCase):
 
 
 class PureLaunchRecordSweepTest(unittest.TestCase):
-    """M-B: the launch-record sweep's host-rendered leaf checks — request/prompt agreement, the
-    reduced marker set, the contract version, the sandbox profile (or, for an HTTP leaf, its
+    """M-B: the launch-record sweep's host-rendered leaf checks — the contract version, the sandbox profile (or, for an HTTP leaf, its
     absence) and the PASS row's empty `output_refs`. Built by converting the minimal
     orchestration tree's generate.generate substep into a WORKSHOP record (`_make_workshop`,
     the one leaf model since issue #534 PR-J4-b) or into the record the retired PURE leaf wrote
@@ -26667,14 +26325,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self.assertTrue([v for v in self._workshop_violations(repo_root)
                              if "carries no network block" in v and "start a fresh run" in v])
 
-    def test_a_workshop_record_disagreeing_with_its_prompt_is_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root, workshop_prompt=False)
-            self.assertTrue(any("workshop-launch mismatch" in v
-                                for v in self._workshop_violations(repo_root)))
-
     def test_a_workshop_record_carrying_the_retired_workshop_counter_is_flagged(self) -> None:
         """The `--resume` barrier of issue #534 PR-J4-b: a workshop record carried its own
         counter (`workshop-N`) through PR-J4-a, and the audit now holds every record to the one
@@ -26735,53 +26385,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             else:
                 self.assertEqual(backend, "http")
 
-    def test_a_workshop_prompt_whose_request_is_unreadable_is_flagged(self) -> None:
-        """The request half defaults to "not workshop" when its file is gone, so the prompt
-        alone is a mismatch rather than a crash."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root)
-            (self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json").unlink()
-            self.assertTrue(any("workshop-launch mismatch" in v
-                                for v in self._workshop_violations(repo_root)))
-
-    def test_no_readable_request_at_all_is_a_mismatch_not_an_unbound_name(self) -> None:
-        """With EVERY request file gone, no earlier row can leave a value behind, so the
-        per-row default is what answers: a mismatch violation, not an UnboundLocalError
-        (round 3: this shape pins the initialisation a one-request removal could not)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root)
-            for path in (self._orch_root(repo_root) / "launches").glob("*.request.json"):
-                path.unlink()
-            self.assertTrue(any("workshop-launch mismatch" in v
-                                for v in self._workshop_violations(repo_root)))
-
-    def test_a_pure_request_with_a_workshop_prompt_is_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root)
-            req_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json"
-            req = json.loads(req_path.read_text(encoding="utf-8"))
-            req["leaf_mode"] = "pure"
-            req_path.write_text(json.dumps(req), encoding="utf-8")
-            self.assertTrue(any("workshop-launch mismatch" in v
-                                for v in self._workshop_violations(repo_root)))
-
-    def test_pure_request_with_nonpure_prompt_flagged(self) -> None:
-        """Tolerance: the request/prompt agreement still holds a pure record to it."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            # Request declares pure but the prompt stays the original (non-pure) full body.
-            self._make_pure(repo_root, pure_prompt=False)
-            self.assertTrue(
-                any("pure-launch mismatch" in v
-                    for v in self._pure_violations(repo_root)))
-
     def test_pure_record_obsolete_contract_version_flagged(self) -> None:
         # Tolerance (the workshop twin is
         # `test_a_workshop_record_carrying_the_retired_workshop_counter_is_flagged`).
@@ -26809,51 +26412,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 encoding="utf-8")
             self.assertTrue(
                 any("prompt_contract_version" in v for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_missing_marker_flagged(self) -> None:
-        # Positive test for the sweep's pure marker set: strip a required NON-sentinel marker
-        # (keep the sentinel so the record still classifies as pure) and confirm the generic
-        # marker violation fires for the pure record.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            prompt_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.prompt.txt"
-            lines = prompt_path.read_text(encoding="utf-8").splitlines()
-            kept = [ln for ln in lines if not ln.startswith("prompt_contract_version:")]
-            prompt_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-            violations = validate(repo_root=repo_root, workspace_root="workspace",
-                                  require_orchestration=True)
-            # The stripped marker is the pure-only `prompt_contract_version:`, so the violation
-            # naming it is unambiguously from the pure record.
-            self.assertTrue(
-                any("missing launch-prompt template markers" in v
-                    and "prompt_contract_version:" in v
-                    for v in violations))
-
-    def test_workshop_record_missing_marker_flagged(self) -> None:
-        """The workshop twin of the row above: the marker set the audit requires of a workshop
-        record (`_required_launch_prompt_markers_for_role(workshop=True)`) is checked on the
-        real rendered prompt — each non-sentinel identity marker stripped alone is named."""
-        from tools.validate_pipeline_semantics import _required_launch_prompt_markers_for_role
-        from tools.leaf_contract import WORKSHOP_PROMPT_SENTINEL
-        markers = _required_launch_prompt_markers_for_role("substep", workshop=True)
-        self.assertEqual(markers[0], WORKSHOP_PROMPT_SENTINEL)
-        for marker in markers[1:]:
-            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                self._build_tree(repo_root)
-                self._make_workshop(repo_root)
-                prompt_path = (self._orch_root(repo_root) / "launches"
-                               / f"{self._ARID}.prompt.txt")
-                lines = prompt_path.read_text(encoding="utf-8").splitlines()
-                kept = [ln for ln in lines if not ln.startswith(marker)]
-                self.assertLess(len(kept), len(lines), marker)
-                prompt_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-                self.assertTrue(
-                    any("missing launch-prompt template markers" in v and marker in v
-                        for v in self._workshop_violations(repo_root)),
-                    self._workshop_violations(repo_root))
 
     # ----------------------------------------------------------------------------------
     # PR-2 of Z4 (issue #171): the records this sweep used to demand are no longer written.

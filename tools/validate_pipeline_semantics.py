@@ -49,14 +49,9 @@ try:
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
-    # PURE_PROMPT_SENTINEL is IMPORTED (not copy-pasted like SLIM_REPAIR_PROMPT_SENTINEL): the
-    # Z2 pure sentinel has a single source in tools/leaf_contract so orchestration_runtime, the
-    # prompt templates, and this validator cannot drift (a parity test still pins template
-    # line 0 against it). leaf_contract is stdlib-only, so importing it here introduces no cycle.
+    # leaf_contract is stdlib-only, so importing it here introduces no cycle.
     from tools.leaf_contract import (
         LEAF_PROMPT_CONTRACT_VERSION,
-        PURE_PROMPT_SENTINEL,
-        WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
@@ -98,8 +93,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     )
     from tools.leaf_contract import (
         LEAF_PROMPT_CONTRACT_VERSION,
-        PURE_PROMPT_SENTINEL,
-        WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
@@ -577,71 +570,6 @@ def _has_informative_agent_summary(text: str) -> bool:
     )
 
 
-DETERMINISTIC_PROMPT_SENTINEL = "Conductor-executed deterministic step"
-
-# The warm-resume slim repair prompt's identifying strings. They were a MIRROR of
-# `orchestration_runtime`'s copies until Z4 (issue #171) deleted that renderer and its
-# literals; this module is the only home now, so there is no drift to guard and the
-# cross-module equality test that guarded it is gone. They are kept because this validator's
-# subject is a PERSISTED record and an operator's `workspace/` holds runs launched before the
-# cut, which it still has to classify — the same reason `_LEGACY_LAUNCH_PROMPT_MARKERS` keeps
-# an even older one's Japanese markers. `DETERMINISTIC_PROMPT_SENTINEL` above IS still
-# duplicated and still cross-checked, so the two are no longer the same case.
-SLIM_REPAIR_PROMPT_SENTINEL = "Warm-resume slim repair turn"
-SLIM_REPAIR_FINDINGS_HEADER = "Findings to fix (from the lint/syntax/static gate or verify finding):"
-
-
-def _is_slim_launch_prompt_text(launch_text: str) -> bool:
-    """True when a recorded launch_prompt_ref body is shaped like a warm-resume slim repair turn.
-
-    Detect by the sentinel's POSITION (first line), NOT a whole-body substring: the FULL
-    substep template documented the slim mechanism in its always-rendered boilerplate, so the
-    sentinel string appeared inside every full substep prompt — both that template and the slim
-    renderer are deleted (Z4, issue #171), and the position rule is what makes this exact on the
-    records they left. `tools/tests/data/historical_launch_prompts/` holds one of each, frozen
-    at the last commit before the cut, and is what drives this function.
-
-    This is a NECESSARY but not SUFFICIENT signal for downgrading the required marker set:
-    the authoritative signal is the structured launch request (see
-    _launch_request_is_slim_repair). A record is treated as slim only when both agree."""
-    return launch_text.lstrip().startswith(SLIM_REPAIR_PROMPT_SENTINEL)
-
-
-def _launch_request_is_slim_repair(request_payload: dict) -> bool:
-    """True when the structured launch REQUEST payload is a warm-resume slim repair.
-
-    This was a mirror of the renderer's own predicate, and the renderer is deleted (Z4, issue
-    #171), so it is now the only statement of the shape — pinned against the payload shapes it
-    must classify rather than against a twin. Gating the reduced marker set on this — not on prompt text alone — prevents a non-slim
-    launch record whose prompt was replaced with a slim-looking body from escaping the full
-    skill / must-read / requirements markers (an inconsistent record would otherwise pass).
-
-    A pure request is excluded up front, and that arm is the one still LIVE: a pure warm-resume
-    repair satisfies the slim shape (warm + reuse + findings) and has its own marker set, so the
-    two classify mutually exclusively. Everything else here answers for a pre-Z4 record."""
-    if request_payload.get("deterministic"):
-        return False
-    if (_leaf_contract_is_pure_request(request_payload)
-            or _leaf_contract_is_workshop_request(request_payload)):
-        return False
-    if not request_payload.get("warm_resume"):
-        return False
-    if str(request_payload.get("repair_strategy", "")).strip() != "reuse":
-        return False
-    return bool(str(request_payload.get("repair_findings", "")).strip())
-
-
-def _is_pure_launch_prompt_text(launch_text: str) -> bool:
-    """True when a recorded launch_prompt body is shaped like a Z2 pure-function leaf turn.
-
-    Anchored on the sentinel's POSITION (first line), mirroring _is_slim_launch_prompt_text: the
-    pure renderer (orchestration_runtime._render_leaf_launch_prompt / _render_leaf_repair_prompt)
-    always emits PURE_PROMPT_SENTINEL as line 0. A NECESSARY but not SUFFICIENT signal — the
-    authoritative signal is the structured request (_launch_request_is_pure); a record is treated
-    as pure only when both agree, and a disagreement is itself a violation."""
-    return launch_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
-
-
 def _workshop_profile_violations(profile: dict) -> list[str]:
     """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): a profile
     with no network block was recorded before issue #534 step 4 — the `--resume` barrier,
@@ -653,134 +581,6 @@ def _workshop_profile_violations(profile: dict) -> list[str]:
                  "orchestration cannot be resumed — start a fresh run; certified nodes are "
                  "reused")]
     return []
-
-
-def _launch_request_is_workshop(request_payload: dict) -> bool:
-    """True when the structured launch REQUEST is a `workshop leaf` (`leaf_mode == "workshop"`,
-    issue #534), by the same single detection source the runtime uses."""
-    return _leaf_contract_is_workshop_request(request_payload)
-
-
-def _is_workshop_launch_prompt_text(launch_text: str) -> bool:
-    """True when a recorded launch_prompt opens with the workshop sentinel (line 0), the
-    workshop twin of `_is_pure_launch_prompt_text`; necessary, not sufficient."""
-    return launch_text.lstrip().startswith(WORKSHOP_PROMPT_SENTINEL)
-
-
-def _launch_request_is_pure(request_payload: dict) -> bool:
-    """True when the structured launch REQUEST is a Z2 pure-function leaf (`leaf_mode == "pure"`).
-
-    Delegates to `leaf_contract.is_pure_request` — the SAME single detection source
-    orchestration_runtime._is_pure_launch_request uses, so the producer and this validator cannot
-    disagree about what "pure" is. Gating on this (not prompt text alone) prevents a non-pure
-    record whose prompt was swapped for a pure-looking body from escaping the full markers, and
-    vice versa."""
-    return _leaf_contract_is_pure_request(request_payload)
-
-
-def _required_launch_prompt_markers_for_role(
-    role: str,
-    deterministic: bool = False,
-    slim: bool = False,
-    pure: bool = False,
-    workshop: bool = False,
-) -> list[str]:
-    if workshop:
-        # The workshop leaf (issue #534): the pure identity block under its own sentinel.
-        # Mirror of orchestration_runtime._required_launch_prompt_markers (host-rendered branch).
-        return [
-            WORKSHOP_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:", "Target substep:",
-            "orchestration_id:", "agent_run_id:",
-            "prompt_contract_version:",
-        ]
-    if pure:
-        # Z2 pure-function leaf (launch OR repair): sentinel + identity + contract version. No
-        # skill / must-read / requirements markers — the pure prompt has no skill section and
-        # no leaf-authorable gate/write instructions. Mirror
-        # orchestration_runtime._required_launch_prompt_markers (pure branch).
-        return [
-            PURE_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:", "Target substep:",
-            "orchestration_id:", "agent_run_id:",
-            "prompt_contract_version:",
-        ]
-    if slim:
-        # Warm-resume slim repair turn: the conductor renders a reduced body (built
-        # directly, not from the template) because the resumed producer leaf already holds
-        # the SKILL / must-read / requirements sections. Mirror the renderer's reduced
-        # marker set (orchestration_runtime._required_launch_prompt_markers, slim branch)
-        # so this pipeline-semantic re-check does not false-reject a legitimate slim prompt.
-        return [
-            SLIM_REPAIR_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:", "Target substep:",
-            "orchestration_id:", "agent_run_id:", "parent_agent_run_id:",
-            "source_id:", "capability_doc_path:", "allowed_output_paths:",
-            "output_manifest_path:", SLIM_REPAIR_FINDINGS_HEADER,
-        ]
-    if deterministic:
-        # Build / Validate.execute run in-process (no leaf); their minimal launch prompt
-        # carries no skill section or leaf instructions — only the sentinel + core ids
-        # + node/step. See _render_deterministic_launch_prompt in orchestration_runtime.
-        det = [
-            DETERMINISTIC_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:",
-            "orchestration_id:", "agent_run_id:", "parent_agent_run_id:",
-            "ir_ref:", "pipeline_ref:",
-        ]
-        if role == "substep":
-            det.append("Target substep:")
-        return det
-    markers = [
-        "orchestration_id:",
-        "agent_run_id:",
-        "parent_agent_run_id:",
-        "ir_ref:",
-        "pipeline_ref:",
-        "dependency_ref:",
-        "skill_name:",
-        "skill_ref:",
-        "skill_must_read_refs:",
-        "Required requirements:",
-    ]
-    if role == "substep":
-        return [
-            "You are a substep agent.",
-            "Target node_key:",
-            "Target step:",
-            "Target substep:",
-            *markers,
-        ]
-    if role == "step":
-        return [
-            "You are a step agent.",
-            "Target node_key:",
-            "Target step:",
-            *markers,
-        ]
-    return []
-
-
-# Backward compatibility: orchestrations launched before the English translation
-# of the launch-prompt templates persisted Japanese template markers in their
-# `launch_prompt_ref`. Map each current English marker to its legacy Japanese
-# equivalent so `pre_judge` / `full` validation accepts both marker sets.
-_LEGACY_LAUNCH_PROMPT_MARKERS: dict[str, str] = {
-    "Required requirements:": "必須要件:",
-    "You are a substep agent.": "あなたは substep agent である。",
-    "You are a step agent.": "あなたは step agent である。",
-    "Target node_key:": "対象 node_key:",
-    "Target step:": "対象 step:",
-    "Target substep:": "対象 substep:",
-}
-
-
-def _launch_prompt_marker_present(marker: str, launch_text: str) -> bool:
-    """True if the current English marker or its legacy Japanese form is present."""
-    if marker in launch_text:
-        return True
-    legacy = _LEGACY_LAUNCH_PROMPT_MARKERS.get(marker)
-    return bool(legacy) and legacy in launch_text
 
 
 def _normalize_workspace_root_token(workspace_root: str) -> str:
@@ -7801,15 +7601,6 @@ def _validate_orchestration_hierarchy(
                                     f"{runs_path}:line {idx + 1} {key} target must be non-empty ({ref_token})"
                                 )
                             if key == "launch_prompt_ref":
-                                # Downgrade to the reduced slim / pure marker set ONLY when the
-                                # structured launch REQUEST confirms it (_launch_request_is_slim_repair
-                                # / _launch_request_is_pure) AND the recorded prompt is actually
-                                # slim- / pure-shaped (sentinel anchored at line 0). Relying on
-                                # prompt text alone would let a record whose prompt was replaced
-                                # with a slim/pure-looking body escape the full markers.
-                                request_confirms_slim = False
-                                request_confirms_pure = False
-                                request_confirms_workshop = False
                                 req_payload_for_launch = None
                                 # The host-authored launch RESPONSE, read alongside the request:
                                 # it is what says an HTTP pure leaf ran in the conductor's own
@@ -7831,59 +7622,21 @@ def _validate_orchestration_hierarchy(
                                             req_payload_for_launch = _read_json(req_path)
                                         except json.JSONDecodeError:
                                             req_payload_for_launch = None
-                                        if isinstance(req_payload_for_launch, dict):
-                                            request_confirms_slim = _launch_request_is_slim_repair(
-                                                req_payload_for_launch)
-                                            request_confirms_pure = _launch_request_is_pure(
-                                                req_payload_for_launch)
-                                            request_confirms_workshop = (
-                                                _launch_request_is_workshop(
-                                                    req_payload_for_launch))
-                                # Anchored slim/pure detection takes precedence over the substring
-                                # deterministic check when an untrusted findings excerpt happens to
-                                # embed the deterministic sentinel.
-                                prompt_is_pure = _is_pure_launch_prompt_text(launch_text)
-                                # Request and prompt must AGREE on pure: a pure request with a
-                                # non-pure prompt (or a pure prompt from a non-pure request) is an
-                                # inconsistent record that must not silently pass.
-                                if request_confirms_pure != prompt_is_pure:
-                                    violations.append(
-                                        f"{runs_path}:line {idx + 1} {key} pure-launch mismatch: "
-                                        f"request leaf_mode=pure is {request_confirms_pure} but "
-                                        f"prompt-is-pure is {prompt_is_pure}"
-                                    )
-                                is_pure = request_confirms_pure and prompt_is_pure
-                                # The workshop leaf (issue #534) is held to the same agreement.
-                                prompt_is_workshop = _is_workshop_launch_prompt_text(launch_text)
-                                if request_confirms_workshop != prompt_is_workshop:
-                                    violations.append(
-                                        f"{runs_path}:line {idx + 1} {key} workshop-launch "
-                                        f"mismatch: request leaf_mode=workshop is "
-                                        f"{request_confirms_workshop} but prompt-is-workshop is "
-                                        f"{prompt_is_workshop}"
-                                    )
-                                is_workshop = request_confirms_workshop and prompt_is_workshop
-                                is_slim = (
-                                    request_confirms_slim
-                                    and _is_slim_launch_prompt_text(launch_text))
-                                is_deterministic = DETERMINISTIC_PROMPT_SENTINEL in launch_text
-                                required_markers = _required_launch_prompt_markers_for_role(
-                                    role_l, deterministic=is_deterministic, slim=is_slim,
-                                    pure=is_pure, workshop=is_workshop)
-                                missing_markers = [
-                                    marker
-                                    for marker in required_markers
-                                    if not _launch_prompt_marker_present(marker, launch_text)
-                                ]
-                                if missing_markers:
-                                    violations.append(
-                                        f"{runs_path}:line {idx + 1} {key} missing launch-prompt template markers ({', '.join(missing_markers)})"
-                                    )
+                                # Which leaf record this is, read from the host-written
+                                # request. (The audits of the request against its prompt — the
+                                # pure / workshop sentinel agreement and the template markers —
+                                # went in issue #643: one record-launch writes both, the prompt
+                                # rendered from the request.)
+                                is_pure = (isinstance(req_payload_for_launch, dict)
+                                           and _leaf_contract_is_pure_request(
+                                               req_payload_for_launch))
+                                is_workshop = (isinstance(req_payload_for_launch, dict)
+                                               and _leaf_contract_is_workshop_request(
+                                                   req_payload_for_launch))
                                 if is_pure or is_workshop:
                                     # Independent audit of the persisted pure record (tamper /
-                                    # drift detection), so it re-checks the value invariants the
-                                    # runtime enforces at launch — the marker sweep above only
-                                    # proves the marker NAME is present.
+                                    # drift detection) of the value invariants the conductor
+                                    # stamps at launch.
                                     # (1) prompt_contract_version must equal the transport's
                                     # contract, in BOTH the structured request and the rendered
                                     # prompt line; an obsolete/forged version passing the audit

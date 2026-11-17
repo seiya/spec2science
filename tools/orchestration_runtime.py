@@ -62,15 +62,12 @@ try:
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         LEAF_PROMPT_CONTRACT_VERSION,
-        PURE_PROMPT_SENTINEL,
         WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
-        WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _leaf_contract_is_host_rendered_request,
         is_workshop_reading_pair as _leaf_contract_is_workshop_reading_pair,
-        is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
@@ -111,15 +108,12 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         LEAF_PROMPT_CONTRACT_VERSION,
-        PURE_PROMPT_SENTINEL,
         WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
-        WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _leaf_contract_is_host_rendered_request,
         is_workshop_reading_pair as _leaf_contract_is_workshop_reading_pair,
-        is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
 
@@ -9290,9 +9284,8 @@ def _render_deterministic_launch_prompt(request_payload: dict[str, Any]) -> str:
 # The five `SLIM_REPAIR_*` literals — the sentinel, the findings header, the untrusted-excerpt
 # warning and its BEGIN/END fence — stood here until Z4 (issue #171). They belonged to the
 # warm-resume slim repair prompt, which only an AGENTIC leaf could receive, and nothing in this
-# module renders one now. `tools/validate_pipeline_semantics.py` keeps its own copies of the two
-# it needs: its subject is a PERSISTED record, and an operator's `workspace/` holds runs launched
-# before the cut, which it still has to classify.
+# module renders one now. `tools/validate_pipeline_semantics.py` kept copies of two of them to
+# classify pre-cut records until issue #643 removed the launch-prompt marker audit.
 
 
 # --------------------------------------------------------------------------------------
@@ -9373,19 +9366,6 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
                                         "runner_output_contract_document",
                                         "severity_rubric_document", "bundle_document"),
 }
-
-
-def _is_pure_launch_request(request_payload: dict[str, Any]) -> bool:
-    """True when this launch is a Z2 pure-function leaf turn (`leaf_mode == "pure"`).
-
-    An ABSENT `leaf_mode` was the legacy agentic path; since Z4 (issue #171) it means a
-    DETERMINISTIC substep or a malformed request, and this predicate is the single gate that
-    steers a request into the pure renderer / marker set / record-launch branch. (Slim and pure
-    were made mutually exclusive predicates for the same reason, and the slim side lives on only
-    in `validate_pipeline_semantics`, for records written before the cut.) Deterministic
-    and pure are likewise mutually exclusive (enforced at validation). Delegates to
-    `leaf_contract.is_pure_request` — the single detection source shared with the validator."""
-    return _leaf_contract_is_pure_request(request_payload)
 
 
 def _sanitize_pure_doc_body(text: str) -> str:
@@ -9813,10 +9793,6 @@ def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
         "the pure leaf went in issue #534 PR-J4-b")
 
 
-def build_launch_prompt_text(request_payload: dict[str, Any]) -> str:
-    return _render_launch_prompt_template(request_payload).split("\n\n", 1)[0]
-
-
 def render_launch_prompt_text(request_payload: dict[str, Any]) -> str:
     return _render_launch_prompt_template(request_payload)
 
@@ -9831,21 +9807,18 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # and shipped without its Task Card, while the persisted request recorded `"substep"` —
     # a durable record positively disagreeing with the prompt beside it. That renderer is
     # deleted (Z4, issue #171) and the ORDER is kept: it is the general rule, and the next
-    # renderer to read a request field before validation gets it for free. Normalization only: an unknown or absent role is left exactly as it is
-    # for the validator to REJECT, so this can never turn a bad role into an accepted one.
+    # renderer to read a request field before validation gets it for free. Normalization only: an
+    # unknown or absent role is left as it is (the conductor writes it from the step table).
     _role_raw = payload.get("agent_role")
-    _role_respelled = False
     if isinstance(_role_raw, str) and _role_raw.strip():
         payload["agent_role"] = _role_raw.strip().lower()
-        _role_respelled = payload["agent_role"] != _role_raw
     # Deterministic (in-process Build / Validate.execute) requests carry no skill: no
     # leaf runs them, and their SKILL.md files do not exist. Leave skill_name/skill_ref
     # stripped and skill_must_read_refs empty (mirror build_launch_request) so the
     # persisted request stays self-consistent and references no deleted SKILL.
     # A pure-function leaf reads no SKILL (its whole context is host-inlined) and has no
     # skill section in its prompt: force the skill fields empty so the persisted request is
-    # self-consistent and the pure marker / validation checks (which require empty skill
-    # fields) hold. A deterministic request never carries them in the first place.
+    # self-consistent. A deterministic request never carries them in the first place.
     pure = _leaf_contract_is_host_rendered_request(payload)
     if pure:
         payload["skill_name"] = ""
@@ -9857,8 +9830,7 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     payload.setdefault("repair_reason", "none")
     # NO leaf force-reads a document since Z4 (issue #171): a deterministic substep has no
     # leaf, and a pure leaf is handed its whole context inlined. Kept as an explicit empty in
-    # BOTH assembly paths (here + build_launch_request) because the launch-integrity validator
-    # checks it.
+    # BOTH assembly paths (here + build_launch_request).
     payload["skill_must_read_refs"] = ""
     explicit_prompt_present = any(
         _coerce_nested_launch_text(payload, path) is not None
@@ -9881,27 +9853,11 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # A pure launch is HOST-MEDIATED: the host fully controls the closed context, so the prompt
     # is ALWAYS the canonical render of THIS request — never a caller-supplied body. Force-render
     # (overwriting any explicit prompt field) so a supplied `launch_prompt_full` cannot inject a
-    # mismatched identity/context that the marker-only validation would otherwise accept (the
-    # child would act on one context while its output is attributed to another request). For the
+    # mismatched identity/context (the child would act on one context while its output is
+    # attributed to another request). For the
     # legacy path, keep the existing behavior (render only when no explicit prompt is supplied).
     if pure or not explicit_prompt_present:
         payload["launch_prompt_full"] = render_launch_prompt_text(payload)
-    elif _role_respelled:
-        # The other half of the same defect. On the render branch above, canonicalizing the
-        # role before the render is what puts the Task Card in the prompt. On THIS branch
-        # nothing is re-rendered, so a caller-supplied prompt built from `"SUBSTEP"` ships
-        # unchanged while the persisted request records `"substep"` — the durable record
-        # disagreeing with the prompt beside it, which is precisely the harm the render-side
-        # fix was written to stop. Refuse the pair instead of silently shipping it. Narrow by
-        # construction: it fires ONLY when the caller both supplies its own prompt AND spells
-        # the role non-canonically, so no conductor launch can reach it
-        # (`workflow_conductor.build_launch_request` supplies no prompt and a canonical role).
-        raise ValueError(
-            "launch request supplies its own prompt while spelling agent_role "
-            f"{_role_raw!r}, which normalizes to {payload['agent_role']!r}; the persisted "
-            "request would disagree with the prompt it accompanies. Send the canonical "
-            "spelling, or omit the prompt and let record-launch render it."
-        )
     return payload
 
 
@@ -9970,58 +9926,6 @@ def _validate_response_agent_session_id(response_payload: dict[str, Any]) -> str
     return session_id
 
 
-def _required_launch_prompt_markers(request_payload: dict[str, Any]) -> list[str]:
-    step = request_payload.get("step")
-    if not isinstance(step, str) or not step.strip():
-        return []
-    if _leaf_contract_is_host_rendered_request(request_payload):
-        # Pure-function leaf turn (launch OR repair): sentinel + identity + contract version.
-        # No skill / must-read / `Required requirements:` markers — the pure prompt has no
-        # skill section and no leaf-authorable gate/write instructions. A workshop turn
-        # (issue #534) carries the same identity block under its own sentinel.
-        return [
-            WORKSHOP_PROMPT_SENTINEL if _leaf_contract_is_workshop_request(request_payload)
-            else PURE_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:", "Target substep:",
-            "orchestration_id:", "agent_run_id:",
-            "prompt_contract_version:",
-        ]
-    if request_payload.get("deterministic"):
-        # In-process Build / Validate.execute: minimal prompt, no skill section.
-        det = [
-            DETERMINISTIC_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:",
-            "orchestration_id:", "agent_run_id:", "parent_agent_run_id:",
-            "ir_ref:", "pipeline_ref:",
-        ]
-        substep = request_payload.get("substep")
-        if isinstance(substep, str) and substep.strip():
-            det.append("Target substep:")
-        return det
-    # Neither shape: no third prompt exists since Z4 (issue #171). The renderer refuses to
-    # RENDER one — but `prepare_launch_request_payload` force-renders only when
-    # `pure or not explicit_prompt_present`, so a caller that supplies `launch_prompt_full`
-    # itself never reaches the renderer, and the earlier wording here ("the renderer refuses
-    # such a request outright") was false on exactly that path. What answers for it is the
-    # caller: `_validate_launch_prompt_text`'s `if not required_markers` arm applies an
-    # identity floor when a step is declared, and returns only for the self-prompt (no step).
-    # This empty is therefore the honest "no template to preserve", not a permission.
-    return []
-
-
-def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
-    step = request_payload.get("step")
-    if not isinstance(step, str) or not step.strip():
-        return []
-    # Backward compatibility: workflow_mode line is recommended but not mandatory
-    # for manually provided legacy launch prompts.
-    return [
-        line
-        for line in build_launch_prompt_text(request_payload).splitlines()
-        if not line.strip().startswith("workflow_mode:")
-    ]
-
-
 # The per-(step, substep) allowed `validate_pipeline_semantics --stage` map, and the scanner
 # that read a rendered prompt for an actionable invocation of one, stood here until Z4
 # (issue #171). Both existed because an AGENTIC leaf ran the gate itself out of its prompt:
@@ -10031,121 +9935,6 @@ def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
 # process, per `docs/workflow/phases/phase_0{1,2,4}_*.md`. The prose half went with them:
 # `docs/workflow/LAUNCH_PROMPT_REFERENCE.md`'s "substep <-> allowed validator gate
 # correspondence table", which this map was the code side of.
-
-
-def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: str) -> None:
-    # Pure detection is the AND of "request declares pure" and "prompt opens with the pure
-    # sentinel" (line 0), and BOTH directions of the disagreement are refused. The first arm is
-    # not redundant with the marker check below, measured by the round-2 security review: a
-    # DETERMINISTIC request whose prompt is the real deterministic render with the pure sentinel
-    # prepended carries every deterministic marker and every field value, so the marker and line
-    # checks both pass — this arm is the only thing that refuses it. Its mirror in
-    # `validate_pipeline_semantics` (`request_confirms_pure != prompt_is_pure`) answers for the
-    # persisted record; this one answers at the write.
-    # The WORKSHOP sentinel (issue #534) is held to the same AND, in both directions, before
-    # the pure one: a workshop request carries a workshop-shaped prompt and nothing else does.
-    prompt_opens_workshop = prompt_text.lstrip().startswith(WORKSHOP_PROMPT_SENTINEL)
-    if prompt_opens_workshop != _leaf_contract_is_workshop_request(request_payload):
-        raise ValueError(
-            "launch prompt and request disagree on the workshop leaf model: the prompt "
-            + ("opens" if prompt_opens_workshop else "does not open")
-            + f" with the workshop sentinel ({WORKSHOP_PROMPT_SENTINEL!r}) and the request "
-            + ("declares" if _leaf_contract_is_workshop_request(request_payload)
-               else "does not declare") + " leaf_mode=workshop")
-    prompt_opens_pure = prompt_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
-    if prompt_opens_pure and not _is_pure_launch_request(request_payload):
-        raise ValueError(
-            "launch prompt opens with the pure-function sentinel but the launch request does "
-            "not declare leaf_mode=pure; a non-pure request must not carry a pure-shaped prompt"
-        )
-    if _is_pure_launch_request(request_payload) and not prompt_opens_pure:
-        raise ValueError(
-            "pure launch request prompt must open with the pure-function sentinel "
-            f"({PURE_PROMPT_SENTINEL!r})"
-        )
-    if _leaf_contract_is_host_rendered_request(request_payload):
-        # Defense-in-depth: bind the pure prompt's identity VALUES to the request, not just the
-        # marker NAMES. `prepare_launch_request_payload` force-renders the canonical pure prompt,
-        # so at the record-launch chokepoint this holds by construction; but a caller that reaches
-        # this validator with a hand-supplied prompt must not be able to keep the `Target
-        # node_key:` marker while swapping its VALUE (which would attribute the child's output to
-        # the wrong request). Require each rendered identity line, with its value, verbatim.
-        expected_identity_lines = (
-            f"Target node_key: {request_payload.get('node_key', '')}",
-            f"Target step: {request_payload.get('step', '')}",
-            f"Target substep: {request_payload.get('substep', '')}",
-            f"orchestration_id: {request_payload.get('orchestration_id', '')}",
-            f"agent_run_id: {request_payload.get('agent_run_id', '')}",
-            f"prompt_contract_version: {request_payload.get('prompt_contract_version', '')}",
-        )
-        missing_identity = [line for line in expected_identity_lines if line not in prompt_text]
-        if missing_identity:
-            raise ValueError(
-                "pure launch prompt identity does not match the request (missing/mismatched: "
-                + "; ".join(missing_identity) + ")"
-            )
-    required_markers = _required_launch_prompt_markers(request_payload)
-    if not required_markers:
-        # An empty marker set means one of two things, and they must not share an exit.
-        # (a) NO STEP: the orchestration agent's own self-prompt, rendered from no template,
-        #     with nothing to preserve. That is what the early return below is for.
-        # (b) A STEP that is NEITHER deterministic NOR workshop (pure until issue #534 PR-J4-b).
-        #     There is no third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
-        #     force-renders only when `pure or not explicit_prompt_present`, so a caller that
-        #     supplies `launch_prompt_full` ITSELF never meets the renderer, and this validator
-        #     is the only thing in front of an arbitrary prompt body on a real step. Returning
-        #     silently there was a fail-OPEN, measured by the round-1 review: HEAD accepted a
-        #     payload `origin/main` refused, because the agentic marker set used to apply to any
-        #     step.
-        #
-        # THE ANSWER IS A REFUSAL, and it became one in PR-2 of issue #171.
-        #
-        # PR-1 left an identity FLOOR here instead — the prompt had to at least name the
-        # node_key and the two ids — and the reason was neither the one first written (that a
-        # pre-Z4 `build` record still had to be readable, which the round-2 disclosure review
-        # showed is false: the only caller is `record_launch`, a WRITER, which never re-reads a
-        # persisted record) nor a judgment about the shape. It was the CORPUS: 30 tests built a
-        # launch whose step is an LLM pair and whose payload declared neither shape, because
-        # their subject was the leaf-declared write set — `allowed_output_paths`, the output
-        # manifest, the cross-phase MCP log auto-injection. They could not be converted (a pure
-        # request declares `allowed_output_paths: []`, which is what those tests were about),
-        # and refusing the shape in PR-1 would have meant rewriting a corpus PR-2 deletes.
-        #
-        # PR-2 deleted it. There is no caller that can build this payload and no test that
-        # needs it, so the honest answer is the one the shape always deserved: a launch is
-        # DETERMINISTIC or PURE, and a request that is neither is a host defect, refused where
-        # it is written rather than recorded with a prompt nothing can check.
-        #
-        # This is a HOST-defect guard: `launch_prompt_full` is supplied by the conductor, and
-        # no leaf holds a write path to a launch request.
-        step = request_payload.get("step")
-        if isinstance(step, str) and step.strip():
-            raise ValueError(
-                f"launch request declares step={step!r} "
-                f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-                "workshop. A launch is one of those two shapes (the pure leaf went in issue "
-                "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
-                "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
-                "and a `workshop_provider` for an LLM leaf"
-            )
-        return
-    missing_markers = [marker for marker in required_markers if marker not in prompt_text]
-    if missing_markers:
-        raise ValueError(
-            "launch prompt text must preserve launch-prompt template markers: "
-            + ", ".join(missing_markers)
-        )
-    required_lines = _required_launch_prompt_lines(request_payload)
-    missing_lines = [line for line in required_lines if line not in prompt_text]
-    if missing_lines:
-        raise ValueError(
-            "launch prompt text must preserve launch-prompt template field values: "
-            + ", ".join(missing_lines)
-        )
-    # The `substep -> allowed validator gate` allowlist lint that used to run here went with
-    # the agentic leaf (Z4, issue #171): it existed because an agentic prompt INSTRUCTED a leaf
-    # to run gate commands, and a pure prompt instructs nothing — the leaf holds no shell, and
-    # every gate is a deterministic in-process substep the host runs itself.
 
 
 def _extract_agent_summary_text(payload: dict[str, Any]) -> str:
@@ -13866,7 +13655,6 @@ def record_launch(
         raise ValueError("launch prompt text must be non-empty")
     if not reply_text.strip():
         raise ValueError("launch reply text must be non-empty")
-    _validate_launch_prompt_text(request_payload, prompt_text)
 
     request_ref, response_ref = _launch_refs(orchestration_id, child_agent_run_id)
     prompt_ref, reply_ref = _launch_dialog_refs(orchestration_id, child_agent_run_id)

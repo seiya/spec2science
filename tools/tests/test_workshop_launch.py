@@ -495,27 +495,6 @@ class WorkshopRecordLaunchTests(_Env):
                 self.assertIn(WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"], prompt)
                 self.assertNotIn('"failed_phase"', prompt)
 
-    def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
-        """Both directions of the sentinel AND. No pure prompt is RENDERED since issue #534
-        PR-J4-b (the renderer refuses a pure request), so the pure-shaped prompt is the
-        workshop render under the pure sentinel — what a record of the old leaf carries."""
-        workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
-        # Unprepared: preparing renders, and the renderer refuses a pure request.
-        pure = _pure_request("generate")
-        workshop_prompt = ort.render_launch_prompt_text(workshop)
-        self.assertTrue(workshop_prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
-        pure_prompt = (leaf_contract.PURE_PROMPT_SENTINEL
-                       + workshop_prompt[len(WORKSHOP_PROMPT_SENTINEL):])
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(workshop, pure_prompt)
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(pure, workshop_prompt)
-        ort._validate_launch_prompt_text(workshop, workshop_prompt)
-        # The identity VALUES are bound for a workshop prompt as for a pure one.
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(
-                workshop, workshop_prompt.replace("Target step: generate", "Target step: x"))
-
     def test_the_repair_turn_renders_from_the_workshop_family(self) -> None:
         req = ort.prepare_launch_request_payload(_workshop_request(
             "ar_x", repair_findings="fix it", warm_resume=True, repair_strategy="reuse"))
@@ -533,14 +512,6 @@ class WorkshopRecordLaunchTests(_Env):
                 ort.render_launch_prompt_text(
                     ort.prepare_launch_request_payload(_workshop_request("ar_x")))
         self.assertIn("workshop generate.generate", str(ctx.exception))
-
-    def test_the_marker_sets_of_the_two_modules_agree(self) -> None:
-        import tools.validate_pipeline_semantics as vps
-        prepared = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
-        self.assertEqual(set(ort._required_launch_prompt_markers(prepared)),
-                         set(vps._required_launch_prompt_markers_for_role(
-                             "substep", workshop=True)))
-
 
 def _clear_active_child(repo: Path) -> None:
     path = ort._active_child_agent_run_id_path(repo, _ORCH)
@@ -1056,20 +1027,6 @@ class WorkshopLaunchRecordTests(unittest.TestCase):
             _workshop_request("ar_x", skill_name="x", skill_ref="skills/x/SKILL.md"))
         self.assertEqual((prepared["skill_name"], prepared["skill_ref"]), ("", ""))
 
-    def test_a_deterministic_request_with_a_workshop_prompt_is_refused(self) -> None:
-        """Only the workshop arm refuses this: the deterministic markers are all present and
-        neither pure arm fires on a prompt that does not open with the pure sentinel."""
-        req = ort.prepare_launch_request_payload({
-            "node_key": "component/x/y@0.1.0", "step": "build", "deterministic": True,
-            "orchestration_id": _ORCH, "agent_run_id": "ar_d", "parent_agent_run_id": "o",
-            "ir_ref": "workspace/ir/x", "pipeline_ref": "workspace/pipelines/x",
-            "agent_role": "step"})
-        prompt = ort.render_launch_prompt_text(req)
-        ort._validate_launch_prompt_text(req, prompt)
-        with self.assertRaises(ValueError) as ctx:
-            ort._validate_launch_prompt_text(req, WORKSHOP_PROMPT_SENTINEL + "\n" + prompt)
-        self.assertIn("workshop", str(ctx.exception))
-
     def test_a_workshop_pass_row_declares_no_output_refs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -1097,13 +1054,6 @@ class WorkshopLaunchRecordTests(unittest.TestCase):
                      "substep": substep}), encoding="utf-8")
             self.assertEqual(ao._pure_leaf_keys_that_ran(repo, "o"),
                              frozenset({"generate.generate", "generate.verify"}))
-
-    def test_the_slim_repair_classifier_excludes_a_workshop_repair(self) -> None:
-        import tools.validate_pipeline_semantics as vps
-        shape = {"warm_resume": True, "repair_strategy": "reuse", "repair_findings": "x"}
-        self.assertTrue(vps._launch_request_is_slim_repair(dict(shape)))
-        self.assertFalse(vps._launch_request_is_slim_repair({**shape, "leaf_mode": "workshop"}))
-
 
 class WorkshopSpawnArgvTests(unittest.TestCase):
     """`spawn_leaf` launches the workshop argv: the endpoint it is handed reaches `leaf_command`."""

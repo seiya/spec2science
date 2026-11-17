@@ -23113,7 +23113,8 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         "test_every_captured_production_payload_declares_the_demanded_role",
         # `test_capability_then_manifest_agree_on_the_role_record_launch_passes` was here
         # until PR-2 of issue #171: `record-launch` writes neither document now.
-        "test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role",
+        # `test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role` was here until
+        # issue #643, with the refusal it pinned (a hand-supplied prompt beside a respelled role).
     })
 
     def test_this_class_census_is_accurate(self) -> None:
@@ -23265,48 +23266,6 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                         )
                     except Exception as exc:  # noqa: BLE001 - the message is the assertion
                         self.assertNotIn("must be one of", str(exc))
-
-    def test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role(self) -> None:
-        """`prepare_launch_request_payload` does NOT re-render when the caller supplies its own
-        prompt, so there the persisted request would record `step` while the supplied prompt
-        was built from `STEP` — the durable record disagreeing with the prompt beside it.
-        Refused rather than shipped.
-
-        The refusal is narrow by construction: it needs a caller-supplied prompt, a
-        non-canonical spelling, AND a request that is not pure (a pure one is re-rendered
-        unconditionally, which canonicalizes it). Since Z4 (issue #171) that leaves the
-        DETERMINISTIC shape, which is what this row drives — the `generate.generate` fixture it
-        used before is pure now and takes the re-render branch. The conductor still cannot
-        reach it: it supplies no prompt and a canonical role, both asserted here."""
-        from tools.orchestration_runtime import (
-            prepare_launch_request_payload,
-            render_launch_prompt_text,
-        )
-
-        fixture = (
-            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "build_step.request.json"
-        )
-        base = json.loads(fixture.read_text(encoding="utf-8"))
-        base.pop("launch_prompt_full", None)
-        respelled = {**base, "agent_role": "STEP"}
-        with self.assertRaisesRegex(ValueError, "supplies its own prompt while spelling"):
-            prepare_launch_request_payload(
-                {**respelled, "launch_prompt_full": render_launch_prompt_text(respelled)})
-        # A canonical role with a caller-supplied prompt is untouched...
-        canonical = {**base, "agent_role": "step"}
-        mine = render_launch_prompt_text(canonical) + "\nCALLER SUFFIX\n"
-        prepared = prepare_launch_request_payload(
-            {**canonical, "launch_prompt_full": mine})
-        self.assertEqual(prepared["launch_prompt_full"], mine)
-        # ...and a respelled role with NO supplied prompt is rendered, not refused, with the
-        # canonical spelling in the record.
-        rendered = prepare_launch_request_payload(dict(respelled))
-        self.assertEqual(rendered["agent_role"], "step")
-        self.assertIn("Target step:", rendered["launch_prompt_full"])
-
-
-
 
 class DerivationInputsTests(unittest.TestCase):
     """`phase_derivation_inputs` / `phase_derivation` (issue #250 PR-1): the per-phase contract

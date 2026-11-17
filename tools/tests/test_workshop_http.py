@@ -395,7 +395,6 @@ class _GenerateProducer(_GenerateHarness):
         payload = ort.prepare_launch_request_payload(dict(request))
         ort._validate_launch_request_payload(payload)
         prompt = ort.render_launch_prompt_text(payload)
-        ort._validate_launch_prompt_text(payload, prompt)
         self.assertIn(leaf_contract.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
         self.assertNotIn("MCP", prompt)
 

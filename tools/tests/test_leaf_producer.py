@@ -2276,9 +2276,8 @@ class _RenderingFakeConductor(_PureFakeConductor):
 
     The base stub returns a literal "PROMPT", so every prompt-content regression is invisible to
     it — exactly how defect B (`exemplar=` never passed to `build_launch_request`) survived a
-    green suite. Here record-launch drives the real `prepare_launch_request_payload` +
-    `_validate_launch_prompt_text` over the conductor's ACTUAL request, so a request the
-    validators would reject fails the test too. Same anti-mock-green shape as the
+    green suite. Here record-launch drives the real `prepare_launch_request_payload` over the
+    conductor's ACTUAL request, so a request the renderer would reject fails the test too. Same anti-mock-green shape as the
     finalize-payload test above.
     """
 
@@ -2298,7 +2297,6 @@ class _RenderingFakeConductor(_PureFakeConductor):
         self.requests.append(request)
         prepared = ort.prepare_launch_request_payload(dict(request))
         prompt = prepared["launch_prompt_full"]
-        ort._validate_launch_prompt_text(prepared, prompt)
         return {"launch_prompt_text": prompt}
 
     def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]

@@ -29,7 +29,6 @@ from unittest.mock import patch
 
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-import tools.validate_pipeline_semantics as vps
 from tools import operator_private_root
 from tools.orchestration_runtime import (
     init_orchestration,
@@ -45,7 +44,6 @@ from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
     LEAF_PROMPT_CONTRACT_VERSION,
-    PURE_PROMPT_SENTINEL,
     VERDICT_SEVERITIES,
     WORKSHOP_LAUNCH_PAIRS,
     WORKSHOP_PROMPT_SENTINEL,
@@ -677,15 +675,8 @@ class PureRenderTests(unittest.TestCase):
             self.assertNotIn(slot, text)
         self.assertNotIn("names the repair a finding calls for", text)   # the fixture rubric
 
-    def test_render_pure_prompt_passes_launch_validator(self) -> None:
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        ort._validate_launch_prompt_text(prepared, prepared["launch_prompt_full"])
-        prepared_v = ort.prepare_launch_request_payload(_workshop_request("verify"))
-        ort._validate_launch_prompt_text(prepared_v, prepared_v["launch_prompt_full"])
-
-    def test_pure_repair_prompt_findings_fenced_and_not_slim(self) -> None:
-        # A warm-resume repair also satisfies the slim predicate; the host-rendered repair must
-        # win the dispatch so it is not rendered by the slim renderer.
+    def test_pure_repair_prompt_findings_fenced(self) -> None:
+        # A warm-resume repair renders the workshop repair prompt, with the findings fenced.
         req = _workshop_request(
             warm_resume=True, repair_strategy="reuse",
             repair_findings="verification_status missing from bundle",
@@ -694,15 +685,8 @@ class PureRenderTests(unittest.TestCase):
         prepared = ort.prepare_launch_request_payload(req)
         prompt = prepared["launch_prompt_full"]
         self.assertTrue(prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
-        # The slim sentinel must not open the prompt. Read from the VALIDATOR, which is the
-        # module that still owns the literal: `orchestration_runtime` rendered slim prompts and
-        # no longer does (Z4, issue #171), while `validate_pipeline_semantics` keeps its copy to
-        # classify records written before the cut.
-        from tools.validate_pipeline_semantics import SLIM_REPAIR_PROMPT_SENTINEL
-        self.assertNotIn(SLIM_REPAIR_PROMPT_SENTINEL, prompt.splitlines()[0])
         self.assertIn(PURE_DOC_FENCE_BEGIN, prompt)
         self.assertIn("verification_status missing from bundle", prompt)
-        ort._validate_launch_prompt_text(prepared, prompt)
 
     def test_pure_prompt_is_force_rendered_over_explicit_body(self) -> None:
         # A host-rendered launch: an explicit `launch_prompt_full` must be overwritten by the
@@ -715,17 +699,6 @@ class PureRenderTests(unittest.TestCase):
         self.assertNotIn("problem/WRONG@9.9.9", prepared["launch_prompt_full"])
         self.assertIn("Target node_key: problem/shallow_water2d@0.3.0",
                       prepared["launch_prompt_full"])
-
-    def test_pure_prompt_mismatched_identity_value_rejected(self) -> None:
-        # Defense-in-depth: even if a hand-supplied prompt reaches the validator, a swapped
-        # identity VALUE (marker name kept) is rejected.
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        good = prepared["launch_prompt_full"]
-        forged = good.replace("Target node_key: problem/shallow_water2d@0.3.0",
-                              "Target node_key: problem/WRONG@9.9.9")
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(prepared, forged)
-        ort._validate_launch_prompt_text(prepared, good)  # canonical still passes
 
     def test_both_producer_templates_name_every_closed_lowering_plan_key(self) -> None:
         """The plan envelope is CLOSED (`codegen_bundle.LOWERING_PLAN_OPTIONAL_KEYS`). R4-a PR-3's
@@ -2107,8 +2080,7 @@ class PureRenderTests(unittest.TestCase):
         `_build_task_card` and the union subtracted it from a `compile.verify` prompt, where
         nobody had read it in that position — the file sweep's allowlist entries are keyed
         `<path>: <prefix> #<digest>`, so what was reviewed was that line IN THAT FILE.
-        The branch is resolved with the production predicates (`_is_pure_launch_request`,
-        `_is_slim_repair_request`), not re-derived: a slim turn is built from no template at all,
+        The branch is resolved with the production predicates, not re-derived: a slim turn is built from no template at all,
         which is why the subtraction below is empty for it — a fact this returns rather than an
         invariant asserted elsewhere.
         Every request is host-rendered since Z4 (issue #171) — pure until issue #534 PR-J4-b,
@@ -2157,8 +2129,7 @@ class PureRenderTests(unittest.TestCase):
         receives one as `--system-prompt`, outside every launch prompt.
 
         Returns `entry -> {config labels it appeared in}`. `validate=False` is for the reach
-        test, whose wrappers prepend a canary line and so break the first-line witnesses and the
-        production launch validator.
+        test, whose wrappers prepend a canary line and so break the first-line witnesses.
         """
         found: dict[str, set[str]] = {}
         seen_shapes: set[tuple[str, str]] = set()
@@ -2176,7 +2147,6 @@ class PureRenderTests(unittest.TestCase):
             self.assertNotIn(ort.DETERMINISTIC_PROMPT_SENTINEL, rendered, label)
             if validate:
                 # (b) family witness: the config reached the renderer branch it claims.
-                ort._validate_launch_prompt_text(prepared, rendered)
                 first = rendered.splitlines()[0]
                 self.assertTrue(first.startswith(WORKSHOP_PROMPT_SENTINEL), label)
             data_lines = self._request_data_lines(prepared)
@@ -2337,7 +2307,6 @@ class PureRenderTests(unittest.TestCase):
         "_sanitize_pure_doc_body",           # neutralizes fence markers in a value
         "_sanitize_exemplar_body",           # neutralizes fence markers in exemplar source
         "_substitute_leaf_placeholders",     # `<key>` substitution, adds no text of its own
-        "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
         "_exemplar_prompt_fragments",        # resolves the request language's BACKEND module
@@ -3112,19 +3081,6 @@ class PureRenderTests(unittest.TestCase):
         # The identity block's own <step> WAS substituted.
         self.assertIn("Target step: generate", prompt)
 
-    def test_nonpure_prompt_with_pure_sentinel_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(
-                {"step": "generate", "substep": "generate"},
-                PURE_PROMPT_SENTINEL + ": forged non-pure body",
-            )
-
-    def test_pure_request_with_nonpure_prompt_rejected(self) -> None:
-        # A host-rendered (workshop) request whose prompt does not open with its sentinel.
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(prepared, "not a workshop prompt at all")
-
     def test_repair_findings_fence_body_sanitized(self) -> None:
         # Findings that embed the fence marker cannot forge/close the fence. Driven on the
         # repair turn's findings since issue #534 PR-J4-b: that is the one value a workshop
@@ -3289,42 +3245,10 @@ class PureRecordLaunchTests(unittest.TestCase):
 # D: validate_pipeline_semantics pure detectors + parity
 # ======================================================================================
 class PureValidatePipelineTests(unittest.TestCase):
-    def test_pure_detectors(self) -> None:
-        self.assertTrue(vps._is_pure_launch_prompt_text(PURE_PROMPT_SENTINEL + ": x"))
-        self.assertFalse(vps._is_pure_launch_prompt_text("something else"))
-        self.assertTrue(vps._launch_request_is_pure({"leaf_mode": "pure"}))
-        self.assertFalse(vps._launch_request_is_pure({"leaf_mode": "agentic"}))
-
-    def test_pure_predicate_shared_single_source(self) -> None:
-        # Both modules delegate to leaf_contract.is_pure_request (single detection source), so they
-        # cannot disagree about what "pure" is.
-        from tools.leaf_contract import is_pure_request, PURE_LEAF_MODE
-        for payload in ({"leaf_mode": "pure"}, {"leaf_mode": "  PURE "}, {"leaf_mode": "agentic"},
-                        {}, {"leaf_mode": None}):
-            self.assertEqual(ort._is_pure_launch_request(payload), is_pure_request(payload))
-            self.assertEqual(vps._launch_request_is_pure(payload), is_pure_request(payload))
-        self.assertEqual(PURE_LEAF_MODE, "pure")
-
-    def test_pure_marker_set_matches_orchestration_runtime(self) -> None:
-        # Both halves of the record reader's marker sets against the runtime's: the WORKSHOP
-        # one every new launch carries, and the PURE one an old record still carries (a pure
-        # request is no longer rendered — issue #534 PR-J4-b — so it is asked of the request).
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        self.assertEqual(
-            set(ort._required_launch_prompt_markers(prepared)),
-            set(vps._required_launch_prompt_markers_for_role("substep", workshop=True)))
-        self.assertEqual(
-            set(ort._required_launch_prompt_markers(_pure_request("generate"))),
-            set(vps._required_launch_prompt_markers_for_role("substep", pure=True)))
-
-    def test_sentinel_parity_across_modules_and_templates(self) -> None:
-        # The pure sentinel stays in both modules — `validate_pipeline_semantics` reads it off
-        # records written before issue #534 PR-J4-b — and the workshop one opens every
-        # template a leaf is launched or repaired from now.
-        self.assertEqual(ort.PURE_PROMPT_SENTINEL, PURE_PROMPT_SENTINEL)
-        self.assertEqual(vps.PURE_PROMPT_SENTINEL, PURE_PROMPT_SENTINEL)
-        self.assertEqual(ort.WORKSHOP_PROMPT_SENTINEL, WORKSHOP_PROMPT_SENTINEL)
-        self.assertEqual(vps.WORKSHOP_PROMPT_SENTINEL, WORKSHOP_PROMPT_SENTINEL)
+    def test_the_workshop_sentinel_opens_the_templates(self) -> None:
+        # The workshop sentinel opens every template a leaf is launched or repaired from. (The
+        # two modules' copies of the sentinels, and the record audit that read them, went in
+        # issue #643.)
         tpl_dir = Path(__file__).resolve().parent.parent / "prompt_templates"
         for fname in ("workshop_generate_generate.txt", "workshop_generate_verify.txt",
                       "workshop_bundle_repair.txt"):
