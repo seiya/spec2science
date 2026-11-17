@@ -2065,7 +2065,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # in the failure text a repair leaf reads; no verdict, record or certified output moves.
     # The digest `execute-22` shipped with at 2b60b8c4:
     "execute-22@2b60b8c4": "7e164fc524b7025f839e59af008497e22810ae11700251683070e0bb97f090ad",
-    "execute-22": "a29f0012b2b7f240dec2d34641b917bfb4164a57ad6957dd523ed67718673b64",
+    "execute-22": "c3a25088a0fe550fe8c4c0736ecdcd7c29ecdd27aac92579b7501c31372cb376",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

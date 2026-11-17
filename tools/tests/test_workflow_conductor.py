@@ -17995,7 +17995,7 @@ class DeterministicBuildTest(unittest.TestCase):
     def _drive_traced_execute(self, target, *, trace_result=None, write_summary=True,
                               run_ok=True, stale=None, probe_answer=None,
                               checked_stderr: str | None = None, run_error: str | None = None,
-                              qc_error: str | None = None):
+                              qc_error: str | None = None, qc_rc: int | None = None):
         """Run `_execute_inproc` for `target` with the server's two tools faked, through
         `_run_deterministic_substep` (so a raise arrives as the substep's transport failure).
         The fake `run_program` answers the binary's run, then — when the target is traced — the
@@ -18066,6 +18066,8 @@ class DeterministicBuildTest(unittest.TestCase):
             _write_c_alpha_captures(qc_tmp)
             if qc_error is not None:
                 return {"ok": False, "command_id": "Q", "return_code": None, "error": qc_error}
+            if qc_rc is not None:
+                return {"ok": False, "command_id": "Q", "return_code": qc_rc}
             return {"ok": True, "command_id": "Q"}
 
         def fake_subprocess_run(argv, *args, **kwargs):
@@ -18337,9 +18339,10 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_execute_inproc_names_the_library_s_reason_for_a_run_it_stopped(self) -> None:
         """A run or a quality-check re-run the build-runtime library stopped at its time bound
-        is reported with that reason, which is all the repair leaf is shown of it: a quality
-        check whose re-run timed out otherwise reads as a verdict mismatch against the serial
-        reference (R3 of issue #644)."""
+        is reported with that reason. The re-run's line is in `trial_meta.json#failure_excerpt`,
+        which is what a warm Generate repair reads: without it a re-run that timed out reads as a
+        verdict mismatch against the serial reference (R3 of issue #644). The run's reaches the
+        operator's log only: that branch writes no trial_meta."""
         from tools.tests.target_fixtures import profile_with
         target = profile_with(parallel={"backend": "none"})
         result = self._drive_traced_execute(target, run_error="timeout: exceeded 3600 sec")[0]
@@ -18350,12 +18353,15 @@ class DeterministicBuildTest(unittest.TestCase):
             target, qc_error="timeout: exceeded 1800 sec")
         self.assertEqual(result.returncode, 0)
         self.assertEqual([tag for tag, _ in calls][:2], ["run", "qc"])
-        status = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))["status"]
+        trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+        self.assertEqual(trial["status"], "fail")
         self.assertIn("re-run (the serial reference) did not complete: "
-                      "timeout: exceeded 1800 sec", json.dumps(status) + result.stderr)
-        # a re-run that completed carries no such line
-        result, _, node_dir, *_ = self._drive_traced_execute(target)
-        self.assertNotIn("did not complete", result.stderr)
+                      "timeout: exceeded 1800 sec", trial["failure_excerpt"])
+        # a re-run that failed with no reason of the library's carries no such line
+        result, _, node_dir, *_ = self._drive_traced_execute(target, qc_rc=2)
+        trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+        self.assertEqual(trial["status"], "fail")
+        self.assertNotIn("did not complete", trial["failure_excerpt"])
 
     def test_execute_inproc_a_failed_run_runs_no_summary_and_keeps_no_stale_one(self) -> None:
         """A runner failure stays the content failure it was (no trace summary runs after it),

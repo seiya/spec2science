@@ -14096,7 +14096,8 @@ class Conductor:
             # Runtime error is a CONTENT failure (buggy generated code): rc 0 so run_phase
             # routes it via the validate tables / diagnostician, not transport fail_closed.
             # No trial_meta is written, so determine_substep_status fails this substep.
-            # The library's own reason (a timeout) goes with it: the repair leaf sees only this.
+            # The library's own reason (a timeout) goes with it. No trial_meta is written, so
+            # this reaches the operator's log, not the cold Generate restart's leaf.
             why = f" ({res_run['error']})" if res_run.get("error") else ""
             return {"returncode": 0, "stdout": stdout,
                     "stderr": stderr + f"\n[run_program failed: runtime_error]{why}"}
