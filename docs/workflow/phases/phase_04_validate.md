@@ -24,7 +24,7 @@ The phase that runs the binary produced by `Build`, obtains the primary evidence
 
 ## `run_id` format
 - Format: `run_<YYYYMMDD>_<seq3>`, e.g. `run_20260511_001`
-- `run_id` has a fixed literal `run_` prefix. The `ir_id` / `pipeline_id` form `<slug>_<YYYYMMDD>_<seq3>` (slug being hyphen-separated) must not be reused. A hyphen-slug form such as `run-rsn-p0_20260605_001` matches the generic slug grammar but is not a canonical `run_id`; the phase contract of `record-launch` rejects it, and even if it passed, the run discovery of `post_execute` recognizes only the literal `run_` layout and would silently fail with `no execution artifacts found`.
+- `run_id` has a fixed literal `run_` prefix. The `ir_id` / `pipeline_id` form `<slug>_<YYYYMMDD>_<seq3>` (slug being hyphen-separated) must not be reused. A hyphen-slug form such as `run-rsn-p0_20260605_001` matches the generic slug grammar but is not a canonical `run_id`: the run discovery of `post_execute` recognizes only the literal `run_` layout and would fail with `no execution artifacts found`. The conductor mints every `run_id` in the canonical form; `record-launch` does not re-check it (issue #643).
 
 ## `validate_meta.json` required keys
 - Common: `attempt_count`, `verification_status`, `last_fail_reason`, `debug_mode`, `context_isolated`

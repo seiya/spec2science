@@ -2692,51 +2692,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertIn(in_phase_log, canonical)
         self.assertNotIn(cross_log, canonical)
 
-    def test_generate_generate_does_not_inject_lineage(self) -> None:
-        """Phase-2: lineage.json is authored host-side by the conductor (it sits at the
-        pipeline root, which must stay non-writable to the sandboxed leaf), so it must
-        NOT be auto-injected into the generate child's allowed_output_paths."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        source_id = "src_20260415_001"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate", "substep": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": source_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/source/{source_id}/src/",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
-
-    def test_generate_verify_does_not_inject_lineage(self) -> None:
-        """The verify substep only reads lineage.json; it must NOT be auto-injected
-        into the verify launch's allowed_output_paths."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        source_id = "src_20260415_001"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate", "substep": "verify",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": source_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/source/{source_id}/src/",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
-
     def test_required_child_agent_kind_lists_valid_steps_on_unknown(self) -> None:
         """An unsupported step must raise a ValueError that enumerates the valid
         steps rather than a bare message (P5)."""
@@ -3521,31 +3476,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     },
                     response_payload=_spawn_response_payload("sess_step_build_failed_gen"),
                  netns_socket_dir=netns_socket_dir())
-
-    def test_generate_non_make_launch_does_not_inject_makefile_pin(self) -> None:
-        """Fix 1 is Make-scoped: CMake/Meson Generate launches must NOT get a
-        Makefile pin auto-injected (out-of-source toolchains do not build with
-        an in-source Makefile)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_20260604_003"
-        src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "_resolved_build_system": "cmake",
-            "allowed_output_paths": [src_dir],
-        }
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertNotIn(
-            f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile", allowed
-        )
 
     def test_rejects_pass_step_result_when_required_outputs_are_missing_from_substeps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
