@@ -16326,30 +16326,30 @@ class RecordTimeoutTests(unittest.TestCase):
         )
 
     def test_cleanup_committed_marker_not_written_when_cleanup_refused(self) -> None:
-        """Adv-36: ownership/collision refusal must NOT yield a committed
-        marker. The Adv-35 invariant requires committed = "actual cleanup
-        succeeded (or already absent)" — a refused cleanup leaving leftover
-        scratch must keep validator exemption alive."""
+        """Adv-36: a refused cleanup must NOT yield a committed marker. The Adv-35
+        invariant requires committed = "actual cleanup succeeded (or already absent)" —
+        a refused cleanup leaving leftover scratch must keep validator exemption alive.
+        Refused here by the symlink guard: `workspace/tmp/<arid>` is a link to a
+        directory outside the checkout."""
+        import os
         from tools.orchestration_runtime import (
             _cleanup_agent_tmp_root, _cleanup_committed_marker_path,
         )
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as ext:
             repo_root = Path(tmp)
-            arid = "intruder-arid"
-            # Owner orch has the launch record; intruder does NOT.
-            self._make_launch_request(repo_root, "orch_owner", arid)
-            tmp_dir = repo_root / "workspace" / "tmp" / arid
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            (tmp_dir / "owner_data.txt").write_text("preserve\n", encoding="utf-8")
+            arid = "linked-arid"
+            self._make_launch_request(repo_root, "orch_x", arid)
+            workspace_tmp = repo_root / "workspace" / "tmp"
+            workspace_tmp.mkdir(parents=True, exist_ok=True)
+            sentinel = Path(ext) / "preserve.txt"
+            sentinel.write_text("preserve\n", encoding="utf-8")
+            os.symlink(ext, workspace_tmp / arid)
 
-            # Caller is intruder — cleanup must REFUSE and return False.
-            result = _cleanup_agent_tmp_root(
-                repo_root, "orch_intruder", agent_run_id=arid,
-            )
-            self.assertFalse(result, "intruder cleanup must return False")
-            self.assertTrue(tmp_dir.exists(), "owner data must survive")
+            result = _cleanup_agent_tmp_root(repo_root, "orch_x", agent_run_id=arid)
+            self.assertFalse(result, "a symlinked tmp root must be refused")
+            self.assertTrue(sentinel.exists(), "the link target must survive")
             self.assertFalse(
-                _cleanup_committed_marker_path(repo_root, "orch_intruder", arid).is_file(),
+                _cleanup_committed_marker_path(repo_root, "orch_x", arid).is_file(),
                 "no committed marker should exist for refused cleanup",
             )
 
@@ -18166,71 +18166,6 @@ class DependencyReadinessStrictModeTests(unittest.TestCase):
             )
             ok, reason = _dependency_ready(repo_root, "fb", step="compile")
             self.assertTrue(ok, f"fallback opt-in must allow test scaffolding; reason={reason}")
-
-
-class TmpCleanupLockTests(unittest.TestCase):
-    """Codex round 20 F2: cleanup creates and uses fcntl lock at
-    `workspace/tmp/<arid>.lock` to serialize the ownership scan + rmtree
-    against concurrent cleanup attempts."""
-
-    def test_cleanup_creates_lock_sidecar(self) -> None:
-        """Smoke: `_cleanup_agent_tmp_root` creates (and intentionally retains)
-        the fcntl lock file. The sidecar is the serialization primitive and is
-        deliberately never unlinked — deleting it would break serialization
-        against a concurrent cleanup. `validate_workspace_root` tolerates the
-        0-byte sidecar so its persistence does not fail the workspace gate."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="lck")
-            meta = json.loads(
-                (repo_root / "workspace" / "orchestrations" / "lck"
-                 / "orchestration_meta.json").read_text(encoding="utf-8")
-            )
-            arid = meta["orchestration_agent_run_id"]
-            (repo_root / "workspace" / "tmp" / arid).mkdir(parents=True, exist_ok=True)
-            ok = _cleanup_agent_tmp_root(
-                repo_root, "lck", agent_run_id=arid,
-            )
-            self.assertTrue(ok)
-            self.assertTrue(
-                (repo_root / "workspace" / "tmp" / f"{arid}.lock").is_file(),
-                "cleanup must create workspace/tmp/<arid>.lock sidecar",
-            )
-
-    def test_cleanup_lock_serializes_concurrent_attempts(self) -> None:
-        """Two threads calling cleanup for the same arid must serialize.
-        We can't directly observe lock contention without instrumentation,
-        but we verify both calls complete and the tmp dir is gone."""
-        import threading
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="cc")
-            meta = json.loads(
-                (repo_root / "workspace" / "orchestrations" / "cc"
-                 / "orchestration_meta.json").read_text(encoding="utf-8")
-            )
-            arid = meta["orchestration_agent_run_id"]
-            (repo_root / "workspace" / "tmp" / arid).mkdir(parents=True, exist_ok=True)
-            (repo_root / "workspace" / "tmp" / arid / "scratch.txt").write_text(
-                "x", encoding="utf-8",
-            )
-            errors: list[BaseException] = []
-            results: list[bool] = []
-            def call():
-                try:
-                    r = _cleanup_agent_tmp_root(repo_root, "cc", agent_run_id=arid)
-                    results.append(r)
-                except BaseException as e:
-                    errors.append(e)
-            t1 = threading.Thread(target=call)
-            t2 = threading.Thread(target=call)
-            t1.start(); t2.start(); t1.join(); t2.join()
-            self.assertEqual(errors, [])
-            # Both calls return True (idempotent: one removes, the other sees absent).
-            self.assertTrue(all(results))
-            self.assertFalse((repo_root / "workspace" / "tmp" / arid).exists())
 
 
 class DependencyReadinessForgeryRejectionTests(unittest.TestCase):

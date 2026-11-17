@@ -6825,34 +6825,6 @@ def _is_safe_path_id(tok: str) -> bool:
     """
     return bool(_SAFE_PATH_ID_RE.fullmatch(tok))
 
-def _orchestration_holds_launch_record(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> bool:
-    """Adv-5 ownership proof: did THIS orchestration launch `agent_run_id`?
-
-    `workspace/tmp/` is a FLAT namespace with no orchestration prefix, so two
-    orchestrations that reuse an agent_run_id share the directory. Anything that deletes
-    under it has to establish ownership first, or terminating one run wipes another's live
-    scratch. `_cleanup_agent_tmp_root` has enforced that since Adv-5 and is the ONE caller
-    left; `run_gate`'s durable gate-result unlink read the same proof through this function
-    until issue #171 PR-2 deleted the subcommand.
-
-    This is the LAUNCH-RECORD half only. `_cleanup_agent_tmp_root` accepts a second proof
-    (the orchestration agent's own arid, from `orchestration_meta.json`) because an
-    orchestration agent is not launched via `record-launch`.
-    """
-    # `.strip()` on BOTH ids, because the inline form this replaced stripped both and
-    # `_orchestration_root` does not. Without it a padded `orchestration_id` resolves to a
-    # directory that does not exist, ownership silently fails, and `_cleanup_agent_tmp_root`
-    # refuses -- leaving the run in cleanup-pending and its tmp scratch on disk. Caught by
-    # diffing this extraction against the code it replaced, not by any test.
-    return (
-        _orchestration_root(repo_root, orchestration_id.strip())
-        / "launches"
-        / f"{agent_run_id.strip()}.request.json"
-    ).is_file()
-
-
 def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, Any]:
     """The toolchain of the target a launch's pipeline is built for, read off the store
     coordinate of its `pipeline_ref` (`target_profile.load_pipeline_target`, issue #284).
@@ -8997,8 +8969,9 @@ def _cleanup_agent_tmp_root(
     Returns:
       True  — cleanup succeeded OR the tmp dir was already absent. The caller
               may now write the cleanup_committed marker (Adv-36).
-      False — cleanup was REFUSED (ownership / collision / symlink) or the
-              destructive `rmtree` raised. The committed marker MUST NOT be
+      False — cleanup was REFUSED (a symlink, or a target outside
+              `workspace/tmp/`) or the destructive `rmtree` raised. The
+              committed marker MUST NOT be
               written; the run remains in cleanup-pending state so the
               validator keeps tmp scratch exempt for diagnostics.
 
@@ -9008,14 +8981,6 @@ def _cleanup_agent_tmp_root(
       for terminal-status agents, so there is no in-flight risk.
     - Validates that the target lives under repo_root/workspace/tmp/ before
       unlinking — refuses to traverse symlinks pointing elsewhere.
-    - **Adv-5 ownership guard**: only deletes if the calling orchestration owns
-      the launch record for `<agent_run_id>` (i.e.,
-      `workspace/orchestrations/<orchestration_id>/launches/<arid>.request.json`
-      exists). The tmp namespace is shared (`workspace/tmp/<arid>/` with no
-      orchestration prefix), so two orchestrations that happen to reuse the
-      same `arid` would share the directory — terminating one must not delete
-      the other's live scratch. Without this guard, a single record-agent-run
-      could wipe a concurrent orchestration's in-flight workspace.
     - rmtree errors are not raised (cleanup must not fail the calling
       record-agent-run / record-timeout flow), but they are surfaced via
       the False return so callers can suppress the cleanup_committed marker.
@@ -9028,105 +8993,29 @@ def _cleanup_agent_tmp_root(
         return False
     if not isinstance(orchestration_id, str) or not orchestration_id.strip():
         return False
-    # Adv-5/Adv-7: refuse to delete unless this orchestration owns the arid.
-    # Two ownership proofs are accepted (covering both child agents and the
-    # orchestration agent itself):
-    #   (a) Step/substep agents: launches/<arid>.request.json exists.
-    #   (b) Orchestration agent: orchestration_meta.json#orchestration_agent_run_id
-    #       equals arid (orchestration agents are not "launched" via record-launch
-    #       and have no request file, but their identity is pinned in the meta).
-    # Without either proof we refuse to delete — a concurrent orchestration
-    # that happens to reuse the same arid (the workspace/tmp/ namespace is flat)
-    # may be using the directory as live scratch.
-    orch_root_dir = repo_root / "workspace" / "orchestrations" / orchestration_id.strip()
-    is_owner_via_launch = _orchestration_holds_launch_record(repo_root, orchestration_id, arid)
-    is_owner_via_orchestration = False
-    if not is_owner_via_launch:
-        meta_path = orch_root_dir / "orchestration_meta.json"
-        if meta_path.is_file():
-            try:
-                meta_doc = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                meta_doc = None
-            if isinstance(meta_doc, dict):
-                expected = meta_doc.get("orchestration_agent_run_id")
-                if isinstance(expected, str) and expected.strip() == arid:
-                    is_owner_via_orchestration = True
-    if not (is_owner_via_launch or is_owner_via_orchestration):
-        return False
-    # Adv-11: cross-orchestration collision check. The flat workspace/tmp/<arid>/
-    # namespace cannot disambiguate which orchestration owns the directory's
-    # contents when two orchestrations have launched the same arid. If ANY
-    # other orchestration also claims this arid (via a launch record OR as its
-    # own orchestration_agent_run_id), refuse to delete — wiping the shared
-    # directory would destroy the colliding orchestration's live scratch.
-    # This matches the validator's collision-aware exemption (Adv-10):
-    # workspace/tmp/<arid>/ is treated as ambiguous and surfaced; cleanup is
-    # likewise refused.
-    #
-    # Codex round 20 F2: serialize the cross-orchestration scan + rmtree under
-    # an fcntl lock on `workspace/tmp/<arid>.lock`. Two concurrent cleanup
-    # attempts (or a cleanup race against a same-orchestration replay) cannot
-    # observe stale ownership state. The lock further narrows — but does not
-    # fully eliminate — the legacy M4 race where a record-launch in another
-    # orchestration creates `launches/<arid>.request.json` between the scan
-    # and the rmtree. With UUID4 arids (the documented norm) collision is
-    # astronomically rare; namespacing `workspace/tmp/` by orchestration_id
-    # is the long-term elimination (see RUNBOOK.md `tmp-namespace-redesign`).
     workspace_tmp = repo_root / "workspace" / "tmp"
-    workspace_tmp.mkdir(parents=True, exist_ok=True)
-    lock_path = workspace_tmp / f"{arid}.lock"
-    with _fcntl_exclusive_lock(lock_path):
-        orchestrations_root = repo_root / "workspace" / "orchestrations"
-        other_owners = 0
-        if orchestrations_root.is_dir():
-            for other_dir in orchestrations_root.iterdir():
-                if not other_dir.is_dir() or other_dir.name == orchestration_id.strip():
-                    continue
-                if (other_dir / "launches" / f"{arid}.request.json").is_file():
-                    other_owners += 1
-                    continue
-                other_meta_path = other_dir / "orchestration_meta.json"
-                if other_meta_path.is_file():
-                    try:
-                        other_meta = json.loads(other_meta_path.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
-                        continue
-                    if isinstance(other_meta, dict):
-                        other_arid = other_meta.get("orchestration_agent_run_id")
-                        if isinstance(other_arid, str) and other_arid.strip() == arid:
-                            other_owners += 1
-        if other_owners > 0:
+    target = workspace_tmp / arid
+    if not target.exists():
+        # Already absent — counts as "tmp is gone" for the committed marker.
+        return True
+    # Reject symlink redirection — never follow a symlink at <agent_run_id>.
+    try:
+        if target.is_symlink():
             return False
-        target = workspace_tmp / arid
-        if not target.exists():
-            # Already absent — counts as "tmp is gone" for the committed marker.
-            return True
-        # Reject symlink redirection — never follow a symlink at <agent_run_id>.
-        try:
-            if target.is_symlink():
-                return False
-            # Confirm the resolved path stays under workspace/tmp/.
-            resolved_target = target.resolve()
-            resolved_parent = workspace_tmp.resolve()
-            if resolved_target.parent != resolved_parent:
-                return False
-        except OSError:
+        # Confirm the resolved path stays under workspace/tmp/.
+        resolved_target = target.resolve()
+        resolved_parent = workspace_tmp.resolve()
+        if resolved_target.parent != resolved_parent:
             return False
-        import shutil
-        try:
-            shutil.rmtree(target)
-        except OSError:
-            return False
-        # Successful rmtree (or post-rmtree absence). Confirm directory is gone.
-        # NOTE: the `<arid>.lock` fcntl sidecar is intentionally NOT unlinked
-        # here. It is the very primitive serializing this scan + rmtree against
-        # a concurrent cleanup; deleting it would let a waiter proceed on the
-        # orphaned inode while a new entrant O_CREATs a fresh inode and locks
-        # it without contention, breaking serialization. The sidecar is a
-        # 0-byte benign file that `validate_workspace_root` tolerates, so it is
-        # left in place (bounded accumulation under session-scoped scratch).
-        return not target.exists()
+    except OSError:
+        return False
+    import shutil
+    try:
+        shutil.rmtree(target)
+    except OSError:
+        return False
+    # Successful rmtree (or post-rmtree absence). Confirm directory is gone.
+    return not target.exists()
 
 
 def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
