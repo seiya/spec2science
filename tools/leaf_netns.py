@@ -90,11 +90,10 @@ def network_block(socket_dir: str, endpoints: list[str] | tuple[str, ...],
 def network_block_violations(block: object, *, endpoints: list[str] | tuple[str, ...],
                              repo_root: str | None) -> list[str]:
     """What is wrong with a profile's `network` block, empty when nothing is. ONE reader for
-    the three readers of a persisted profile — the renderer, the spawn admission and the
-    launch-record audit — each of which refuses on any answer. `endpoints` is the family's
-    CONSTANT (`leaf_contract.WORKSHOP_CLI_ENDPOINTS`): the block's copy is a record checked
-    against it, never a source the host half reads. Reads no file: the socket directory is
-    gone once the launch ends, and the audit reads the record after that."""
+    the two readers of a profile — the renderer and the spawn admission — each of which
+    refuses on any answer. `endpoints` is the family's CONSTANT
+    (`leaf_contract.WORKSHOP_CLI_ENDPOINTS`): the block's copy is a record checked against it,
+    never a source the host half reads. Reads no file."""
     if not isinstance(block, dict):
         return [(f"the profile carries no network block (got {block!r}); every CLI leaf runs "
                  "in a network namespace since issue #534 step 4")]

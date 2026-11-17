@@ -45,8 +45,6 @@ TIER_A_SUBCOMMANDS: frozenset[str] = frozenset({
 TIER_B_SUBCOMMANDS: frozenset[str] = frozenset({
     "init",
     "preflight",
-    "preflight-status",
-    "record-timeout",
     "check-phase-certified",
     "revoke-artifact",
     "reset-phase",

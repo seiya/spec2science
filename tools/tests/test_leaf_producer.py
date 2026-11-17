@@ -23,8 +23,6 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
-
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 from tools.tests.target_fixtures import composed_pure_template
@@ -725,7 +723,7 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         """Issue #644: the frozen context carries the library variables ahead of the build
         overrides, the include directories for the syntax stage, the loader overlay for a run
         (the directories alone: the base environment holds no loader variable) and the
-        directories the sandbox binds; `run_env` hands the overlay to a run and declares it."""
+        directories the sandbox binds; `run_env` hands the overlay to a run."""
         from unittest import mock
 
         from tools import external_library as xl
@@ -748,9 +746,8 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         self.assertEqual(dict(ctx.library_env), {"LD_LIBRARY_PATH": str(dirs["lib"])})
         for root in xl.bind_roots(resolved):
             self.assertIn(root, ctx.toolchain_ro_roots)
-        env, declared = ww.run_env(ctx)
+        env = ww.run_env(ctx)
         self.assertEqual(env["LD_LIBRARY_PATH"], str(dirs["lib"]))
-        self.assertIn("LD_LIBRARY_PATH", declared)
         # A closure that declares none: empty variables, nothing else.
         self.assertEqual(list(self.ctx.build_overrides[:2]), ["LIBINC=", "LIBS="])
         self.assertEqual((self.ctx.syntax_include_dirs, self.ctx.library_env), ((), ()))

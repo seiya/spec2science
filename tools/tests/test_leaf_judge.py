@@ -22,14 +22,11 @@ document's own schema belongs to `test_leaf_contract.py`, and the raw-evidence e
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import yaml
 

@@ -53,9 +53,9 @@ IR_CHECK_OPS: tuple[str, ...] = ("check_ir",)
 #: Every operation any lineage may serve.
 ALL_OPS: tuple[str, ...] = WRAPPER_OPS + IR_CHECK_OPS
 #: The operations each PRODUCING pair's lineage serves, by `(step, substep)` (issue #534
-#: PR-J3-b): what the conductor's producer specs freeze into `WrapperContext.ops`, and what the
-#: launch-record audit compares an HTTP workshop launch's declared tool surface against (it
-#: receives no frozen context). A test pins the specs equal to this table.
+#: PR-J3-b): what the conductor's producer specs freeze into `WrapperContext.ops`, and what an
+#: HTTP workshop launch's declared tool surface is composed from. A test pins the specs equal
+#: to this table.
 WORKSHOP_OPS_BY_PAIR: dict[tuple[str, str], tuple[str, ...]] = {
     ("generate", "generate"): WRAPPER_OPS,
     ("compile", "generate"): IR_CHECK_OPS,
@@ -220,13 +220,12 @@ def _bounded_timeout(ctx: WrapperContext, default: int) -> int:
 
 
 def _sandbox(ctx: WrapperContext, *, project_dir: Path, rw: list[Path],
-             ro: tuple[Path, ...] | list[Path] = (), env: Mapping[str, str],
-             declared: tuple[str, ...] = ()) -> list[str]:
+             ro: tuple[Path, ...] | list[Path] = (), env: Mapping[str, str]) -> list[str]:
     from tools.orchestration_runtime import render_wrapper_sandbox_prefix
 
     return render_wrapper_sandbox_prefix(
         repo_root=ctx.repo_root, project_dir=project_dir, rw_binds=rw, ro_binds=list(ro),
-        toolchain_ro_roots=ctx.toolchain_ro_roots, env=env, declared_env_names=declared)
+        toolchain_ro_roots=ctx.toolchain_ro_roots, env=env)
 
 
 def _attribution(ctx: WrapperContext) -> dict[str, str]:
@@ -605,7 +604,7 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
     # `case_inputs/` beside the spec path it is given, so it is given the seeded IR's path, and
     # the runner refuses a case the seeded IR does not declare (it has no file).
     seeded_path = ctx.paths.tree / SEEDED_IR_NAME
-    env, declared = run_env(ctx)
+    env = run_env(ctx)
     command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(seeded_path), *case_ids]
     result = tool_run_program({
         "command": command,
@@ -616,19 +615,17 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         "timeout_sec": _bounded_timeout(ctx, ctx.run_timeout_sec),
         "sandbox_argv_prefix": _sandbox(
             ctx, project_dir=ctx.paths.tree, rw=[ctx.paths.tree], ro=[ctx.paths.staged_bin],
-            env=env, declared=declared),
+            env=env),
         "on_spawn": on_spawn,
         **_attribution(ctx),
     })
     return _command_feedback(result)
 
 
-def run_env(ctx: WrapperContext) -> tuple[dict[str, str], tuple[str, ...]]:
-    """The environment a `run` of the tree's binary is handed, and the names beyond the base
-    ones it declares to the sandbox: the base environment, the launch shape's, and the loader
-    overlay of the closure's external libraries (issue #644)."""
-    env = dict(ctx.base_env) | dict(ctx.launch_env) | dict(ctx.library_env)
-    return env, tuple(k for k, _ in (*ctx.launch_env, *ctx.library_env))
+def run_env(ctx: WrapperContext) -> dict[str, str]:
+    """The environment a `run` of the tree's binary is handed: the base environment, the
+    launch shape's, and the loader overlay of the closure's external libraries (issue #644)."""
+    return dict(ctx.base_env) | dict(ctx.launch_env) | dict(ctx.library_env)
 
 
 def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],

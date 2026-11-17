@@ -152,26 +152,6 @@ class LineageHomeTests(_Env):
         self.assertIsNone(self._prepare("lin_gone", resume=True))
         self.assertFalse((self.homes / _ORCH / "claude" / "lin_gone").exists())
 
-    def test_a_warm_preparation_re_secures_the_lineage_home(self) -> None:
-        cold = self._prepare("lin_a", resume=False)
-        home = Path(cold["home"])
-        os.chmod(home, 0o755)
-        self._prepare("lin_a", resume=True)
-        self.assertEqual(stat.S_IMODE(home.lstat().st_mode), 0o700)
-
-    def test_a_warm_preparation_re_secures_the_config_home(self) -> None:
-        """The CLI's own `config/` holds the lineage's transcripts: a drifted mode is tightened
-        on the warm preparation, and a link in its place is refused."""
-        cold = self._prepare("lin_a", resume=False)
-        config = Path(cold["config"])
-        os.chmod(config, 0o755)
-        self._prepare("lin_a", resume=True)
-        self.assertEqual(stat.S_IMODE(config.lstat().st_mode), 0o700)
-        config.rename(config.with_name("config_real"))
-        config.symlink_to(config.with_name("config_real"))
-        with self.assertRaises(ValueError):
-            self._prepare("lin_a", resume=True)
-
     def test_a_missing_credentials_file_is_refused(self) -> None:
         self.credentials.unlink()
         with self.assertRaises(ValueError) as ctx:
@@ -273,17 +253,13 @@ class WorkshopProfileTests(_Env):
         self.assertEqual(cmd[cmd.index("CLAUDE_CONFIG_DIR") + 1], iso["config"])
         self.assertIn(str(self.repo), [cmd[i + 1] for i, t in enumerate(cmd) if t == "--tmpfs"])
 
-    def test_the_builder_refuses_a_half_workshop_profile(self) -> None:
+    def test_the_builder_refuses_a_profile_declaring_no_cli_home(self) -> None:
         iso = self._prepare("lin_b", resume=False)
         base = dict(repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_b",
                     backend_command="claude", backend_type="claude")
-        kwargs = claude_workshop_profile_kwargs(iso)
-        for broken in ({"readonly": True}, {"leaf_mode": None}, {"leaf_mode": "agentic"},
-                       {"workdir": None}, {"credential_rw_mapping": None}):
-            with self.subTest(broken=broken), self.assertRaises(ValueError):
-                build_lineage_bwrap_profile(**base, **{**kwargs, **broken}, network=network_block("claude"))
-        # A profile that is not a workshop lineage's — the read-only one the pure leaf ran
-        # under, with or without the workshop fields — is refused since issue #534 PR-J4-b.
+        # A profile without the workshop kwargs' `env_overrides` — the read-only one the pure
+        # leaf ran under, with or without the other workshop fields — declares no CLI home,
+        # and `workshop_profile_family` refuses it.
         for extra in ({}, {"workdir": iso["tree"]},
                       {"credential_rw_mapping": (iso["credentials"],
                                                  iso["credentials_destination"])},
@@ -583,104 +559,41 @@ def _clear_active_child(repo: Path) -> None:
 
 
 class PreflightTests(unittest.TestCase):
-    # The option lines of every flag a claude workshop argv carries, spelled as CLI 2.1.309's
-    # `--help` spells them (a long alias after the flag, a wrapped description line below).
-    _HELP = ("Usage: claude\n  --allowedTools, --allowed-tools <tools...>  x\n"
-             "  --disable-slash-commands  x\n"
-             "  --mcp-config <configs...>  x\n"
-             "  --output-format <format>  x\n"
-             "  --permission-mode <mode>  x\n  --permission-prompts <target>  x\n"
-             "  --restricted  x\n"
-             "                                        --strict-mcp-config to skip MCP servers\n"
-             "  --strict-mcp-config  x\n"
-             "  --system-prompt <prompt>  x\n  --tools <tools...>  x\n")
-
-    def _runner(self, help_text: str, rc: int = 0):
-        import subprocess
-
-        def run(argv, **kw):
-            return subprocess.CompletedProcess(argv, rc, help_text, "")
-        return run
-
-    def test_the_check_requires_every_option_as_an_option_line(self) -> None:
-        self.assertIs(ort._claude_workshop_flag_set_check("claude", self._runner(self._HELP))
-                      ["pass"], True)
-        for option in ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS:
-            with self.subTest(dropped=option):
-                text = "\n".join(line for line in self._HELP.splitlines()
-                                 if not line.strip().startswith(option))
-                # A mention inside another option's description does not answer for it.
-                text += f"\n  --other  see {option}\n"
-                check = ort._claude_workshop_flag_set_check("claude", self._runner(text))
-                self.assertIs(check["pass"], False)
-                self.assertIn(option, check["detail"])
-        self.assertIs(ort._claude_workshop_flag_set_check(
-            "claude", self._runner(self._HELP, rc=1))["pass"], False)
-
-    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
-        """A `--help` that cannot run at all is a failed capability row, named, not an
-        exception out of the preflight."""
-        def gone(argv, **kw):
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
-        check = ort._claude_workshop_flag_set_check("/nonexistent/claude", gone)
-        self.assertIs(check["pass"], False)
-        self.assertIn("FileNotFoundError", check["detail"])
-
-    def test_every_cli_surface_an_entry_launches_through_takes_the_check(self) -> None:
-        """A CLI surface takes its workshop row when some workshop entry launches through it —
-        since issue #534 PR-J4-b every entry is one, so every CLI surface an entry names takes
-        it. `defaults` is one since issue #534 PR-J4-a (the diagnostician, a reading workshop
-        leaf), so a claude `defaults` takes the check with no substep entry of its own (review
-        finding 1 of the PR-J4 plan: the probe read `cfg.entries` alone, so a `defaults` on a
-        surface no substep shares launched an argv nothing had certified); a claude surface
-        only substep entries use — beside a codex `defaults` — takes it too (before PR-J4-b
-        such entries could be pure, and their surface took none)."""
+    def test_every_cli_surface_an_entry_launches_through_is_stamped_workshop(self) -> None:
+        """Every CLI surface an entry launches through is recorded with the `workshop` stamp —
+        since issue #534 PR-J4-b every entry is a workshop entry. `defaults` is one since issue
+        #534 PR-J4-a (the diagnostician, a reading workshop leaf), so a claude `defaults` is
+        stamped with no substep entry of its own; a claude surface only substep entries use —
+        beside a codex `defaults` — is stamped too. The TTL re-probe keeps the stamp. The
+        workshop option-set row these surfaces also took went in issue #643."""
         def probe(**kw):
             return {"probe_command": kw.get("agent_command") or "claude", "checks": [],
                     "status": "pass"}
 
         cases = {
-            "claude defaults": ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n",
-                                True),
+            "claude defaults": "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n",
             "claude defaults and a workshop entry": (
-                ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n"
-                 "phases: {generate: {substeps: {generate: {"
-                 "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"), True),
+                "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n"
+                "phases: {generate: {substeps: {generate: {"
+                "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"),
             "claude substep entries beside a codex defaults": (
-                ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
-                 "phases: {generate: {substeps: {generate: {provider: claude_cli}}}}\n"),
-                True),
+                "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
+                "phases: {generate: {substeps: {generate: {provider: claude_cli}}}}\n"),
         }
         with tempfile.TemporaryDirectory() as tmp:
-            for label, (body, workshop) in cases.items():
+            for label, body in cases.items():
                 path = Path(tmp) / f"llm_{len(label)}.yaml"
                 path.write_text(workshop_yaml(body), encoding="utf-8")
                 with self.subTest(case=label), \
                         mock.patch.object(ort, "probe_execution_platform", probe), \
                         mock.patch.object(ort, "_preflight_allows_agent_launch",
-                                          lambda p: True), \
-                        mock.patch.object(ort, "_codex_workshop_flag_set_check",
-                                          lambda cmd, runner: {
-                                              "name": "codex_workshop_flag_set_available",
-                                              "pass": True, "detail": ""}):
-                    providers = ort.probe_all_providers(
-                        config=lc.load_llm_config(path),
-                        runner=self._runner("no options here"))
+                                          lambda p: True):
+                    providers = ort.probe_all_providers(config=lc.load_llm_config(path))
                     row = providers["claude"]
-                    names = [c["name"] for c in row["checks"]]
-                    self.assertEqual("claude_workshop_flag_set_available" in names, workshop)
-                    self.assertEqual(row["launchable"], not workshop)
-                    self.assertEqual(row["surfaces"][0].get("workshop"),
-                                     True if workshop else None)
-                    if workshop:
-                        # The TTL re-probe reconstructs the requirement from the surface.
-                        with mock.patch.object(ort, "_claude_workshop_flag_set_check",
-                                               lambda cmd, runner: {
-                                                   "name": "claude_workshop_flag_set_available",
-                                                   "pass": False, "detail": ""}):
-                            again = ort._reprobe_recorded_providers(providers, None)
-                        self.assertIs(again["claude"]["launchable"], False)
-                        self.assertTrue(again["claude"]["surfaces"][0]["workshop"])
+                    self.assertIs(row["launchable"], True)
+                    self.assertIs(row["surfaces"][0].get("workshop"), True)
+                    again = ort._reprobe_recorded_providers(providers, None)
+                    self.assertTrue(again["claude"]["surfaces"][0]["workshop"])
 
 
 class _WorkshopConfig:
@@ -1318,10 +1231,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         tail = render_bwrap_command(profile=reading, command_argv=["claude"])
         self.assertNotIn("--tunnel", tail)
 
-    def test_the_builder_and_the_renderer_refuse_a_profile_without_a_network_block(
-            self) -> None:
-        with self.assertRaisesRegex(ValueError, "needs its network block"):
-            self._profile(network=None)
+    def test_the_renderer_refuses_a_profile_without_a_network_block(self) -> None:
         profile = self._profile()
         del profile["network"]
         with self.assertRaisesRegex(ValueError, "carries no network block"):
@@ -1338,10 +1248,6 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
                     profile["env"][name] = bad
                 with self.assertRaisesRegex(ValueError, f"profile env {name} must be"):
                     render_bwrap_command(profile=profile, command_argv=["claude"])
-        profile = self._profile()
-        profile["env"]["HTTP_PROXY"] = "http://127.0.0.1:3128"
-        with self.assertRaisesRegex(ValueError, "undeclared name 'HTTP_PROXY'"):
-            render_bwrap_command(profile=profile, command_argv=["claude"])
 
     def test_each_field_of_the_block_off_its_constant_is_refused(self) -> None:
         good = network_block("claude")
@@ -1409,7 +1315,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         import tools.validate_pipeline_semantics as vps
         self.assertEqual(vps._workshop_profile_violations(profile), [])
 
-    def test_the_audit_names_the_resume_barrier_and_reads_the_recorded_command(self) -> None:
+    def test_the_audit_names_the_resume_barrier(self) -> None:
         import tools.validate_pipeline_semantics as vps
         self._launch("ar_aud", _workshop_request("ar_aud"))
         good = json.loads((self._base() / "sandbox_profiles/ar_aud.json").read_text())
@@ -1417,29 +1323,3 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         old = {k: v for k, v in good.items() if k != "network"}
         self.assertEqual(len(vps._workshop_profile_violations(old)), 1)
         self.assertIn("start a fresh run", vps._workshop_profile_violations(old)[0])
-        cmd = good["rendered_command"]
-        split = cmd.index("--")
-        for label, rendered in (
-                ("no --unshare-net", [t for t in cmd if t != "--unshare-net"]),
-                ("no --unshare-pid", [t for t in cmd if t != "--unshare-pid"]),
-                ("no -I", cmd[:split + 2] + cmd[split + 3:]),
-                ("no ro-bind", [t if t != "/run/spec2science/net" else "/run/x" for t in cmd]),
-                ("not rendered", None)):
-            with self.subTest(label):
-                self.assertTrue(vps._workshop_profile_violations(
-                    {**good, "rendered_command": rendered}), label)
-        with self.subTest("proxy env"):
-            self.assertTrue(vps._workshop_profile_violations(
-                {**good, "env": {**good["env"], "HTTPS_PROXY": "http://x:1"}}))
-        # The persisted block's CONTENT, the audit being the one reader of the record.
-        for label, change in (
-                ("a host beyond the family's set",
-                 {"endpoints": [*good["network"]["endpoints"], "github.com:443"]}),
-                ("a socket dir inside the checkout",
-                 {"socket_dir": str(self.repo.resolve() / "workspace" / "x")}),
-                ("no unshare_pid", {"unshare_pid": False})):
-            with self.subTest(label):
-                found = vps._workshop_profile_violations(
-                    {**good, "network": {**good["network"], **change}}, None, self.repo)
-                self.assertTrue(found, label)
-                self.assertTrue(all("network." in v for v in found), found)

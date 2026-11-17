@@ -249,7 +249,7 @@ class SpawnLeafRefusesTheRetiredReadonlyProfileTests(unittest.TestCase):
     Until issue #534 PR-J4-b this class pinned the opposite half of the same guard: every pure
     leaf ran under the READ-ONLY profile (`readonly: True`, no `leaf_mode`), and a writable or
     keyless profile was refused. With the pure leaf gone no in-tree launch shape builds that
-    profile, so the guard now refuses it BY NAME (`leaf_profile_not_a_workshop_lineage`) —
+    profile, so the admission (`_admissible_leaf_profile`) now refuses it —
     a caller that still builds one fails here rather than launching a leaf whose edits land
     on the sandbox's tmpfs and vanish. Pinned at the spawn site rather than at the callers: a
     guard that rests on the caller set goes quiet the moment a new caller appears. The HTTP
@@ -288,19 +288,19 @@ class SpawnLeafRefusesTheRetiredReadonlyProfileTests(unittest.TestCase):
         wc.Conductor.spawn_leaf(c, "PROMPT", {}, c.entry_for("generate", "generate"),
                                 child_arid=child_arid, mcp_config_json=self._MCP)
 
-    def test_the_retired_readonly_profile_is_refused_by_name(self) -> None:
+    def test_the_retired_readonly_profile_is_refused(self) -> None:
         c = self._conductor()
         self._write_profile("child-ro", readonly=True)
         with self.assertRaises(wc.SandboxEnforcementError) as ctx:
             self._spawn(c, "child-ro")
-        self.assertIn("leaf_profile_not_a_workshop_lineage", str(ctx.exception))
+        self.assertIn("is not a workshop lineage's", str(ctx.exception))
 
     def test_a_writable_profile_without_a_leaf_mode_is_refused(self) -> None:
         c = self._conductor()
         self._write_profile("child-rw", readonly=False)
         with self.assertRaises(wc.SandboxEnforcementError) as ctx:
             self._spawn(c, "child-rw")
-        self.assertIn("leaf_profile_not_a_workshop_lineage", str(ctx.exception))
+        self.assertIn("is not a workshop lineage's", str(ctx.exception))
 
     def test_a_profile_with_no_readonly_key_at_all_is_refused(self) -> None:
         """ABSENT is not the same input as `False`, and the guard must refuse both.
@@ -313,7 +313,7 @@ class SpawnLeafRefusesTheRetiredReadonlyProfileTests(unittest.TestCase):
         self._write_profile("child-nokey", readonly=None)
         with self.assertRaises(wc.SandboxEnforcementError) as ctx:
             self._spawn(c, "child-nokey")
-        self.assertIn("leaf_profile_not_a_workshop_lineage", str(ctx.exception))
+        self.assertIn("is not a workshop lineage's", str(ctx.exception))
 
     def test_a_missing_profile_is_refused(self) -> None:
         c = self._conductor()
@@ -462,11 +462,9 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
                 self._write(arid, profile)
                 with self.assertRaises(wc.SandboxEnforcementError) as ctx:
                     self._spawn(arid, entry)
-                # The retired read-only shape (`readonly: True`, or no `leaf_mode`) is refused
-                # by name (issue #534 PR-J4-b); every other mutation by the admission check.
-                retired = profile.get("readonly") is True or profile.get("leaf_mode") is None
-                self.assertIn("leaf_profile_not_a_workshop_lineage" if retired
-                              else "is not a workshop lineage's", str(ctx.exception))
+                # Every mutation, the retired read-only shape (`readonly: True`, or no
+                # `leaf_mode`) among them, is refused by the admission check.
+                self.assertIn("is not a workshop lineage's", str(ctx.exception))
 
 
 class CodexLeafHasNoHookLayerTests(unittest.TestCase):
@@ -951,8 +949,8 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
              {**det, "orchestration_id": "orch_other_001"}, None,
              ValueError, "template field values"),
             ("4 sandbox profile refused", "orch_to_001", "orch_run_to_001", leaf,
-             {"SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "not_this_arid"},
-             RuntimeError, "sandbox enforcement failed.*disagrees"),
+             {"CODEX_HOME": "/a/second/cli/home"},
+             RuntimeError, "sandbox enforcement failed.*exactly one CLI home"),
             ("5 validate.execute without source_binary_id", "orch_001", "orch_run_001",
              execute, None, ValueError, "validate.execute launch requires `source_binary_id`"),
         )

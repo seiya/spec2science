@@ -94,22 +94,19 @@ class WorkshopLeafFlagsTest(unittest.TestCase):
         self.assertFalse(pl.WORKSHOP_PROMPT_SENTINEL.startswith(pl.PURE_PROMPT_SENTINEL))
         self.assertFalse(pl.PURE_PROMPT_SENTINEL.startswith(pl.WORKSHOP_PROMPT_SENTINEL))
 
-    def test_the_preflight_option_census_is_the_union_of_both_argvs(self):
-        """`CLAUDE_WORKSHOP_REQUIRED_OPTIONS` is the option set of the two claude workshop
-        argvs (issue #534 PR-J4-b, MJ2).
-
-        It was derived as the workshop flags minus `pure_leaf_flags()`; with the pure flag set
-        gone it is an explicit tuple, so this row is the derivation. EQUALITY in both
-        directions: an option the launch emits that the preflight does not probe lets a CLI
-        that refuses it pass preflight and kill every launch as a transport death, and an
-        option the preflight probes that no launch emits false-fails a CLI that dropped
-        something nothing uses.
-        """
-        from tools import orchestration_runtime as ort
+    def test_the_option_set_of_both_argvs(self):
+        """The options of the two claude workshop argvs, producing and reading (issue #534
+        PR-J4-b, MJ2). Until issue #643 this set was also the preflight's `--help` census
+        (`CLAUDE_WORKSHOP_REQUIRED_OPTIONS`); that probe went, and a CLI missing one of these
+        options now refuses the argv at launch (`leaf_transport_error`). The row still pins
+        which options the reading argv carries, which `test_flag_set_golden` does not."""
         emitted = {flag for argv in (pl.workshop_leaf_flags("{}"),
                                      pl.workshop_leaf_flags(None, reading=True))
                    for flag in argv if flag.startswith("--")}
-        self.assertEqual(emitted, set(ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS))
+        self.assertEqual(emitted, {
+            "--restricted", "--system-prompt", "--tools", "--mcp-config", "--strict-mcp-config",
+            "--permission-mode", "--permission-prompts", "--allowedTools",
+            "--disable-slash-commands", "--output-format"})
 
 
 class ParseResultEnvelopeTest(unittest.TestCase):

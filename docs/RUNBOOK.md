@@ -66,9 +66,8 @@ with it, every declared format's for every target.
 
 (`PyYAML` is listed here because a run needs it, but it is not a member of
 `REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`
-imports it at module top, and `tools/orchestration_runtime._require_yaml` raises its own
-"install PyYAML" message. Both are already launch-time and legible, which is the property the
-reason codes exist to give the other two families.)
+and `tools/orchestration_runtime.py` import it at module top, so a missing package stops the run
+at startup with Python's own `ModuleNotFoundError`, which is already launch-time and legible.)
 
 ### Refused at startup — `missing_required_host_tools`
 
@@ -295,37 +294,36 @@ links on the host and fails in the `workshop leaf`'s sandbox, whose environment 
 
 When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.yaml`; preflight
 `--backend claude`), the launch gate is the conjunction of every check named in
-`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the five
-`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available`,
-`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element),
-`claude_restricted_flag_available` (the `--help` text names `--restricted` as an option, the
-flag that keeps the operator's settings files out of a leaf) and
-`claude_global_config_env_absent` (neither `~/.claude.json` nor the legacy
+`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the two
+`_probe_claude_backend` emits — `claude_prompt_stdin` (the prompt arrives on stdin, never as an
+argv element) and `claude_global_config_env_absent` (neither `~/.claude.json` nor the legacy
 `~/.claude/.config.json` carries an `env` block: the CLI reads one of them as its global config,
 which is not a settings file, `--restricted` does not ignore it, and its `env` block would set a
 leaf's model, endpoint and output ceiling; the failing check's detail names the file — remove its
 `env` key to pass) — plus the three `sandbox_bwrap_*` and the two `sandbox_netns_*`
 checks every CLI backend needs ([issue #453](https://github.com/seiya/spec2science/issues/453) for the
-last two of the five above; the `sandbox_netns_*` pair is [issue #534](https://github.com/seiya/spec2science/issues/534)
+second of the two above; the `sandbox_netns_*` pair is [issue #534](https://github.com/seiya/spec2science/issues/534)
 step 4: `sandbox_netns_python` — `/usr/bin/python3`, the leaf's network relay's interpreter,
 starts isolated inside a `--unshare-net` bwrap — and `sandbox_netns_route` — the real relay, with
 no route out of the namespace and a CONNECT through it reaching a loopback stand-in; no provider
-is contacted. A host without a system `/usr/bin/python3` fails both, with the same `execvp` detail). Authentication is NOT probed: a CLI that is on `PATH`, answers `--version` and
-`--help`, names `--restricted`, and refuses an empty `-p` naming stdin passes preflight and fails
-at the first launch instead. That includes a machine that authenticates through the
+is contacted. A host without a system `/usr/bin/python3` fails both, with the same `execvp` detail). `--version` is run for the recorded
+`agent_version` and does not gate. The CLI's option set is NOT probed
+([issue #643](https://github.com/seiya/spec2science/issues/643), which reversed the `--restricted`
+probe of issue #453 and the workshop option-set probe of issue #534): a CLI that lacks an option
+the leaf argv carries refuses the argv before any request (measured on CLI 2.1.326: exit 1,
+`error: unknown option`), and the first launch on it ends `fail_closed` with
+`leaf_transport_error: leaf_exit=1`, with no repair turn and the CLI's message in the failure
+summary. Authentication is NOT probed: a CLI that refuses an empty `-p` naming stdin passes
+preflight and fails at the first launch instead. That includes a machine that authenticates through the
 settings file — `apiKeyHelper`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in its `env`
 block: `--restricted` ignores the file, so every leaf there answers "Not logged in" (measured,
 issue #453). A claude leaf authenticates through the CLI's own credential store (`/login` in an
 interactive `claude` session writes it).
 
-Every claude surface of a configuration takes one more check on its provider row, because every
-leaf is a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b;
-`docs/ORCHESTRATION.md` "Leaf LLM configuration"): `claude_workshop_flag_set_available` (the
-`--help` text names every option a workshop leaf's argv carries — the explicit tuple
-`CLAUDE_WORKSHOP_REQUIRED_OPTIONS`, which a suite row compares with the argv's options). It is
-AND-ed into that row's `launchable`, and the row's recorded surface says `workshop: true`; the
-TTL re-probe asks it of every CLI surface, a row recorded without the stamp included. A workshop
-leaf runs with a
+Every claude surface of a configuration is recorded on its provider row with `workshop: true`,
+because every leaf is a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534)
+PR-J4-b; `docs/ORCHESTRATION.md` "Leaf LLM configuration"); the TTL re-probe stamps a row
+recorded without it. A workshop leaf runs with a
 private `CLAUDE_CONFIG_DIR` under its lineage home (§operator-private root) over which the
 operator's `~/.claude/.credentials.json` is bound read-write (a leaf's token refresh writes in
 place onto the bound inode and so reaches the host — read off the CLI 2.1.319 binary, not
@@ -353,25 +351,24 @@ operator who set it up will find it no longer checked:
 - **`checks.claude_leaf_tool_roster_classified`** (issue #71), which launched the agentic argv
   once against a loopback stand-in and required the CLI's own tool roster to match the leaf
   allowlist. A `workshop leaf`'s argv names its tool set explicitly (`--tools` with the work-tree
-  file tools, `--strict-mcp-config`), and `claude_workshop_flag_set_available` asks only that the
-  CLI accepts those options; the roster check probed the agentic argv only, which its own text
+  file tools, `--strict-mcp-config`), and a CLI that does not accept one of those options
+  refuses the argv at launch; the roster check probed the agentic argv only, which its own text
   recorded as its limit.
 
 `multi_agent_enabled` and `feature_states.multi_agent` went in
 [issue #447](https://github.com/seiya/spec2science/issues/447) (D1): the conductor launches each leaf
 as its own CLI process and never uses a platform's own subagents. On claude the check was
-`--help` answering, which `claude_help_probe_available` records and now gates by name; the
-skipped `claude_features_list_available` row went with it. The recorded document is now held
+`--help` answering, which no check reads since issue #643; the skipped
+`claude_features_list_available` row went with it. The recorded document is now held
 to every member of `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a claude `preflight.json` written
 before `claude_prompt_stdin` existed (orchestrations from 2026-07-23 to 2026-08-02 on the
-machine this was measured on), or before `claude_restricted_flag_available` and
-`claude_global_config_env_absent` existed (every claude orchestration before issue #453), is refused by every command that reads the stored document —
+machine this was measured on), or before `claude_global_config_env_absent` existed (every claude orchestration before issue #453), is refused by every command that reads the stored document —
 `revoke-artifact`, `reset-phase`, `check-phase-certified`, `set-status pass`. Re-run that
 orchestration's preflight first: `--resume` does it before anything else reads the document.
 
 ## 0-3. Codex backend preflight requirements (operator setup)
 
-When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), the launch gate is the conjunction of every check named in `CODEX_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`), which already includes the sandbox members — the three `sandbox_bwrap_*` checks and the two `sandbox_netns_*` checks of §0-2. At probe time every emitted check gates, on both backends, so a check added later gates by default. Reading a recorded `preflight.json` back applies more than that set. `_preflight_launch_refusals` (`tools/orchestration_runtime.py`) is the one list of launch conditions — a `checks` list, `status`, both `can_launch_*` fields, `sandbox_enforced`, a `backend` that names a required set, every member of that set (`CODEX_REQUIRED_LAUNCH_CHECKS` or `CLAUDE_REQUIRED_LAUNCH_CHECKS`), and every provider's launchability; `_preflight_allows_agent_launch` is "that list is empty", and `write_preflight` refuses a document that claims launchability while the list is not. The probe no longer runs `codex features list` ([issue #447](https://github.com/seiya/spec2science/issues/447), D1 and D4): its output fed only the `multi_agent_enabled` check, which went with `feature_states`, and its exit status fed `codex_features_list_available`, which left `CODEX_REQUIRED_LAUNCH_CHECKS` with it — so a codex build whose `features list` fails, refused before, now launches. **This section covers the members of that set an operator configures**, plus one requirement that is enforced at launch instead. The CLI-capability members (`codex_version_available`, `codex_exec_*`, `codex_prompt_stdin`) are properties of the installed build rather than of the operator's configuration, and the sandbox members belong to `docs/BWRAP_ENABLEMENT.md`; read the set in the code for the whole list. The section exists because the repository can commit the hook source and the launch flags, and cannot commit the operator's own CLI state.
+When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), the launch gate is the conjunction of every check named in `CODEX_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`), which already includes the sandbox members — the three `sandbox_bwrap_*` checks and the two `sandbox_netns_*` checks of §0-2. At probe time every emitted check gates, on both backends, so a check added later gates by default. Reading a recorded `preflight.json` back applies more than that set. `_preflight_launch_refusals` (`tools/orchestration_runtime.py`) is the one list of launch conditions — a `checks` list, `status`, both `can_launch_*` fields, `sandbox_enforced`, a `backend` that names a required set, every member of that set (`CODEX_REQUIRED_LAUNCH_CHECKS` or `CLAUDE_REQUIRED_LAUNCH_CHECKS`), and every provider's launchability; `_preflight_allows_agent_launch` is "that list is empty", and every reader of a stored document asks it (`write_preflight` stores what the probe returned). The probe no longer runs `codex features list` ([issue #447](https://github.com/seiya/spec2science/issues/447), D1 and D4): its output fed only the `multi_agent_enabled` check, which went with `feature_states`, and its exit status fed `codex_features_list_available`, which left `CODEX_REQUIRED_LAUNCH_CHECKS` with it — so a codex build whose `features list` fails, refused before, now launches. **This section covers the members of that set an operator configures**, plus one requirement that is enforced at launch instead. The CLI-capability members (`codex_version_available`, `codex_exec_*`, `codex_prompt_stdin`) are properties of the installed build rather than of the operator's configuration, and the sandbox members belong to `docs/BWRAP_ENABLEMENT.md`; read the set in the code for the whole list. The section exists because the repository can commit the hook source and the launch flags, and cannot commit the operator's own CLI state.
 
 - **The CLI's `hooks` feature is no longer required.** `checks.hooks_enabled` and
   `checks.codex_project_hooks_validated` were part of this gate until Z4
@@ -386,7 +383,7 @@ When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), th
 
 - **The state home must be writable.** `checks.codex_home_writable.pass` resolves `CODEX_HOME`, else the deprecated `SPEC2SCIENCE_HOME`, else `~/.codex`, and requires the directory (or its parent, when it does not exist yet) to be writable. `CODEX_HOME` and `SPEC2SCIENCE_HOME` set to different paths is a refusal rather than a precedence rule.
 
-- **Every `codex_cli` surface takes one more row** ([issue #534](https://github.com/seiya/spec2science/issues/534) step 2 PR-2; on every codex surface since PR-J4-b, when every leaf became a workshop leaf; `docs/ORCHESTRATION.md` §workshop leaf): `codex_workshop_flag_set_available`, AND-ed into that provider row's `launchable` and asked again by the TTL re-probe, as the claude workshop row is (§0-2). It replaced `codex_exec_pure_isolation_flags`, the pure leaf's `--sandbox read-only` check, which PR-J4-b removed from `CODEX_REQUIRED_LAUNCH_CHECKS`. It requires `codex exec --help` to name `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` (`--model`, `--sandbox`, `--config`, `--json`, `--skip-git-repo-check`, `--ignore-rules`) as option lines and to list `workspace-write` among the possible values of `--sandbox`, and `codex mcp add --help` to name `--url` (the streamable-HTTP route the wrapper's endpoint takes). The `--config` keys the workshop argv sets (`leaf_contract.codex_workshop_overrides`) are in no help text; the unbilled CLI rows pin them. Each CLI's workshop surface takes its own CLI's row and not the other's. The reading argv's options are a subset of the producing one's, and its `codex mcp add --help` check for `--url` names a route a reading lineage does not use — stricter than a judging-only surface needs, not a hole. A codex workshop leaf reads `auth.json` through a read-only bind into its lineage's own `CODEX_HOME`.
+- **The cold workshop argv's option set is not probed** ([issue #643](https://github.com/seiya/spec2science/issues/643), which removed the issue #534 row `codex_workshop_flag_set_available`, as §0-2 records for claude). A codex build that lacks an option of the cold argv (`docs/ORCHESTRATION.md` §workshop leaf) refuses it before any request (measured on codex-cli 0.169.0: exit 2, `error: unexpected argument`), and the first launch on it ends `fail_closed` with `leaf_transport_error: leaf_exit=2`, with no repair turn and the CLI's message in the failure summary. The warm argv's options are still certified by `codex_exec_resume` (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`). A codex workshop leaf reads `auth.json` through a read-only bind into its lineage's own `CODEX_HOME`.
 
 - **The prompt-on-stdin contract must hold.** `checks.codex_prompt_stdin.pass` requires `codex exec --help` and `codex exec resume --help` to document the `-` stdin sentinel. A failure means the installed build no longer accepts a prompt on stdin; install one that does, and do not move the prompt back onto argv — see §1-3.
 
@@ -559,7 +556,7 @@ What moves the key, and therefore re-derives: an edit to a node's `controlled_sp
 
 **The workshop contract counter's retirement is a `--resume` barrier, and so was each of its bumps** ([issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b). Since PR-J4-b there is ONE leaf contract version, `leaf_contract.LEAF_PROMPT_CONTRACT_VERSION` (`pure-84`, the value kept, so no derivation key moved and no certified output re-derives); every new launch record carries it, and the launch-record audit compares every record of the orchestration being audited to it (`validate_pipeline_semantics.py`). `--resume` of an orchestration launched before PR-J4-b is refused — EVERY one in flight, producing and reading, on every provider — and at START, by name: a resume launches with the configuration bytes it recorded, and every pre-J4-b configuration either writes `leaf:` (`llm_config_unknown_key`) or leaves an LLM substep without its own bounds (`llm_config_workshop_bound_missing`), and on `--resume` the refusal says the orchestration cannot be resumed; a recorded file edited to load is refused as `llm_config_changed_since_launch`. The audit is the backstop: a workshop record stamped `workshop-9` (every workshop launch from PR-J4-a to PR-J4-b) fails it, at Validate `pre_judge`. Start a fresh run instead; certified nodes were reused (until `leaf-85`, next). The next bump writes `leaf-85` and moves the compile, generate and validate keys, as every `pure-NN` bump did. `leaf-85` is that bump, the first after PR-J4-b (the leaf-read text PR-J4 deferred, the `seed` wording of the leaf-read documents, and [issue #545](https://github.com/seiya/spec2science/issues/545)'s judge sentence): the compile, generate and validate derivation keys hash it (`derivation.transformation_versions`; the build key does not), so every certified Compile, Generate and Validate re-derives on its next run (`derivation_key_mismatch:transformation`; run with `--with-deps`, or the single-node launch check stops at `dependency_not_ready` as above), and `--resume` of an orchestration launched under `pure-84` fails the launch-record audit, which compares every pure or workshop launch record's `prompt_contract_version` to the current constant (`validate_pipeline_semantics.py`, stage `pre_judge`, run in Validate's `post_judge` substep) — nothing refuses it at start, so a resumed run pays for the launches it still has to make and then fails there; start a fresh run with `--with-deps` instead. PR-J4-b also changes what an `llm.yaml` must say (below). The history of the retired counter: `leaf_contract.WORKSHOP_PROMPT_CONTRACT_VERSION` was hashed into no derivation key, so no certified output re-derived; but the launch-record audit compared every workshop launch record's `prompt_contract_version` to the current constant (`validate_pipeline_semantics.py`, the pure / workshop record audit), so `--resume` of a workshop orchestration launched before the bump fails that audit — EVERY workshop orchestration in flight, producing and reading, on every provider, whichever part of the contract moved. Start a fresh run instead; certified nodes are reused. `workshop-7` (issue #534 PR-J3-a: the codex reader row and its reading helper) is such a barrier, and so is `workshop-8` (PR-J3-b: the HTTP providers' tool-surface rows, the five file tools they declare, and the producer system prompt and producing templates naming the host's operations without the MCP transport), and `workshop-9` (PR-J4-a: the `escalate` diagnostician's reading template). PR-J4-a also changes what an `llm.yaml` must say: `defaults` serves the diagnostician as a reading workshop leaf, so it must state `lineage_timeout_s` (`llm_config_workshop_bound_missing` at `defaults` otherwise) and must keep the `workshop` capability; add the line under `defaults:` (the four `docs/examples/*.yaml` carry `lineage_timeout_s: 2700`). No substep entry inherits it. **This makes PR-J4-a a `--resume` barrier for EVERY orchestration launched before it, pure-only ones included**: `--resume` launches with the RECORDED configuration, whose bytes lack the bound and are refused at load (`llm_config_workshop_bound_missing`), and a recorded file edited to add it is refused as `llm_config_changed_since_launch`. Start a fresh run after migrating `llm.yaml`; certified nodes are reused (no derivation key moved). Since [issue #574](https://github.com/seiya/spec2science/issues/574) this barrier is independent of the keys: a `leaf-N` bump moves no derivation key, and the keyed contract of each phase is its reader constant (`docs/ORCHESTRATION.md` §13d).
 
-**The leaf's network namespace is a `--resume` barrier** ([issue #534](https://github.com/seiya/spec2science/issues/534) step 4). Every CLI leaf's sandbox profile now records a `network` block, and the launch-record audit (`validate_pipeline_semantics._workshop_profile_violations`, stage `pre_judge`) requires it on every workshop launch record of the orchestration it audits. A profile recorded before this change has none, so `--resume` of an orchestration launched before it fails that audit, naming the missing block ("start a fresh run; certified nodes are reused"). The audit runs in Validate's `post_judge` substep (the validator stage is named `pre_judge`), so the resumed run first makes — and pays for — the launches it still has to make, the judge included; nothing refuses it at start. Do not `--resume` such an orchestration. No derivation key moved: start a fresh run and every certified node is reused. The same check refuses `record-timeout` for an in-flight leaf launched before this change (`sandbox_network_missing`, with a violation record), so such an orchestration cannot be closed out through [Substep timeout recovery](#substep-timeout-recovery) either; abandon it and start a fresh run. A new launch on such an orchestration would carry the block; the earlier records are what fail.
+**The leaf's network namespace is a `--resume` barrier** ([issue #534](https://github.com/seiya/spec2science/issues/534) step 4). Every CLI leaf's sandbox profile now records a `network` block, and the launch-record audit (`validate_pipeline_semantics._workshop_profile_violations`, stage `pre_judge`) requires it on every workshop launch record of the orchestration it audits. A profile recorded before this change has none, so `--resume` of an orchestration launched before it fails that audit, naming the missing block ("start a fresh run; certified nodes are reused"). The audit runs in Validate's `post_judge` substep (the validator stage is named `pre_judge`), so the resumed run first makes — and pays for — the launches it still has to make, the judge included; nothing refuses it at start. Do not `--resume` such an orchestration. No derivation key moved: start a fresh run and every certified node is reused. A new launch on such an orchestration would carry the block; the earlier records are what fail.
 
 **PR-J4-b's `llm.yaml` migration** ([issue #534](https://github.com/seiya/spec2science/issues/534)). Every LLM leaf is a workshop leaf, so (0) if the file predates PR-J4-a, add `lineage_timeout_s` under `defaults:` (the diagnostician's bound, above; `llm_config_workshop_bound_missing` at `defaults` otherwise); (1) delete every `leaf:` line — a written `leaf:` is refused at load, `llm_config_unknown_key`; (2) write all five substeps under `phases.<phase>.substeps.<substep>`, each with `lineage_timeout_s`, and `compile.generate` / `generate.generate` with `max_wrapper_calls` as well — the bounds have no default and no level inherits them, so a substep left to `defaults` is refused `llm_config_workshop_bound_missing`, and a judging substep (`compile.verify`, `generate.verify`, `validate.judge`) stating `max_wrapper_calls` is refused `llm_config_workshop_bound_not_served`; (3) drop `pure` from any `capabilities:` list (refused `llm_config_invalid_field`). The four `docs/examples/*.yaml` carry the bounds on every substep (`lineage_timeout_s: 2700`, `max_wrapper_calls: 30`). An orchestration launched before PR-J4-b cannot be `--resume`d (above), so the recorded configuration's bytes never need to load again.
 
@@ -850,8 +847,9 @@ attributed to `~/.spec2science` above it. Both went with the leaf hook layer.
 **`chmod 700 ~/.spec2science` is recommended** on a
 shared host. The workflow creates the directory best-effort and does not force its mode,
 because a root that predates this recommendation would otherwise fail every launch;
-everything it creates BELOW that level is 0700 and is re-checked for ownership and
-symlinks on each launch.
+everything it creates BELOW that level is created 0700. An existing directory is used as it
+is found: its mode, owner and type are not checked on a later launch
+([issue #643](https://github.com/seiya/spec2science/issues/643)).
 
 `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` relocates the homes tree and `SPEC2SCIENCE_START_CLAIM_ROOT` the
 claims tree. Both exist for tests and for an operator with a specific reason; neither is
@@ -941,12 +939,8 @@ what closed it was the sandbox mount namespace rather than this guard. That meas
 went with its subject in issue #176; the analogue for a relocated homes root is
 unmeasured.)
 
-The MODE is not a precondition: a root you create with a plain `mkdir` is tightened to
-0700 on first use rather than refused, as is a mode that later drifts (a backup restored
-without permissions) — and since the tightening also runs on a warm reuse, a drift is
-corrected by the next launch of the same orchestration rather than only by a new one.
-What is refused is a symlink, a non-directory, a directory owned by another user, and a
-filesystem on which the tightening does not take.
+The MODE is not a precondition: a root you create with a plain `mkdir` is used at the
+mode you gave it, and the directories the workflow creates under it are created 0700.
 
 ### Why the homes are kept, and how to remove one
 
@@ -1022,12 +1016,11 @@ An orchestration named explicitly on the command line and then refused — or at
 failed — makes the tool exit 2; a refusal during `--all` does not, because there the
 refusals are the report.
 
-**One failure mode worth recognising, and the two causes need different commands.** If a
-launch reports `isolated <backend> home already exists but is not recorded in this
-orchestration's metadata`, a previous run created the directory and died before recording
-it, or its metadata was lost. The home is never adopted — that would hand a new
-orchestration an earlier run's transcripts — so inspect it and then remove it. Which
-command works depends on which cause it was, and the difference is not cosmetic:
+**An orphaned home, and the two causes need different commands.** A backend directory that
+a previous run created and died before recording, or whose metadata was lost, is adopted by
+the next launch of the same orchestration id (each lineage home inside it is still created
+exclusively by its cold launch). To remove it instead, which command works depends on which
+cause it was, and the difference is not cosmetic:
 
 - **the metadata is gone** (the checkout was removed, or the orchestration directory
   was): the entry is `refused:unverifiable_owner`, and `--allow-unverifiable --delete`
@@ -1079,47 +1072,15 @@ Invoking `record-agent-run` twice with the **same `agent_run_id`** raises `Value
 **Recovery procedure**
 
 1. Number a new `agent_run_id` with `python3 tools/new_agent_run_id.py`. (The project allow list stopped pre-approving this command and `python3 tools/orchestration_runtime.py …` in issue #444 — the grants served the retired orchestration agent — so an interactive session asks once for each.)
-2. Newly reserve `ir_id` / `pipeline_id` with `python3 tools/orchestration_runtime.py reserve-phase-root --repo-root . --orchestration-id <oid> --node-key <node_key> --step <compile|generate> --reserved-id <new_id> --reserved-by-agent-run-id <new_arid>`, adding `--target <target_id>` for `--step generate` (a pipeline is reserved for one target; it is refused for `compile`) (when the old `agent_run_id` already reserved, confirm with the operator whether the reservation can be reused).
+2. Newly reserve `ir_id` / `pipeline_id` with `python3 tools/orchestration_runtime.py reserve-phase-root --repo-root . --orchestration-id <oid> --node-key <node_key> --step <compile|generate> --reserved-id <new_id> --reserved-by-agent-run-id <new_arid>`, adding `--target <target_id>` for `--step generate` (a pipeline is reserved for one target; a `compile` output is target-free) (when the old `agent_run_id` already reserved, confirm with the operator whether the reservation can be reused).
 3. Re-run the legitimate sequence `record-launch` → leaf launch → `finalize-child` (the single call that performs `deactivate-child` → `record-reply` → `record-agent-run`) with the new `agent_run_id`. Under conductor orchestration this sequence is normally re-driven by `--resume` (§3-1); the manual subcommand path below remains available for edge recovery.
 4. To terminate the orchestration itself, call `set-status --status fail_closed --reason-code <code> --reason-detail <detail>`. Because `set-status` automatically terminates the orchestration row of `agent_runs.jsonl` in-place, do not update it manually.
 
 The detailed CLI conventions use [docs/CLI_REFERENCE.md#record-agent-run](CLI_REFERENCE.md#record-agent-run) as the canonical source.
 
-## Substep timeout recovery {#substep-timeout-recovery}
-
-**Scope**: manual finalization of a leaf that produced no terminal entry **while the driver is still alive** — an orchestration driven by hand, or a leaf the conductor could not finalize itself. A leaf that merely **wedges** under a live conductor no longer needs this procedure: the conductor enforces a hard per-leaf cap (`SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS`, default 7200s), kills the leaf's process group, emits `leaf_timeout`, and terminalizes the attempt in band through the ordinary `finalize-child` chain (canonical: `docs/ORCHESTRATION.md` "leaf transient retry"). A leaf orphaned because the **driver itself died** is a different case again — see §[Incomplete launch recovery](#launch-incomplete-recovery) and the claim rule in §3-1, which recover it through `--resume` rather than by hand.
-
-When a leaf is cut off midway by an API stream idle timeout and left no terminal entry, the operator calls `record-timeout` to finalize it. **An ad-hoc script must not be written to `workspace/tmp/`.**
-
-**Premise**: before calling `record-timeout`, always run the following in order.
-
-1. `deactivate-child --child-run-id <arid>`: once you have confirmed the leaf process is gone, release the active marker.
-2. `record-timeout --agent-run-id <arid> --reason ...`: record the terminal entry.
-
-(A `record-child-return` step with a per-launch `--return-token` used to come first; [issue #447](https://github.com/seiya/spec2science/issues/447) (D2) retired it, and the subcommand no longer exists.)
-
-```bash
-python3 tools/orchestration_runtime.py deactivate-child \
-  --repo-root . \
-  --orchestration-id <orchestration_id> \
-  --child-run-id <child_agent_run_id>
-
-python3 tools/orchestration_runtime.py record-timeout \
-  --repo-root . \
-  --orchestration-id <orchestration_id> \
-  --agent-run-id <child_agent_run_id> \
-  --reason "API stream idle timeout after 600s"
-```
-
-Then call `set-status --status fail_closed --reason-code <code> --reason-detail <detail>` to terminate the orchestration itself.
-
-### Escape hatch for a wedged child
-
-`deactivate-child` verifies nothing about the leaf; it refuses only when the Claude sequential pointer `active_child_agent_run_id.txt` names a different child, and then the per-arid marker stays and `record-timeout` refuses too. Only in that case, the marker check can be bypassed with `record-timeout --force-reason "<operator override content>"`. When the timed-out child is itself a Claude child, the forced timeout row removes the Claude sequential pointer too, whichever child it names, so the other child loses its sequential-launch guard; check that child's state before forcing. Prioritize the normal flow, and use it as a last resort.
-
 ## Incomplete launch recovery (dangling active_child window) {#launch-incomplete-recovery}
 
-Distinct from the substep-timeout case above (where the conductor is still alive and finalizes the child itself): here the **conductor process itself dies** while a leaf launch is mid-flight. `record-launch` opened the active_child window — the backend-neutral per-arid marker `active_children/<arid>.txt` is written for **all** backends (Claude additionally writes the sequential pointer `active_child_agent_run_id.txt`) — but the leaf was interrupted before returning, so there is no terminal `agent_runs.jsonl` row for `<arid>`.
+Distinct from a leaf that wedges under a live conductor (the conductor kills it at the per-leaf cap, `SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS`, and finalizes it in band): here the **conductor process itself dies** while a leaf launch is mid-flight. `record-launch` opened the active_child window — the backend-neutral per-arid marker `active_children/<arid>.txt` is written for **all** backends (Claude additionally writes the sequential pointer `active_child_agent_run_id.txt`) — but the leaf was interrupted before returning, so there is no terminal `agent_runs.jsonl` row for `<arid>`.
 
 Whether the orchestration is left non-terminal (`running`) depends on how the driver died. `SIGTERM` / `Ctrl-C` are handled and terminalize the run as `cancel` / `driver_interrupted` (§3-1 "Interruption of the driver"), so those cases normally arrive here already terminal — best-effort, though: the terminalization is skipped when the signal lands before `init` commits the orchestration, and a failed `set-status` is swallowed so the interrupt still propagates, either of which also leaves `running`. An unexpected driver exception is handled too, and terminalizes as `fail` / `driver_exception` under the same best-effort guards (§3-1). `SIGKILL`, an OOM kill, or the loss of the host shell cannot be handled and do leave `running` — that is the case this section covers.
 
@@ -1146,7 +1107,7 @@ python3 tools/audit_orchestration.py --orchestration-id <orchestration_id>
 
 `audit_orchestration.py` correlates the dangling leaf's OWN transcript on demand. The conductor pins each leaf's Claude session id to its `agent_run_id`, so the transcript is directly addressable as `<projects-root>/<slug>/<arid>.jsonl` (no host session needed). Which `<projects-root>` is chosen from the launch record `workspace/orchestrations/<orchestration_id>/launches/<agent_run_id>.request.json`, and the tooling resolves it through `tools/operator_private_root.py::claude_leaf_projects_roots`, the canonical resolver every consumer shares ([issue #565](https://github.com/seiya/spec2science/issues/565)): for a claude `workshop leaf` (`leaf_mode: "workshop"` with `workshop_provider: "claude_cli"`, or with no `workshop_provider` key at all — a record from before `026de9d4`, issue #534 step 2 PR-1, when only claude ran a workshop leaf) it is that lineage's private config home, `~/.spec2science/homes/<orchestration_id>/claude/<lineage_id>/config/projects`, where `<lineage_id>` is the record's `workshop_lineage_id` and `<slug>` is the lineage's `tree/` path with `/`, `.` and `_` turned into `-`, and that root alone; for a launch whose record names no workshop it is the operator's `~/.claude/projects`. Issue #63 had made it the orchestration's PRIVATE home, recorded as `orchestration_meta.json#claude_workflow_home`; Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)) deleted the private home with the agentic leaf, that key is no longer written, and a transcript under one from a pre-Z4 run is not reachable from the diagnostician (the files remain, for `tools/prune_workflow_homes.py`). The operator's `~/.claude/projects` is where a pure `claude` leaf's transcript landed (that CLI was launched with no `CLAUDE_CONFIG_DIR`; no pure leaf launches since [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b), and where a run recorded before issue #63 also left its transcript. A codex `workshop leaf` writes no claude transcript — its rollout is under `~/.spec2science/homes/<orchestration_id>/codex/<lineage_id>/config/sessions/` — and an HTTP workshop lineage has no CLI transcript at all — its host loop's turns are `workspace/orchestrations/<orchestration_id>/workshop/<lineage_id>/loop_turns.jsonl`; the audit reads neither, and its miss reason names the place, so read it there by hand. The durable homes tree under §"The operator-private root (`~/.spec2science`)" holds pre-Z4 agentic transcripts, the codex homes and the `workshop leaf` lineage homes. Where a claude transcript is found, it gives the child's last activity, dead-air interval, and final API error — distinguishing a retryable 529 from other failures; the audit degrades to the in-repo facts when it finds none (a `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` the resolver cannot expand included: the miss names the variable), and its miss reason names the root it searched (the `searched_projects_root` key under `--format json`) or says why the launch record selected none. A run from before 2026-06-21 (`d2728d6a`) may carry a `launch_incident.runtime.*.json` snapshot of the dangling launch beside its `orchestration_meta.json`; the audit no longer renders it ([issue #464](https://github.com/seiya/spec2science/issues/464)), so read that JSON directly. The transcript line names the projects root the hit came from — ``(matched via `session_id` under `<root>`)``. A hit under a lineage home, `~/.spec2science/homes/<orchestration_id>/claude/<lineage_id>/config/projects`, names a claude `workshop leaf` decisively, because only a workshop lineage is prepared one (before Z4, [issue #171](https://github.com/seiya/spec2science/issues/171), a hit under `~/.spec2science/homes/<orchestration_id>/claude/projects` named an agentic leaf the same way — issue #63). A hit under the operator's `~/.claude/projects` is AMBIGUOUS between two cases — a pure CLAUDE-CLI leaf of a run before PR-J4-b, which was prepared no private home at all and so launched with no `CLAUDE_CONFIG_DIR` (a pure leaf on an HTTP provider launched no CLI and wrote no transcript anywhere, so it never produces a hit at all), and an agentic run recorded before issue #63. Which of those it is comes from the launch record — `workspace/orchestrations/<orchestration_id>/launches/<agent_run_id>.request.json`, where `leaf_mode: "pure"` settles it — and NOT from `orchestration_meta.json#claude_workflow_home`, which a pre-Z4 run set as soon as any agentic Claude leaf launched and which is no longer written. The root is also a prefix of the transcript path printed beside it, so what it adds to the RENDERED line is that reading rather than new information; what is new in the record is `match_method` itself and, under `--format json`, the `matched_projects_root` key.
 
-Recovery is the normal `python3 tools/run_workflow.py --resume --orchestration-id <orchestration_id>` (§3-1). Resume is phase-granular, not substep-granular: a phase certified under the current key is skipped, and the phase the dangling leaf belonged to re-runs from its first substep (`run_phase`, `tools/workflow_conductor.py`), so the substeps it had completed run again: its LLM substeps are launched and billed again, and its deterministic ones (a gate, `Validate.execute`'s run of the binary) re-run with no leaf — at a batch-scheduler site `Validate.execute` submits a new job, which waits in the queue again (§3-0). The reconciliations below run on any `--resume` whose exclusive claim is free (§3-1) — the prior status is archived to `resumed_from_status`, the status is reset to `running`, and the reconciliations follow in the same invocation. **The orchestration does not have to be terminal first**, and there is no verdict that makes it manual: the claim is the whole test.
+Recovery is the normal `python3 tools/run_workflow.py --resume --orchestration-id <orchestration_id>` (§3-1). A child released by hand with `deactivate-child` and never finalized is recovered the same way: `--resume` prunes it. Resume is phase-granular, not substep-granular: a phase certified under the current key is skipped, and the phase the dangling leaf belonged to re-runs from its first substep (`run_phase`, `tools/workflow_conductor.py`), so the substeps it had completed run again: its LLM substeps are launched and billed again, and its deterministic ones (a gate, `Validate.execute`'s run of the binary) re-run with no leaf — at a batch-scheduler site `Validate.execute` submits a new job, which waits in the queue again (§3-0). The reconciliations below run on any `--resume` whose exclusive claim is free (§3-1) — the prior status is archived to `resumed_from_status`, the status is reset to `running`, and the reconciliations follow in the same invocation. **The orchestration does not have to be terminal first**, and there is no verdict that makes it manual: the claim is the whole test.
 
 **No manual terminalization is needed first.** Before issue #177 a `running` orchestration whose driver had crashed had to be pushed to a terminal status by hand (`set-status --status fail --reason-code driver_crashed`) before `--resume` would touch it, because the resume path refused a non-terminal target it could not prove dead. It no longer refuses: the exclusive claim is free, so nothing is driving the run, so `--resume` resets it and reconciles directly. Terminalizing by hand still works and is still the honest record if you want one, but it is no longer a step in the recovery.
 

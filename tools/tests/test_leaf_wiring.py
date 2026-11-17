@@ -27,10 +27,6 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
-# Trust the persisted dependency-readiness booleans _mark_dependencies_ready injects, so a
-# record_launch test does not need a real deps.yaml on disk (mirrors test_orchestration_runtime).
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
-
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
@@ -223,7 +219,10 @@ def _workshop_request(substep: str = "generate", **overrides) -> dict[str, objec
 def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001") -> None:
     # What a real launch also has (issue #284): the target profile its pipeline names, in the
     # repository `record_launch` loads it from, and the target recorded on the orchestration.
-    from tools.tests.orchestration_fixtures import record_orchestration_target
+    from tools.tests.orchestration_fixtures import (
+        make_dependencies_ready,
+        record_orchestration_target,
+    )
     from tools.tests.target_fixtures import install_target_profile
     install_target_profile(repo_root)
     record_orchestration_target(repo_root, orchestration_id)
@@ -243,6 +242,9 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
         },
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # The gate recomputes readiness live and reads none of the booleans above (issue #643
+    # removed the persisted-boolean fallback): give the orchestration a recomputable node.
+    make_dependencies_ready(repo_root, orchestration_id)
 
 
 def _spawn_response(session_id: str) -> dict[str, object]:
@@ -2371,7 +2373,6 @@ class PureRenderTests(unittest.TestCase):
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
-        "_require_yaml",                     # returns the yaml MODULE (the caller emits the text)
         "_exemplar_prompt_fragments",        # resolves the request language's BACKEND module
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH

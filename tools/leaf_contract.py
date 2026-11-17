@@ -308,8 +308,8 @@ HTTP_READER_TOOL_SURFACE_TEXT = (
 #: The lineage-home directory of each provider that runs a workshop leaf, keyed by PROVIDER
 #: (issue #534 PR-J3-b): the two CLIs keep their backend tokens, the two HTTP providers share
 #: one transport and one directory, `http` (`workshop_tree.LINEAGE_BACKENDS`). The one place the
-#: provider-to-dirname mapping lives: the conductor's `_workshop_backend`, `record_launch`'s
-#: workshop block and the launch-record audit all read it.
+#: provider-to-dirname mapping lives: the conductor's `_workshop_backend` and `record_launch`'s
+#: workshop block read it.
 WORKSHOP_LINEAGE_BACKENDS: dict[str, str] = {
     "claude_cli": "claude",
     "codex_cli": "codex",

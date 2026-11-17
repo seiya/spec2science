@@ -385,21 +385,20 @@ class RunWorkflowTests(unittest.TestCase):
             "status": "fail", "can_launch_step_agents": False,
             "can_launch_substep_agents": False,
             "checks": [
-                {"name": "claude_version_available", "pass": True, "detail": "2.1.294"},
+                {"name": "sandbox_bwrap_available", "pass": True, "detail": "bwrap 0.11"},
                 {"name": "claude_global_config_env_absent", "pass": False,
                  "detail": "remove the `env` key (ANTHROPIC_MODEL) from /h/.claude.json\n"
                            "the CLI's global config is not a settings file"},
-                {"name": "claude_restricted_flag_available", "pass": False,
-                 "detail": "`--help` names no `--restricted` option\nUsage: claude\n  --other"},
+                {"name": "claude_prompt_stdin", "pass": False,
+                 "detail": "error: unknown option '-p'\nUsage: claude\n  --other"},
                 {"name": "sandbox_bwrap_exec", "pass": None, "detail": "skipped"},
             ]})
         self.assertFalse(ok)
         self.assertIn("claude_global_config_env_absent: remove the `env` key "
                       "(ANTHROPIC_MODEL) from /h/.claude.json", detail)
-        self.assertIn("claude_restricted_flag_available: `--help` names no `--restricted` "
-                      "option", detail)
+        self.assertIn("claude_prompt_stdin: error: unknown option '-p'", detail)
         self.assertNotIn("Usage", detail)          # first detail line only
-        self.assertNotIn("claude_version_available", detail)
+        self.assertNotIn("sandbox_bwrap_available", detail)
         self.assertNotIn("sandbox_bwrap_exec", detail)
         # The failing checks come BEFORE the status fields (the in-run line is cut at 240).
         self.assertLess(detail.index("claude_global_config_env_absent"),
@@ -5301,7 +5300,6 @@ class DependencyClosureTests(unittest.TestCase):
                     repo_root, "spec/problem/a")
             self.assertEqual(ordered, [])
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
-            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
 
     @staticmethod
     def _add_problems(repo_root: Path, spec_ref: str, members: list[str]) -> None:
@@ -9570,18 +9568,6 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(args[args.index("--llm-config-defaults-model") + 1], "opus")
             # ...and the top-level probe gets the same command.
             self.assertEqual(args[args.index("--agent-command") + 1], "mywrap --x")
-
-    def test_preflight_is_told_which_snapshot_to_probe(self) -> None:
-        """Preflight is a subprocess that reloads the file; without the hash, an edit between
-        the load and the probe certifies commands the conductor will never launch."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            _, kw, _, _ = self._run(
-                repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"], oid="orch_snap")
-            args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
-            self.assertEqual(args[args.index("--llm-config-sha256") + 1],
-                             kw["llm_config"].sha256)
 
     def test_a_file_that_declares_its_own_values_sends_those(self) -> None:
         """The resolved defaults are sent unconditionally: re-applying a value the file already

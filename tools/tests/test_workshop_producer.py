@@ -2379,5 +2379,21 @@ class StaleCredentialRelaunchTests(_Base):
         self.assertEqual(self.named("leaf_stale_credential_relaunch_declined"), [])
 
 
+class LocateLineageTests(unittest.TestCase):
+    """`_locate_workshop_lineage` answers None — a cold launch, whose own failure is the named
+    `workshop_lineage_setup_failed` — when the home cannot be prepared. Issue #643 U12 removed
+    the re-wrap of an `OSError` into a `ValueError`, so the method catches both itself; an
+    escaping `OSError` would end the run as a conductor error instead."""
+
+    def test_a_home_that_cannot_be_prepared_is_not_found(self) -> None:
+        for exc in (OSError(13, "Permission denied"), ValueError("malformed home")):
+            with self.subTest(exc=type(exc).__name__):
+                def prepare(entry, lineage_id, *, resume, exc=exc):
+                    raise exc
+                fake = SimpleNamespace(_prepare_workshop_home=prepare)
+                self.assertIsNone(
+                    wc.Conductor._locate_workshop_lineage(fake, object(), "lin_x"))
+
+
 if __name__ == "__main__":
     unittest.main()

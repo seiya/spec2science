@@ -6208,10 +6208,7 @@ class LeafChildEnvTest(unittest.TestCase):
         bwrap profile's `--setenv` alone, so that the home the leaf reads is the home
         whose settings were SHA-pinned. A host copy must not create a second spelling.
 
-        WHAT THIS PINS, precisely: that `leaf_env_from` omits the two names. It does NOT
-        pin the `env.pop` loop in `_child_env` — measured, that loop can be deleted and
-        this test still passes, because the host copy never survives the filter to begin
-        with. The sibling below is the one that pins the pop."""
+        WHAT THIS PINS, precisely: that `leaf_env_from` omits the two names."""
         ort = wc_runtime
         for backend in ("claude", "codex"):
             with self.subTest(backend=backend):
@@ -6222,32 +6219,6 @@ class LeafChildEnvTest(unittest.TestCase):
                          "CODEX_HOME": "/host/.codex", "PATH": "/host/bin"})
                 env = c._child_env("child-1")
                 self.assertEqual(set(env) & set(ort._BACKEND_HOME_ENV_VARS), set())
-
-    def test_the_pop_is_what_keeps_a_declared_backend_home_out(self) -> None:
-        """The one path that puts a backend home back into the dict after the filter.
-
-        `_child_env`'s HTTP branch re-adds whatever name the entry's `api_key_env`
-        declares. An entry declaring `CODEX_HOME` therefore reintroduces a backend home
-        AFTER `leaf_env_from` removed it, and the `env.pop` loop is the only thing that
-        takes it out again — so this is the fixture under which deleting that loop fails.
-        Written because review measured the loop as unreachable by every existing test
-        and the comment above it claimed it was doing the enforcing."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        path = Path(d) / "llm.yaml"
-        path.write_text(_workshop_yaml(
-            "defaults:\n  provider: claude_cli\n  model: opus\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: CODEX_HOME\n"
-            "        model: local-coder\n"), encoding="utf-8")
-        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
-                         orchestration_agent_run_id="ORCH",
-                         llm_config=lc.load_llm_config(path),
-                         env={"CODEX_HOME": "/host/.codex", "PATH": "/b"})
-        env = c._child_env("child-1", c.entry_for("generate", "generate"))
-        self.assertNotIn("CODEX_HOME", env)
 
     def test_child_env_drops_spec2science_home_despite_the_prefix(self) -> None:
         """`SPEC2SCIENCE_HOME` is inside the allowed prefix and still must not travel: it is
@@ -6622,8 +6593,8 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_leaf_timeout_is_terminal_not_retried(self) -> None:
         """A leaf the conductor killed at the cap is terminalized IN BAND — the ordinary
-        finalize_child chain closes the attempt (the `record-timeout` CLI stays what it always
-        was: the operator's procedure for a conductor that DIED). And it is not retried: a
+        finalize_child chain closes the attempt (a conductor that DIED is recovered by
+        `--resume`). And it is not retried: a
         re-launch would stake another full cap of wall-clock on a leaf that already wedged."""
         # Exactly what `_timed_out_result` hands back: partial output, the conductor's marker,
         # and — the load-bearing part — `timed_out=True`.
@@ -11027,7 +10998,7 @@ class LeafSpawnTest(unittest.TestCase):
         / `config.toml` (codex) mapped into it — with the lineage home in a scratch directory
         OUTSIDE `repo`, as production's `~/.spec2science/homes` is. It is the one profile any leaf
         runs under since issue #534 PR-J4-b; the read-only profile (`readonly: true`, no
-        `leaf_mode`) these fixtures wrote until then is refused by name
+        `leaf_mode`) these fixtures wrote until then is refused
         (`test_leaf_model.SpawnLeafRefusesTheRetiredReadonlyProfileTests`). The rows
         that use it are about PROCESS handling, which is the same under either."""
         outside = Path(tempfile.mkdtemp())
@@ -11194,22 +11165,22 @@ class LeafSpawnTest(unittest.TestCase):
                 with self.assertRaises(TypeError):
                     self._c(repo_root=repo, env={}).spawn_leaf("P", {"HOME": "/h"}, entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 self.assertNotIn("argv", captured)
-                # structurally invalid profile (missing repo_root/tmp_dir) →
+                # a profile the renderer refuses →
                 # SandboxEnforcementError (so conduct terminalizes fail_closed), not a
                 # bare ValueError bubbling up as a generic conductor error.
-                # An ADMISSIBLE lineage profile with the two render-required keys removed, so
-                # it passes the admission check and dies in `render_bwrap_command` — the fold
-                # this arm is about. (A bare `{"read_roots": []}` is refused by name at
-                # admission since issue #534 PR-J4-b and would observe that refusal instead.)
+                # An ADMISSIBLE lineage profile with a malformed read-only file mapping (which
+                # the admission does not read for claude), so it passes the admission check
+                # and dies in `render_bwrap_command` — the fold this arm is about. (A bare
+                # `{"read_roots": []}` is refused at admission and would observe that refusal
+                # instead.)
                 self._write_lineage_profile(repo, "BAD")
                 bad = json.loads((prof_dir / "BAD.json").read_text(encoding="utf-8"))
-                del bad["repo_root"], bad["tmp_dir"]
+                bad["runtime_ro_bind_mappings"] = [["only-a-source"]]
                 (prof_dir / "BAD.json").write_text(json.dumps(bad), encoding="utf-8")
                 with self.assertRaises(wc.SandboxEnforcementError) as bad_ctx:
                     self._c(repo_root=repo, env={}).spawn_leaf(
                         "P", {"HOME": "/h"}, session_id="BAD", child_arid="BAD", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"), **_leaf_kind("generate", "generate"))
                 self.assertIn("is invalid", str(bad_ctx.exception))
-                self.assertNotIn("leaf_profile_not_a_workshop_lineage", str(bad_ctx.exception))
                 self.assertNotIn("argv", captured)
 
     def test_spawn_leaf_missing_bwrap_binary_fails_closed(self) -> None:
@@ -24728,8 +24699,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_the_build_diagnostician_records_its_surface(self) -> None:
         """`build`'s PHASE runs in-process, its diagnostician does not: `build.diagnose` records
         the reading surface like every other phase's — the five file tools on an HTTP
-        `defaults` (which the pre_judge audit requires, `_http_workshop_record_violations`),
-        the reader tool list on a claude one. Round 2 found `_is_deterministic_substep`
+        `defaults`, the reader tool list on a claude one. Round 2 found `_is_deterministic_substep`
         answering True for `(build, diagnose)`, so the deterministic-first order of round 1
         recorded nothing there and the next Validate failed the run on the diagnostician's
         own record."""

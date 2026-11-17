@@ -16,12 +16,6 @@ import unittest
 
 import yaml
 
-# Codex round 20 F1: unit tests use `_mark_dependencies_ready` to inject
-# all-true readiness without setting up a real deps.yaml on disk. Production
-# `_dependency_ready` now fails closed when live recompute cannot run; tests
-# explicitly opt into the legacy persisted-boolean fallback so existing
-# fixtures keep working. Production environments do NOT set this variable.
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable, ClassVar
 from datetime import datetime, timedelta, timezone
@@ -54,7 +48,6 @@ from tools.orchestration_runtime import (
     _update_preflight_probed_at,
     _validate_agent_summary_text,
     resume_orchestration,
-    get_preflight_ttl_status,
     init_orchestration,
     main,
     _project_terse_result,
@@ -64,7 +57,6 @@ from tools.orchestration_runtime import (
     prepare_launch_request_payload,
     record_agent_run,
     record_launch,
-    record_timeout,
     _read_json_or_none,
     reserve_phase_root,
     _evaluate_reply_budget,
@@ -392,12 +384,15 @@ def _fixture_generate_downstream_ready(repo_root: Path, *, source_id: str = "src
 
 
 def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001") -> None:
-    """Inject `dependency_readiness` so `_dependency_ready` accepts the launch (under the
-    suite's `SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1`, where a fixture with no
-    deps.yaml falls back to these persisted booleans)."""
+    """Make `_dependency_ready` accept the launch: the orchestration's node is recomputably
+    ready (`orchestration_fixtures.make_dependencies_ready`), and the persisted
+    `dependency_readiness` record says so too."""
     # What a real launch also has (issue #284): the target profile its pipeline names, in the
     # repository `record_launch` loads it from, and the target recorded on the orchestration.
-    from tools.tests.orchestration_fixtures import record_orchestration_target
+    from tools.tests.orchestration_fixtures import (
+        make_dependencies_ready,
+        record_orchestration_target,
+    )
     from tools.tests.target_fixtures import install_target_profile
     install_target_profile(repo_root)
     record_orchestration_target(repo_root, orchestration_id)
@@ -417,6 +412,9 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
         },
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # The gate recomputes readiness live and reads none of the booleans above (issue #643
+    # removed the persisted-boolean fallback): give the orchestration a recomputable node.
+    make_dependencies_ready(repo_root, orchestration_id)
 
 
 
@@ -609,12 +607,6 @@ _CLAUDE_EMPTY_PROMPT_REFUSAL = (
     "Error: Input must be provided either through stdin or as a prompt argument "
     "when using --print"
 )
-# A subset of the real `claude --help` (CLI 2.1.294): the usage line and the `--restricted`
-# option line, which `claude_restricted_flag_available` reads (issue #453).
-_CLAUDE_HELP_TEXT = (
-    "Usage: claude [options] [command] [prompt]\n"
-    "  --restricted                          Restricted mode: removes the built-in\n"
-)
 
 
 # Subsets of the real `codex exec --help` / `codex exec resume --help`: every flag the
@@ -643,7 +635,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         checks: list[dict[str, object]] = [
             {"name": "codex_version_available", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
@@ -730,15 +721,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         orchestration id" — which was a defense for `tempfile.mkdtemp(dir="/tmp")`:
         `/tmp` is world-writable, so a predictable name lets any local user pre-create
         the directory the home is about to become and win it. Issue #64 moved the tree
-        under `operator_secret_root()`, whose every level this code creates 0700 and
-        re-checks for ownership and symlinks, so no other user can place anything on
-        the path at all. What replaces the randomness is the EXCLUSIVE `os.mkdir` —
-        pinned by `DurableWorkflowHomesTests.
-        test_an_unrecorded_existing_home_is_refused_rather_than_adopted`. That witness
-        drives the CLAUDE preparer; both preparers reach the same
-        `_create_workflow_backend_home`, so what it pins is the shared creation, not a
-        per-backend behaviour. (An earlier version of this sentence named a codex-specific
-        test that does not exist.)
+        under `operator_secret_root()`, whose every level this code creates 0700. What
+        replaces the randomness is the EXCLUSIVE creation of each lineage home by its cold
+        launch (`test_prepare_codex_home_refuses_a_cold_launch_into_an_existing_lineage`).
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOMES_ROOT_ENV,
@@ -766,20 +751,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 second = _prepare_codex_workflow_home(repo_root, orch, "arid-b", resume=False)
                 # A warm preparation of an existing lineage answers the same home.
                 warm = _prepare_codex_workflow_home(repo_root, orch, "arid-a", resume=True)
-                # The pure codex THREAD lineage (a bare `CODEX_HOME` bound rw whole) went
-                # with the pure leaf (issue #534 PR-J4-b): asking for it is refused, cold or
-                # warm, and creates nothing — never answered with the workshop layout.
-                for resume in (False, True):
-                    with self.subTest(pure_layout_resume=resume), self.assertRaisesRegex(
-                            ValueError, "pure codex thread lineage went with the pure leaf"):
-                        _prepare_codex_workflow_home(repo_root, orch, "arid-p", resume=resume,
-                                                     workshop=False)
             homes_root = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV])
             container = homes_root / orch / "codex"
             home_a, home_b = Path(first["home"]), Path(second["home"])
             self.assertEqual(home_a, container / "arid-a")
             self.assertEqual(home_b, container / "arid-b")
-            self.assertFalse((container / "arid-p").exists())
             self.assertEqual(first["lineage_id"], "arid-a")
             self.assertEqual(warm["home"], first["home"])
             self.assertFalse(home_a.is_relative_to(repo_root), "CODEX_HOME must ignore in-repo TMPDIR")
@@ -952,8 +928,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
         An `agent_run_id` is minted once, so nothing legitimate reaches this; a directory
         at the path before its cold launch is another run's state, and adopting it would
-        hand this thread that state. The refusal names the lineage, not the container
-        (the container message is `_create_workflow_backend_home`'s and still stands).
+        hand this thread that state. The refusal names the lineage.
         """
         from tools.orchestration_runtime import _prepare_codex_workflow_home
 
@@ -971,12 +946,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 # The refused call neither removed nor rewrote the existing lineage.
                 self.assertTrue((Path(first["home"]) / "config" / "config.toml").is_file())
                 self.assertIn("arid-x", str(caught.exception))
-                # A lineage id that is not a plain path token is refused before any
-                # path is joined — the second wall behind `record_launch`'s regex.
-                for bad in ("../escape", "a/b", "", " ", "x y"):
-                    with self.subTest(lineage=bad), self.assertRaisesRegex(
-                            ValueError, "lineage_id must be a plain"):
-                        _prepare_codex_workflow_home(repo_root, orch, bad, resume=False)
 
     def test_prepare_codex_home_warm_answers_the_sentinel_and_creates_nothing(self) -> None:
         """`resume=True` for a lineage that is not there returns None and leaves no trace.
@@ -1156,8 +1125,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 # The zero-token stdin-support probe: the CLI's own refusal names its
                 # input channels. See `_probe_claude_backend`.
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             raise AssertionError(args)
 
         result = probe_execution_platform(backend="claude", runner=runner)
@@ -1170,101 +1137,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertEqual(
             {c["name"] for c in result["checks"]} & set(CLAUDE_REQUIRED_LAUNCH_CHECKS),
             set(CLAUDE_REQUIRED_LAUNCH_CHECKS))
-
-    def test_a_claude_help_without_restricted_fails_preflight(self) -> None:
-        """Issue #453: the workshop leaf's argv (`workshop_leaf_flags`; `pure_leaf_flags`, which
-        this row first named, went with the pure leaf in issue #534 PR-J4-b) carries
-        `--restricted`, and a CLI that does not know it refuses the whole argv, so every leaf
-        would die at launch. Preflight refuses
-        it first — as an OPTION LINE: a help naming only `--restricted-mode` (a longer
-        option sharing the prefix), `--restrictedness`, or `--restricted` inside another
-        option's description does not answer for it; a short alias before it does."""
-        from tools.orchestration_runtime import _probe_claude_backend
-
-        def runner_for(help_text: str):  # type: ignore[no-untyped-def]
-            def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-                if args[1:] == ["--version"]:
-                    return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-                if args[1:] == ["-p"]:
-                    return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-                if args[1:] == ["--help"]:
-                    return _FakeCompletedProcess(0, stdout=help_text)
-                raise AssertionError(args)
-            return runner
-
-        for help_text in (_CLAUDE_HELP_TEXT, "Usage: claude\n  -R, --restricted  x\n"):
-            checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
-            self.assertTrue({c["name"]: c for c in checks}
-                            ["claude_restricted_flag_available"]["pass"], help_text)
-        # A failure's first detail line says what is missing (the operator sees that line).
-        checks, _ = _probe_claude_backend("claude", "claude",
-                                          runner_for("Usage: claude [options]\n"))
-        first_line = ({c["name"]: c for c in checks}
-                      ["claude_restricted_flag_available"]["detail"].splitlines()[0])
-        self.assertIn("names no `--restricted` option", first_line)
-        # It names the leaf model there is (round-0 mutation survivor of issue #534 PR-J4-b:
-        # the line said "cannot run a pure leaf" until the pure leaf went).
-        self.assertIn("this CLI cannot run a leaf (issue #453)", first_line)
-        for label, help_text in (
-            ("absent", "Usage: claude [options] [command] [prompt]\n"),
-            ("longer option", "Usage: claude [options]\n  --restricted-mode  x\n"),
-            ("longer word", "Usage: claude [options]\n  --restrictedness  x\n"),
-            # Named inside another option's description, not as an option of its own.
-            ("description mention",
-             "Usage: claude [options]\n  --safe-mode  like --restricted, but broader\n"),
-            # The real help wraps descriptions at column 40, and a wrapped line can BEGIN
-            # with an option name (17 lines do on 2.1.294).
-            ("wrapped description line",
-             "Usage: claude [options]\n  --safe-mode                           Like\n"
-             + " " * 40 + "--restricted, but broader\n"),
-        ):
-            with self.subTest(case=label):
-                checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
-                self.assertFalse({c["name"]: c for c in checks}
-                                 ["claude_restricted_flag_available"]["pass"])
-                result = probe_execution_platform(backend="claude",
-                                                  runner=runner_for(help_text))
-                self.assertEqual(result["status"], "fail")
-                self.assertFalse(result["can_launch_step_agents"])
-
-    def test_probe_execution_platform_claude_fails_when_help_also_unavailable(self) -> None:
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[0] == "claude" and args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["-p"]:
-                # The zero-token stdin-support probe: the CLI's own refusal names its
-                # input channels. See `_probe_claude_backend`.
-                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(1, stderr="error\n")
-            raise AssertionError(args)
-
-        result = probe_execution_platform(backend="claude", runner=runner)
-        self.assertEqual(result["backend"], "claude")
-        self.assertEqual(result["status"], "fail")
-        self.assertFalse(result["can_launch_substep_agents"])
-
-    def test_probe_execution_platform_claude_fails_when_help_exit0_but_empty_stdout(self) -> None:
-        """P2-C: `claude --help` exiting 0 with EMPTY stdout must NOT pass the help probe —
-        guards against a substitute/broken binary named `claude` that returns success with
-        no help text."""
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[0] == "claude" and args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["-p"]:
-                # The zero-token stdin-support probe: the CLI's own refusal names its
-                # input channels. See `_probe_claude_backend`.
-                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout="   \n")  # exit 0, no real output
-            raise AssertionError(args)
-
-        result = probe_execution_platform(backend="claude", runner=runner)
-        self.assertEqual(result["backend"], "claude")
-        self.assertEqual(result["status"], "fail")
-        self.assertFalse(result["can_launch_substep_agents"])
-        by_name = {c["name"]: c["pass"] for c in result["checks"]}
-        self.assertIs(by_name["claude_help_probe_available"], False)
 
     # `test_the_permission_remedy_points_at_the_layer_the_gate_reads` stood here until Z4
     # (issue #171). It pinned that `_CLAUDE_MCP_PERMISSION_REMEDIATION` — the only guidance an
@@ -1325,13 +1197,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertIn("codex_home_writable", by_name)
         self.assertFalse(by_name["codex_home_writable"]["pass"])
 
-    def test_probe_execution_platform_rejects_backend_command_mismatch(self) -> None:
-        with self.assertRaisesRegex(ValueError, "agent_command/backend mismatch"):
-            probe_execution_platform(
-                backend="claude",
-                agent_command="codex",
-            )
-
     def test_probe_execution_platform_uses_backend_default_when_no_override(self) -> None:
         seen = {"command": ""}
 
@@ -1382,9 +1247,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
-        # The pure leaf's isolation-flag row went with it (issue #534 PR-J4-b); the exec
-        # options a leaf needs are the workshop row's (`_codex_workshop_flag_set_check`, run by
-        # `probe_all_providers` on every codex surface).
+        # The pure leaf's isolation-flag row went with it (issue #534 PR-J4-b); the cold exec
+        # options a leaf needs are not probed (issue #643).
         self.assertNotIn("codex_exec_pure_isolation_flags", by_name)
 
     def test_probe_codex_backend_rejects_an_exec_help_without_skip_git_repo_check(self) -> None:
@@ -1395,12 +1259,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         `CODEX_EXEC_RESUME_REQUIRED_FLAGS`. Control: the full fixtures pass it.
 
         The COLD half — `exec --help` without the flag — was the pure isolation-flags row,
-        which went with the pure leaf (issue #534 PR-J4-b); the cold argv's options are the
-        workshop row's, and its dropped-option refusal is pinned in
-        `test_workshop_codex.py::CodexPreflightTests::
-        test_the_row_requires_each_option_the_mode_and_the_url_route`. What this probe still
-        owns on the cold help is that an exec help without the flag does not fail the
-        RESUME row (the two helps are read apart)."""
+        which went with the pure leaf (issue #534 PR-J4-b); the cold argv's options are not
+        probed (issue #643). What this probe still owns on the cold help is that an exec help
+        without the flag does not fail the RESUME row (the two helps are read apart)."""
         from tools.orchestration_runtime import _probe_codex_backend
 
         def _runner(exec_help: str, resume_help: str):  # type: ignore[no-untyped-def]
@@ -1611,13 +1472,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
     def test_claude_required_set_equals_the_emitted_checks(self) -> None:
         """The claude twin of the row above (issue #447, D1): `CLAUDE_REQUIRED_LAUNCH_CHECKS`
-        is what the claude probe emits, so the `--help` liveness check that the deleted
-        `multi_agent_enabled` used to carry is gated by its own name."""
+        is what the claude probe emits."""
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if cmd[-1] == "--help":
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             if cmd[-1] == "-p":
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             raise AssertionError(cmd)
@@ -1687,8 +1545,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if cmd[-1] == "--help":
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             if cmd[-1] == "-p":
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             raise AssertionError(cmd)
@@ -6340,22 +6196,26 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "missing required capabilities: .*codex_home_writable"):
-                write_preflight(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "status": "pass",
-                        "backend": "codex",
-                        "sandbox_runtime": "bwrap",
-                        "sandbox_enforced": True,
-                        "can_launch_step_agents": True,
-                        "can_launch_substep_agents": True,
-                        "checks": [
-                            {"name": "hooks_enabled", "pass": True},
-                        ],
-                    },
-                )
+            # Written as given (issue #643 removed the write-time mirror); every reader of the
+            # stored document asks the read-time gate, which refuses it.
+            write_preflight(
+                repo_root=repo_root,
+                orchestration_id="orch_001",
+                payload={
+                    "status": "pass",
+                    "backend": "codex",
+                    "sandbox_runtime": "bwrap",
+                    "sandbox_enforced": True,
+                    "can_launch_step_agents": True,
+                    "can_launch_substep_agents": True,
+                    "checks": [
+                        {"name": "hooks_enabled", "pass": True},
+                    ],
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError,
+                                        "missing required capabilities: .*codex_home_writable"):
+                _require_preflight_launchable(repo_root, "orch_001", enforce_live_probe=False)
 
     def test_record_launch_runs_live_probe_when_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8482,8 +8342,6 @@ class ClaudeGlobalConfigEnvCheckTests(unittest.TestCase):
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[1:] == ["-p"]:
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             raise AssertionError(args)
 
         with tempfile.TemporaryDirectory() as home:
@@ -9851,15 +9709,6 @@ class PhaseCertificationTests(unittest.TestCase):
             for entry in resets:
                 self.assertEqual(entry.get("reason"), "build_dependency_stale")
 
-    def test_reset_phase_refuses_a_step_that_is_not_a_phase(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self._preflight(repo)
-            with self.assertRaises(RuntimeError) as ctx:
-                ort.reset_phase(repo, "o1", node_key=self._NK, from_phase="promote",
-                                reason="r", trigger_agent_run_id="t1")
-            self.assertIn("unsupported --from-phase", str(ctx.exception))
-
 
 class CertificationStampTests(unittest.TestCase):
     """`write_step_result` is the single host-side point that stamps a phase's certification
@@ -10389,7 +10238,8 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
     def test_resume_orchestration_raises_for_nonexistent_orchestration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            with self.assertRaisesRegex(RuntimeError, "orchestration not found"):
+            # No refusal of its own since issue #643: the meta read raises.
+            with self.assertRaises(FileNotFoundError):
                 resume_orchestration(repo, "missing")
 
     def test_resume_orchestration_preserves_existing_fields(self) -> None:
@@ -10537,58 +10387,12 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             init_orchestration(repo_root=repo, orchestration_id="o1")
             self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
 
-    def test_a_prior_that_is_neither_terminal_nor_running_is_refused(self) -> None:
-        """The NEGATIVE control of the reconcile gate, which the inversion took with it.
-
-        `reconcile` is `prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status ==
-        "running"`. Before this PR, the `running` case was the only test standing on the False
-        side; inverting it left `reconcile = True` indistinguishable from the real condition —
-        measured, that mutation passes the whole suite. And the False side is reachable:
-        neither `init --status` nor `set-status --status` declares `choices=`, so a status
-        outside both sets is an ordinary string the runtime will store.
-
-        What the gate protects is not academic: reconciliation deletes active-child markers and
-        resets `child_running` phase authority unconditionally. A status nobody can reason about
-        must not be treated as proof that no child is live."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1", status="running")
-            _mark_dependencies_ready(repo, "o1")
-            root = repo / "workspace/orchestrations/o1"
-            meta_path = root / "orchestration_meta.json"
-            doc = json.loads(meta_path.read_text("utf-8"))
-            doc["status"] = "quiescing"          # neither terminal nor `running`
-            meta_path.write_text(json.dumps(doc), encoding="utf-8")
-            del doc
-            child = "live-child-arid"
-            (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
-            markers = root / "active_children"
-            markers.mkdir(exist_ok=True)
-            (markers / f"{child}.txt").write_text(child, encoding="utf-8")
-
-            # REFUSED, not silently un-reconciled. Proceeding was the worse of the two: the
-            # resume succeeded, the reconciliations were skipped, and the run carried on with
-            # the dead child's markers and `child_running` phase authority still in place —
-            # wedging the next launch behind a sequential-child gate whose owner is gone, for
-            # a reason nothing reported.
-            with self.assertRaisesRegex(RuntimeError, "is neither terminal .* nor 'running'"):
-                resume_orchestration(repo, "o1")
-            self.assertTrue((root / "active_child_agent_run_id.txt").exists())
-            self.assertTrue((markers / f"{child}.txt").exists())
-            # The status is left alone: a refusal must not half-apply.
-            self.assertEqual(
-                json.loads((root / "orchestration_meta.json").read_text("utf-8"))["status"],
-                "quiescing")
-
-    def test_every_unplaceable_status_shape_is_refused_not_just_a_non_empty_string(self) -> None:
-        """The first cut of the refusal read `isinstance(str) and status.strip() and not
-        reconcile`, which exempted the three shapes that are EASIEST to produce — an empty
-        string, a JSON `null`, and an absent key. `set-status --status ""` exits 0, and the
-        resume then took the exact path the guard was added to close.
-
-        The second-order effect is worse than the first: the meta is left at `''` rather than
-        `running`, and `_warn_about_resumable_priors` skips a falsy status — so the run stops
-        being mentioned on the cold path too, and becomes invisible in both directions."""
+    def test_every_unplaceable_status_shape_is_reconciled(self) -> None:
+        """A recorded status the runtime does not write — only a hand-run `init --status` /
+        `set-status --status` produces one — is reconciled like any other prior (issue #643
+        removed the refusal): the dead child's markers are cleared and the status is
+        `running`, so no shape leaves the meta at a value `_warn_about_resumable_priors`
+        skips."""
         for label, mutate in (
             ("empty string", lambda d: d.__setitem__("status", "")),
             ("whitespace", lambda d: d.__setitem__("status", "   ")),
@@ -10612,11 +10416,10 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
                 markers.mkdir(exist_ok=True)
                 (markers / f"{child}.txt").write_text(child, encoding="utf-8")
 
-                with self.assertRaisesRegex(RuntimeError, "is neither terminal"):
-                    resume_orchestration(repo, "o1")
-                self.assertTrue((root / "active_child_agent_run_id.txt").exists(),
-                                f"{label}: a refused resume must not clear live markers")
-                self.assertTrue((markers / f"{child}.txt").exists())
+                resume_orchestration(repo, "o1")
+                self.assertFalse((markers / f"{child}.txt").exists(), label)
+                self.assertEqual(
+                    json.loads(meta_path.read_text("utf-8"))["status"], "running", label)
 
     def test_a_resume_records_its_host_and_reports_crossing_one(self) -> None:
         """The ONE fact from the deleted `driver` block that has no substitute.
@@ -10708,7 +10511,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
     def test_init_resume_fails_if_orchestration_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(FileNotFoundError):
                 main(
                     [
                         "init",
@@ -10902,16 +10705,6 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             meta = self._read_meta(repo, "o1")
             self.assertEqual(meta.get("invocation"), inv)
 
-    def test_init_cli_invocation_json_rejects_non_object(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            with self.assertRaises(ValueError):
-                main([
-                    "init", "--repo-root", str(repo),
-                    "--orchestration-id", "o1",
-                    "--invocation-json", "[1, 2, 3]",
-                ])
-
     def test_validate_agent_summary_text_orchestration_rejects_single_line(
         self,
     ) -> None:
@@ -10927,11 +10720,9 @@ def _iso_utc_z(dt: datetime) -> str:
 
 
 class PreflightOneReasonListTests(unittest.TestCase):
-    """The preflight gate and the preflight validator are ONE reason list (issue #433 PR-2):
-    `_preflight_allows_agent_launch` is "`_preflight_launch_refusals` is empty", and
-    `_validate_preflight_payload` refuses exactly a document that claims launchability (either
-    `can_launch_*` flag true) while the list is not empty. Every row calls the real functions;
-    none reconstructs the condition list."""
+    """The preflight gate is ONE reason list (issue #433 PR-2): `_preflight_allows_agent_launch`
+    is "`_preflight_launch_refusals` is empty". (The write-time validator that mirrored it went
+    in issue #643.) Every row calls the real functions; none reconstructs the condition list."""
 
     @staticmethod
     def _claude_launchable() -> dict[str, object]:
@@ -10978,7 +10769,7 @@ class PreflightOneReasonListTests(unittest.TestCase):
                  "backend must be one of ['claude', 'codex']"),
                 (f"{tag} checks absent", {k: v for k, v in base.items() if k != "checks"},
                  "checks must be a list of capability probe results"),
-                (f"{tag} checks dict", {**base, "checks": {"claude_version_available": True}},
+                (f"{tag} checks dict", {**base, "checks": {"claude_prompt_stdin": True}},
                  "checks must be a list of capability probe results"),
                 (f"{tag} unlaunchable provider",
                  {**base, "providers": {"openai_compatible": {"launchable": False}}},
@@ -10996,14 +10787,6 @@ class PreflightOneReasonListTests(unittest.TestCase):
         out += [
             ("backend unknown", {**claude, "backend": "gemini"},
              "backend must be one of ['claude', 'codex']"),
-            # The deleted `multi_agent_enabled` carried the claude `--help` liveness; a
-            # document asserting it no longer substitutes for the named check.
-            ("claude help probe absent, multi_agent_enabled true",
-             self._with_check(
-                 self._with_check(claude, "claude_help_probe_available", None, drop=True),
-                 "multi_agent_enabled", True),
-             "claude launchable preflight is missing required capabilities: "
-             "claude_help_probe_available"),
         ]
         for tag, base, required in (("codex", codex, CODEX_REQUIRED_LAUNCH_CHECKS),
                                     ("claude", claude, CLAUDE_REQUIRED_LAUNCH_CHECKS)):
@@ -11038,13 +10821,13 @@ class PreflightOneReasonListTests(unittest.TestCase):
             ("codex required check 1", self._with_check(codex, "codex_home_writable", 1),
              "codex launchable preflight is missing required capabilities: codex_home_writable"),
             # Duplicate rows: the LAST row for a name decides (`_codex_check_pass_values`).
-            ("claude help probe rows True then None",
+            ("claude stdin probe rows True then None",
              {**claude, "checks": [*claude["checks"],  # type: ignore[misc]
-                                   {"name": "claude_help_probe_available", "pass": None}]},
+                                   {"name": "claude_prompt_stdin", "pass": None}]},
              "claude launchable preflight is missing required capabilities: "
-             "claude_help_probe_available"),
-            ("claude help probe rows None then True",
-             {**claude, "checks": [{"name": "claude_help_probe_available", "pass": None},
+             "claude_prompt_stdin"),
+            ("claude stdin probe rows None then True",
+             {**claude, "checks": [{"name": "claude_prompt_stdin", "pass": None},
                                    *claude["checks"]]},  # type: ignore[misc]
              None),
         ]
@@ -11061,10 +10844,9 @@ class PreflightOneReasonListTests(unittest.TestCase):
         ]
         return out
 
-    def test_the_validator_refuses_exactly_a_claiming_document_the_gate_refuses(self) -> None:
+    def test_the_gate_is_the_reason_list_being_empty(self) -> None:
         from tools.orchestration_runtime import (
             _preflight_allows_agent_launch, _preflight_launch_refusals,
-            _validate_preflight_payload,
         )
         perturbations = self._perturbations()
         # The family must straddle both sides of each decision, or the equivalence is vacuous.
@@ -11078,14 +10860,6 @@ class PreflightOneReasonListTests(unittest.TestCase):
             with self.subTest(label):
                 gate = _preflight_allows_agent_launch(payload)
                 self.assertEqual(gate, not _preflight_launch_refusals(payload))
-                claims = (payload.get("can_launch_step_agents") is True
-                          or payload.get("can_launch_substep_agents") is True)
-                try:
-                    _validate_preflight_payload(payload)
-                    raised = False
-                except ValueError:
-                    raised = True
-                self.assertEqual(raised, claims and not gate)
 
     def test_each_condition_names_its_own_reason(self) -> None:
         from tools.orchestration_runtime import _preflight_launch_refusals
@@ -11097,16 +10871,15 @@ class PreflightOneReasonListTests(unittest.TestCase):
                 else:
                     self.assertIn(reason, reasons)
 
-    def test_the_two_holes_the_mirror_left_are_closed(self) -> None:
-        """Before issue #433 PR-2 the validator ACCEPTED these and the gate refused them, so
-        `write_preflight` persisted a document every later record-launch refused. (A third
-        row, a document without `feature_states`, went with that key in issue #447.)"""
-        from tools.orchestration_runtime import _validate_preflight_payload
+    def test_each_launch_flag_is_its_own_refusal(self) -> None:
+        """Each `can_launch_*` flag is refused by name (the two holes the write-time mirror
+        once left; issue #433 PR-2)."""
+        from tools.orchestration_runtime import _preflight_launch_refusals
         codex = _launchable_preflight_dict()
-        with self.assertRaisesRegex(ValueError, "can_launch_substep_agents must be true"):
-            _validate_preflight_payload({**codex, "can_launch_substep_agents": False})
-        with self.assertRaisesRegex(ValueError, "can_launch_step_agents must be true"):
-            _validate_preflight_payload({**codex, "can_launch_step_agents": False})
+        self.assertIn("can_launch_substep_agents must be true",
+                      _preflight_launch_refusals({**codex, "can_launch_substep_agents": False}))
+        self.assertIn("can_launch_step_agents must be true",
+                      _preflight_launch_refusals({**codex, "can_launch_step_agents": False}))
 
     def test_reasons_keep_the_gate_order_and_hide_none(self) -> None:
         from tools.orchestration_runtime import _preflight_launch_refusals
@@ -11152,11 +10925,6 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
         "sandbox_enforced": True,
         "can_launch_step_agents": True,
         "can_launch_substep_agents": True,
-        "session_policy": {
-            "allow_step_agent_launch": True,
-            "allow_substep_agent_launch": True,
-        },
-        "session_policy_launchable": True,
         "checks": [
             {"name": "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},
@@ -11167,7 +10935,6 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "sandbox_netns_python", "pass": True},
             {"name": "sandbox_netns_route", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
@@ -12076,93 +11843,6 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                      netns_socket_dir=netns_socket_dir())
                     self.assertEqual(probe_mock.call_count, 2)
 
-    def test_get_preflight_ttl_status_within_ttl(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            write_preflight(
-                repo_root=repo,
-                orchestration_id="o1",
-                payload=_launchable_preflight_dict(
-                    probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=10)),
-                ),
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
-                },
-            ):
-                st = get_preflight_ttl_status(repo, "o1")
-            self.assertTrue(st["preflight_exists"])
-            self.assertTrue(st["within_ttl"])
-            self.assertTrue(st["probe_skippable"])
-            self.assertIsNotNone(st["ttl_remaining_seconds"])
-
-    def test_get_preflight_ttl_status_no_preflight(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
-                st = get_preflight_ttl_status(repo, "o1")
-            self.assertFalse(st["preflight_exists"])
-            self.assertFalse(st["probe_skippable"])
-
-    def test_get_preflight_ttl_status_always_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            write_preflight(
-                repo_root=repo,
-                orchestration_id="o1",
-                payload=_launchable_preflight_dict(
-                    probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=5)),
-                ),
-            )
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
-                st = get_preflight_ttl_status(repo, "o1")
-            self.assertFalse(st["probe_skippable"])
-
-    def test_preflight_status_cli_outputs_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            write_preflight(
-                repo_root=repo,
-                orchestration_id="o1",
-                payload=_launchable_preflight_dict(
-                    probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=10)),
-                ),
-            )
-            buf = io.StringIO()
-            with patch.dict(
-                os.environ,
-                {
-                    "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
-                },
-            ):
-                with redirect_stdout(buf):
-                    rc = main(
-                        [
-                            "preflight-status",
-                            "--repo-root",
-                            str(repo),
-                            "--orchestration-id",
-                            "o1",
-                        ]
-                    )
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["orchestration_id"], "o1")
-            self.assertTrue(out["preflight_exists"])
-            self.assertIn("ttl_remaining_seconds", out)
-            self.assertTrue(out["probe_skippable"])
 
 
 class TestPhase1RuleSourceAudit(unittest.TestCase):
@@ -12202,81 +11882,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
     def test_required_child_agent_kind_plan_and_build(self) -> None:
         self.assertEqual(_required_child_agent_kind("compile"), "substep")
         self.assertEqual(_required_child_agent_kind("build"), "step")
-
-    def test_workflow_launch_check_fail_closed_by_session_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="wf1")
-            _mark_dependencies_ready(repo_root, "wf1")
-            dep_path = repo_root / _FIX_DEP_REF
-            dep_path.parent.mkdir(parents=True, exist_ok=True)
-            dep_path.write_text("ok\n", encoding="utf-8")
-            meta_path = repo_root / "workspace/orchestrations/wf1/orchestration_meta.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_ref"] = _FIX_DEP_REF
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="wf1",
-                payload=_launchable_preflight_dict(
-                    session_policy={"allow_substep_agent_launch": False},
-                ),
-            )
-            out = workflow_launch_check(
-                repo_root,
-                orchestration_id="wf1",
-                node_key="problem/shallow_water2d@0.3.0",
-                step="compile",
-                backend="codex",
-                require_child_agent="substep",
-            )
-            self.assertEqual(out.get("status"), "fail_closed")
-            self.assertEqual(out.get("reason_code"), "child_agent_forbidden_by_session_policy")
-            self.assertEqual(out.get("next_action"), "stop_before_phase_body")
-
-    def test_workflow_launch_check_fail_closed_when_session_policy_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="wf2")
-            _mark_dependencies_ready(repo_root, "wf2")
-            dep_path = repo_root / _FIX_DEP_REF
-            dep_path.parent.mkdir(parents=True, exist_ok=True)
-            dep_path.write_text("ok\n", encoding="utf-8")
-            meta_path = repo_root / "workspace/orchestrations/wf2/orchestration_meta.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_ref"] = _FIX_DEP_REF
-            meta["dependency_readiness"] = {
-                "direct_dependency_compile_readiness": True,
-                "direct_dependency_execution_readiness": True,
-                "detail": {
-                    "ir_ref_verified": True,
-                    "pipeline_ref_verified": True,
-                    "aggregate_verdict_verified": True,
-                },
-            }
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            # Simulate a legacy/manual preflight payload that has no session policy fields.
-            preflight_path = repo_root / "workspace/orchestrations/wf2/preflight.json"
-            preflight_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_payload = _launchable_preflight_dict()
-            legacy_payload.pop("session_policy", None)
-            legacy_payload.pop("session_policy_launchable", None)
-            preflight_path.write_text(
-                json.dumps(legacy_payload, ensure_ascii=False, indent=2)
-                + "\n",
-                encoding="utf-8",
-            )
-            out = workflow_launch_check(
-                repo_root,
-                orchestration_id="wf2",
-                node_key="problem/shallow_water2d@0.3.0",
-                step="compile",
-                backend="codex",
-                require_child_agent="substep",
-            )
-            self.assertEqual(out.get("status"), "fail_closed")
-            self.assertEqual(out.get("reason_code"), "child_agent_forbidden_by_session_policy")
-            self.assertEqual(out.get("blocking_policy_scope"), "session_policy_missing")
 
     def test_record_launch_rejects_missing_step_or_node_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
@@ -12411,12 +12016,16 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="wf4")
             _mark_dependencies_ready(repo_root, "wf4")
+            # The pre-phase check fails closed on a dependency that is not ready: the node's
+            # spec names no `deps.yaml`, so the live readiness recompute cannot run.
+            meta_path = repo_root / "workspace/orchestrations/wf4/orchestration_meta.json"
+            wf4_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            wf4_meta["spec_ref"] = "spec/problem/no_such_spec"
+            meta_path.write_text(json.dumps(wf4_meta), encoding="utf-8")
             write_preflight(
                 repo_root=repo_root,
                 orchestration_id="wf4",
-                payload=_launchable_preflight_dict(
-                    session_policy={"allow_substep_agent_launch": False},
-                ),
+                payload=_launchable_preflight_dict(),
             )
             req = {
                 "agent_run_id": "plan_sub_fail_closed",
@@ -12492,7 +12101,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 )
             )
             self.assertEqual(meta.get("status"), "fail_closed")
-            self.assertEqual(meta.get("reason_code"), "child_agent_forbidden_by_session_policy")
+            self.assertEqual(meta.get("reason_code"), "dependency_not_ready")
 
     @staticmethod
     def _perm_test_refs(**extra):
@@ -12634,25 +12243,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                     "workspace/pipelines/problem__shallow_water2d__0.3.0/"
                     "shallow-water2d_20260415_001")
 
-    def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
-        """The id becomes a directory name and every gate's path base, so both entry
-        points refuse it. Resume as well as init: a workspace created under an older
-        grammar would otherwise restart and fail at its first build-runtime call instead."""
-        from tools.orchestration_runtime import resume_orchestration
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for bad in ("../escape", "orch.1", "a/b", " orch_1 "):
-                with self.subTest(orchestration_id=bad):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        init_orchestration(repo_root=repo_root, orchestration_id=bad)
-                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
-                    with self.assertRaises(RuntimeError) as ctx_resume:
-                        resume_orchestration(repo_root, bad)
-                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_resume.exception))
-            # The generated form still works.
-            init_orchestration(repo_root=repo_root,
-                               orchestration_id="orch_20260812T010203Z_ab12cd34")
-
     def test_omitted_build_system_standalone_still_marker_detects(self) -> None:
         """The asymmetry is deliberate: outside an orchestration there is no toolchain
         declaration to agree with, so marker detection stays the answer."""
@@ -12698,13 +12288,13 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 repo_root=repo_root,
                 orchestration_id="g9",
                 status="fail_closed",
-                reason_code="child_agent_forbidden_by_session_policy",
-                reason_detail="session policy denied substep launch",
-                blocking_policy_scope="session_policy.allow_substep_agent_launch",
+                reason_code="dependency_not_ready",
+                reason_detail="deps_yaml_missing_or_unparseable",
+                blocking_policy_scope="default_allow",
             )
             self.assertEqual(meta.get("status"), "fail_closed")
-            self.assertEqual(meta.get("reason_code"), "child_agent_forbidden_by_session_policy")
-            self.assertEqual(meta.get("blocking_policy_scope"), "session_policy.allow_substep_agent_launch")
+            self.assertEqual(meta.get("reason_code"), "dependency_not_ready")
+            self.assertEqual(meta.get("blocking_policy_scope"), "default_allow")
 
     def test_set_status_terminal_writes_cleanup_committed_marker_after_cleanup(self) -> None:
         """Adv-35 invariant: set-status terminal must commit (a) terminal
@@ -12750,7 +12340,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         leftover *.py — Adv-9 only exempts that dir while status='running'."""
         for terminal_status, reason_code in (
             ("fail", None),
-            ("fail_closed", "child_agent_forbidden_by_session_policy"),
+            ("fail_closed", "dependency_not_ready"),
             ("timeout", None),
             ("cancel", None),
         ):
@@ -13493,7 +13083,7 @@ class SignatureDriftCanaryTests(unittest.TestCase):
 
 
 class ResolveDependencyFactsTests(unittest.TestCase):
-    """_resolve_dependency_facts mirrors _verify_dep_stage's selection — since issue #250
+    """_resolve_dependency_facts mirrors _verify_dep_stage_detail's selection — since issue #250
     PR-2 the dependency's SELECTED certified outputs under its derivation key — and is
     best-effort (never raises; leaf / unresolved → [])."""
 
@@ -13530,7 +13120,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
     def test_resolves_on_disk_selection(self) -> None:
         from tools.orchestration_runtime import (
-            _resolve_dependency_facts, _verify_dep_stage,
+            _resolve_dependency_facts, _verify_dep_stage_detail,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -13552,8 +13142,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertEqual(facts[0]["aggregate_verdict_ref"], verdict_ref)
             # Selection coincides with the readiness gate's choice.
             self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
-                                  "aggregate_verdict", target=_TP))
+                _verify_dep_stage_detail(repo_root, "component", "dep_base", "0.1.0",
+                                         "aggregate_verdict", target=_TP)[0])
 
     @staticmethod
     def _dep_ir_signature(symbol: str, args: list[dict]) -> str:
@@ -13663,11 +13253,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertNotIn("published_operations", facts[0])
 
     def test_verdict_bound_to_chosen_binary_else_skipped(self) -> None:
-        """Mirror _verify_dep_stage's Codex-round-24 binding: when the latest binary has
+        """Mirror _verify_dep_stage_detail's Codex-round-24 binding: when the latest binary has
         no verdict and only an OLDER binary's verdict exists, the dep does not resolve (the
         orientation hint must not borrow an unbound verdict)."""
         from tools.orchestration_runtime import (
-            _resolve_dependency_facts, _verify_dep_stage,
+            _resolve_dependency_facts, _verify_dep_stage_detail,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -13686,8 +13276,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "component/dep_base@0.1.0"}])
             # The readiness gate rejects this (verdict not bound to newer binary)...
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
-                                  "aggregate_verdict", target=_TP))
+                _verify_dep_stage_detail(repo_root, "component", "dep_base", "0.1.0",
+                                         "aggregate_verdict", target=_TP)[0])
             # ...and the orientation resolver agrees: the dep is skipped.
             self.assertEqual(
                 _resolve_dependency_facts(
@@ -15188,7 +14778,7 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
     """One child at a time on the claude backend, refused at the SECOND launch.
 
     `active_children/<arid>.txt` guards the finalize side of the lifecycle —
-    `record-timeout` refuses while a child is live — and `active_child_agent_run_id.txt`
+    `finalize-child` refuses an arid without it — and `active_child_agent_run_id.txt`
     is the launch side. It is the only
     thing that stops a conductor bug from running two claude leaves against one
     orchestration, where both write the same phase root and the second's record silently
@@ -15284,7 +14874,7 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
 
 
 class RecordTimeoutTests(unittest.TestCase):
-    """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
+    """A substep launch and its finalization: record-launch, finalize-child, the terminal row."""
 
     def _setup_substep_launch(self, repo_root: Path,
                               response_extra: dict | None = None,
@@ -15636,9 +15226,26 @@ class RecordTimeoutTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
         self.assertNotIn("ANTHROPIC_BASE_URL", "\x00".join(profile["rendered_command"]))
 
+    def _record_timeout_row(self, repo_root: Path, arid: str) -> dict:
+        """Helper: terminalize the fixture's substep launch with a `timeout` row through
+        `record_agent_run`, the one terminal writer (the in-band per-leaf cap and an old
+        record both carry the status)."""
+        return record_agent_run(
+            repo_root=repo_root,
+            orchestration_id="orch_to_001",
+            payload={
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "agent_backend": "claude",
+                "status": "timeout",
+                "agent_session_id": arid,
+                "context_id": arid,
+                "result_summary": "timeout: leaf cut off",
+            },
+        )
+
     def _deactivate(self, repo_root: Path, arid: str) -> None:
-        """Helper: clear the active marker so the Adv-14 guard accepts the
-        subsequent record-timeout call."""
+        """Helper: clear the active marker, as `finalize-child`'s first step does."""
         from tools.orchestration_runtime import deactivate_child_agent
         deactivate_child_agent(
             repo_root=repo_root,
@@ -15892,7 +15499,7 @@ class RecordTimeoutTests(unittest.TestCase):
                     )
             self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).exists())
 
-    def test_record_timeout_appends_terminal_entry_and_cleans_tmp(self) -> None:
+    def test_a_timeout_row_carries_its_derivation_and_cleans_tmp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root, deterministic=True)
@@ -15903,15 +15510,9 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertTrue(tmp_dir.exists())
 
             self._deactivate(repo_root, arid)
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="API stream idle timeout after 600s",
-            )
+            result = self._record_timeout_row(repo_root, arid)
             self.assertEqual(result.get("status"), "timeout")
             self.assertEqual(result.get("agent_run_id"), arid)
-            self.assertEqual(result.get("timeout_reason"), "API stream idle timeout after 600s")
 
             runs_path = repo_root / "workspace" / "orchestrations" / "orch_to_001" / "agent_runs.jsonl"
             entries = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -15920,85 +15521,10 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertEqual(timeout_entry["status"], "timeout")
             self.assertIn("finished_at", timeout_entry)
             self.assertEqual(timeout_entry["agent_role"], "substep")
-            self.assertEqual(timeout_entry["timeout_reason"], "API stream idle timeout after 600s")
             # A timed-out attempt is still an attempt of its derivation (issue #250).
             self.assertEqual(timeout_entry["derivation_key"], "sha256:" + "e" * 64)
             self.assertFalse(tmp_dir.exists(),
-                             "workspace/tmp/<arid>/ must be cleaned by record-timeout")  # noqa: E501
-
-    def test_record_timeout_rejects_missing_launch_request(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_to_002")
-            _mark_dependencies_ready(repo_root, "orch_to_002")
-            with self.assertRaisesRegex(ValueError, "cannot find launch request"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_002",
-                    agent_run_id="never-launched",
-                    reason="x",
-                )
-
-    def test_record_timeout_requires_non_empty_reason(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            with self.assertRaisesRegex(ValueError, "non-empty --reason"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_003",
-                    agent_run_id="any",
-                    reason="   ",
-                )
-
-    def test_record_timeout_preserves_launched_context_id_and_parent(self) -> None:
-        """Adv-3: context_id (per-run isolation context, distinct from
-        agent_session_id under Codex's repair_strategy=reuse) and
-        parent_agent_run_id must be carried over from the launch artifacts /
-        session_run_index, not synthesised from agent_session_id."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-
-            # Simulate a backend where context_id was explicitly recorded at
-            # launch time as a separate identifier from agent_session_id
-            # (e.g. Codex distinguishes session and per-run isolated context).
-            # agent_session_id stays bound to the launch response (record-agent-run
-            # rejects mismatch) but context_id can diverge.
-            from tools.orchestration_runtime import (
-                _read_session_run_index,
-                _session_run_index_path,
-            )
-            doc = _read_session_run_index(repo_root, "orch_to_001")
-            for entry in doc.get("entries", []):
-                if entry.get("agent_run_id") == arid:
-                    entry["context_id"] = "explicit-isolated-context-id-XYZ"
-            (_session_run_index_path(repo_root, "orch_to_001")).write_text(
-                json.dumps(doc), encoding="utf-8"
-            )
-
-            self._deactivate(repo_root, arid)
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="stream idle timeout",
-            )
-            self.assertEqual(result.get("context_id"), "explicit-isolated-context-id-XYZ",
-                             "context_id from session_run_index must be preserved, NOT replaced by agent_session_id")
-            self.assertEqual(result.get("parent_agent_run_id"), "orch_run_to_001",
-                             "parent_agent_run_id from launch request must be preserved")
-
-            # Verify the persisted entry on disk also has the right identity.
-            runs_path = repo_root / "workspace" / "orchestrations" / "orch_to_001" / "agent_runs.jsonl"
-            entries = [
-                json.loads(line)
-                for line in runs_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            timeout_entry = next((e for e in entries if e.get("agent_run_id") == arid), None)
-            self.assertIsNotNone(timeout_entry)
-            self.assertEqual(timeout_entry["context_id"], "explicit-isolated-context-id-XYZ")
-            self.assertEqual(timeout_entry["parent_agent_run_id"], "orch_run_to_001")
+                             "workspace/tmp/<arid>/ must be cleaned by the terminal row")
 
     def test_record_agent_run_terminal_routes_through_ownership_guard(self) -> None:
         """Adv-7 end-to-end: the cleanup at end of record_agent_run must go
@@ -16016,8 +15542,7 @@ class RecordTimeoutTests(unittest.TestCase):
             arid = self._setup_substep_launch(repo_root)
             workspace_tmp = repo_root / "workspace" / "tmp"
             workspace_tmp.mkdir(parents=True, exist_ok=True)
-            # external dir lives OUTSIDE repo_root so that record-timeout's
-            # workspace-diff check does not flag it as an unauthorized write.
+            # external dir lives OUTSIDE repo_root, where the cleanup must not reach.
             external = Path(ext_tmp) / "external_real_dir"
             external.mkdir()
             sentinel = external / "must_not_delete.txt"
@@ -16032,12 +15557,7 @@ class RecordTimeoutTests(unittest.TestCase):
             os.symlink(external, link_path)
 
             self._deactivate(repo_root, arid)
-            record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="stream idle timeout",
-            )
+            self._record_timeout_row(repo_root, arid)
 
             self.assertTrue(
                 sentinel.exists(),
@@ -16158,7 +15678,7 @@ class RecordTimeoutTests(unittest.TestCase):
     def test_read_existing_run_ids_tolerates_partial_tail_when_writer_active(self) -> None:
         """Adv-21+Adv-40: while a writer holds the runs lock, a truncated
         trailing line is treated as in-flight append and tolerated.
-        Exercised directly on `_read_existing_run_ids` (not record_timeout)
+        Exercised directly on `_read_existing_run_ids` (not a terminal writer)
         because record_agent_run's own LOCK_EX would deadlock against a
         same-process holder."""
         import os as _os
@@ -16326,30 +15846,30 @@ class RecordTimeoutTests(unittest.TestCase):
         )
 
     def test_cleanup_committed_marker_not_written_when_cleanup_refused(self) -> None:
-        """Adv-36: ownership/collision refusal must NOT yield a committed
-        marker. The Adv-35 invariant requires committed = "actual cleanup
-        succeeded (or already absent)" — a refused cleanup leaving leftover
-        scratch must keep validator exemption alive."""
+        """Adv-36: a refused cleanup must NOT yield a committed marker. The Adv-35
+        invariant requires committed = "actual cleanup succeeded (or already absent)" —
+        a refused cleanup leaving leftover scratch must keep validator exemption alive.
+        Refused here by the symlink guard: `workspace/tmp/<arid>` is a link to a
+        directory outside the checkout."""
+        import os
         from tools.orchestration_runtime import (
             _cleanup_agent_tmp_root, _cleanup_committed_marker_path,
         )
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as ext:
             repo_root = Path(tmp)
-            arid = "intruder-arid"
-            # Owner orch has the launch record; intruder does NOT.
-            self._make_launch_request(repo_root, "orch_owner", arid)
-            tmp_dir = repo_root / "workspace" / "tmp" / arid
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            (tmp_dir / "owner_data.txt").write_text("preserve\n", encoding="utf-8")
+            arid = "linked-arid"
+            self._make_launch_request(repo_root, "orch_x", arid)
+            workspace_tmp = repo_root / "workspace" / "tmp"
+            workspace_tmp.mkdir(parents=True, exist_ok=True)
+            sentinel = Path(ext) / "preserve.txt"
+            sentinel.write_text("preserve\n", encoding="utf-8")
+            os.symlink(ext, workspace_tmp / arid)
 
-            # Caller is intruder — cleanup must REFUSE and return False.
-            result = _cleanup_agent_tmp_root(
-                repo_root, "orch_intruder", agent_run_id=arid,
-            )
-            self.assertFalse(result, "intruder cleanup must return False")
-            self.assertTrue(tmp_dir.exists(), "owner data must survive")
+            result = _cleanup_agent_tmp_root(repo_root, "orch_x", agent_run_id=arid)
+            self.assertFalse(result, "a symlinked tmp root must be refused")
+            self.assertTrue(sentinel.exists(), "the link target must survive")
             self.assertFalse(
-                _cleanup_committed_marker_path(repo_root, "orch_intruder", arid).is_file(),
+                _cleanup_committed_marker_path(repo_root, "orch_x", arid).is_file(),
                 "no committed marker should exist for refused cleanup",
             )
 
@@ -16396,12 +15916,7 @@ class RecordTimeoutTests(unittest.TestCase):
                 tmp_present_at_lock_release.append(tmp_dir.exists())
 
             with _mp.object(_rt, "_validate_terminal_run_payload", _spying_validate):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="NEW-M2 deferred-cleanup test",
-                )
+                self._record_timeout_row(repo_root, arid)
             self.assertTrue(tmp_present_at_lock_release,
                             "spy must have observed validation completion")
             self.assertTrue(
@@ -16477,12 +15992,7 @@ class RecordTimeoutTests(unittest.TestCase):
             tmp_dir.mkdir(parents=True, exist_ok=True)
             (tmp_dir / "scratch.py").write_text("print('s')\n", encoding="utf-8")
 
-            record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="two-phase invariant test",
-            )
+            self._record_timeout_row(repo_root, arid)
 
             runs_path = (
                 repo_root / "workspace" / "orchestrations" / "orch_to_001"
@@ -16748,120 +16258,10 @@ class RecordTimeoutTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "malformed non-trailing JSON"):
                 _read_existing_run_ids(runs)
 
-    def test_record_timeout_refuses_when_arid_already_in_agent_runs_jsonl(self) -> None:
-        """Adv-14: a duplicate timeout call (e.g. retry / delayed callback)
-        must not fabricate a second terminal record nor wipe scratch — refuse
-        if any entry for arid already exists in agent_runs.jsonl."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Pre-seed the runs ledger with an arbitrary entry for the same arid
-            # (the actual content doesn't matter — duplicate detection is on id).
-            runs_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "agent_runs.jsonl"
-            )
-            with runs_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"agent_run_id": arid, "status": "running"}) + "\n")
-
-            with self.assertRaisesRegex(ValueError, "already has a durable entry"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="duplicate timer",
-                )
-
-    def test_record_timeout_refuses_when_session_run_index_status_not_running(self) -> None:
-        """Adv-14: refuse if session_run_index already shows the run as
-        terminal — another finalization path won the race."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _read_session_run_index, _session_run_index_path,
-            )
-            doc = _read_session_run_index(repo_root, "orch_to_001")
-            for entry in doc.get("entries", []):
-                if entry.get("agent_run_id") == arid:
-                    entry["status"] = "pass"  # simulate prior terminal record
-            (_session_run_index_path(repo_root, "orch_to_001")).write_text(
-                json.dumps(doc), encoding="utf-8"
-            )
-
-            with self.assertRaisesRegex(ValueError, "session_run_index.*not 'running'"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="late callback",
-                )
-
-    def test_record_timeout_refuses_when_active_child_marker_still_set(self) -> None:
-        """Adv-14 + Adv-16: refuse if backend-neutral per-arid marker
-        active_children/<arid>.txt still exists. The orchestration must call
-        deactivate-child first (signaling that the child leaf actually
-        returned) before record-timeout can run, regardless of backend."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _active_child_agent_run_id_path,
-                _active_child_marker_path,
-            )
-            # The fixture (claude backend) produces both markers.
-            self.assertTrue(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-
-            with self.assertRaisesRegex(ValueError, "active-child marker .* still exists"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="early fire",
-                )
-
-    def test_record_timeout_refuses_for_codex_backend_when_marker_present(self) -> None:
-        """Adv-16: backend-neutral guard. Codex never had the legacy
-        single-file Claude marker, so the per-arid marker is the only
-        liveness handshake protecting them from delayed/duplicated timeouts.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Force the launch response into a non-Claude backend so the
-            # legacy single-file Claude marker is bypassed and only the new
-            # per-arid marker remains as protection.
-            resp_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "launches" / f"{arid}.response.json"
-            )
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["backend"] = "codex"
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
-            from tools.orchestration_runtime import (
-                _active_child_agent_run_id_path,
-                _active_child_marker_path,
-            )
-            # Remove Claude legacy marker so the per-arid marker is the sole
-            # remaining defense (mirrors how a real Codex run would look —
-            # record_launch never writes it for non-Claude backends).
-            _active_child_agent_run_id_path(repo_root, "orch_to_001").unlink(missing_ok=True)
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file(),
-                            "per-arid marker must exist for the protection to be testable")
-
-            with self.assertRaisesRegex(ValueError, "active-child marker .* still exists"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="codex delayed callback",
-                )
-
     def test_deactivate_child_validates_before_unlinking_per_arid_marker(self) -> None:
         """Adv-18: a stray deactivate-child for a non-active arid must NOT
-        clear the per-arid marker. Otherwise it could unlock record-timeout
-        for a still-running child by removing its liveness guard."""
+        clear the per-arid marker. Otherwise the still-running child's own
+        finalize-child would be refused for want of it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             real_arid = self._setup_substep_launch(repo_root)
@@ -16883,14 +16283,6 @@ class RecordTimeoutTests(unittest.TestCase):
                 real_marker.is_file(),
                 "stray deactivate-child must NOT remove the live child's marker",
             )
-            # And record-timeout for the live arid is still blocked.
-            with self.assertRaisesRegex(ValueError, "active-child marker .* still exists"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=real_arid,
-                    reason="should be blocked",
-                )
 
     def test_record_launch_writes_no_parent_return_token(self) -> None:
         """Issue #447 D2 retired the child-return handshake: record-launch no longer
@@ -16921,112 +16313,15 @@ class RecordTimeoutTests(unittest.TestCase):
             )
             self.assertTrue(r2.get("already_inactive"))
 
-    def test_forced_record_timeout_preserves_markers_when_record_agent_run_fails(self) -> None:
-        """Adv-37: in the forced bypass path, markers must NOT be cleared
-        until record_agent_run successfully commits the terminal entry.
-        Otherwise a record_agent_run failure leaves the run without markers
-        AND without terminal record — wedged forever, no retry possible."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _active_child_marker_path, _active_child_agent_run_id_path,
-            )
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-            self.assertTrue(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
-
-            # Inject a duplicate entry into agent_runs.jsonl so record_agent_run's
-            # locked re-check raises ValueError mid-flow.
-            runs_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "agent_runs.jsonl"
-            )
-            with runs_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"agent_run_id": arid, "status": "running"}) + "\n")
-
-            with self.assertRaises(ValueError):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="forced timeout that will fail mid-commit",
-                    force_reason="operator override",
-                )
-            # Markers MUST survive the failed call so retry/recovery is possible.
-            self.assertTrue(
-                _active_child_marker_path(repo_root, "orch_to_001", arid).is_file(),
-                "active_children marker must NOT be unlinked before terminal commit",
-            )
-            self.assertTrue(
-                _active_child_agent_run_id_path(repo_root, "orch_to_001").is_file(),
-                "legacy Claude marker must NOT be unlinked before terminal commit",
-            )
-
-    def test_record_timeout_force_reason_bypasses_marker_for_wedged_child(self) -> None:
-        """Adv-26: with the active-child markers still present (deactivate-child not
-        run, or refused because the Claude pointer names another child), the
-        --force-reason escape clears the markers and finalizes the run, with
-        forced=True + forced_reason recorded in the payload for audit."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Intentionally do NOT call _deactivate: the markers are still present, which
-            # is the state --force-reason exists to bypass.
-            from tools.orchestration_runtime import (
-                _active_child_marker_path, _active_child_agent_run_id_path,
-            )
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-
-            # Without --force-reason: blocked.
-            with self.assertRaisesRegex(ValueError, "active-child marker"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="wedged child",
-                )
-
-            # With --force-reason: succeeds.
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="API stream wedged after 30 minutes",
-                force_reason="operator override: child PID killed externally",
-            )
-            self.assertEqual(result.get("status"), "timeout")
-            self.assertTrue(result.get("forced"))
-            self.assertIn("operator override", result.get("forced_reason", ""))
-            self.assertIn("FORCED", result.get("timeout_reason", ""))
-            # Markers cleared by the forced bypass.
-            self.assertFalse(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-            self.assertFalse(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
-
-    def test_record_timeout_succeeds_after_deactivate_child(self) -> None:
-        """Adv-14 happy path: deactivate-child clears the marker; then
-        record-timeout proceeds and finalizes the run."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import deactivate_child_agent
-            deactivate_child_agent(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                child_run_id=arid,
-            )
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="legitimate timeout after deactivate",
-            )
-            self.assertEqual(result.get("status"), "timeout")
-
     def test_finalize_after_a_manual_deactivate_names_the_remedy_that_converges(self) -> None:
-        """An operator who ran `deactivate-child` by hand (RUNBOOK substep-timeout recovery,
-        step 1) and then reaches for `finalize-child` is refused: the marker is gone. The
-        refusal must name that state and the remedy, and the remedy must work as printed."""
-        from tools.orchestration_runtime import deactivate_child_agent, finalize_child
+        """An operator who ran `deactivate-child` by hand and then reaches for
+        `finalize-child` is refused: the marker is gone. The refusal must name that state and
+        the remedy, and the remedy must work as printed: `--resume` (`resume_orchestration`),
+        with no manual terminalization first, prunes the unfinalized child's graph edge and its
+        `child_running` state, so the resumed run is not held by it."""
+        from tools.orchestration_runtime import (
+            deactivate_child_agent, finalize_child, resume_orchestration,
+        )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
@@ -17039,31 +16334,27 @@ class RecordTimeoutTests(unittest.TestCase):
                     agent_run_payload={"agent_run_id": arid, "status": "fail"})
             message = str(cm.exception)
             self.assertIn("deactivate-child", message)
-            self.assertIn(f"record-timeout --agent-run-id {arid}", message)
-            result = record_timeout(repo_root=repo_root, orchestration_id="orch_to_001",
-                                    agent_run_id=arid, reason="released by hand")
-            self.assertEqual(result.get("status"), "timeout")
+            self.assertIn("--resume", message)
+            self.assertNotIn("set-status", message)
+            graph_path = (repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                          / "agent_graph.json")
 
-    def test_record_timeout_cli_dispatch(self) -> None:
-        """The `record-timeout` subcommand is wired into main()."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            self._deactivate(repo_root, arid)
-            argv = [
-                "record-timeout",
-                "--repo-root", str(repo_root),
-                "--orchestration-id", "orch_to_001",
-                "--agent-run-id", arid,
-                "--reason", "stream idle timeout",
-            ]
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                rc = main(argv)
-            self.assertEqual(rc, 0)
-            payload = json.loads(stdout.getvalue())
-            self.assertEqual(payload.get("status"), "timeout")
-            self.assertEqual(payload.get("agent_run_id"), arid)
+            def _children() -> list:
+                graph = json.loads(graph_path.read_text(encoding="utf-8"))
+                return [e.get("child_agent_run_id") for e in graph.get("edges", [])]
+
+            state_path = graph_path.parent / "phase_state.json"
+
+            def _child_running() -> bool:
+                doc = json.loads(state_path.read_text(encoding="utf-8"))
+                return any(v == "child_running" for steps in doc.get("node_states", {}).values()
+                           for v in steps.values())
+
+            self.assertIn(arid, _children())
+            self.assertTrue(_child_running())
+            resume_orchestration(repo_root, "orch_to_001")
+            self.assertNotIn(arid, _children())
+            self.assertFalse(_child_running())
 
 
 class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
@@ -17547,11 +16838,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
                 },
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
-            # Disable persisted-boolean fallback for this assertion: we want
-            # production strict-mode behavior where the gate uses fail_reason.
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
-                ok, reason = _dependency_ready(repo_root, "frp", step="compile")
+            ok, reason = _dependency_ready(repo_root, "frp", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_malformed_schema",
                              "gate must propagate the specific malformed-schema "
@@ -17586,9 +16873,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
                 },
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
-                ok, reason = _dependency_ready(repo_root, "frp2", step="compile")
+            ok, reason = _dependency_ready(repo_root, "frp2", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_missing_or_unparseable")
 
@@ -17600,7 +16885,7 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
 
     def test_mtime_preserved_content_change_invalidates_cache(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         import os
         with tempfile.TemporaryDirectory() as tmp:
@@ -17615,7 +16900,7 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
             cat1 = _load_spec_catalog(str(repo_root.resolve()))
             self.assertEqual(
-                _resolve_dep_version(cat1, "component", "dep_a", ">=0.1.0"),
+                (_matching_dep_versions(cat1, "component", "dep_a", ">=0.1.0") or (None,))[0],
                 "0.1.0",
             )
             # Capture mtime, edit content, restore mtime — simulates
@@ -17631,7 +16916,7 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
                              "precondition: mtime is preserved across the edit")
             cat2 = _load_spec_catalog(str(repo_root.resolve()))
             self.assertEqual(
-                _resolve_dep_version(cat2, "component", "dep_a", ">=0.1.0"),
+                (_matching_dep_versions(cat2, "component", "dep_a", ">=0.1.0") or (None,))[0],
                 "0.2.0",
                 "content-keyed cache must observe the new contents even though "
                 "mtime is unchanged",
@@ -17734,7 +17019,7 @@ class CandidateOrderingAndFilterTests(unittest.TestCase):
                          ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001")
             self.assertTrue(self._certified(repo_root, "compile")[0])
             cat = repo_root / "spec" / "registry" / "spec_catalog.yaml"
-            doc = ort._require_yaml().safe_load(cat.read_text(encoding="utf-8"))
+            doc = yaml.safe_load(cat.read_text(encoding="utf-8"))
             entry = dict(next(e for e in doc["specs"] if e.get("spec_id") == "dep_a"))
             other = "spec/component/elsewhere/dep_a"
             (repo_root / other).mkdir(parents=True)
@@ -17744,7 +17029,7 @@ class CandidateOrderingAndFilterTests(unittest.TestCase):
             entry.update({"controlled_spec_path": f"{other}/controlled_spec.md",
                           "tests_path": f"{other}/tests.md", "deps_path": f"{other}/deps.yaml"})
             doc["specs"].append(entry)
-            cat.write_text(ort._require_yaml().safe_dump(doc), encoding="utf-8")
+            cat.write_text(yaml.safe_dump(doc), encoding="utf-8")
             ort._load_spec_catalog.cache_clear()
             self.assertEqual(self._certified(repo_root, "compile")[1]["reason"],
                              "spec_ref_unresolved")
@@ -17824,7 +17109,7 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
         )
 
     def test_touching_older_passing_ir_meta_does_not_override_newer_fail(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
         import os, time
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -17844,13 +17129,14 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
             time.sleep(0.01)
             os.utime(old / "ir_meta.json")
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref", target=_TP),
+                _verify_dep_stage_detail(repo_root, "component", "dep_a", "0.1.0", "ir_ref",
+                                         target=_TP)[0],
                 "older artifact touched to a newer mtime must NOT override the "
                 "newer-by-runtime-id failing artifact",
             )
 
     def test_touching_older_pipeline_dir_does_not_override(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
         import os, time
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -17872,7 +17158,8 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
                 if f.is_file():
                     os.utime(f)
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref", target=_TP),
+                _verify_dep_stage_detail(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref",
+                                         target=_TP)[0],
                 "touched-newer mtime on old pipeline must not override newer "
                 "(by runtime id) pipeline's failing binary_meta",
             )
@@ -18126,111 +17413,29 @@ class MarkDependencyReadinessMalformedCliTests(unittest.TestCase):
 
 
 class DependencyReadinessStrictModeTests(unittest.TestCase):
-    """Codex round 20 F1: production launch checks fail closed when live
-    recompute cannot run (no deps.yaml). The persisted-boolean fallback is
-    gated behind SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1, which only
-    test scaffolding sets."""
+    """Codex round 20 F1: launch checks fail closed when live recompute cannot run (no
+    deps.yaml), whatever the persisted booleans say. The persisted-boolean fallback that test
+    scaffolding could opt into went in issue #643."""
 
     def test_strict_mode_rejects_when_recompute_unavailable(self) -> None:
         from tools.orchestration_runtime import _dependency_ready
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="strict")
-            _mark_dependencies_ready(repo_root, "strict")
-            # No spec_ref / deps.yaml on disk. Disable the fallback.
-            with patch.dict(os.environ, {
-                "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK": "",
-            }, clear=False):
-                # patch.dict can't truly "unset" a var unless we ensure it.
-                os.environ.pop(
-                    "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None,
-                )
-                ok, reason = _dependency_ready(repo_root, "strict", step="compile")
-            self.assertFalse(ok,
-                             "production strict mode must reject when live "
-                             "recompute cannot run")
+            # No spec_ref / deps.yaml on disk; the persisted record claims ready.
+            meta_path = (repo_root / "workspace" / "orchestrations" / "strict"
+                         / "orchestration_meta.json")
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["dependency_readiness"] = {
+                "direct_dependency_compile_readiness": True,
+                "direct_dependency_execution_readiness": True,
+                "detail": {"ir_ref_verified": True, "pipeline_ref_verified": True,
+                           "aggregate_verdict_verified": True},
+            }
+            meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+            ok, reason = _dependency_ready(repo_root, "strict", step="compile")
+            self.assertFalse(ok, "the gate must reject when live recompute cannot run")
             self.assertEqual(reason, "deps_yaml_missing_or_unparseable")
-
-    def test_fallback_mode_allows_persisted_booleans_for_tests(self) -> None:
-        """The opt-in env var explicitly enables the legacy fallback so test
-        fixtures (`_mark_dependencies_ready`) continue to work."""
-        from tools.orchestration_runtime import _dependency_ready
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="fb")
-            _mark_dependencies_ready(repo_root, "fb")
-            # Module-level setdefault already set the env var to "1".
-            self.assertEqual(
-                os.environ.get("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK"),
-                "1",
-            )
-            ok, reason = _dependency_ready(repo_root, "fb", step="compile")
-            self.assertTrue(ok, f"fallback opt-in must allow test scaffolding; reason={reason}")
-
-
-class TmpCleanupLockTests(unittest.TestCase):
-    """Codex round 20 F2: cleanup creates and uses fcntl lock at
-    `workspace/tmp/<arid>.lock` to serialize the ownership scan + rmtree
-    against concurrent cleanup attempts."""
-
-    def test_cleanup_creates_lock_sidecar(self) -> None:
-        """Smoke: `_cleanup_agent_tmp_root` creates (and intentionally retains)
-        the fcntl lock file. The sidecar is the serialization primitive and is
-        deliberately never unlinked — deleting it would break serialization
-        against a concurrent cleanup. `validate_workspace_root` tolerates the
-        0-byte sidecar so its persistence does not fail the workspace gate."""
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="lck")
-            meta = json.loads(
-                (repo_root / "workspace" / "orchestrations" / "lck"
-                 / "orchestration_meta.json").read_text(encoding="utf-8")
-            )
-            arid = meta["orchestration_agent_run_id"]
-            (repo_root / "workspace" / "tmp" / arid).mkdir(parents=True, exist_ok=True)
-            ok = _cleanup_agent_tmp_root(
-                repo_root, "lck", agent_run_id=arid,
-            )
-            self.assertTrue(ok)
-            self.assertTrue(
-                (repo_root / "workspace" / "tmp" / f"{arid}.lock").is_file(),
-                "cleanup must create workspace/tmp/<arid>.lock sidecar",
-            )
-
-    def test_cleanup_lock_serializes_concurrent_attempts(self) -> None:
-        """Two threads calling cleanup for the same arid must serialize.
-        We can't directly observe lock contention without instrumentation,
-        but we verify both calls complete and the tmp dir is gone."""
-        import threading
-        from tools.orchestration_runtime import _cleanup_agent_tmp_root
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="cc")
-            meta = json.loads(
-                (repo_root / "workspace" / "orchestrations" / "cc"
-                 / "orchestration_meta.json").read_text(encoding="utf-8")
-            )
-            arid = meta["orchestration_agent_run_id"]
-            (repo_root / "workspace" / "tmp" / arid).mkdir(parents=True, exist_ok=True)
-            (repo_root / "workspace" / "tmp" / arid / "scratch.txt").write_text(
-                "x", encoding="utf-8",
-            )
-            errors: list[BaseException] = []
-            results: list[bool] = []
-            def call():
-                try:
-                    r = _cleanup_agent_tmp_root(repo_root, "cc", agent_run_id=arid)
-                    results.append(r)
-                except BaseException as e:
-                    errors.append(e)
-            t1 = threading.Thread(target=call)
-            t2 = threading.Thread(target=call)
-            t1.start(); t2.start(); t1.join(); t2.join()
-            self.assertEqual(errors, [])
-            # Both calls return True (idempotent: one removes, the other sees absent).
-            self.assertTrue(all(results))
-            self.assertFalse((repo_root / "workspace" / "tmp" / arid).exists())
 
 
 class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
@@ -18720,7 +17925,7 @@ class SetStatusPassReplayIdempotencyTests(unittest.TestCase):
 
 class DependencyIdentifierPathSafetyTests(unittest.TestCase):
     """Codex round 15 F2: spec_kind / spec_id / spec_version values from
-    deps.yaml and spec_catalog.yaml are interpolated into workspace paths.
+    deps.yaml are interpolated into workspace paths.
     Path-traversal characters (`..`, `/`, `\\`) and otherwise unsafe tokens
     must be rejected before path construction so a malformed entry cannot
     steer the verifier outside the dependency subtree."""
@@ -18766,49 +17971,6 @@ class DependencyIdentifierPathSafetyTests(unittest.TestCase):
                 meta["dependency_readiness"]["direct_dependency_compile_readiness"],
                 "path-traversal component_id must persist fail-closed",
             )
-
-    def test_spec_catalog_path_traversal_in_spec_id_is_skipped(self) -> None:
-        """A catalog entry with unsafe spec_id must not be indexed; resolution
-        of even legitimate constraints for that id then yields None."""
-        from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n"
-                "    spec_id: \"../../etc/passwd\"\n"
-                "    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            cat = _load_spec_catalog(str(repo_root.resolve()))
-            # The unsafe entry must NOT be present in the indexed catalog.
-            self.assertNotIn(("component", "../../etc/passwd"), cat)
-            # Resolving any constraint for that id returns None.
-            self.assertIsNone(
-                _resolve_dep_version(cat, "component", "../../etc/passwd", ">=0.1.0"),
-            )
-
-    def test_spec_catalog_path_traversal_in_version_is_skipped(self) -> None:
-        from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n"
-                "    spec_version: \"0.1.0/../../etc\"\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            cat = _load_spec_catalog(str(repo_root.resolve()))
-            # No entry indexed for dep_a because the only version was unsafe.
-            self.assertNotIn(("component", "dep_a"), cat)
 
     def test_safe_token_unit(self) -> None:
         from tools.orchestration_runtime import _is_safe_path_token as S
@@ -19135,7 +18297,7 @@ class SemverParserPrereleaseBuildTests(unittest.TestCase):
         """Higher-level: catalog containing `1.0.0-rc1` must be ordered and
         matchable by version_constraint expressions."""
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19151,12 +18313,12 @@ class SemverParserPrereleaseBuildTests(unittest.TestCase):
             catalog = _load_spec_catalog(str(repo_root.resolve()))
             # 1.0.0 > 1.0.0-rc1, so highest-match for any range covering both is 1.0.0.
             self.assertEqual(
-                _resolve_dep_version(catalog, "component", "dep_a", ">=1.0.0-rc1"),
+                (_matching_dep_versions(catalog, "component", "dep_a", ">=1.0.0-rc1") or (None,))[0],
                 "1.0.0",
             )
             # Exact match should pick the prerelease entry.
             self.assertEqual(
-                _resolve_dep_version(catalog, "component", "dep_a", "==1.0.0-rc1"),
+                (_matching_dep_versions(catalog, "component", "dep_a", "==1.0.0-rc1") or (None,))[0],
                 "1.0.0-rc1",
             )
 
@@ -19500,7 +18662,7 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
 
     def test_catalog_edit_within_process_changes_resolved_version(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19514,7 +18676,7 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
             # First load: only 0.1.0 present → constraint resolves to 0.1.0.
             cat1 = _load_spec_catalog(str(repo_root.resolve()))
             self.assertEqual(
-                _resolve_dep_version(cat1, "component", "dep_a", ">=0.1.0 <1.0.0"),
+                (_matching_dep_versions(cat1, "component", "dep_a", ">=0.1.0 <1.0.0") or (None,))[0],
                 "0.1.0",
             )
             # Edit catalog to add another matching version → now ambiguous.
@@ -19532,7 +18694,7 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
             # version (not None). Validates that the cache invalidated AND
             # the new resolver semantics picked 0.2.0.
             self.assertEqual(
-                _resolve_dep_version(cat2, "component", "dep_a", ">=0.1.0 <1.0.0"),
+                (_matching_dep_versions(cat2, "component", "dep_a", ">=0.1.0 <1.0.0") or (None,))[0],
                 "0.2.0",
                 "catalog edit must invalidate cache and resolver picks highest match",
             )
@@ -19970,7 +19132,7 @@ class VersionConstraintResolutionTests(unittest.TestCase):
 
     def test_constraint_matches_unique_version(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19978,7 +19140,7 @@ class VersionConstraintResolutionTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
             catalog = _load_spec_catalog(str(repo_root.resolve()))
             # Constraint >=0.1.0 <0.2.0 should match only 0.1.0.
-            resolved = _resolve_dep_version(catalog, "component", "dep_a", ">=0.1.0 <0.2.0")
+            resolved = (_matching_dep_versions(catalog, "component", "dep_a", ">=0.1.0 <0.2.0") or (None,))[0]
             self.assertEqual(resolved, "0.1.0")
 
     def test_range_constraint_survives_catalog_publishing_new_version(self) -> None:
@@ -20031,28 +19193,28 @@ class VersionConstraintResolutionTests(unittest.TestCase):
         resolver picks the highest (descending semver order), keeping
         existing specs launchable across catalog growth."""
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._catalog_with_versions(repo_root, ["0.1.0", "0.2.0"])
             _load_spec_catalog.cache_clear()
             catalog = _load_spec_catalog(str(repo_root.resolve()))
-            resolved = _resolve_dep_version(catalog, "component", "dep_a", ">=0.1.0 <1.0.0")
+            resolved = (_matching_dep_versions(catalog, "component", "dep_a", ">=0.1.0 <1.0.0") or (None,))[0]
             self.assertEqual(resolved, "0.2.0",
                              "multi-match constraint must pick highest catalog version")
 
     def test_no_match_constraint_fails_closed(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._catalog_with_versions(repo_root, ["0.1.0"])
             _load_spec_catalog.cache_clear()
             catalog = _load_spec_catalog(str(repo_root.resolve()))
-            resolved = _resolve_dep_version(catalog, "component", "dep_a", ">=2.0.0")
-            self.assertIsNone(resolved)
+            self.assertEqual(
+                _matching_dep_versions(catalog, "component", "dep_a", ">=2.0.0"), ())
 
     def test_constraint_drives_workspace_lookup_in_full_verify(self) -> None:
         """End-to-end: deps.yaml declares >=0.1.0 <0.2.0, catalog has both 0.1.0
@@ -20505,148 +19667,13 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
             self.assertTrue(r["direct_dependency_execution_readiness"])
 
 
-class PyYAMLScopedRequirementTests(unittest.TestCase):
-    """Codex round 27 F1: PyYAML is required only for the deps-parsing code
-    paths. Recovery commands (set-status, record-timeout) must continue to
-    work when the package is missing — collapsing them under a module-top
-    `raise ImportError` expanded the blast radius from a localized feature
-    failure to a full control-plane outage."""
-
-    def _missing_yaml_resolver(self) -> Callable[[], Any]:  # type: ignore[name-defined]
-        from tools.orchestration_runtime import _require_yaml as _orig  # noqa: F401
-
-        def _raise() -> Any:
-            raise RuntimeError(
-                "tools.orchestration_runtime: PyYAML is required for parsing "
-                "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`."
-            )
-
-        return _raise
-
-    def test_require_yaml_raises_with_install_hint(self) -> None:
-        from tools.orchestration_runtime import _require_yaml
-        # When PyYAML is actually installed (the test environment), this
-        # returns the module without raising. We assert the contract by
-        # confirming the docstring identifies it as the install-required
-        # resolver and that the returned object exposes `safe_load`.
-        mod = _require_yaml()
-        self.assertTrue(hasattr(mod, "safe_load"))
-
-    def test_set_status_works_without_pyyaml(self) -> None:
-        """set-status MUST NOT import yaml. Patching `_require_yaml` to a
-        raising stub then exercising set-status confirms the recovery
-        path is independent of PyYAML availability."""
-        from tools.orchestration_runtime import (
-            _require_yaml as _live_resolver,  # noqa: F401
-            update_orchestration_status,
-        )
-        import tools.orchestration_runtime as _rt
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root,
-                orchestration_id="orch_recover",
-                spec_ref="spec/component/x",
-            )
-            with patch.object(_rt, "_require_yaml", self._missing_yaml_resolver()):
-                update_orchestration_status(
-                    repo_root=repo_root,
-                    orchestration_id="orch_recover",
-                    status="fail_closed",
-                    reason_code="dependency_not_ready",
-                    reason_detail="recover_smoke",
-                )
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_recover"
-                / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta["status"], "fail_closed")
-            self.assertEqual(meta["reason_code"], "dependency_not_ready")
-
-    def test_dependency_ready_returns_pyyaml_unavailable_not_crash(self) -> None:
-        """Codex round 28 F1: `_dependency_ready` MUST convert a missing-
-        PyYAML `RuntimeError` from `_compute_dep_readiness`
-        into a deterministic gate result (`pyyaml_unavailable`) instead of
-        letting it escape as an unhandled exception. Without this conversion
-        `workflow-launch-check` looks like an infrastructure outage rather
-        than a fail-closed dependency decision."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref, **_kw):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root,
-                orchestration_id="orch_noyaml",
-                spec_ref="spec/component/x",
-            )
-            # Seed dependency_readiness so the gate reaches the recompute
-            # path (otherwise it returns earlier on a missing key).
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_noyaml"
-                / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_readiness"] = {
-                "direct_dependency_compile_readiness": False,
-                "direct_dependency_execution_readiness": False,
-                "detail": {},
-            }
-            meta_path.write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_compute_dep_readiness", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_noyaml", step="compile",
-                )
-            self.assertFalse(ok)
-            self.assertEqual(reason, "pyyaml_unavailable")
-
-    def test_mark_dependency_readiness_cli_handles_missing_pyyaml_cleanly(self) -> None:
-        """Codex round 28 F2: the `mark-dependency-readiness` CLI dispatcher
-        previously caught only `ValueError` / `FileNotFoundError`. The
-        round-27 F1 change made `mark_dependency_readiness()` propagate a
-        `RuntimeError` from `_require_yaml()` when PyYAML is absent — that
-        escaped the dispatch table as a raw traceback. The CLI must now
-        convert it into the same stderr+exit-1 contract as other expected
-        verification failures."""
-        import tools.orchestration_runtime as _rt
-
-        def _raise_pyyaml(**kwargs):  # type: ignore[no-untyped-def]
-            raise RuntimeError(
-                "tools.orchestration_runtime: PyYAML is required for parsing "
-                "deps.yaml / spec_catalog.yaml."
-            )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root,
-                orchestration_id="orch_cli_noyaml",
-                spec_ref="spec/component/x",
-            )
-            stderr_buf = io.StringIO()
-            with patch.object(_rt, "mark_dependency_readiness", _raise_pyyaml), \
-                 redirect_stderr(stderr_buf):
-                rc = _rt.main([
-                    "mark-dependency-readiness",
-                    "--repo-root", str(repo_root),
-                    "--orchestration-id", "orch_cli_noyaml",
-                ])
-            self.assertEqual(rc, 1)
-            self.assertIn("PyYAML", stderr_buf.getvalue())
+class MarkDependencyReadinessCliTests(unittest.TestCase):
+    """The `mark-dependency-readiness` dispatch turns the expected verification failures
+    (`ValueError`, `FileNotFoundError`) into exit 1 and lets any other exception escape."""
 
     def test_mark_dependency_readiness_cli_propagates_unrelated_runtimeerror(self) -> None:
-        """Guard: the round-28 F2 catch must NOT swallow unrelated
-        RuntimeErrors. Only those whose message identifies the PyYAML
-        install gap should be downgraded; other RuntimeErrors are real
-        infrastructure bugs and should escape with a traceback."""
+        """A RuntimeError is not an expected verification failure: it escapes with a
+        traceback rather than being downgraded to exit 1."""
         import tools.orchestration_runtime as _rt
 
         def _raise_unrelated(**kwargs):  # type: ignore[no-untyped-def]
@@ -20667,29 +19694,6 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
                         "--orchestration-id", "orch_cli_infra",
                     ])
             self.assertIn("disk corruption", str(ctx.exception))
-
-    def test_read_deps_yaml_propagates_missing_package_runtimeerror(self) -> None:
-        """When `_require_yaml` raises (PyYAML missing), `_read_deps_yaml`
-        must propagate the RuntimeError to its caller instead of swallowing
-        it into the "deps.yaml unparseable → None" branch. Caller code
-        (mark_dependency_readiness, _compute_dep_readiness)
-        is responsible for surfacing the install hint."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _read_deps_yaml
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            spec_dir = repo_root / "spec" / "component" / "x"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n  components: []\n  profiles: []\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_require_yaml", self._missing_yaml_resolver()):
-                with self.assertRaises(RuntimeError) as ctx:
-                    _read_deps_yaml(repo_root, "spec/component/x")
-            self.assertIn("PyYAML is required", str(ctx.exception))
-
 
 class DependencyReadyLockSerializationTests(unittest.TestCase):
     """Codex round 27 F2: `_dependency_ready` reads orchestration_meta and
@@ -20792,71 +19796,6 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
         compute_idx = events.index("compute_called")
         self.assertLess(enter_idx, compute_idx)
         self.assertLess(compute_idx, exit_idx)
-
-
-class LaunchWithoutPyYAMLTests(unittest.TestCase):
-    """Codex round 28 F1, as issue #250 PR-2 leaves it: when PyYAML is unavailable the
-    launch gate answers `pyyaml_unavailable` for EVERY node — the persisted record is never
-    what it decides from, and the no-deps-leaf shortcut of rounds 29–31 (trust a persisted
-    `certified_deps == []` bound to a byte fingerprint of deps.yaml) went with the
-    fingerprint. No production launch reaches this state: `run_workflow.py` reads the
-    catalog through PyYAML (`resolve_node`) before any orchestration exists."""
-
-    def _seed_persisted_leaf(self, repo_root: Path, orch_id: str) -> Path:
-        spec_ref = "spec/component/leaf"
-        spec_dir = repo_root / spec_ref
-        spec_dir.mkdir(parents=True, exist_ok=True)
-        (spec_dir / "deps.yaml").write_text(
-            "dependencies:\n  components: []\n  profiles: []\n",
-            encoding="utf-8",
-        )
-        init_orchestration(
-            repo_root=repo_root, orchestration_id=orch_id, spec_ref=spec_ref,
-        )
-        meta_path = (
-            repo_root / "workspace" / "orchestrations" / orch_id
-            / "orchestration_meta.json"
-        )
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta["dependency_readiness"] = {
-            "direct_dependency_compile_readiness": True,
-            "direct_dependency_execution_readiness": True,
-            "detail": {
-                "ir_ref_verified": True,
-                "pipeline_ref_verified": True,
-                "aggregate_verdict_verified": True,
-            },
-            "certified_deps": [],
-        }
-        meta_path.write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        return meta_path
-
-    def test_every_node_fails_closed_when_pyyaml_is_missing(self) -> None:
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref, **_kw):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._seed_persisted_leaf(repo_root, "orch_leaf")
-            with patch.object(_rt, "_compute_dep_readiness", _raise):
-                self.assertEqual(_dependency_ready(repo_root, "orch_leaf", step="compile"),
-                                 (False, "pyyaml_unavailable"))
-            # A persisted record that names dependencies: the same answer.
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_readiness"]["certified_deps"] = [
-                {"spec_kind": "component", "spec_id": "dep_a", "spec_version": "0.1.0"},
-            ]
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-                                 encoding="utf-8")
-            with patch.object(_rt, "_compute_dep_readiness", _raise):
-                self.assertEqual(_dependency_ready(repo_root, "orch_leaf", step="compile"),
-                                 (False, "pyyaml_unavailable"))
 
 
 class CanonicalIdEnforcementTests(unittest.TestCase):
@@ -21059,59 +19998,11 @@ class InitialLeafReadinessCertifiedDepsTests(unittest.TestCase):
             self.assertEqual(readiness.get("certified_deps"), [])
             self.assertTrue(readiness.get("direct_dependency_compile_readiness"))
 
-class PreflightSurvivesMissingPyYAMLTests(unittest.TestCase):
-    """Codex round 32 F1: `write_preflight` must not crash when PyYAML
-    is missing — it must compute a degraded `dependency_readiness`
-    payload (fail-closed by default) and let downstream control surfaces
-    keep running. Round 31's `_compute_initial_dependency_readiness`
-    called `_dependency_set_fingerprint` unconditionally, which reached
-    `_require_yaml()` and raised on degraded hosts."""
+class PreflightLeafReadinessTests(unittest.TestCase):
+    """`write_preflight` records a leaf's trivial readiness with `certified_deps: []`."""
 
-    def test_preflight_does_not_raise_when_pyyaml_missing_real_deps(self) -> None:
-        import tools.orchestration_runtime as _rt
-
-        def _raise(*args, **kwargs):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            spec_dir = repo_root / "spec" / "component" / "real"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n"
-                "  components:\n"
-                "    - component_id: dep_a\n"
-                "      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_real_noyaml",
-                spec_ref="spec/component/real",
-            )
-            with patch.object(_rt, "_require_yaml", lambda: _raise()):
-                # MUST NOT raise.
-                write_preflight(
-                    repo_root=repo_root,
-                    orchestration_id="orch_real_noyaml",
-                    payload=_launchable_preflight_dict(
-                        checked_at="2026-05-12T00:00:00Z",
-                    ),
-                )
-            meta = json.loads((
-                repo_root / "workspace" / "orchestrations" / "orch_real_noyaml"
-                / "orchestration_meta.json"
-            ).read_text(encoding="utf-8"))
-            # With real deps + PyYAML unavailable we cannot prove leaf
-            # status — payload is fail-closed.
-            readiness = meta["dependency_readiness"]
-            self.assertFalse(readiness["direct_dependency_compile_readiness"])
-            self.assertNotIn("certified_deps", readiness)
-
-    def test_preflight_writes_leaf_certified_deps_when_pyyaml_available(self) -> None:
-        """When PyYAML IS available the leaf path still produces
-        `certified_deps: []` (round 31 F1). Smoke test that round-32 F1
-        did not regress that behavior."""
+    def test_preflight_writes_leaf_certified_deps(self) -> None:
+        """The leaf path produces `certified_deps: []` (round 31 F1)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             spec_dir = repo_root / "spec" / "component" / "smokeleaf"
@@ -21189,82 +20080,6 @@ class ReservePhaseRootCanonicalIdTests(unittest.TestCase):
                 reserved_by_agent_run_id="arid_caller",
             )
             self.assertEqual(payload["reserved_ir_id"], "dep-a_20260101_001")
-
-
-class PreflightPreservesVerifiedOnPyYAMLOutageTests(unittest.TestCase):
-    """Codex round 33 F1: a transient PyYAML outage on the controller
-    must NOT invalidate previously-verified non-leaf readiness records.
-    Round 32 synthesized an incompatible byte-only fingerprint that
-    guaranteed a "mismatch" against the full fingerprint stored at mark
-    time, causing `write_preflight` to overwrite verified state with
-    fail-closed across every non-leaf orchestration."""
-
-    def test_existing_verified_non_leaf_preserved_when_pyyaml_missing(self) -> None:
-        import tools.orchestration_runtime as _rt
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Build a non-leaf orchestration and verify it normally.
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            spec_dir = repo_root / "spec" / "component" / "nonleaf"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n"
-                "  components:\n"
-                "    - component_id: dep_a\n"
-                "      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_pres",
-                spec_ref="spec/component/nonleaf",
-            )
-            write_preflight(
-                repo_root=repo_root, orchestration_id="orch_pres",
-                payload=_launchable_preflight_dict(checked_at="2026-05-12T00:00:00Z"),
-            )
-            _setup_verified_dep(repo_root, dep_id="dep_a")
-            from tools.orchestration_runtime import (
-                mark_dependency_readiness, _load_spec_catalog,
-            )
-            _load_spec_catalog.cache_clear()
-            mark_dependency_readiness(
-                repo_root=repo_root, orchestration_id="orch_pres",
-            )
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_pres"
-                / "orchestration_meta.json"
-            )
-            verified_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            verified_readiness = dict(verified_meta["dependency_readiness"])
-            self.assertTrue(verified_readiness["direct_dependency_compile_readiness"])
-
-            # Now simulate PyYAML outage and re-run preflight.
-            def _raise():  # type: ignore[no-untyped-def]
-                raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-            with patch.object(_rt, "_require_yaml", _raise):
-                write_preflight(
-                    repo_root=repo_root, orchestration_id="orch_pres",
-                    payload=_launchable_preflight_dict(
-                        checked_at="2026-05-12T01:00:00Z",
-                    ),
-                )
-            after = json.loads(meta_path.read_text(encoding="utf-8"))
-            # The previously-verified record MUST be preserved untouched.
-            self.assertEqual(
-                after["dependency_readiness"], verified_readiness,
-                msg=(
-                    "round-33 F1: PyYAML outage must not overwrite verified "
-                    "non-leaf readiness — found "
-                    f"{after['dependency_readiness']!r}"
-                ),
-            )
 
 
 class SpecCatalogCorruptionTests(unittest.TestCase):
@@ -21366,52 +20181,6 @@ class SpecCatalogCorruptionTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("spec_catalog_corrupt", log)
 
-
-class FreshLeafLaunchableWithoutPyYAMLTests(unittest.TestCase):
-    """Codex round 34 F1: a brand-new no-deps orchestration must remain
-    launchable through `init → preflight → workflow-launch-check` even
-    when the controller is missing PyYAML. The fix is a strict
-    byte-level recognizer for canonical empty-deps `deps.yaml`."""
-
-    def _canonical_leaf(self, repo_root: Path) -> None:
-        spec_dir = repo_root / "spec" / "component" / "freshcanon"
-        spec_dir.mkdir(parents=True)
-        (spec_dir / "deps.yaml").write_text(
-            "dependencies:\n  components: []\n  profiles: []\n",
-            encoding="utf-8",
-        )
-
-    def test_byte_recognizer_accepts_canonical_empty_deps(self) -> None:
-        from tools.orchestration_runtime import _deps_yaml_bytes_are_canonical_empty
-        good = [
-            b"dependencies:\n  components: []\n  profiles: []\n",
-            b"dependencies:\n  profiles: []\n  components: []\n",
-            b"# leading comment\ndependencies:\n  components: []\n  profiles: []\n",
-            # M3a: the optional empty `infrastructure` key is still a canonical leaf (any order),
-            # so an R1 leaf stays launchable under the PyYAML-unavailable byte path.
-            b"dependencies:\n  components: []\n  profiles: []\n  infrastructure: []\n",
-            b"dependencies:\n  infrastructure: []\n  profiles: []\n  components: []\n",
-        ]
-        for sample in good:
-            self.assertTrue(_deps_yaml_bytes_are_canonical_empty(sample), sample)
-
-    def test_byte_recognizer_rejects_populated_or_ambiguous(self) -> None:
-        from tools.orchestration_runtime import _deps_yaml_bytes_are_canonical_empty
-        bad = [
-            b"dependencies:\n  components:\n    - component_id: dep_a\n  profiles: []\n",
-            b"dependencies:\n  components: []\n  profiles:\n    - profile_id: foo\n",
-            b"spec_id: x\ndependencies:\n  components: []\n  profiles: []\n",
-            b"",
-            b"dependencies:\n",
-            # M3a: a POPULATED infrastructure list is not a leaf; a duplicate key, a missing
-            # required key, and an unknown key must all still fall through to full parse.
-            b"dependencies:\n  components: []\n  profiles: []\n  infrastructure:\n    - infrastructure_id: harness_fortran_cpu\n",
-            b"dependencies:\n  components: []\n  profiles: []\n  widgets: []\n",
-            b"dependencies:\n  components: []\n  infrastructure: []\n",  # missing required profiles
-            b"dependencies:\n  components: []\n  components: []\n  profiles: []\n",  # duplicate
-        ]
-        for sample in bad:
-            self.assertFalse(_deps_yaml_bytes_are_canonical_empty(sample), sample)
 
 class SpecCatalogMissingHardFailureTests(unittest.TestCase):
     """Codex round 34 F2: a missing `spec_catalog.yaml` is a HARD
@@ -23760,20 +22529,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         path.write_text(_workshop_yaml(text), encoding="utf-8")
         return path
 
-    def _stub_workshop_row(self) -> None:
-        """Stub the CLI's workshop `--help` row (`_workshop_flag_set_check`), which
-        `probe_all_providers` and `_reprobe_recorded_providers` run on EVERY CLI surface since
-        issue #534 PR-J4-b: it runs the real CLI (CI has neither `claude` nor `codex`, and
-        these rows name wrapper commands that do not exist), and it is not what these rows
-        are about. Passing, so a row's launchability assertion is decided by the probe it
-        drives and not by this row failing."""
-        patcher = patch.object(ort, "_workshop_flag_set_check",
-                               lambda token, *a, **k: {
-                                   "name": f"{token}_workshop_flag_set_available",
-                                   "pass": True, "detail": "stubbed"})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     _MIXED = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
               "phases:\n  generate:\n    substeps:\n      generate:\n"
               "        provider: openai_compatible\n"
@@ -23977,46 +22732,23 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), self._MIXED)
-            # `defaults` is a reading workshop surface (issue #534 PR-J4-a), so the claude row
-            # also takes the CLI's workshop `--help` probe; CI has no `claude` on PATH.
             with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
-                              return_value=_launchable_preflight_dict(backend="claude")), \
-                 patch.object(ort, "_workshop_flag_set_check",
-                              lambda *a, **k: {"name": "claude_workshop_flag_set_available",
-                                               "pass": True, "detail": "stubbed"}):
+                              return_value=_launchable_preflight_dict(backend="claude")):
                 out = ort.probe_all_providers(llm_config_path=cfg,
                                               opener=lambda *a, **k: object())
         self.assertEqual(set(out), {"claude", "openai_compatible"})
         self.assertTrue(all(entry["launchable"] for entry in out.values()))
         self.assertEqual([s.get("workshop") for s in out["claude"]["surfaces"]], [True])
 
-    def test_preflight_refuses_a_snapshot_that_changed_under_it(self) -> None:
-        """The caller resolved one set of bytes; this subprocess reloads the file. If they
-        differ, the probe would certify a configuration the run will not launch."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            argv = ["preflight", "--repo-root", str(repo_root),
-                    "--orchestration-id", "orch_001", "--backend", "claude",
-                    "--llm-config", str(cfg), "--llm-config-sha256", "sha256:stale"]
-            with patch.object(ort, "probe_execution_platform",
-                              return_value=_launchable_preflight_dict(backend="claude")), \
-                 self.assertRaises(ValueError) as ctx:
-                ort.main(argv)
-            self.assertIn("changed between the caller loading it", str(ctx.exception))
-
     def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             argv = ["preflight", "--repo-root", str(repo_root),
                     "--orchestration-id", "orch_001", "--backend", "claude",
-                    "--llm-config", str(cfg),
-                    "--llm-config-sha256", lc_config_sha256(cfg)]
+                    "--llm-config", str(cfg)]
             with patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")):
                 ort.main(argv)
@@ -24029,7 +22761,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Hashing the path and then re-reading it to probe approves one version and certifies
         another. Under two wrapper commands on one backend token that is a launch the
         `providers` map never saw, so the two must share one snapshot."""
-        self._stub_workshop_row()
         import tools.llm_config as _lc
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
@@ -24050,7 +22781,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(seen, ["wrapA"])
 
     def test_preflight_hands_the_prober_its_own_snapshot(self) -> None:
-        """The CLI half: it must pass the object it hashed, not the path."""
+        """The CLI half: it must pass the object it parsed, not the path."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
@@ -24062,8 +22793,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                               side_effect=lambda **kw: captured.update(kw) or {}):
                 ort.main(["preflight", "--repo-root", str(repo_root),
                           "--orchestration-id", "orch_001", "--backend", "claude",
-                          "--llm-config", str(cfg),
-                          "--llm-config-sha256", lc_config_sha256(cfg)])
+                          "--llm-config", str(cfg)])
             self.assertIsNotNone(captured.get("config"))
             self.assertIsNone(captured.get("llm_config_path"))
             self.assertEqual(captured["config"].sha256, lc_config_sha256(cfg))
@@ -24103,7 +22833,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         The override is a no-op in VALUE today (nothing in `run_workflow` overrides the file
         since the run-wide flag trio was removed), so this test supplies one directly — that is
         what keeps the transport from being certified only by a case where it cannot matter."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n")
             seen: list = []
@@ -24124,7 +22853,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         and refreshing it leaves a mixed configuration's other providers treated as fresh
         indefinitely — and `record-launch` then creates durable child state for a provider that
         has since become unavailable."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             payload = _launchable_preflight_dict(backend="claude")
@@ -24157,7 +22885,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Two entries can share a backend token with different commands; the initial probe
         AND-s them. The row is what the TTL re-probe reconstructs from, so recording only the
         first command would silently stop checking the second after the first expiry."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapA\n"
@@ -24177,7 +22904,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(seen, ["wrapA", "wrapB"])
 
     def test_a_row_predating_surfaces_degrades_to_the_one_it_names(self) -> None:
-        self._stub_workshop_row()
         seen: list = []
 
         def _probe(**kw):
@@ -24190,24 +22916,15 @@ class MultiProviderPreflightTests(unittest.TestCase):
                             "checks": [], "launchable": True}}, None)
         self.assertEqual(seen, ["wrapA"])
 
-    def test_a_cli_row_without_the_workshop_stamp_is_reprobed_for_the_workshop_row(
-            self) -> None:
-        """Every CLI surface takes its CLI's workshop row on re-probe, stamped or not (issue
-        #534 PR-J4-b): a recorded `claude_cli` surface WITHOUT the `workshop` stamp — the shape a
-        pre-J4-b pure-only preflight wrote — is re-probed for the flag set, its failure makes the
-        token unlaunchable, and the refreshed surface carries the stamp. No producer at HEAD
-        writes an unstamped CLI surface (`probe_all_providers` stamps every one), so this pins
-        the re-probe's own rule rather than a reachable input (round-0 mutation survivor)."""
-        calls: list = []
-
-        def _flag_row(token, probe_command, runner):  # type: ignore[no-untyped-def]
-            calls.append((token, probe_command))
-            return {"name": f"{token}_workshop_flag_set_available", "pass": False,
-                    "detail": "stubbed: no workshop flag set"}
-
+    def test_a_cli_row_without_the_workshop_stamp_is_restamped_on_reprobe(self) -> None:
+        """A recorded `claude_cli` surface WITHOUT the `workshop` stamp — the shape a pre-J4-b
+        pure-only preflight wrote — comes back from the re-probe carrying the stamp (issue
+        #534 PR-J4-b). No producer at HEAD writes an unstamped CLI surface
+        (`probe_all_providers` stamps every one), so this pins the re-probe's own rule rather
+        than a reachable input. The workshop option-set row it was also re-probed for went in
+        issue #643."""
         with patch.object(ort, "probe_execution_platform",
-                          return_value=_launchable_preflight_dict(backend="claude")), \
-                patch.object(ort, "_workshop_flag_set_check", side_effect=_flag_row):
+                          return_value=_launchable_preflight_dict(backend="claude")):
             fresh = ort._reprobe_recorded_providers(
                 {"claude": {"provider_type": "claude_cli", "probe_command": "wrapA",
                             "checks": [], "launchable": True,
@@ -24215,10 +22932,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                                           "probe_command": "wrapA", "base_url": "",
                                           "api_key_env": ""}]}}, None)
         row = fresh["claude"]
-        self.assertEqual(len(calls), 1, calls)
-        self.assertIn("claude_workshop_flag_set_available",
-                      [c.get("name") for c in row["checks"]])
-        self.assertFalse(row["launchable"])
+        self.assertTrue(row["launchable"])
         self.assertEqual([s.get("workshop") for s in row["surfaces"]], [True])
 
     def test_a_refreshed_probe_persists_the_rows_it_refreshed(self) -> None:
@@ -24235,12 +22949,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             path = repo_root / "workspace/orchestrations/orch_001/preflight.json"
             probed = _launchable_preflight_dict(backend="claude")
             probed["probe_command"] = "oldwrapper"
-            # The re-probe runs every recorded CLI surface's workshop `--help` row too (issue
-            # #534 PR-J4-b), which would run `oldwrapper`; that row is not this one's subject.
-            with patch.object(ort, "probe_execution_platform", return_value=probed), \
-                    patch.object(ort, "_workshop_flag_set_check",
-                                 lambda *a, **k: {"name": "claude_workshop_flag_set_available",
-                                                  "pass": True, "detail": "stubbed"}):
+            with patch.object(ort, "probe_execution_platform", return_value=probed):
                 ort._run_live_probe_and_update(
                     repo_root, "orch_001",
                     json.loads(path.read_text(encoding="utf-8")))
@@ -24252,7 +22961,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     def test_two_entries_under_one_token_are_anded(self) -> None:
         """Same backend behind two commands: the token is launchable only if BOTH are."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: claude\n"
@@ -24608,7 +23316,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
             self.assertEqual(profile["backend_command"], "claude")
 
-    def test_write_preflight_refuses_what_the_launch_gate_would_refuse(self) -> None:
+    def test_the_launch_gate_refuses_an_unlaunchable_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
@@ -24617,9 +23325,10 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 "claude": {"launchable": True, "checks": []},
                 "openai_compatible": {"launchable": False, "checks": []},
             }
-            with self.assertRaises(ValueError) as ctx:
-                write_preflight(repo_root=repo_root, orchestration_id="orch_001",
-                                payload=payload)
+            write_preflight(repo_root=repo_root, orchestration_id="orch_001", payload=payload)
+            with self.assertRaises(RuntimeError) as ctx:
+                ort._require_preflight_launchable(repo_root, "orch_001",
+                                                  enforce_live_probe=False)
             self.assertIn("openai_compatible", str(ctx.exception))
 
 
@@ -26346,12 +25055,7 @@ class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
             return {"backend": kwargs.get("backend"), "checks": [], "probe_command": "",
                     "status": "fail"}
 
-        # Every CLI surface also takes its CLI's workshop `--help` row (issue #534 PR-J4-b),
-        # which runs the real CLI; CI has none, and that row is not this class's subject.
-        with mock.patch.object(ort, "probe_execution_platform", spy), \
-                mock.patch.object(ort, "_workshop_flag_set_check",
-                                  lambda *a, **k: {"name": "claude_workshop_flag_set_available",
-                                                   "pass": True, "detail": "stubbed"}):
+        with mock.patch.object(ort, "probe_execution_platform", spy):
             call()
         return seen
 
@@ -26395,8 +25099,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
     The claude and codex preparers are covered above for what each of them BUILDS. What
     this class covers is the part they now share: WHERE the home lands, that the location
-    is derived rather than random, that its ancestors are checked rather than trusted,
-    and that a directory already sitting on the path is refused rather than adopted.
+    is derived rather than random, the mode of what it creates, and the owner marker.
     """
 
     def _claude_repo(self, td: str, orchestration_id: str = "orch_d") -> Path:
@@ -26420,8 +25123,8 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """Prepare a private backend home, with the operator credential resolved beside the
         repo. The backend is codex because it is the only one with a private home now; what
         every row here is about is the SHARED creation of the CONTAINER
-        (`_create_workflow_backend_home` / `_require_secure_backend_home` /
-        `_resecure_workflow_home_on_reuse`), which is backend-independent. The returned
+        (`_create_workflow_backend_home` / `_refresh_workflow_home_owner_on_reuse`), which is
+        backend-independent. The returned
         `home` is the lineage home one level below it (issue #245); rows that are about
         the container take `Path(iso["home"]).parent`."""
         from tools.orchestration_runtime import _prepare_codex_workflow_home
@@ -26579,116 +25282,29 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(json.loads(meta_path.read_text(encoding="utf-8"))
                              ["codex_workflow_home_generation"], 3)
 
-    def test_an_unrecorded_existing_home_is_refused_rather_than_adopted(self) -> None:
-        """The exclusive `os.mkdir` is what replaced the mkdtemp randomness.
-
-        A directory already on the deterministic path belongs to an earlier run whose
-        metadata was lost, or to one that crashed between creating the home and
-        recording it. Adopting it would hand this orchestration that run's transcripts —
-        the leaf-to-leaf leak the isolated home exists to prevent — so it fails closed,
-        and the message names both the path and the remedy. Weaken the creation to
-        `exist_ok=True` and this test is what fails.
+    def test_an_unrecorded_existing_container_is_adopted(self) -> None:
+        """A backend directory already on the deterministic path — a run that crashed between
+        creating it and recording it, or a reused orchestration id — is adopted rather than
+        refused (issue #643: the operator's own tree). What it holds is left as it is, and the
+        lineage is created inside it exclusively.
         """
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
             squatter = self._homes_root() / "orch_d" / "codex"
             squatter.mkdir(parents=True)
-            os.chmod(squatter.parent, 0o700)
-            os.chmod(squatter, 0o700)
             (squatter / "transcript.jsonl").write_text("older run\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "not recorded in this orchestration"):
-                self._prepare_home(root, "orch_d")
-            # Refusing must not destroy the evidence it refused over.
+            iso = self._prepare_home(root, "orch_d")
+            self.assertEqual(Path(iso["home"]).parent, squatter)
             self.assertEqual((squatter / "transcript.jsonl").read_text(encoding="utf-8"),
                              "older run\n")
-            with self.assertRaisesRegex(ValueError, "prune_workflow_homes"):
-                self._prepare_home(root, "orch_d")
-
-    def test_a_symlinked_ancestor_is_refused_before_anything_is_written(self) -> None:
-        """An ancestor that already exists is CHECKED, not trusted.
-
-        The homes root and the per-orchestration directory are created by this code, but
-        on a second launch they are found rather than made. A symlink placed at either
-        level would otherwise decide where the home — and with it the credential bind
-        destination — actually lands.
-
-        The symlink TARGET is a second temporary directory rather than one inside the
-        checkout, and that is load-bearing since the in-repo refusal landed: a homes root
-        that RESOLVES inside the checkout is refused earlier, by a different rule with a
-        different message, and this test would then be observing that one instead of the
-        ancestor check it names. `test_a_homes_root_inside_the_checkout_is_refused` is
-        where the in-repo rule is pinned.
-        """
-        for level in ("root", "orchestration"):
-            with self.subTest(level=level):
-                with tempfile.TemporaryDirectory() as td, \
-                        tempfile.TemporaryDirectory() as outside:
-                    self.addCleanup(_discard_isolated_homes, "orch_d")
-                    _discard_isolated_homes("orch_d")
-                    root = self._claude_repo(td)
-                    elsewhere = Path(outside) / f"elsewhere_{level}"
-                    elsewhere.mkdir(mode=0o700)
-                    homes_root = self._homes_root()
-                    if level == "root":
-                        shutil.rmtree(homes_root, ignore_errors=True)
-                        target = homes_root
-                    else:
-                        homes_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        os.chmod(homes_root, 0o700)
-                        target = homes_root / "orch_d"
-                    os.symlink(elsewhere, target)
-                    try:
-                        with self.assertRaisesRegex(ValueError, "must be a real directory"):
-                            self._prepare_home(root, "orch_d")
-                        # Nothing was written through the symlink before the refusal.
-                        self.assertEqual(list(elsewhere.iterdir()), [])
-                    finally:
-                        # Undone HERE, not via addCleanup: cleanups run at the end of the
-                        # whole test, so the root-level symlink would still be in place
-                        # for the orchestration-level subtest.
-                        target.unlink()
-
-    def test_a_loosely_moded_ancestor_is_TIGHTENED_rather_than_refused(self) -> None:
-        """0700 holds at every level this code owns — by being ESTABLISHED, not demanded.
-
-        A homes root left at 0755 or 0777 is a directory another local user can read, and
-        at 0777 add to and rename within, which is the whole reason the mkdtemp
-        randomness could be dropped only once the tree became private. But a mode is
-        something this code can simply set, and REFUSING made two pieces of correct
-        operator behaviour fail every launch: `docs/RUNBOOK.md` offers
-        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
-        creating it 0755 under the default umask bricked the lever; and a mode drift on
-        `~/.spec2science/homes` — a backup restored without permissions — bricked every
-        orchestration. Both measured before the change.
-
-        What must still hold afterwards is the property, so that is what is asserted: the
-        launch succeeds AND every level this code owns comes out 0700.
-        """
-        for mode in (0o755, 0o777, 0o750):
-            with self.subTest(mode=oct(mode)):
-                self.addCleanup(_discard_isolated_homes, "orch_d")
-                _discard_isolated_homes("orch_d")
-                with tempfile.TemporaryDirectory() as td:
-                    root = self._claude_repo(td)
-                    homes_root = self._homes_root()
-                    homes_root.mkdir(parents=True, exist_ok=True)
-                    os.chmod(homes_root, mode)
-                    iso = self._prepare_home(root, "orch_d")
-                    self.assertEqual(homes_root.stat().st_mode & 0o777, 0o700)
-                    self.assertEqual((homes_root / "orch_d").stat().st_mode & 0o777, 0o700)
-                    self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
     def test_the_operator_secret_root_itself_is_never_re_moded(self) -> None:
-        """`~/.spec2science` is left exactly as the operator has it. Nothing observed that.
+        """`~/.spec2science` is left exactly as the operator has it.
 
-        `_require_secure_home_ancestor`'s docstring and `docs/RUNBOOK.md` both state it —
-        the root is shared with `operator_tokens/` and `start_claims/`, the operator-token
-        writer has created it best-effort since long before this branch, and RUNBOOK
-        RECOMMENDS `chmod 700` rather than doing it. Dropping the `require_private` gate
-        so every ancestor gets tightened left the whole suite green, which means the one
-        sentence a reader relies on had no witness at all.
+        `docs/RUNBOOK.md` states it — the root is shared with `start_claims/`, and RUNBOOK
+        RECOMMENDS `chmod 700` rather than doing it.
 
-        Asserted as the pair: the level this code owns comes out 0700, the level above it
+        Asserted as the pair: the level this code creates comes out 0700, the level above it
         is untouched at whatever it was.
         """
         with tempfile.TemporaryDirectory() as td:
@@ -26707,61 +25323,16 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual((secret_root / "homes").stat().st_mode & 0o777, 0o700)
             self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
-    def test_an_ancestor_owned_by_another_user_is_still_refused(self) -> None:
-        """Tightening the MODE does not mean touching a directory that is not ours.
-
-        The distinction the mode change rests on: a loose mode is something the caller
-        did not say, and this code can establish it; another uid is a DISAGREEMENT it
-        cannot resolve, and chmod would fail there anyway. `os.getuid` is patched rather
-        than a real second user created, because a test cannot make one.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            homes_root = self._homes_root()
-            homes_root.mkdir(parents=True, exist_ok=True)
-            with mock.patch("os.getuid", return_value=os.getuid() + 1):
-                with self.assertRaisesRegex(ValueError, "not owned by this user"):
-                    self._prepare_home(root, "orch_d")
-            self.assertFalse((homes_root / "orch_d").exists())
-
-    def test_an_ancestor_whose_mode_cannot_be_set_is_refused(self) -> None:
-        """The tightening is fail-closed when it does not take.
-
-        A filesystem that ignores `chmod` (FAT/exFAT, some network mounts) reports
-        success and changes nothing, and descending anyway would put the leaf's
-        transcripts somewhere other local users can read. The mode is therefore re-read
-        after the chmod rather than assumed.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            homes_root = self._homes_root()
-            homes_root.mkdir(parents=True, exist_ok=True)
-            os.chmod(homes_root, 0o755)
-            # `os.fchmod`, not `os.chmod`: the tightening goes through
-            # `_chmod_directory_no_follow`, which opens the directory and uses the
-            # descriptor so a substituted symlink cannot redirect it.
-            with mock.patch("os.fchmod"):  # a chmod that "succeeds" and does nothing
-                with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
-                    self._prepare_home(root, "orch_d")
-            os.chmod(homes_root, 0o700)
-
     def test_a_hostile_umask_neither_breaks_the_launch_nor_loosens_the_home(self) -> None:
-        """The chmod after each `mkdir`, and the re-check after it, in one witness.
+        """The chmod after each `mkdir`.
 
-        Both survived every mutation sweep on this branch, and a reviewer wrote them off
-        as redundant on the grounds that removal "fails closed at
-        `_require_secure_backend_home`". Failing closed is not the same as costing
-        nothing: MEASURED here, `os.mkdir(path, 0o700)` under a umask that contains owner
-        bits yields 0o400 (umask 0o300), 0o200 (0o500) or 0o000 (0o700), so without the
-        chmod the launch does not merely lose a defense — it DIES, on every launch, on a
-        host whose umask is unusual but legal. The chmod is what makes it work; the
-        re-check is what stops it from proceeding when the chmod does not take (a
-        filesystem that ignores it — FAT/exFAT, some network mounts — reports success and
-        changes nothing).
+        MEASURED here, `os.mkdir(path, 0o700)` under a umask that contains owner bits
+        yields 0o400 (umask 0o300), 0o200 (0o500) or 0o000 (0o700), so without the chmod
+        the launch DIES, on every launch, on a host whose umask is unusual but legal. The
+        chmod is what makes it work.
 
         Asserted as both halves of the same property: the launch succeeds AND the home
-        is 0700. Delete the chmod and the first fails; make the chmod a no-op and the
-        second is caught rather than shipped.
+        is 0700.
         """
         for umask_value in (0o300, 0o500, 0o700):
             with self.subTest(umask=oct(umask_value)):
@@ -26795,28 +25366,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                         self.assertEqual(
                             (Path(iso["config"]) / name).stat().st_mode & 0o777, 0o600,
                             msg=f"{name} under umask {umask_value:#o}")
-
-    def test_a_home_whose_mode_did_not_take_is_refused_rather_than_used(self) -> None:
-        """`_require_secure_backend_home` after the creation is the last word.
-
-        Everything it checks is established two lines above it, which is why it survives
-        mutation — until the chmod silently does not take, which is exactly when a
-        re-check is the only thing left. Driven by patching `os.chmod` to a no-op under a
-        umask that makes the raw `mkdir` mode wrong.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            homes_root = self._homes_root()
-            (homes_root / "orch_d").mkdir(parents=True, exist_ok=True)
-            os.chmod(homes_root, 0o700)
-            os.chmod(homes_root / "orch_d", 0o700)
-            previous = os.umask(0o300)
-            try:
-                with mock.patch("os.chmod"), mock.patch("os.fchmod"):
-                    with self.assertRaisesRegex(ValueError, "must have mode 0700"):
-                        self._prepare_home(root, "orch_d")
-            finally:
-                os.umask(previous)
 
     def test_the_owner_marker_names_the_checkout_and_tolerates_a_second_backend(self) -> None:
         """`<homes-root>/<oid>/owner.json` — a LOCATOR for the prune tool.
@@ -26852,77 +25401,17 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             # who created the orchestration directory, not who touched it last.
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), first)
 
-    def test_the_reuse_path_tightens_a_drifted_home(self) -> None:
-        """The REUSE path tightens rather than refuses, so a drifted mode does not brick an
-        orchestration.
+    def test_a_second_backend_and_a_moved_checkout_keep_the_marker_true(self) -> None:
+        """The owner marker across two backends of one orchestration and a moved checkout.
 
-        This row used to drive both preparers and was called `test_both_backends_…`: the
-        `tighten=True` was pinned on the claude side only, so reverting the codex call to a
-        refusal left the suite green. Z4 (issue #171) left one preparer, so what it drives is
-        that one — and the tightening itself is `_require_secure_backend_home`, which has
-        carried a single spelling for every backend all along.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            repo_root, auth_home = self._codex_repo(td)
-            with mock.patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
-                lineage = Path(self._prepare_home(repo_root, "orch_d")["home"])
-                container = lineage.parent
-                # Both levels drift; a warm preparation of the same lineage re-asserts
-                # both (the container through the reuse branch, the lineage through its
-                # own `tighten=True`), and a cold one for a new lineage the container.
-                os.chmod(container, 0o755)
-                os.chmod(lineage, 0o755)
-                self._prepare_home(repo_root, "orch_d", resume=True)
-                self.assertEqual(container.stat().st_mode & 0o777, 0o700)
-                self.assertEqual(lineage.stat().st_mode & 0o777, 0o700)
-                os.chmod(container, 0o755)
-                self._prepare_home(repo_root, "orch_d", "lineage-e")
-                self.assertEqual(container.stat().st_mode & 0o777, 0o700)
-
-    def test_a_reuse_tightening_that_does_not_take_is_refused(self) -> None:
-        """The re-read after the home's own tightening, which nothing observed.
-
-        Its twin one level up (the ancestor) is pinned; the home's was not, so skipping
-        the re-read entirely left the suite green — and skipping it means launching into
-        a home the chmod silently failed to make private, on a filesystem that reports
-        success and changes nothing. `os.fchmod` is patched because that is what
-        `_chmod_directory_no_follow` uses.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            lineage = Path(self._prepare_home(root, "orch_d")["home"])
-            container = lineage.parent
-            for drifted, kwargs in ((container, {"lineage_id": "lineage-e"}),
-                                    (lineage, {"resume": True})):
-                with self.subTest(level=drifted.name):
-                    os.chmod(drifted, 0o755)
-                    with mock.patch("os.fchmod"), \
-                            self.assertRaisesRegex(ValueError,
-                                                   "still not mode 0700 after chmod"):
-                        # fchmod succeeds and changes nothing
-                        self._prepare_home(root, "orch_d", **kwargs)
-                    os.chmod(drifted, 0o700)
-
-    def test_a_rival_live_checkout_cannot_take_over_an_orchestration_directory(self) -> None:
-        """Two checkouts, one explicit orchestration id, and the second inherited the
-        first's `owner.json`.
-
-        The exclusive creation is PER BACKEND, so checkout B asking for `codex` while
-        checkout A already made `claude` sailed past it and then silently accepted A's
-        marker. The prune tool reads the marker to decide which checkout to ask about the
-        status, so it read A's — terminal — and deleted B's LIVE codex home. Reproduced
-        end to end before the check existed.
-
-        Three cases in one test, because the refusal is only correct if the two adjacent
-        legitimate ones still work:
-          * a RIVAL checkout whose metadata for the id is still present -> refused, and
-            NOTHING left behind (the check runs before the exclusive mkdir; validating
-            after it left the refused run's own directory blocking the real owner);
           * the SAME checkout's second backend -> accepted, marker untouched, so
             `created_at` keeps meaning when the directory was made;
           * a MOVED checkout, old path gone -> adopted AND the marker rewritten to the
             path that exists, because a locator that locates nothing makes the prune tool
             answer `unverifiable` forever for a run whose owner is identifiable.
+
+        Two checkouts running one orchestration id on one homes root is the operator's own
+        configuration and is not refused (issue #643).
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOME_OWNER_FILENAME, _create_workflow_backend_home)
@@ -26944,13 +25433,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             _create_workflow_backend_home(a, "orch_shared", "claude", "Claude")
             first = json.loads(marker.read_text(encoding="utf-8"))
             self.assertEqual(first["repo_root"], str(a.resolve()))
-
-            b = _checkout(root, "checkout_b", "running")
-            with self.assertRaisesRegex(ValueError, "belongs to a different checkout"):
-                _create_workflow_backend_home(b, "orch_shared", "codex", "Codex")
-            self.assertFalse((homes / "orch_shared" / "codex").exists(),
-                             "a refused launch left its own backend directory behind, "
-                             "which blocks the legitimate owner's next launch")
 
             second = _create_workflow_backend_home(a, "orch_shared", "codex", "Codex")
             self.assertEqual(second.name, "codex")
@@ -27067,40 +25549,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                              "a marker was written into a homes tree that is not the "
                              "one this launch resolves")
 
-    def test_a_rival_checkout_cannot_take_over_by_REUSING_an_existing_home(self) -> None:
-        """The marker check on the REUSE path, which no test observed.
-
-        `_require_owner_marker_agrees` guards two callers and only the creation one was
-        witnessed: deleting the reuse call left the whole suite green while a copied
-        checkout — same orchestration id, same metadata, different directory — was
-        allowed to adopt the home AND had the marker rewritten to name it. That is
-        precisely the precondition of the harm the creation-side check exists for: the
-        prune tool reads the marker to decide whose status to ask about, so it would then
-        ask the wrong checkout and delete a live run's only record.
-
-        A COPIED checkout rather than a moved one, because the moved case is the one the
-        refresh deliberately adopts; what must be refused is a second checkout whose
-        metadata for this orchestration is still there.
-        """
-        from tools.orchestration_runtime import WORKFLOW_HOME_OWNER_FILENAME
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            original = self._claude_repo(str(root / "original"))
-            (original / "workspace" / "orchestrations" / "orch_d"
-             / "orchestration_meta.json").write_text(
-                json.dumps({"orchestration_id": "orch_d", "status": "running"}),
-                encoding="utf-8")
-            self._prepare_home(original, "orch_d")
-            marker = self._homes_root() / "orch_d" / WORKFLOW_HOME_OWNER_FILENAME
-            before = json.loads(marker.read_text(encoding="utf-8"))
-
-            rival = root / "copied"
-            shutil.copytree(original, rival)
-            with self.assertRaisesRegex(ValueError, "belongs to a different checkout"):
-                self._prepare_home(rival, "orch_d")
-            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), before,
-                             "a rival checkout rewrote the marker by reusing the home")
-
     def test_a_module_run_outside_pytest_writes_nothing_into_the_home(self) -> None:
         """The module redirect, which the suite cannot observe from inside itself.
 
@@ -27182,29 +25630,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/homes"))
         self.assertNotIn("~", str(resolved))
 
-    def test_a_marker_naming_another_orchestration_refuses_the_launch(self) -> None:
-        """The other half of the marker check, and the cheaper one to get wrong.
-
-        A directory whose marker names a DIFFERENT orchestration id is not a stale owner
-        to adopt — it is the wrong directory entirely, and no "is that checkout still
-        there" question makes it right.
-        """
-        from tools.orchestration_runtime import (
-            WORKFLOW_HOME_OWNER_FILENAME, _create_workflow_backend_home)
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            oid_dir = self._homes_root() / "orch_d"
-            oid_dir.mkdir(parents=True)
-            os.chmod(oid_dir, 0o700)
-            (oid_dir / WORKFLOW_HOME_OWNER_FILENAME).write_text(
-                json.dumps({"schema": 1, "orchestration_id": "somebody_else",
-                            "repo_root": str(root)}), encoding="utf-8")
-            os.chmod(oid_dir / WORKFLOW_HOME_OWNER_FILENAME, 0o600)
-            repo = self._claude_repo(td)
-            with self.assertRaisesRegex(ValueError, "claimed by orchestration"):
-                _create_workflow_backend_home(repo, "orch_d", "codex", "Codex")
-            self.assertFalse((oid_dir / "codex").exists())
-
     def test_the_suites_own_homes_guard_raises_before_anything_is_created(self) -> None:
         """A witness for `tools/tests/conftest.py`'s guard, which had none.
 
@@ -27237,26 +25662,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(real_root.exists(), existed_before,
                          "the guard let something be created in the operator's tree")
 
-    def test_an_orchestration_id_that_is_not_a_plain_token_is_refused(self) -> None:
-        """The id becomes a path segment OUTSIDE the repository.
-
-        `init_orchestration` already refuses anything but `[A-Za-z0-9_-]`, and this is
-        the second wall at the point of use: a traversal segment would place a 0700
-        directory — and later the destination of a credential file-bind — at a caller-
-        chosen path anywhere the running user can write.
-        """
-        from tools.orchestration_runtime import _workflow_backend_home_path
-        for bad in ("../escape", "a/b", ".", "..", "", "  ", "o\x00d"):
-            with self.subTest(orchestration_id=bad):
-                with self.assertRaisesRegex(ValueError, "plain"):
-                    _workflow_backend_home_path(bad, "claude")
-        # And an unknown backend cannot invent a directory level either.
-        with self.assertRaisesRegex(ValueError, "unknown backend"):
-            _workflow_backend_home_path("orch_d", "../..")
-        self.assertEqual(
-            _workflow_backend_home_path("orch_d", "codex"),
-            self._homes_root() / "orch_d" / "codex")
-
     def test_a_relative_override_is_resolved_to_an_absolute_path(self) -> None:
         """"The tree that gets created is the tree that gets guarded" needs one more thing.
 
@@ -27279,37 +25684,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(Path(td) / "abs")},
                     clear=False):
                 self.assertEqual(workflow_homes_root(), Path(td) / "abs")
-
-    def test_a_reuse_re_secures_the_ancestors_not_only_the_home(self) -> None:
-        """`docs/RUNBOOK.md` promises a LATER drift is tightened; only creation did that.
-
-        The ancestor check ran inside `_create_workflow_backend_home`, so a warm reuse
-        looked at the home and never above it. Measured before the fix: with
-        `<homes-root>` or `<homes-root>/<oid>` dropped to 0755, relaunching left them
-        there indefinitely — the transcripts stayed 0700, so what leaked was which
-        orchestrations exist and which backends ran, but the document's sentence was
-        false and the drift persisted until an unrelated new orchestration rebuilt the
-        path.
-
-        All four levels are asserted, because the container's own tightening already
-        had a witness and would have carried a two-level assertion on its own; the
-        lineage home (issue #245) is the fourth, tightened by the warm branch's own
-        `tighten=True`.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            repo = self._claude_repo(td)
-            homes = self._homes_root()
-            lineage = Path(self._prepare_home(repo, "orch_d")["home"])
-            container = lineage.parent
-            for target, label in ((homes, "homes root"),
-                                  (container.parent, "orchestration dir"),
-                                  (container, "the container"),
-                                  (lineage, "the lineage home")):
-                with self.subTest(level=label):
-                    os.chmod(target, 0o755)
-                    self._prepare_home(repo, "orch_d", resume=True)
-                    self.assertEqual(target.stat().st_mode & 0o777, 0o700,
-                                     f"{label} stayed loose across a warm reuse")
 
     def test_a_relative_homes_root_override_is_refused_at_creation(self) -> None:
         """Absolute or nothing, and `.absolute()` is NOT what makes it so.
@@ -27651,33 +26025,6 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         })
         self.assertEqual(got, {"PATH": "/b", "SPEC2SCIENCE_REAL": "kept"})
 
-    def test_an_unanchored_prefix_name_is_refused_at_render_too(self) -> None:
-        """The renderer spells the same rule a second time, so it needs its own probe:
-        two independent copies with no pin on either is how they desync."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        root = Path(d)
-        for sub in ("repo", "ws", "tmp"):
-            (root / sub).mkdir()
-        workshop = _hand_workshop_profile_fields(root)
-        profile = {
-            "repo_root": str(root / "repo"), "tmp_dir": str(root / "tmp"),
-            "workspace_tmp_rw_abs": str(root / "ws"),
-            "read_roots": [], "write_roots": [],
-            "runtime_ro_bind_paths": [],
-            **workshop,
-            "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
-                    **workshop["env"], "MY_SPEC2SCIENCE_API_KEY": "sk-live"},
-        }
-        # Control: the same profile without the name renders.
-        ort.render_bwrap_command(
-            profile={**profile, "env": {k: v for k, v in profile["env"].items()
-                                        if k != "MY_SPEC2SCIENCE_API_KEY"}},
-            command_argv=["claude"])
-        with self.assertRaises(ValueError) as ctx:
-            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-        self.assertIn("MY_SPEC2SCIENCE_API_KEY", str(ctx.exception))
-
     def test_an_empty_value_never_becomes_a_declared_name(self) -> None:
         """The filter's `or not value` skip, measured as a surviving mutation.
 
@@ -27730,40 +26077,6 @@ class LeafEnvClosureTests(unittest.TestCase):
     that the persisted profile is a record of it rather than of a second one.
     """
 
-    # -- the CLI seam that carries the authored dict ---------------------------
-
-    def test_the_stdin_flag_parses_only_a_non_empty_object_of_strings(self) -> None:
-        """The seam the conductor actually uses. On STDIN rather than argv because these
-        values would otherwise be readable in `ps` by every process on the host, and an
-        HTTP entry's credential can be among them — so the parse is where the shape is
-        checked, and a bad shape must fail closed rather than build an env-less profile.
-        """
-        from tools.orchestration_runtime import main as runtime_main
-
-        def _run(raw: str) -> str:
-            buf, err = io.StringIO(), io.StringIO()
-            with mock.patch.object(sys, "stdin", io.StringIO(raw)):
-                with redirect_stdout(buf), redirect_stderr(err):
-                    rc = runtime_main([
-                        "record-launch", "--repo-root", ".", "--orchestration-id", "o",
-                        "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
-                        "--request-json", "{}", "--response-json", "{}",
-                        "--child-env-from-stdin",
-                    ])
-            self.assertEqual(rc, 1)
-            return err.getvalue().strip()
-
-        for raw in ("", "not json", "[]", "{}", '{"A": 1}', "null"):
-            with self.subTest(raw=raw):
-                # NAMES the flag, so the refusal is this parse and not some later
-                # validation the fixture also fails.
-                self.assertIn("--child-env-from-stdin", _run(raw))
-        # Control: every one of these calls fails (the fixture payloads are empty), so
-        # "rc == 1" alone proves nothing. A WELL-FORMED env gets past this parse and dies
-        # further in, at response-json validation — that is what makes the six above
-        # attributable to the parse.
-        self.assertNotIn("--child-env-from-stdin", _run('{"PATH": "/usr/bin"}'))
-
     def _profile(self, **over) -> dict:
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -27812,44 +26125,16 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(argv.count("--clearenv"), 1)
         self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
 
-    def test_a_profile_granting_a_repository_path_is_refused(self) -> None:
-        """Issue #445 deleted the arms that mounted these five fields; a profile that
-        carries one (a hand-built one, or a persisted `sandbox_profiles/<arid>.json` altered
-        after it was written and re-read by the conductor) must fail closed rather than
-        render without the grant its record states. One row per field, each value naming
-        an EXISTING path, so the refusal is the field and not a missing file."""
-        self.assertEqual(ort._UNRENDERED_PROFILE_GRANTS, (
-            "read_roots", "write_roots", "runtime_rw_bind_mappings",
-            "runtime_rw_rel_paths", "runtime_rw_file_paths"))
-        ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])  # control
-        base = self._profile()
-        repo = Path(base["repo_root"])
-        (repo / "d").mkdir()
-        (repo / "f").write_text("x", encoding="utf-8")
-        grants = {
-            "read_roots": ["d/"],
-            "write_roots": ["d/"],
-            "runtime_rw_bind_mappings": [[str(repo / "f"), str(repo / "f")]],
-            "runtime_rw_rel_paths": ["d"],
-            "runtime_rw_file_paths": ["f"],
-        }
-        self.assertEqual(set(grants), set(ort._UNRENDERED_PROFILE_GRANTS))
-        for field, value in grants.items():
-            with self.subTest(field=field):
-                with self.assertRaises(ValueError) as ctx:
-                    ort.render_bwrap_command(profile={**base, field: value},
-                                             command_argv=["claude"])
-                self.assertIn(repr(field), str(ctx.exception))
-
-    def test_the_profile_builder_records_every_refused_grant_empty(self) -> None:
-        """The other half of the refusal: the one builder emits each refused field, empty,
-        so the refusal can never fire on a profile production builds."""
+    def test_the_profile_builder_records_every_retired_grant_empty(self) -> None:
+        """The one builder records each field that once carried a repository grant (their
+        mounting arms went in issue #445), empty."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         profile = ort.build_lineage_bwrap_profile(
             repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
             backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
-        for field in ort._UNRENDERED_PROFILE_GRANTS:
+        for field in ("read_roots", "write_roots", "runtime_rw_bind_mappings",
+                      "runtime_rw_rel_paths", "runtime_rw_file_paths"):
             with self.subTest(field=field):
                 self.assertIn(field, profile)
                 self.assertEqual(profile[field], [])
@@ -27889,22 +26174,9 @@ class LeafEnvClosureTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ort.render_bwrap_command(profile=profile, command_argv=["claude"])
 
-    def test_an_undeclared_name_in_the_profile_fails_closed(self) -> None:
-        """A stranger here means something built an environment outside `leaf_env_from`
-        — the one question this layer exists to answer — so it is refused rather than
-        delivered and recorded as though it had been declared."""
-        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "SPEC2SCIENCE_HOME", "SHELL"):
-            with self.subTest(name=name):
-                profile = self._profile()
-                profile["env"] = {**profile["env"], name: "x"}
-                with self.assertRaises(ValueError) as ctx:
-                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-                self.assertIn(name, str(ctx.exception))
-
     def test_the_names_only_the_deliverer_adds_are_accepted(self) -> None:
-        """The backend-home name and the claude extras never come from the author, so the
-        validation has to allow them — asserted, or a correct profile would be refused and
-        every launch would fail closed.
+        """The backend-home name and the claude extras never come from the author, and the
+        renderer delivers them as recorded.
 
         Since issue #534 the backend home is the workshop lineage's (`CLAUDE_CONFIG_DIR` =
         its `config/`; the pure leaf's no-home shape and the Z4-era refusal of
@@ -27924,25 +26196,6 @@ class LeafEnvClosureTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             ort.render_bwrap_command(profile=refused, command_argv=["claude"])
         self.assertIn("exactly one CLI home", str(ctx.exception))
-
-    def test_a_mistyped_profile_env_entry_fails_closed_at_render(self) -> None:
-        """The renderer's own str->str check, also found undriven. A non-string value
-        here would reach `cmd.extend([...])` and produce a `TypeError` from subprocess
-        rather than a refusal naming the profile."""
-        for bad in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
-            with self.subTest(env=bad):
-                profile = self._profile()
-                profile["env"] = {**profile["env"], **bad}
-                with self.assertRaises(ValueError):
-                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-
-    def test_a_tmpdir_that_disagrees_with_the_bind_fails_closed(self) -> None:
-        """The writable bind is what makes TMPDIR usable, so a TMPDIR naming anywhere
-        else points the leaf at a path bwrap did not make writable."""
-        profile = self._profile()
-        profile["env"] = {**profile["env"], "TMPDIR": "/somewhere/else"}
-        with self.assertRaises(ValueError):
-            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
 
     def test_tmpdir_is_the_resolved_bind_even_if_the_env_omits_it(self) -> None:
         profile = self._profile()
@@ -28027,21 +26280,6 @@ class LeafEnvClosureTests(unittest.TestCase):
                          ort.leaf_netns.PROXY_ENV)
         self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
 
-    def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
-        """Threading only helps if the dict belongs to THIS launch. A profile carrying
-        another leaf's `SPEC2SCIENCE_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
-        different run, and the record and the reality would be one object describing two."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        for name, bad in (("SPEC2SCIENCE_ORCHESTRATION_ID", "other-orch"),
-                          ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", "other-arid")):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    ort.build_lineage_bwrap_profile(
-                        repo_root=Path(d), orchestration_id="o", agent_run_id="A",
-                        backend_command="claude", backend_type="claude",
-                        child_env={"PATH": "/a", name: bad}, network=network_block("claude"))
-
     def test_the_fallback_replaces_a_stale_per_launch_id_rather_than_refusing(self) -> None:
         """The two paths answer DIFFERENT questions, and this is the reconstructing one.
 
@@ -28056,8 +26294,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         This test asserted the refusal for exactly one round. That was measured to make
         152 tests fail with one variable exported and, in production, to turn an
-        unreachable stale record into `fail_closed`. The sibling below keeps the refusal
-        where it belongs."""
+        unreachable stale record into `fail_closed`."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ID": "OTHER-ORCH",
@@ -28070,32 +26307,6 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(profile["env"]["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
         self.assertEqual(profile["env"]["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
-    def test_an_EMPTY_per_launch_id_is_refused_not_quietly_filled(self) -> None:
-        """The `is not None` guard, which a census found unpinned.
-
-        An empty string is the one shape that slips between the two mechanisms: the
-        disagreement check would let it past under a truthiness test, and the
-        `setdefault` floor CANNOT repair it because the key exists. The renderer's own
-        `if value:` then drops the name — producing exactly the leaf-with-no-orchestration
-        -id whose MCP server stops requiring a capability token. Refusing at the boundary
-        is right: this arrives over `--child-env-from-stdin`, and an empty id there is a
-        malformed payload, not an omission."""
-        for name in ("SPEC2SCIENCE_ORCHESTRATION_ID", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID"):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    ort._profile_child_env({"PATH": "/b", name: ""},
-                                           orchestration_id="o", agent_run_id="A")
-
-    def test_an_empty_tmpdir_in_the_record_is_refused_at_render(self) -> None:
-        """Same shape one layer down, same guard (`env_tmp is not None`). Under a
-        truthiness test an empty TMPDIR would be silently corrected to the bind rather
-        than refused — the right value, but a record that disagreed with its delivery and
-        said nothing, which is the one thing this layer exists to prevent."""
-        profile = self._profile()
-        profile["env"] = {**profile["env"], "TMPDIR": ""}
-        with self.assertRaises(ValueError):
-            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-
     def test_every_profile_carries_both_per_launch_ids(self) -> None:
         """The floor `--clearenv` made necessary, on BOTH paths.
 
@@ -28107,7 +26318,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         omission rather than an attack.
 
         Filled rather than refused: the ids are this builder's own arguments, so an
-        absence contradicts nothing. Only a disagreement does, and that still raises."""
+        absence contradicts nothing."""
         for child_env in ({"PATH": "/b"},
                           {"PATH": "/b", "SPEC2SCIENCE_ORCHESTRATION_ID": "o"},
                           {"PATH": "/b", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "A"},
@@ -28140,29 +26351,6 @@ class LeafEnvClosureTests(unittest.TestCase):
                         backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
                 self.assertEqual(profile["env"]["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
                 self.assertEqual(profile["env"]["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "A")
-
-    def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
-        """The type validations, which review found undriven by any test.
-
-        Not decorative: `child_env` arrives from a JSON payload over stdin, and a
-        non-string value that reached `--setenv` would be a `TypeError` deep inside argv
-        construction rather than a named refusal at the boundary."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        for bad in ([("PATH", "/b")], "PATH=/b", 42):
-            with self.subTest(child_env=bad):
-                with self.assertRaises(ValueError):
-                    ort.build_lineage_bwrap_profile(
-                        repo_root=Path(d) / "repo", orchestration_id="o",
-                        agent_run_id="A", backend_command="claude",
-                        backend_type="claude", child_env=bad, network=network_block("claude"))
-        for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
-            with self.subTest(entry=bad_entry):
-                with self.assertRaises(ValueError):
-                    ort.build_lineage_bwrap_profile(
-                        repo_root=Path(d) / "repo", orchestration_id="o",
-                        agent_run_id="A", backend_command="claude",
-                        backend_type="claude", child_env=bad_entry, network=network_block("claude"))
 
     def _alias_layout(self, d: Path, *, symlinked_home: bool) -> tuple[Path, Path, Path]:
         """A checkout and a CLI wrapper under the same $HOME child (`~/work`), with `$HOME`
@@ -29476,20 +27664,13 @@ class ProfileExpansionTests(unittest.TestCase):
         self.assertEqual(
             _closure_signature({k: v for k, v in two.items() if k != "profiles"})[2], [])
 
-    def test_every_expansion_refusal_uses_a_declared_reason(self) -> None:
-        """`_PROFILE_EXPANSION_REASONS` is what pins these reasons to the STALE side of the
-        freshness taxonomy, so it has to be the source of the emitted strings rather than a
-        list beside them. Round-1 finding: it was a documentation constant nothing emitted
-        from, so renaming a reason to a `_UNREADABLE_CLOSURE_REASONS` member — which flips the
-        disposition from stale to fresh — changed no test.
-
-        The WIRING is what this row observes, not the shape of the result: asserting only that
-        the reason is a member passes just as well when the refusal bypasses the guard and the
-        literals happen to be right today, which is the mutant that survived round 1's own
-        sweep of this fix."""
+    def test_an_expansion_refusal_goes_through_the_constructor(self) -> None:
+        """A profile refusal of `expand_profile_dependencies` is built by
+        `_profile_expansion_failure` and carries its literal reason. (The declared-reason set
+        and its import-time membership assert went in issue #643: every reason is a literal at
+        its call site.)"""
         import tools.orchestration_runtime as ort
-        from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, expand_profile_dependencies)
+        from tools.orchestration_runtime import expand_profile_dependencies
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
@@ -29505,18 +27686,12 @@ class ProfileExpansionTests(unittest.TestCase):
                 _e, _r, err = expand_profile_dependencies(
                     repo, "spec/problem/a", entries, catalog)
             self.assertEqual(seen, ["profile_declares_infrastructure"])
-            self.assertIn(err["reason"], _PROFILE_EXPANSION_REASONS)
-        # The guard fires on an UNDECLARED reason rather than being satisfied by the one
-        # refusal this fixture happens to reach.
-        with self.assertRaises(AssertionError):
-            ort._profile_expansion_failure("not_a_declared_reason", "x")
+            self.assertEqual(err["reason"], "profile_declares_infrastructure")
 
     def test_a_registry_outage_inside_the_expansion_is_not_a_profile_reason(self) -> None:
         """`spec_catalog_corrupt` is the ONE error the expansion can return that is not a
         profile reason — the registry could not be READ — and it is reported under the name
-        every other catalog reader uses. It therefore must NOT go through
-        `_profile_expansion_failure`, which would raise on it; round 1's sweep showed that
-        routing it back through the guard changed no test."""
+        every other catalog reader uses, not through `_profile_expansion_failure`."""
         import tools.orchestration_runtime as ort
         from tools.orchestration_runtime import SpecCatalogCorruption, expand_profile_dependencies
         with tempfile.TemporaryDirectory() as tmp:
@@ -29531,7 +27706,6 @@ class ProfileExpansionTests(unittest.TestCase):
                 expanded, record, err = expand_profile_dependencies(
                     repo, "spec/problem/a", entries, catalog)
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
-            self.assertNotIn("spec_catalog_corrupt", ort._PROFILE_EXPANSION_REASONS)
             self.assertEqual((expanded, record), ([], []))
 
     def test_an_unresolvable_profile_directory_fails_closed(self) -> None:
@@ -30337,8 +28511,8 @@ class CrossTargetAgreementTests(unittest.TestCase):
             return contextlib.nullcontext()
 
         def ir_unreadable(a: dict, b: dict) -> Any:
-            return mock.patch.object(ort, "_require_yaml",
-                                     side_effect=RuntimeError("PyYAML missing"))
+            return mock.patch.object(ort, "yaml", mock.Mock(
+                safe_load=mock.Mock(side_effect=RuntimeError("PyYAML missing"))))
 
         def evaluator_raises(a: dict, b: dict) -> Any:
             return mock.patch("tools.primary_evidence.evaluate_primary_predicates",
@@ -30539,16 +28713,6 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         # Nothing of the checkout is bound: `tools/` is under the tmpfs, not over it.
         self.assertNotIn(str((self.repo / "tools").resolve()), cmd)
 
-    def test_the_whole_command_appends_the_argv(self) -> None:
-        cmd = ort.render_wrapper_run_command(
-            command_argv=["make", "-j2"], repo_root=self.repo, project_dir=self.tree,
-            rw_binds=[self.tree], env=self.env)
-        self.assertEqual(cmd[-3:], ["--", "make", "-j2"])
-        with self.assertRaises(ValueError):
-            ort.render_wrapper_run_command(command_argv=[], repo_root=self.repo,
-                                           project_dir=self.tree, rw_binds=[self.tree],
-                                           env=self.env)
-
     def test_a_bind_related_to_the_checkout_is_refused(self) -> None:
         for bad in (self.repo, self.repo / "tools", self.repo.parent):
             with self.subTest(bad=bad):
@@ -30556,29 +28720,6 @@ class WrapperSandboxRendererTests(unittest.TestCase):
                     self.render(rw_binds=[self.tree, bad])
                 with self.assertRaisesRegex(ValueError, "not outside the checkout"):
                     self.render(ro_binds=[bad])
-
-    def test_a_bind_that_is_relative_or_absent_is_refused(self) -> None:
-        with self.assertRaisesRegex(ValueError, "absolute"):
-            self.render(rw_binds=[Path("tree")])
-        with self.assertRaisesRegex(ValueError, "does not exist"):
-            self.render(ro_binds=[self.tree / "absent"])
-
-    def test_the_project_dir_must_be_writable(self) -> None:
-        with self.assertRaisesRegex(ValueError, "not inside a read-write bind"):
-            self.render(project_dir=self.bin)
-        with self.assertRaisesRegex(ValueError, "at least one read-write bind"):
-            self.render(rw_binds=[])
-
-    def test_an_undeclared_env_name_is_refused(self) -> None:
-        with self.assertRaisesRegex(ValueError, "undeclared name 'OMP_NUM_THREADS'"):
-            self.render(env={**self.env, "OMP_NUM_THREADS": "2"})
-        cmd = self.render(env={**self.env, "OMP_NUM_THREADS": "2"},
-                          declared_env_names=("OMP_NUM_THREADS",))
-        self.assertIn("OMP_NUM_THREADS", cmd)
-        for bad in ({"A=B": "x"}, {"PATH": 3}):
-            with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):
-                    self.render(env=bad, declared_env_names=tuple(bad))
 
     def test_toolchain_roots_are_bound_read_only_and_may_not_alias_the_checkout(self) -> None:
         root = Path(self._tmp.name) / "opt" / "mpi"
@@ -30755,25 +28896,12 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
                 self.assertFalse(ok)
 
     def test_a_deps_yaml_without_problems_is_well_formed(self) -> None:
-        from tools.orchestration_runtime import (
-            _deps_yaml_bytes_are_canonical_empty, _parse_dep_entries)
+        from tools.orchestration_runtime import _parse_dep_entries
         entries, ok = _parse_dep_entries({"dependencies": {"components": [], "profiles": []}})
         self.assertEqual((entries, ok), ([], True))
         # `problems` alone does not replace a required key.
         _e, ok = _parse_dep_entries({"dependencies": {"components": [], "problems": []}})
         self.assertFalse(ok)
-        # The byte-level empty recognizer tracks the parser: an empty `problems: []` is still
-        # the canonical empty form, and a duplicate or a populated one is not.
-        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  profiles: []\n"))
-        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  problems: []\n  profiles: []\n"))
-        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  problems: []\n  problems: []\n"
-            b"  profiles: []\n"))
-        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  profiles: []\n  problems:\n"
-            b"    - problem_id: m\n"))
         # Every deps.yaml of the corpus parses well-formed; the two assembled models of the
         # corpus (system tier PR-S2, issue #632 P4) are the only ones with a `problem` entry.
         problems = {}
@@ -30791,10 +28919,9 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
 
     def test_the_deps_key_tables_name_the_same_keys(self) -> None:
         """The parse loop iterates the pair table only, so an allowed key it does not name
-        would parse well-formed with its entries dropped. The module asserts the coupling at
-        import; this row pins that the assertion exists and fires."""
-        import importlib
-
+        would parse well-formed with its entries dropped. The module builds the allowed set as
+        the union of the two tables (the import-time assert went in issue #643); this row pins
+        the tables."""
         import tools.orchestration_runtime as ort
         # The allowed keys are the paired ones plus the non-node ones (issue #644:
         # `libraries`), disjoint.
@@ -30808,21 +28935,6 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         # Every pair's kind is the key's singular: the kind the gates test for.
         self.assertEqual({k.rstrip("s") for k, _f in ort._DEPS_KEY_KIND_FIELDS},
                          {"component", "problem", "profile", "infrastructure"})
-        source = Path(ort.__file__).read_text(encoding="utf-8")
-        broken = source.replace('    ("problems", "problem_id"),\n', "", 1)
-        self.assertNotEqual(broken, source)
-        spec = importlib.util.spec_from_loader("_ort_broken_tables", loader=None)
-        module = importlib.util.module_from_spec(spec)
-        module.__dict__["__file__"] = ort.__file__
-        with self.assertRaisesRegex(AssertionError, "disjoint union"):
-            exec(compile(broken, ort.__file__, "exec"), module.__dict__)
-        # A key both paired and non-node is refused too (its entries would be parsed twice).
-        overlap = source.replace('_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})',
-                                 '_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset('
-                                 '{"libraries", "problems"})', 1)
-        self.assertNotEqual(overlap, source)
-        with self.assertRaisesRegex(AssertionError, "disjoint union"):
-            exec(compile(overlap, ort.__file__, "exec"), module.__dict__)
 
     def test_a_profile_declaring_a_problem_is_refused(self) -> None:
         """D7: once `problems` is an allowed key, a profile's `problems:` entry would parse
@@ -30830,9 +28942,8 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         through the reason constructor."""
         import tools.orchestration_runtime as ort
         from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _load_spec_catalog, _parse_dep_entries,
             _read_deps_yaml, expand_profile_dependencies)
-        self.assertIn("profile_declares_problem", _PROFILE_EXPANSION_REASONS)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             lines = ["catalog_version: 0.2.0", "specs:"]

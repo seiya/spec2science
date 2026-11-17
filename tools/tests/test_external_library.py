@@ -258,9 +258,8 @@ class ProfileTests(unittest.TestCase):
 
     def test_a_profile_declaring_libraries_is_refused(self) -> None:
         from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _load_spec_catalog, _parse_dep_entries,
             _read_deps_yaml, expand_profile_dependencies)
-        self.assertIn("profile_declares_libraries", _PROFILE_EXPANSION_REASONS)
         for declared in (True, False):
             with self.subTest(declared=declared), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
@@ -609,16 +608,14 @@ class BuildAndRunTests(_Fixture):
                    **xl.loader_env(FORTRAN_CPU, xl.library_dirs(resolved), {})}
             prefix = render_wrapper_sandbox_prefix(
                 repo_root=repo_root, project_dir=src, rw_binds=[work],
-                toolchain_ro_roots=xl.bind_roots(resolved), env=env,
-                declared_env_names=("LD_LIBRARY_PATH",))
+                toolchain_ro_roots=xl.bind_roots(resolved), env=env)
             proc = subprocess.run([*prefix, "sh", "-c", script], cwd=src, capture_output=True,
                                   text=True, check=False)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertEqual(" ".join(proc.stdout.split()), _EXPECTED)
             # Without the bound directories the library is not reachable in the sandbox.
             unbound = render_wrapper_sandbox_prefix(
-                repo_root=repo_root, project_dir=src, rw_binds=[work], env=env,
-                declared_env_names=("LD_LIBRARY_PATH",))
+                repo_root=repo_root, project_dir=src, rw_binds=[work], env=env)
             proc = subprocess.run([*unbound, "sh", "-c", f"{work}/obj/x"], cwd=src,
                                   capture_output=True, text=True, check=False)
             self.assertNotEqual(proc.returncode, 0)

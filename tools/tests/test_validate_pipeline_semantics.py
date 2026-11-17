@@ -26627,39 +26627,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             for v in validate(repo_root=repo_root, workspace_root="workspace",
                               require_orchestration=True))
 
-    def test_an_http_exemption_with_a_profile_still_on_disk_is_flagged(self) -> None:
-        """Tolerance (the workshop twin is `test_an_http_workshop_record_with_a_profile_is_flagged`).
-        A genuine HTTP launch writes none, so one existing alongside the claim is how a
-        tampered CLI record would escape the profile-content audit."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            self._make_http(repo_root, keep_profile=True)
-            self.assertTrue([v for v in self._pure_violations(repo_root)
-                             if "sandbox_profiles/" in v and "exists" in v])
-
-    def test_an_http_exemption_needs_the_row_to_agree_with_the_response(self) -> None:
-        """On a workshop record (the one leaf model since issue #534 PR-J4-b) and, as
-        tolerance, on a record the retired pure leaf wrote."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_http_workshop(repo_root)
-            self.assertEqual([v for v in self._workshop_violations(repo_root)
-                              if "agent_backend must be an http provider" in v], [])
-            self._patch_row(repo_root, agent_backend="claude")
-            self.assertTrue([v for v in self._workshop_violations(repo_root)
-                             if "agent_backend must be an http provider" in v])
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            self._make_http(repo_root)
-            self._patch_row(repo_root, agent_backend="claude")
-            self.assertTrue([v for v in self._pure_violations(repo_root)
-                             if "agent_backend must be an http provider" in v])
-
     def test_a_cli_pure_launch_still_needs_one(self) -> None:
         """The control: the exemption is not "a missing profile is fine" — for a CLI workshop
         record, and as tolerance for a record the retired pure leaf wrote."""
@@ -26682,11 +26649,11 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self.assertTrue([v for v in self._pure_violations(repo_root)
                              if "sandbox profile missing" in v])
 
-    def test_the_exemption_needs_both_the_transport_and_an_http_provider(self) -> None:
-        """Either half alone is a CLI launch that dropped its profile — on a workshop record,
-        and as tolerance on a record the retired pure leaf wrote."""
-        for kwargs in ({"backend": "claude"},                    # transport claimed, CLI token
-                       {"transport": "cli"}):                    # HTTP token, no transport mark
+    def test_the_exemption_needs_the_http_transport_mark(self) -> None:
+        """An HTTP provider token without the transport mark is a CLI launch that dropped its
+        profile — on a workshop record, and as tolerance on a record the retired pure leaf
+        wrote."""
+        for kwargs in ({"transport": "cli"},):                   # HTTP token, no transport mark
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
                 self._build_tree(repo_root)
@@ -26703,24 +26670,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self.assertTrue(
                     [v for v in self._pure_violations(repo_root)
                      if "sandbox profile missing" in v], msg=str(kwargs))
-
-    def test_an_http_pure_launch_may_not_reference_a_profile(self) -> None:
-        """Tolerance (the workshop twin is the second half of
-        `test_an_http_workshop_record_with_a_profile_is_flagged`). A response claiming both is incoherent: it says nothing was confined and then points
-        at the confinement."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            self._make_http(repo_root, keep_profile=True)
-            resp_path = (self._orch_root(repo_root) / "launches"
-                         / f"{self._ARID}.response.json")
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["sandbox_profile_ref"] = (
-                f"workspace/orchestrations/{self._ORCH}/sandbox_profiles/{self._ARID}.json")
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
-            self.assertTrue([v for v in self._pure_violations(repo_root)
-                             if "must NOT reference a sandbox profile" in v])
 
     def _make_workshop(self, repo_root: Path, *, workshop_prompt: bool = True,
                        profile: dict | None = None, provider: str = "claude_cli") -> None:
@@ -26817,83 +26766,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self.assertEqual(self._all_violations(repo_root),
                                  self._all_violations(control))
 
-    def test_a_malformed_http_workshop_record_is_flagged(self) -> None:
-        from tools.leaf_contract import HTTP_FILE_TOOLS
-        ops = ["derive", "compile", "lint", "syntax_check", "run"]
-        cases = {
-            "an endpoint": ({"claude_mcp_config": [{"server": "wrapper", "url": "u"}]},
-                            "must name no wrapper endpoint"),
-            "a codex endpoint": ({"codex_mcp_config": [{"server": "wrapper", "url": "u"}]},
-                                 "must name no wrapper endpoint"),
-            "no lineage stamp": ({"workshop_lineage_id": None}, "as workshop_lineage_id"),
-            "another lineage": ({"workshop_lineage_id": "other"}, "as workshop_lineage_id"),
-            "no home stamp": ({"http_workflow_home": None}, "http_workflow_home"),
-            "a home of another lineage": (
-                {"http_workflow_home": f"/tmp/homes/{self._ORCH}/http/other"},
-                "http_workflow_home"),
-            "a claude home": (
-                {"http_workflow_home": f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"},
-                "http_workflow_home"),
-            "a subset surface": ({"http_tool_surface": [*HTTP_FILE_TOOLS, *ops[:-1]]},
-                                 "must declare the tool surface"),
-            "a superset surface": ({"http_tool_surface": [*HTTP_FILE_TOOLS, *ops, "check_ir"]},
-                                   "must declare the tool surface"),
-            "a reading surface": ({"http_tool_surface": list(HTTP_FILE_TOOLS)},
-                                  "must declare the tool surface"),
-            "no surface": ({"http_tool_surface": None}, "must declare the tool surface"),
-        }
-        for label, (response, needle) in cases.items():
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                self._build_tree(repo_root)
-                self._make_http_workshop(repo_root, **response)
-                self.assertTrue([v for v in self._workshop_violations(repo_root)
-                                 if needle in v], (label, self._workshop_violations(repo_root)))
-
-    def test_an_http_workshop_record_with_a_profile_is_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_http_workshop(repo_root)
-            (self._orch_root(repo_root) / "sandbox_profiles" / f"{self._ARID}.json"
-             ).write_text("{}", encoding="utf-8")
-            self.assertTrue([v for v in self._workshop_violations(repo_root)
-                             if "sandbox_profiles/" in v and "exists" in v])
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_http_workshop(repo_root, sandbox_profile_ref="workspace/x.json")
-            self.assertTrue([v for v in self._workshop_violations(repo_root)
-                             if "must NOT reference a sandbox profile" in v])
-
-    def test_a_reading_http_record_may_declare_no_operation(self) -> None:
-        """The surface is the KIND's, read from the request's pair against
-        `WORKSHOP_OPS_BY_PAIR` — never from the request — so a judging pair's surface naming an
-        operation is flagged and its five-tool surface passes."""
-        from tools.leaf_contract import HTTP_FILE_TOOLS
-        from tools.validate_pipeline_semantics import _http_workshop_record_violations
-        request = {"step": "validate", "substep": "judge", "workshop_lineage_id": "L"}
-        good = {"workshop_lineage_id": "L", "http_workflow_home": "/h/o/http/L",
-                "http_tool_surface": list(HTTP_FILE_TOOLS)}
-        self.assertEqual(_http_workshop_record_violations(request, good), [])
-        self.assertTrue(_http_workshop_record_violations(
-            request, {**good, "http_tool_surface": [*HTTP_FILE_TOOLS, "derive"]}))
-        compile_request = {**request, "step": "compile", "substep": "generate"}
-        self.assertEqual(_http_workshop_record_violations(
-            compile_request, {**good, "http_tool_surface": [*HTTP_FILE_TOOLS, "check_ir"]}),
-            [])
-
-    def test_a_pure_http_record_is_not_held_to_the_workshop_stamps(self) -> None:
-        """Tolerance: a record the retired HTTP pure leaf wrote carries no lineage stamps and
-        no tool surface, and is not refused for it."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            self._make_http(repo_root, backend="anthropic_api")
-            self.assertEqual([v for v in self._pure_violations(repo_root)
-                              if "http workshop" in v], [])
-
     def _workshop_violations(self, repo_root: Path) -> list[str]:
         return [v for v in validate(repo_root=repo_root, workspace_root="workspace",
                                     require_orchestration=True)
@@ -26926,55 +26798,22 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 doc[key] = value
         path.write_text(json.dumps(doc), encoding="utf-8")
 
-    def _endpoint_violations(self, repo_root: Path) -> list[str]:
-        return [v for v in self._workshop_violations(repo_root) if "wrapper endpoint" in v]
-
-    def test_a_producing_workshop_record_naming_no_endpoint_is_flagged(self) -> None:
-        """Issue #534 step 3: the endpoint a launch was served is decided by the KIND of its
-        pair. A producing record that names none was served no operation, which is not a
-        producing launch."""
-        for field in ("claude_mcp_config", "codex_mcp_config"):
-            with self.subTest(served_by=field), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                self._build_tree(repo_root)
-                self._make_workshop(repo_root)
-                self._edit_launch(repo_root, "response",
-                                  **{"claude_mcp_config": None,
-                                     field: [{"server": "wrapper", "url": "u"}]})
-                self.assertEqual(self._endpoint_violations(repo_root), [])
+    def test_a_workshop_profile_without_a_network_block_is_the_resume_barrier(self) -> None:
+        """The audit's one remaining profile arm, driven through `validate`: a profile recorded
+        before issue #534 step 4 carries no `network` block, and the record is refused by
+        name."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
             self._make_workshop(repo_root)
-            self._edit_launch(repo_root, "response", claude_mcp_config=None)
-            self.assertEqual(len(self._endpoint_violations(repo_root)), 1)
-            self.assertIn("producing launch (generate.generate) must name its wrapper "
-                          "endpoint", self._endpoint_violations(repo_root)[0])
-
-    def test_a_reading_workshop_record_naming_an_endpoint_is_flagged(self) -> None:
-        """The other direction: a judging pair's lineage is served no operation, so a record
-        of one naming an endpoint is a reviewer that held the wrapper. The kind is read from
-        the REQUEST's pair, so a response cannot choose it. Every reading pair: the three
-        judges and, since issue #534 PR-J4-a, the diagnostician's four."""
-        from tools.leaf_contract import (
-            WORKSHOP_DIAGNOSE_PAIRS,
-            WORKSHOP_READING_LAUNCH_PAIRS,
-        )
-        self.assertEqual(len(WORKSHOP_READING_LAUNCH_PAIRS), 7)
-        self.assertLessEqual(WORKSHOP_DIAGNOSE_PAIRS, WORKSHOP_READING_LAUNCH_PAIRS)
-        for step, substep in sorted(WORKSHOP_READING_LAUNCH_PAIRS):
-            with self.subTest(pair=f"{step}.{substep}"), \
-                    tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                self._build_tree(repo_root)
-                self._make_workshop(repo_root)
-                self._edit_launch(repo_root, "request", step=step, substep=substep)
-                found = self._endpoint_violations(repo_root)
-                self.assertEqual(len(found), 1, found)
-                self.assertIn(f"reading launch ({step}.{substep}) must name no wrapper "
-                              "endpoint (got claude_mcp_config)", found[0])
-                self._edit_launch(repo_root, "response", claude_mcp_config=None)
-                self.assertEqual(self._endpoint_violations(repo_root), [])
+            path = self._orch_root(repo_root) / "sandbox_profiles" / f"{self._ARID}.json"
+            self.assertEqual([v for v in self._workshop_violations(repo_root)
+                              if "network block" in v], [])
+            body = json.loads(path.read_text(encoding="utf-8"))
+            del body["network"]
+            path.write_text(json.dumps(body), encoding="utf-8")
+            self.assertTrue([v for v in self._workshop_violations(repo_root)
+                             if "carries no network block" in v and "start a fresh run" in v])
 
     def test_a_workshop_record_disagreeing_with_its_prompt_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -27026,97 +26865,14 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self.assertEqual(len(found), 1, found)
             self.assertIn(f"must carry {line!r}", found[0])
 
-    def test_a_workshop_record_with_another_profile_shape_is_flagged(self) -> None:
-        home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
-        good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
-                "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                "workdir": f"{home}/tree", "env": {"CLAUDE_CONFIG_DIR": f"{home}/config"},
-                "runtime_rw_credential_mapping": ["/operator/.credentials.json",
-                                                  f"{home}/config/.credentials.json"]}
-        for label, change in (("read-only", {"readonly": True}),
-                              ("a write root", {"write_roots": ["workspace"]}),
-                              ("a third bind", {"runtime_rw_bind_paths": [
-                                  f"{home}/config", f"{home}/tree", "/tmp/x"]}),
-                              ("two homes", {"runtime_rw_bind_paths": [
-                                  f"{home}/config", "/tmp/elsewhere/tree"],
-                                  "workdir": "/tmp/elsewhere/tree"}),
-                              ("another lineage", {"runtime_rw_bind_paths": [
-                                  "/tmp/homes/x/claude/OTHER/config",
-                                  "/tmp/homes/x/claude/OTHER/tree"],
-                                  "workdir": "/tmp/homes/x/claude/OTHER/tree"}),
-                              ("an unnormalized spelling", {"runtime_rw_bind_paths": [
-                                  f"{home}/x/../config", f"{home}/x/../tree"],
-                                  "workdir": f"{home}/x/../tree"}),
-                              # The lineage NAME is right here, so only the normalization
-                              # test can refuse it.
-                              ("an unnormalized spelling of the right lineage", {
-                                  "runtime_rw_bind_paths": [
-                                      f"{home}/../{self._ARID}/config",
-                                      f"{home}/../{self._ARID}/tree"],
-                                  "workdir": f"{home}/../{self._ARID}/tree"}),
-                              ("workdir config", {"workdir": f"{home}/config"}),
-                              ("no leaf_mode", {"leaf_mode": None}),
-                              ("the credential mapped into the tree", {
-                                  "runtime_rw_credential_mapping": [
-                                      "/operator/.credentials.json",
-                                      f"{home}/tree/.credentials.json"]}),
-                              ("no credential mapping", {
-                                  "runtime_rw_credential_mapping": None}),
-                              ("no CLI home", {"env": {}}),
-                              ("the CLI home on the tree", {
-                                  "env": {"CLAUDE_CONFIG_DIR": f"{home}/tree"}}),
-                              ("both CLI homes", {"env": {
-                                  "CLAUDE_CONFIG_DIR": f"{home}/config",
-                                  "CODEX_HOME": f"{home}/config"}})):
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                self._build_tree(repo_root)
-                self._make_workshop(repo_root, profile={**good, **change})
-                self.assertTrue(any("workshop launch sandbox profile" in v
-                                    for v in self._workshop_violations(repo_root)), label)
-
-    def test_a_codex_workshop_profile_is_judged_by_its_own_family(self) -> None:
-        """Issue #534 step 2 PR-2: a codex workshop profile declares `CODEX_HOME` = `config/`,
-        remounts exactly its `auth.json` and `config.toml` read-only, and binds no credential
-        read-write — and each other shape is refused, the claude credential mapping among them."""
-        from tools.validate_pipeline_semantics import _workshop_profile_violations
-        home = f"/tmp/homes/{self._ORCH}/codex/{self._ARID}"
-        net = netns_record_fields("codex", "codex")
-        good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
-                "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                "workdir": f"{home}/tree", "env": {"CODEX_HOME": f"{home}/config", **net["env"]},
-                "network": net["network"], "rendered_command": net["rendered_command"],
-                "runtime_ro_bind_mappings": [["/operator/auth.json", f"{home}/config/auth.json"],
-                                             [f"{home}/config/config.toml",
-                                              f"{home}/config/config.toml"]]}
-        request = {"workshop_lineage_id": self._ARID, "workshop_provider": "codex_cli"}
-        self.assertEqual(_workshop_profile_violations(good, request), [])
-        for label, change in (
-                ("the claude credential mapping", {"runtime_rw_credential_mapping": [
-                    "/operator/.credentials.json", f"{home}/config/.credentials.json"]}),
-                ("no ro mappings", {"runtime_ro_bind_mappings": []}),
-                ("auth.json into the tree", {"runtime_ro_bind_mappings": [
-                    ["/operator/auth.json", f"{home}/tree/auth.json"],
-                    [f"{home}/config/config.toml", f"{home}/config/config.toml"]]}),
-                ("a third mapping", {"runtime_ro_bind_mappings": [
-                    *good["runtime_ro_bind_mappings"], ["/x", f"{home}/config/x"]]}),
-                ("CODEX_HOME on the tree", {"env": {"CODEX_HOME": f"{home}/tree"}}),
-                ("both CLI homes", {"env": {"CODEX_HOME": f"{home}/config",
-                                            "CLAUDE_CONFIG_DIR": f"{home}/config"}})):
-            with self.subTest(case=label):
-                self.assertTrue(_workshop_profile_violations({**good, **change}, request),
-                                label)
-
-    def test_the_cli_home_table_is_the_runtime_s(self) -> None:
+    def test_the_lineage_home_table_is_the_runtime_s(self) -> None:
         from tools import llm_config
         from tools import orchestration_runtime as ort_
         from tools import leaf_contract
-        from tools.validate_pipeline_semantics import _WORKSHOP_PROFILE_HOME_ENV
-        self.assertEqual(_WORKSHOP_PROFILE_HOME_ENV, ort_.WORKSHOP_PROFILE_HOME_ENV)
-        # Issue #534 PR-J3-b: the audit reads the provider -> lineage-home table itself
+        # Issue #534 PR-J3-b: the provider -> lineage-home table
         # (`leaf_contract.WORKSHOP_LINEAGE_BACKENDS`). Every provider that runs a workshop leaf has a
-        # row; a CLI's row is its backend token (the profile family the audit compares), and
-        # each row names a home the runtime prepares.
+        # row; a CLI's row is its backend token (the profile family), and each row names a home
+        # the runtime prepares.
         self.assertEqual(set(leaf_contract.WORKSHOP_LINEAGE_BACKENDS), {
             p for p in llm_config.PROVIDER_CAPABILITIES
             if llm_config.CAP_WORKSHOP in llm_config.PROVIDER_CAPABILITIES[p]})
@@ -27126,75 +26882,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self.assertEqual(backend, llm_config.PROVIDER_BACKEND_TOKENS[provider])
             else:
                 self.assertEqual(backend, "http")
-
-    def test_a_profile_of_the_other_family_than_the_request_s_provider_is_flagged(self) -> None:
-        """Round 3 of step 2 PR-2: a codex profile under a request naming `claude_cli` (and the
-        reverse) was `[]` once the family came from the profile's env alone — red on
-        origin/main, where every workshop profile had to carry the claude credential."""
-        from tools.validate_pipeline_semantics import _workshop_profile_violations
-        codex_home = f"/tmp/homes/{self._ORCH}/codex/{self._ARID}"
-        claude_home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
-        codex = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
-                 "write_roots": [], "runtime_rw_bind_paths": [f"{codex_home}/config",
-                                                              f"{codex_home}/tree"],
-                 "workdir": f"{codex_home}/tree",
-                 "env": {"CODEX_HOME": f"{codex_home}/config",
-                         **netns_record_fields("codex", "codex")["env"]},
-                 **{k: v for k, v in netns_record_fields("codex", "codex").items() if k != "env"},
-                 "runtime_ro_bind_mappings": [
-                     ["/operator/auth.json", f"{codex_home}/config/auth.json"],
-                     [f"{codex_home}/config/config.toml", f"{codex_home}/config/config.toml"]]}
-        claude = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
-                  "write_roots": [], "runtime_rw_bind_paths": [f"{claude_home}/config",
-                                                               f"{claude_home}/tree"],
-                  "workdir": f"{claude_home}/tree",
-                  "env": {"CLAUDE_CONFIG_DIR": f"{claude_home}/config",
-                          **netns_record_fields("claude", "claude")["env"]},
-                  **{k: v for k, v in netns_record_fields("claude", "claude").items()
-                     if k != "env"},
-                  "runtime_rw_credential_mapping": ["/operator/.credentials.json",
-                                                    f"{claude_home}/config/.credentials.json"]}
-        for profile, own, other in ((codex, "codex_cli", "claude_cli"),
-                                    (claude, "claude_cli", "codex_cli")):
-            with self.subTest(own=own):
-                request = {"workshop_lineage_id": self._ARID}
-                self.assertEqual(_workshop_profile_violations(
-                    profile, {**request, "workshop_provider": own}), [])
-                for named in (other, "anthropic_api"):
-                    self.assertTrue(any("workshop_provider" in v for v in
-                                        _workshop_profile_violations(
-                                            profile, {**request, "workshop_provider": named})),
-                                    named)
-                # A step-1 record names no provider (the field came with step 2 PR-1): it claims
-                # nothing to disagree with, and is not refused for it.
-                self.assertEqual(_workshop_profile_violations(profile, request), [])
-
-    def test_a_workshop_profile_under_the_checkout_or_without_a_lineage_is_flagged(self) -> None:
-        for label in ("under the checkout", "no lineage in the request"):
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                self._build_tree(repo_root)
-                home = repo_root / "lineage" / self._ARID
-                profile = {"agent_run_id": self._ARID, "readonly": False,
-                           "leaf_mode": "workshop", "write_roots": [],
-                           "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                           "workdir": f"{home}/tree",
-                           "runtime_rw_credential_mapping": [
-                               "/operator/.credentials.json",
-                               f"{home}/config/.credentials.json"]}
-                if label == "under the checkout":
-                    self._make_workshop(repo_root, profile=profile)
-                    expected = "must lie outside the checkout"
-                else:
-                    self._make_workshop(repo_root)
-                    req_path = (self._orch_root(repo_root) / "launches"
-                                / f"{self._ARID}.request.json")
-                    req = json.loads(req_path.read_text(encoding="utf-8"))
-                    del req["workshop_lineage_id"]
-                    req_path.write_text(json.dumps(req), encoding="utf-8")
-                    expected = "names no workshop_lineage_id"
-                self.assertTrue(any(expected in v for v in self._workshop_violations(repo_root)),
-                                label)
 
     def test_a_workshop_prompt_whose_request_is_unreadable_is_flagged(self) -> None:
         """The request half defaults to "not workshop" when its file is gone, so the prompt
@@ -27231,12 +26918,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             req_path.write_text(json.dumps(req), encoding="utf-8")
             self.assertTrue(any("workshop-launch mismatch" in v
                                 for v in self._workshop_violations(repo_root)))
-
-    def test_http_pure_leaf_backends_matches_the_runtime(self) -> None:
-        """The token set is duplicated here (this module may not import the runtime); the two
-        must not drift, or a provider added there would fail this gate."""
-        from tools.orchestration_runtime import _HTTP_PROVIDER_TOKENS
-        self.assertEqual(vps._HTTP_LEAF_BACKENDS, frozenset(_HTTP_PROVIDER_TOKENS))
 
     def test_pure_request_with_nonpure_prompt_flagged(self) -> None:
         """Tolerance: the request/prompt agreement still holds a pure record to it."""
@@ -27276,23 +26957,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 encoding="utf-8")
             self.assertTrue(
                 any("prompt_contract_version" in v for v in self._pure_violations(repo_root)))
-
-    def test_pure_record_writable_sandbox_profile_flagged(self) -> None:
-        # Tolerance: the audit's pure arm still holds a record the retired pure leaf wrote to
-        # the read-only profile. A pure launch provisioned through the generic (writable/non-readonly) sandbox path
-        # must be caught.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            sbx_path = self._orch_root(repo_root) / "sandbox_profiles" / f"{self._ARID}.json"
-            sbx = json.loads(sbx_path.read_text(encoding="utf-8"))
-            sbx["readonly"] = False
-            sbx["write_roots"] = ["workspace/pipelines/x/source/s/src/"]
-            sbx_path.write_text(json.dumps(sbx), encoding="utf-8")
-            violations = self._pure_violations(repo_root)
-            self.assertTrue(any("sandbox profile must be readonly" in v for v in violations))
-            self.assertTrue(any("sandbox profile write_roots must be []" in v for v in violations))
 
     def test_pure_record_missing_marker_flagged(self) -> None:
         # Positive test for the sweep's pure marker set: strip a required NON-sentinel marker
@@ -27349,9 +27013,9 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     # hook layer that read the manifests went in PR-1 — so each is a record checked against
     # itself, and PR-2 stops writing all three.
     #
-    # What must SURVIVE is the pair that describes something real: the sandbox profile
-    # (`readonly`, `write_roots == []`), which the kernel enforces through bwrap, and the
-    # terminal row's `output_refs == []`, which is the claim the host's own bundle writer
+    # What must SURVIVE is the pair that describes something real: the sandbox profile,
+    # which the kernel enforces through bwrap (its shape is admitted at spawn since issue
+    # #643; the audit reads only its presence and its network block), and the terminal row's `output_refs == []`, which is the claim the host's own bundle writer
     # contradicts if it is wrong.
     #
     # Since issue #534 PR-J4-b no pure record is written; these rows hold the audit's pure arm
@@ -27389,27 +27053,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._build_tree(repo_root)
             self._make_pr2_pure(repo_root)
             self.assertEqual(self._pure_violations(repo_root), [])
-
-    def test_the_readonly_sandbox_profile_is_still_required_without_them(self) -> None:
-        """The surviving half, checked on the SAME workspace the row above passes on — so a
-        deletion that silenced the pure audit altogether fails here."""
-        for mutation, expected in (
-            ({"readonly": False}, "must be readonly"),
-            ({"write_roots": ["workspace/"]}, "write_roots must be []"),
-        ):
-            with self.subTest(mutation=sorted(mutation)), \
-                    tempfile.TemporaryDirectory() as tmp:
-                    repo_root = Path(tmp)
-                    self._build_tree(repo_root)
-                    self._make_pr2_pure(repo_root)
-                    sbx = (self._orch_root(repo_root) / "sandbox_profiles"
-                           / f"{self._ARID}.json")
-                    doc = json.loads(sbx.read_text(encoding="utf-8"))
-                    doc.update(mutation)
-                    sbx.write_text(json.dumps(doc), encoding="utf-8")
-                    self.assertTrue(
-                        any(expected in v for v in self._pure_violations(repo_root)),
-                        self._pure_violations(repo_root))
 
     def test_a_pure_pass_row_must_still_declare_no_output_refs_without_them(self) -> None:
         """The PASS row's `output_refs` is exactly `[]` — on a workshop record (the host
@@ -29324,70 +28967,6 @@ class SourceFingerprintTests(unittest.TestCase):
                 repo, repo / "workspace" / "pipelines" / self._NK / "zz_no_target" / "p1"),
                 frozenset())
 
-
-
-class PreflightBlockTests(unittest.TestCase):
-    """What the validator reads of `preflight.json` (issue #447, D1): status, both
-    `can_launch_*` flags and a `checks` list. The `multi_agent` feature state and check it
-    used to require are read by nothing — a past document that still carries them, either
-    way, is neither required nor refused."""
-
-    def _preflight_violations(self, preflight: dict[str, object]) -> list[str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # The tree `test_passes_with_orchestration_when_required` validates clean, so a
-            # preflight violation below is the only one the document can cause.
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=(
-                    "module shallow_water2d_model\n"
-                    "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
-                    "implicit none\ncontains\nsubroutine solve(flag)\n"
-                    "  logical, intent(out) :: flag\n"
-                    "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
-                    "end subroutine solve\nend module shallow_water2d_model\n"),
-                runner_text=(
-                    "program shallow_water2d_runner\nimplicit none\nwrite(*,*) 'ok'\n"
-                    "end program shallow_water2d_runner\n"),
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            _create_minimal_orchestration_tree(repo_root)
-            path = repo_root / "workspace" / "orchestrations" / "orch_test_001" / "preflight.json"
-            _write_json(path, preflight)
-            violations = validate(
-                repo_root=repo_root, workspace_root="workspace", require_orchestration=True)
-        return [v for v in violations if "preflight.json" in v]
-
-    _CURRENT = {
-        "status": "pass", "backend": "claude",
-        "can_launch_step_agents": True, "can_launch_substep_agents": True,
-        "checks": [{"name": "claude_help_probe_available", "pass": True}],
-    }
-
-    def test_a_document_without_feature_states_is_accepted(self) -> None:
-        self.assertEqual(self._preflight_violations(dict(self._CURRENT)), [])
-
-    def test_a_past_document_with_multi_agent_false_is_accepted(self) -> None:
-        past = {**self._CURRENT, "feature_states": {"multi_agent": False},
-                "checks": [{"name": "multi_agent_enabled", "pass": False}]}
-        self.assertEqual(self._preflight_violations(past), [])
-
-    def test_the_remaining_conditions_still_refuse(self) -> None:
-        for label, doc, needle in (
-            ("checks dict", {**self._CURRENT, "checks": {}}, "checks must be list"),
-            ("checks absent", {k: v for k, v in self._CURRENT.items() if k != "checks"},
-             "checks must be list"),
-            ("status fail", {**self._CURRENT, "status": "fail"}, "status must be pass"),
-            ("step flag false", {**self._CURRENT, "can_launch_step_agents": False},
-             "can_launch_step_agents must be true"),
-            ("substep flag false", {**self._CURRENT, "can_launch_substep_agents": False},
-             "can_launch_substep_agents must be true"),
-        ):
-            with self.subTest(label):
-                found = self._preflight_violations(doc)
-                self.assertTrue(any(needle in v for v in found), found)
 
 
 class CompileIrDirTests(unittest.TestCase):

@@ -239,8 +239,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             if name in SUITE_OWNED_ENV and os.environ.get(name) == operator_value:
                 # Undecidable by VALUE, and only for these two. The suite sets them itself
                 # AFTER the strip, so an operator who exported the value the suite happens
-                # to use — `SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1` is the suite's
-                # own — cannot be told apart here from the suite having set it.
+                # to use cannot be told apart here from the suite having set it.
                 #
                 # The exemption is narrow ON PURPOSE, and the first version of it was NOT.
                 # Skipping these names unconditionally is how a real defect got read as a

@@ -21,42 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-# fcntl is POSIX-only. Used by Adv-24 to serialize agent_runs.jsonl
-# duplicate-check + append against concurrent finalizers. On non-POSIX
-# platforms the lock degrades to a no-op (single-process workflows are the
-# only supported configuration there).
-try:
-    import fcntl as _fcntl  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover — non-POSIX
-    _fcntl = None  # type: ignore[assignment]
+# fcntl serializes agent_runs.jsonl duplicate-check + append against concurrent
+# finalizers (Adv-24). The product runs on POSIX: every leaf launch already imports
+# fcntl unconditionally (`tools/workshop_tree.py`).
+import fcntl as _fcntl
 
-# Codex round 25 F1 → round 27 F1: PyYAML is required by the dependency-
-# readiness paths (`_read_deps_yaml`, `_load_spec_catalog_from_bytes`) but
-# NOT by recovery commands (`set-status`, `record-timeout`,
-# `workflow-launch-check` for leaf nodes, etc.). Module-level import would
-# brick every CLI command when the package is missing — that expanded the
-# blast radius from a localized feature failure to a full control-plane
-# outage. Use a lazy resolver instead so:
-#   - paths that parse YAML get an actionable RuntimeError when the package
-#     is missing (distinct from missing repo data, with install hint),
-#   - all other commands (status updates, audit reads, cleanup) remain
-#     usable without PyYAML installed.
-
-
-def _require_yaml() -> Any:
-    """Lazy PyYAML resolver. Raises a distinct RuntimeError when PyYAML is
-    not installed so the diagnostic is "install PyYAML" rather than
-    "deps.yaml missing/unparseable" (Codex round 25 F1 + round 27 F1)."""
-    try:
-        import yaml as _yaml_mod
-    except ImportError as exc:  # pragma: no cover — install gap
-        raise RuntimeError(
-            "tools.orchestration_runtime: PyYAML is required for parsing "
-            "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`. "
-            "Recovery commands (set-status, record-timeout, etc.) that do "
-            "not parse YAML remain usable without it."
-        ) from exc
-    return _yaml_mod
+import yaml
 
 try:
     from tools import leaf_netns
@@ -206,57 +176,10 @@ def _read_deps_yaml(repo_root: Path, spec_ref: Any) -> dict[str, Any] | None:
         return None
     if not deps_path.is_file():
         return None
-    # Codex round 27 F1: resolve PyYAML BEFORE the try-block so its
-    # install-required `RuntimeError` propagates to the caller. Catching it
-    # here would silently turn "package missing" into "deps.yaml unparseable"
-    # and let dependency_readiness fall through to its "no deps" branch.
-    yaml_mod = _require_yaml()
     try:
-        return yaml_mod.safe_load(deps_path.read_text(encoding="utf-8"))
+        return yaml.safe_load(deps_path.read_text(encoding="utf-8"))
     except Exception:
         return None
-
-
-# A single canonical empty-deps line: `  <key>: []` for one of the deps keys (2-space indent,
-# empty list). Keyed on the same key vocabulary as `_parse_dep_entries` (byte-level, no parse).
-_EMPTY_DEPS_LINE_RE = re.compile(r"^  (components|problems|profiles|infrastructure): \[\]$")
-
-
-def _deps_yaml_bytes_are_canonical_empty(deps_bytes: bytes) -> bool:
-    """Codex round 34 F1 (+ R1/M3a): a CONSERVATIVE byte-level recognizer for the canonical
-    empty-deps form of `deps.yaml`. Returns True only when the file declares, under a single
-    `dependencies:` key, an empty list `[]` for BOTH required keys `components` / `profiles`
-    and — optionally — the `problems` key and the R1 `infrastructure` key, in ANY ordering, with
-    NO other key and NO populated list. Any deviation (extra keys, populated lists, exotic YAML syntax) returns
-    False so the caller falls back to full YAML parsing.
-
-    This lets `_compute_initial_dependency_readiness` recognize a true leaf without invoking
-    PyYAML, so a brand-new no-deps orchestration remains launchable during a controller
-    packaging issue. Intentionally strict: false negatives are safe (caller parses with PyYAML if
-    available, else fails closed); false positives would be a fail-open (orchestration treated as
-    leaf when it actually has deps). Extending it to the empty `infrastructure: []` variant keeps
-    an R1 leaf (a harness node, or any node that spells out an empty infrastructure list)
-    launchable in the PyYAML-unavailable mode — the byte form must track `_parse_dep_entries`.
-    """
-    text = deps_bytes.decode("utf-8", errors="ignore")
-    significant: list[str] = []
-    for raw_line in text.splitlines():
-        # Strip trailing whitespace and inline comments.
-        line = raw_line.split("#", 1)[0].rstrip()
-        if line.strip() == "":
-            continue
-        significant.append(line)
-    if not significant or significant[0] != "dependencies:":
-        return False
-    seen_keys: set[str] = set()
-    for line in significant[1:]:
-        m = _EMPTY_DEPS_LINE_RE.match(line)
-        if m is None or m.group(1) in seen_keys:  # non-empty/unknown key, or a duplicate
-            return False
-        seen_keys.add(m.group(1))
-    # Both required keys present (infrastructure optional); the regex already bounds the key set
-    # to the allowed vocabulary, so no unknown key can slip through.
-    return _DEPS_YAML_REQUIRED_KEYS <= seen_keys
 
 
 class SpecCatalogCorruption(Exception):
@@ -268,10 +191,11 @@ class SpecCatalogCorruption(Exception):
 
 
 @lru_cache(maxsize=16)
-def _load_spec_catalog_from_bytes(
-    content_bytes: bytes,
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    """Parse `spec_catalog.yaml` bytes into `(spec_kind, spec_id) → versions`.
+def _spec_catalog_entries_from_bytes(content_bytes: bytes) -> tuple[dict[str, Any], ...]:
+    """The mapping entries of `spec_catalog.yaml`'s `specs:` list, as parsed (callers must not
+    mutate them). The one parse of the catalog: `_load_spec_catalog` (versions),
+    `_spec_ref_candidates` (spec directories) and `_catalog_family_index` (families) each read
+    these entries with their own tolerances.
 
     Codex round 26 F1: cache keyed on FILE CONTENT bytes (not mtime).
     Restore/copy workflows that preserve mtime while changing content
@@ -293,11 +217,6 @@ def _load_spec_catalog_from_bytes(
             "resolution requires the canonical registry; this is a "
             "repository-wide outage, not a normal dependency miss."
         )
-    # Codex round 27 F1: resolve PyYAML BEFORE the try-block so a missing
-    # package raises `RuntimeError` to the caller instead of being swallowed
-    # as "catalog unparseable → empty dict" (which would make every
-    # `_matching_dep_versions` call return [] and fail readiness silently).
-    yaml_mod = _require_yaml()
     # Codex round 33 F2: catalog parse/schema problems propagate as a
     # distinct `SpecCatalogCorruption` exception rather than being
     # downgraded to `{}` (which made downstream resolution treat
@@ -307,7 +226,7 @@ def _load_spec_catalog_from_bytes(
     # dependency miss). Distinct failure mode matches the treatment of
     # malformed deps.yaml (`deps_yaml_malformed_schema`).
     try:
-        doc = yaml_mod.safe_load(content_bytes.decode("utf-8"))
+        doc = yaml.safe_load(content_bytes.decode("utf-8"))
     except Exception as exc:
         raise SpecCatalogCorruption(
             f"spec_catalog.yaml could not be parsed as YAML: {exc}"
@@ -322,10 +241,17 @@ def _load_spec_catalog_from_bytes(
             "spec_catalog.yaml is missing the canonical `specs:` list "
             f"(found {type(specs).__name__})"
         )
+    return tuple(entry for entry in specs if isinstance(entry, dict))
+
+
+@lru_cache(maxsize=16)
+def _load_spec_catalog_from_bytes(
+    content_bytes: bytes,
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Parse `spec_catalog.yaml` bytes into `(spec_kind, spec_id) → versions`: entries whose
+    three fields are strings, stripped, an entry with an empty one dropped."""
     grouped: dict[tuple[str, str], list[str]] = {}
-    for entry in specs:
-        if not isinstance(entry, dict):
-            continue
+    for entry in _spec_catalog_entries_from_bytes(content_bytes):
         kind = entry.get("spec_kind")
         sid = entry.get("spec_id")
         ver = entry.get("spec_version")
@@ -334,12 +260,7 @@ def _load_spec_catalog_from_bytes(
         kind_token = kind.strip()
         sid_token = sid.strip()
         ver_token = ver.strip()
-        # Codex round 15 F2: reject catalog entries with path-unsafe tokens.
-        if not (
-            _is_safe_path_token(kind_token)
-            and _is_safe_path_token(sid_token)
-            and _is_safe_path_token(ver_token)
-        ):
+        if not (kind_token and sid_token and ver_token):
             continue
         grouped.setdefault((kind_token, sid_token), []).append(ver_token)
     out: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -350,7 +271,17 @@ def _load_spec_catalog_from_bytes(
 
 
 def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, ...]]:
-    """Read catalog bytes each call and dispatch to a content-keyed cache.
+    """`(spec_kind, spec_id) → versions` of the catalog (`_load_spec_catalog_from_bytes`)."""
+    return _load_spec_catalog_from_bytes(_spec_catalog_bytes(repo_root_str))
+
+
+def _spec_catalog_entries(repo_root: Path | str) -> tuple[dict[str, Any], ...]:
+    """The catalog's entries (`_spec_catalog_entries_from_bytes`)."""
+    return _spec_catalog_entries_from_bytes(_spec_catalog_bytes(str(repo_root)))
+
+
+def _spec_catalog_bytes(repo_root_str: str) -> bytes:
+    """Read catalog bytes each call; the parsers above cache on the content.
 
     Codex round 26 F1: previously keyed on `(repo_root, mtime_ns)`, which
     could be bypassed by edits that preserve mtime (restore-from-cache,
@@ -377,17 +308,21 @@ def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, .
             "repository-wide outage, not a normal dependency miss."
         )
     try:
-        content = catalog_path.read_bytes()
+        return catalog_path.read_bytes()
     except OSError as exc:
         raise SpecCatalogCorruption(
             f"spec_catalog.yaml at {catalog_path} is unreadable: {exc}"
         ) from exc
-    return _load_spec_catalog_from_bytes(content)
+
+
+def _clear_spec_catalog_caches() -> None:
+    _spec_catalog_entries_from_bytes.cache_clear()
+    _load_spec_catalog_from_bytes.cache_clear()
 
 
 # Preserve the existing `_load_spec_catalog.cache_clear()` call surface used by
-# tests; delegate to the content-keyed inner cache.
-_load_spec_catalog.cache_clear = _load_spec_catalog_from_bytes.cache_clear  # type: ignore[attr-defined]
+# tests; delegate to the content-keyed inner caches.
+_load_spec_catalog.cache_clear = _clear_spec_catalog_caches  # type: ignore[attr-defined]
 
 
 def resolve_spec_ref_for(
@@ -398,8 +333,7 @@ def resolve_spec_ref_for(
     The dependency closure driver (`tools/run_workflow.py --with-deps`) needs
     the spec_ref PATH of each dependency node so it can run that node's own
     workflow. `_load_spec_catalog` only retains versions per `(kind, spec_id)`
-    and drops paths, so this is a separate, path-preserving read of the same
-    canonical registry.
+    and drops paths, so this reads the paths of the same parsed entries.
 
     The spec_ref is the dirname of the entry's `deps_path`
     (e.g. `spec/.../advdiff1d_linear/deps.yaml` → `spec/.../advdiff1d_linear`);
@@ -410,9 +344,6 @@ def resolve_spec_ref_for(
     `controlled_spec.md`, not in the directory path). When multiple entries for
     the same `(kind, spec_id)` resolve to DIFFERENT directories, that ambiguity
     is fail-closed (returns None) rather than silently picking one.
-
-    `spec_kind` / `spec_id` are validated with `_is_safe_path_token` before any
-    path use, consistent with the rest of the dependency-resolution layer.
     """
     found = _spec_ref_candidates(repo_root, spec_kind, spec_id)
     if len(found) != 1:
@@ -434,30 +365,12 @@ def _spec_ref_candidates(
     distinction so `DerivationResolver.spec_ref` can refuse an ambiguous entry (a definitive
     registry defect, `spec_ref_unresolved`) while a genuinely-absent one is answered as such. Raises ``SpecCatalogCorruption``
     on a missing/unparseable registry, matching ``resolve_spec_ref_for``."""
-    if not (_is_safe_path_token(spec_kind) and _is_safe_path_token(spec_id)):
+    if not (_is_identifier_token(spec_kind) and _is_identifier_token(spec_id)):
         return set()
-    catalog_path = Path(repo_root) / "spec" / "registry" / "spec_catalog.yaml"
-    if not catalog_path.is_file():
-        raise SpecCatalogCorruption(
-            f"spec_catalog.yaml is missing at {catalog_path}. Dependency "
-            "resolution requires the canonical registry."
-        )
-    yaml_mod = _require_yaml()
-    try:
-        doc = yaml_mod.safe_load(catalog_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        raise SpecCatalogCorruption(
-            f"spec_catalog.yaml could not be parsed as YAML: {exc}"
-        ) from exc
-    if not isinstance(doc, dict) or not isinstance(doc.get("specs"), list):
-        raise SpecCatalogCorruption(
-            "spec_catalog.yaml is missing the canonical `specs:` list"
-        )
+    entries = _spec_catalog_entries(repo_root)
     repo_root_resolved = Path(repo_root).resolve()
     found: set[str] = set()
-    for entry in doc["specs"]:
-        if not isinstance(entry, dict):
-            continue
+    for entry in entries:
         if entry.get("spec_kind") != spec_kind or entry.get("spec_id") != spec_id:
             continue
         ref_source = entry.get("deps_path") or entry.get("controlled_spec_path")
@@ -630,19 +543,6 @@ def _matching_dep_versions(
     return matched
 
 
-def _resolve_dep_version(
-    catalog: dict[tuple[str, str], tuple[str, ...]],
-    kind: str,
-    spec_id: str,
-    constraint: str | None,
-) -> str | None:
-    """Return the highest matching version, or None if no version matches.
-    Kept for callers that need a single representative version; readiness
-    verification uses `_matching_dep_versions`."""
-    matched = _matching_dep_versions(catalog, kind, spec_id, constraint)
-    return matched[0] if matched else None
-
-
 # Required deps.yaml `dependencies:` keys (present in every deps.yaml). `infrastructure` is still
 # PARSED, so that a declaration is refused by name at spec-input
 # (`spec_input_gates.infra_dep_declared_violation`, issue #284: a harness is a target attribute)
@@ -659,8 +559,6 @@ _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
 # admits the key and skips it, so no closure code sees a library; `_parse_library_entries`
 # reads it.
 _DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})
-_DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"components", "problems", "profiles", "infrastructure"}) | _DEPS_NON_NODE_KEYS
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields
 # component/problem/profile/infrastructure.
 # A `profile` entry is expanded into the components it selects by
@@ -675,21 +573,17 @@ _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
 )
 # The parse loop of `_parse_dep_entries` iterates `_DEPS_KEY_KIND_FIELDS` alone, so a key in
 # `_DEPS_YAML_ALLOWED_KEYS` that neither the pair table nor `_DEPS_NON_NODE_KEYS` names would
-# parse as well-formed with its entries DROPPED. The allowed set is therefore exactly the two,
-# disjoint, checked at import.
+# parse as well-formed with its entries DROPPED. The allowed set is therefore built as the
+# union of the two.
 _PAIRED_DEPS_KEYS = frozenset(key for key, _field in _DEPS_KEY_KIND_FIELDS)
-if (_PAIRED_DEPS_KEYS | _DEPS_NON_NODE_KEYS != _DEPS_YAML_ALLOWED_KEYS
-        or _PAIRED_DEPS_KEYS & _DEPS_NON_NODE_KEYS):
-    raise AssertionError(
-        "_DEPS_YAML_ALLOWED_KEYS must be the disjoint union of _DEPS_KEY_KIND_FIELDS' keys and "
-        "_DEPS_NON_NODE_KEYS: a key allowed but parsed by neither has its entries dropped")
+_DEPS_YAML_ALLOWED_KEYS: frozenset[str] = _PAIRED_DEPS_KEYS | _DEPS_NON_NODE_KEYS
 
-# Codex round 15 F2: identifiers from deps.yaml / spec_catalog.yaml are
-# interpolated into workspace/<kind>/<safe>/ paths. ANY of `spec_kind`,
-# `spec_id`, `spec_version` containing path separators or traversal sequences
-# would let the verifier walk out of the dependency subtree and treat
-# unrelated files as readiness evidence. Reject anything outside this strict
-# safe-token grammar before path construction.
+
+# Codex round 15 F2: identifiers from deps.yaml are interpolated into
+# workspace/<kind>/<safe>/ paths. ANY of `spec_kind`, `spec_id`, `spec_version`
+# containing path separators or traversal sequences would let the verifier walk
+# out of the dependency subtree and treat unrelated files as readiness evidence.
+# Reject anything outside this strict safe-token grammar before path construction.
 _SAFE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 
 
@@ -698,15 +592,20 @@ def _is_safe_path_token(s: Any) -> bool:
 
     Rejects empty / non-str values, `..` traversal substrings, and any
     character outside `[A-Za-z0-9._+-]`. Path separators (`/`, `\\`), null
-    bytes, and shell metacharacters are all rejected. Used to gate
-    `spec_kind` / `spec_id` / `spec_version` values from deps.yaml and
-    spec_catalog.yaml before they are interpolated into filesystem paths.
+    bytes, and shell metacharacters are all rejected. Gates the `deps.yaml` ids
+    (`_parse_dep_entries`, `_parse_library_entries`) and `_verify_dep_stage_detail`'s
+    tokens.
     """
     if not isinstance(s, str) or not s:
         return False
     if ".." in s:
         return False
     return bool(_SAFE_ID_TOKEN_RE.match(s))
+
+
+def _is_identifier_token(s: Any) -> bool:
+    """A spec identifier read from the catalog or composed from it is a non-empty string."""
+    return isinstance(s, str) and bool(s)
 
 
 def _parse_dep_entries(
@@ -803,39 +702,17 @@ def _parse_library_entries(deps_doc: dict[str, Any]) -> tuple[list[str], bool]:
     return ids, True
 
 
-# The named `{reason}` values `expand_profile_dependencies` can return. Every one of them means
-# the registry WAS read and the declared closure does not resolve — a spec-author defect no leaf
-# can repair. `spec_catalog_corrupt`, which the expansion can also surface, is the registry-read
-# failure and is reported as itself. (Until issue #250 PR-2 the two classes had opposite
-# freshness dispositions; the derivation key refuses every one of them the same way, as an
-# unresolvable compile input.)
-_PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
-    "profile_unresolvable",
-    "profile_spec_ref_unresolved",
-    "profile_deps_unreadable",
-    "profile_deps_malformed",
-    "profile_nesting_unsupported",
-    "profile_declares_infrastructure",
-    "profile_declares_problem",
-    "profile_declares_libraries",
-    "profile_component_declared_twice",
-    "profile_component_conflict",
-})
-
-
+# The named `{reason}` values `expand_profile_dependencies` returns through
+# `_profile_expansion_failure` mean the registry WAS read and the declared closure does not
+# resolve — a spec-author defect no leaf can repair. `spec_catalog_corrupt`, which the expansion
+# can also surface, is the registry-read failure and is reported as itself. (Until issue #250
+# PR-2 the two classes had opposite freshness dispositions; the derivation key refuses every one
+# of them the same way, as an unresolvable compile input.)
 def _profile_expansion_failure(reason: str, detail: str) -> dict[str, str]:
-    """The ONLY constructor of an `expand_profile_dependencies` error, so that
-    `_PROFILE_EXPANSION_REASONS` is the source of these strings rather than a list beside them.
-
-    That membership is not decoration: `ProfileExpansionTests` pins the set, and the reason a
-    caller reads decides its message (`_derived_closure_graph` names it in the unresolvable
-    compile input; the launch-time closure resolver reports it to the operator). Raising on an
-    undeclared reason can only ever fire on a coding error, never on spec input.
-    """
-    if reason not in _PROFILE_EXPANSION_REASONS:
-        raise AssertionError(
-            f"{reason!r} is not a declared profile-expansion reason; add it to "
-            f"_PROFILE_EXPANSION_REASONS before emitting it")
+    """The constructor of an `expand_profile_dependencies` profile error. Every `reason` is a
+    literal at its call site; the reason a caller reads decides its message
+    (`_derived_closure_graph` names it in the unresolvable compile input; the launch-time
+    closure resolver reports it to the operator)."""
     return {"reason": reason, "detail": detail}
 
 
@@ -871,7 +748,8 @@ def expand_profile_dependencies(
     - `error`: `None`, or `{reason, detail}`. Fail-closed with NO partial expansion — a caller
       that receives an error must not use `expanded_entries`.
 
-    The reasons are `_PROFILE_EXPANSION_REASONS` plus `spec_catalog_corrupt`. Nesting (a profile
+    The reasons are the `profile_*` literals passed to `_profile_expansion_failure`, plus
+    `spec_catalog_corrupt`. Nesting (a profile
     adopting a profile) is refused by name rather than recursed: no spec needs it today, and a
     named refusal is one line to relax if one ever does.
 
@@ -912,7 +790,7 @@ def expand_profile_dependencies(
         try:
             profile_ref = resolve_spec_ref_for(repo_root, "profile", sid)
         except SpecCatalogCorruption as exc:
-            # NOT a `_PROFILE_EXPANSION_REASONS` member on purpose: this one IS the
+            # NOT a `profile_*` reason on purpose: this one IS the
             # registry-read failure, reported under the name every other catalog reader uses.
             return [], [], {"reason": "spec_catalog_corrupt", "detail": str(exc)}
         if not profile_ref:
@@ -1018,9 +896,8 @@ def expand_profile_dependencies(
 # tail, etc. — so a planted `FAKE__20991231_999/binary_meta.json` outranked
 # legitimate artifacts despite never having been issued by any writer.
 # Anchoring both ends to the strict slug grammar closes that trust gap.
-# This pattern is identical to `_SLUG_DATE_SEQ3_PATTERN` plus capture
-# groups for date and seq; kept in lock-step by construction (see the
-# `assert` at module load below).
+# `_SLUG_DATE_SEQ3_PATTERN` is this pattern without its two capture groups, built from it
+# below, so the two grammars cannot diverge.
 _FRESHNESS_CANONICAL_ID_RE = re.compile(
     r"^[a-z0-9]+(?:-[a-z0-9]+)*_([0-9]{8})_([0-9]{3})$"
 )
@@ -1656,25 +1533,14 @@ def _certified_ir_dir(
     pins, the harness pin). `None` when no Compile output is eligible under the key
     recomputed now. Before issue #250 PR-2 this was the LATEST ir dir regardless of status."""
     if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
+        _is_identifier_token(kind)
+        and _is_identifier_token(spec_id)
+        and _is_identifier_token(version)
     ):
         return None
     resolver = resolver or DerivationResolver(repo_root)
     sel = resolver.select(f"{kind}/{spec_id}@{version}", "compile")
     return sel.stage_dir() if sel.ok else None
-
-
-def _verify_dep_stage(
-    repo_root: Path, kind: str, spec_id: str, version: str, stage: str,
-    *, target: TargetProfile | None = None,
-) -> bool:
-    """Check whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
-    completion for `target`. The boolean face of `_verify_dep_stage_detail`, which is the
-    primitive — see there for what each stage requires and why."""
-    return _verify_dep_stage_detail(
-        repo_root, kind, spec_id, version, stage, target=target)[0]
 
 
 #: The certifying phase each dependency-readiness stage asks of a dependency.
@@ -3072,7 +2938,6 @@ def cross_target_agreement(
         run_dir = sel.stage_dir()
         if run_dir is None or not sel.ir_ref:
             return unevaluable("validate_selection_has_no_run")
-        yaml = _require_yaml()
         ir = yaml.safe_load((repo_root / sel.ir_ref / "spec.ir.yaml").read_text(
             encoding="utf-8"))
         ir = ir if isinstance(ir, dict) else {}
@@ -3715,7 +3580,7 @@ def _resolve_dependency_facts(
     dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
     gate.
 
-    Mirrors ``_verify_dep_stage``'s execution-readiness selection EXACTLY so the operations a
+    Mirrors ``_verify_dep_stage_detail``'s execution-readiness selection EXACTLY so the operations a
     leaf reads come from the artifacts readiness actually accepted: the dependency's SELECTED
     certified Validate output under its key (``DerivationResolver.select``), whose run
     directory holds the ``aggregate_verdict.json`` the fact names.
@@ -3773,7 +3638,7 @@ def _resolve_dependency_facts(
     these facts.
 
     Best-effort: NEVER raises. A leaf node (empty ``direct_deps``), a missing/unparseable
-    IR, a missing PyYAML, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
+    IR, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
 
     The facts are for ONE target (issue #284) — the resolver's, else ``target``: a dependency's
     verdict and source are per-target artifacts, and the consumer's language is the target's.
@@ -3792,7 +3657,7 @@ def _resolve_dependency_facts(
         if not ir_path.is_file():
             return []
         try:
-            ir_doc = _require_yaml().safe_load(ir_path.read_text(encoding="utf-8"))
+            ir_doc = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
         except Exception:
             return []
         if not isinstance(ir_doc, dict):
@@ -4100,7 +3965,7 @@ def _ir_public_api(
         ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
             return None
-        doc = _require_yaml().safe_load(
+        doc = yaml.safe_load(
             (ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             return None
@@ -4139,7 +4004,7 @@ def _ir_published_signature(
         ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
             return None
-        doc = _require_yaml().safe_load(
+        doc = yaml.safe_load(
             (ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
         pa = doc.get("public_api") if isinstance(doc, dict) else None
         sigs = pa.get("signatures") if isinstance(pa, dict) else None
@@ -4220,18 +4085,11 @@ def _catalog_family_index(repo_root: Path) -> list[dict[str, str]]:
     selector to group nodes by ``(spec_kind, family)`` — a dimension ``_load_spec_catalog``
     (versions only) drops."""
     try:
-        catalog_path = Path(repo_root) / "spec" / "registry" / "spec_catalog.yaml"
-        if not catalog_path.is_file():
-            return []
-        doc = _require_yaml().safe_load(catalog_path.read_text(encoding="utf-8"))
+        entries = _spec_catalog_entries(repo_root)
     except Exception:
         return []
-    if not isinstance(doc, dict) or not isinstance(doc.get("specs"), list):
-        return []
     out: list[dict[str, str]] = []
-    for entry in doc["specs"]:
-        if not isinstance(entry, dict):
-            continue
+    for entry in entries:
         kind = str(entry.get("spec_kind") or "").strip()
         spec_id = str(entry.get("spec_id") or "").strip()
         version = str(entry.get("spec_version") or "").strip()
@@ -4284,7 +4142,7 @@ def _resolve_exemplar_source(
     R1 lands the harness node, the runner leaves the physics node; since issue #589 the exemplar
     is the model alone.
 
-    Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage``
+    Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage_detail``
     / ``_certified_model_source``): for each sibling catalog spec, its SELECTED certified
     Validate output under its key (a genuinely certified node, not merely built —
     ``DerivationResolver.select``) and the certified Generate output that verdict stands on.
@@ -4303,7 +4161,7 @@ def _resolve_exemplar_source(
         if not ir_path.is_file():
             return None
         try:
-            ir_doc = _require_yaml().safe_load(ir_path.read_text(encoding="utf-8"))
+            ir_doc = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
         except Exception:
             return None
         if not isinstance(ir_doc, dict):
@@ -4353,8 +4211,8 @@ def _resolve_exemplar_source(
         best: tuple[tuple[str, int], dict[str, Any]] | None = None
         resolver = DerivationResolver(repo_root, target=target)
         for cand_id, cand_version in siblings:
-            if not (_is_safe_path_token(self_kind) and _is_safe_path_token(cand_id)
-                    and (not cand_version or _is_safe_path_token(cand_version))):
+            if not (_is_identifier_token(self_kind) and _is_identifier_token(cand_id)
+                    and (not cand_version or _is_identifier_token(cand_version))):
                 continue
             # Scan every catalog version's pipeline dir (a spec may have >1); pick the
             # certified pipeline with the freshest canonical id across them.
@@ -4598,7 +4456,8 @@ def _compute_initial_dependency_readiness(
     Under a `target` (the orchestration's, issue #284) a node that is not itself
     `infrastructure` has the target's harness as a direct dependency even with an empty
     `deps.yaml` (`target_harness_entries`), so it is not a trivial leaf. Asking that reads the
-    catalog, whose failure propagates like a PyYAML one (`write_preflight` handles both).
+    catalog, whose failure propagates (out of `write_preflight` too, which ends the run's
+    preflight; issue #643 removed its degraded mode).
     """
     if _target_harness_entries_for_spec_ref(repo_root, spec_ref, target):
         return {
@@ -4610,25 +4469,6 @@ def _compute_initial_dependency_readiness(
                 "aggregate_verdict_verified": False,
             },
         }
-    # Codex round 34 F1: detect a canonical empty-deps leaf via a strict
-    # BYTE-LEVEL recognizer BEFORE touching PyYAML, so a controller PyYAML
-    # outage does not make `write_preflight` persist an all-false readiness
-    # record for a FRESH leaf orchestration (a brand-new no-deps workflow
-    # could not launch).
-    # The byte-level recognizer is intentionally conservative: false
-    # negatives just defer to PyYAML parsing (or fail-closed under
-    # outage); false positives would be fail-open, so the grammar is
-    # restricted to the canonical pattern.
-    spec_token = spec_ref.strip() if isinstance(spec_ref, str) and spec_ref.strip() else ""
-    deps_bytes_for_leaf: bytes | None = None
-    if spec_token:
-        deps_path = (repo_root / spec_token / "deps.yaml").resolve()
-        try:
-            deps_path.relative_to(repo_root.resolve())
-            if deps_path.is_file():
-                deps_bytes_for_leaf = deps_path.read_bytes()
-        except (ValueError, OSError):
-            deps_bytes_for_leaf = None
     trivial: dict[str, Any] = {
         "direct_dependency_compile_readiness": True,
         "direct_dependency_execution_readiness": True,
@@ -4641,15 +4481,6 @@ def _compute_initial_dependency_readiness(
         # certify); `write_preflight` refreshes such a record from the current deps.yaml.
         "certified_deps": [],
     }
-    if deps_bytes_for_leaf is not None and _deps_yaml_bytes_are_canonical_empty(
-        deps_bytes_for_leaf
-    ):
-        # Byte-confirmed leaf, decided without PyYAML.
-        return trivial
-    # Codex round 33 F1: PyYAML errors past this point propagate so
-    # `write_preflight` can decide between "preserve existing verified
-    # record" and "write fail-closed". Non-leaf specs cannot be verified
-    # without YAML, so a PyYAML outage MUST fail-closed for those.
     fail_closed: dict[str, Any] = {
         "direct_dependency_compile_readiness": False,
         "direct_dependency_execution_readiness": False,
@@ -4661,11 +4492,6 @@ def _compute_initial_dependency_readiness(
         # Fail-closed payloads explicitly omit `certified_deps`: there is
         # no proof of any verification state to record.
     }
-    # Codex round 33 F1: PyYAML errors propagate; write_preflight handles
-    # the "preserve existing or write degraded fail-closed" decision based
-    # on whether prior verified state exists. Letting `_read_deps_yaml` /
-    # `_require_yaml` raise here is the correct behavior so the caller can
-    # distinguish "could not evaluate" from "evaluated to fail-closed".
     deps_doc = _read_deps_yaml(repo_root, spec_ref)
     if not isinstance(deps_doc, dict):
         return fail_closed
@@ -4698,7 +4524,11 @@ _NODE_KEY_SAFE_PATTERN = re.compile(
 _NODE_KEY_KIND_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _NODE_KEY_ID_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _NODE_KEY_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._-]*$")
-_SLUG_DATE_SEQ3_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*_[0-9]{8}_[0-9]{3}$")
+_SLUG_DATE_SEQ3_PATTERN = re.compile(
+    _FRESHNESS_CANONICAL_ID_RE.pattern
+    .replace(r"([0-9]{8})", r"[0-9]{8}")
+    .replace(r"([0-9]{3})", r"[0-9]{3}")
+)
 
 # `run_id` is the one id in the family that is NOT a `<slug>_<date>_<seq3>`
 # value: it carries a fixed literal `run_` prefix (`run_<YYYYMMDD>_<seq3>`,
@@ -4721,28 +4551,6 @@ _RUN_ID_RE = re.compile(r"^run_[0-9]{8}_[0-9]{3}$")
 # the ir_id slug format) fails fast before the generate agent wastes a full
 # substep run that would only be caught by generate.verify.
 _SOURCE_ID_RE = re.compile(r"^src_[0-9]{8}_[0-9]{3}$")
-
-# Codex round 31 F2 → round 36: keep reader (`_FRESHNESS_CANONICAL_ID_RE`)
-# and writer (`_SLUG_DATE_SEQ3_PATTERN`) grammars in lock-step. The capture
-# groups in the reader (`([0-9]{8})` / `([0-9]{3})`) are the only intentional
-# difference; their pattern bodies must be identical so a future edit to one
-# without the other surfaces at module load instead of silently re-opening
-# the trust gap fixed in round 31. Round 36 promotes this from `assert` (which
-# `python -O` elides) to an unconditional RuntimeError so the load-bearing
-# invariant survives optimized interpreter modes. Round 36 also tightens the
-# reader's digit classes to `[0-9]` (same as the writer) for genuine
-# equivalence — `\d` would match Unicode digits.
-if _SLUG_DATE_SEQ3_PATTERN.pattern != (
-    _FRESHNESS_CANONICAL_ID_RE.pattern
-    .replace(r"([0-9]{8})", r"[0-9]{8}")
-    .replace(r"([0-9]{3})", r"[0-9]{3}")
-):
-    raise RuntimeError(
-        "freshness reader and writer regexes have diverged — round 31 F2 "
-        "invariant violated. Reader: "
-        f"{_FRESHNESS_CANONICAL_ID_RE.pattern!r}; writer: "
-        f"{_SLUG_DATE_SEQ3_PATTERN.pattern!r}."
-    )
 
 
 def _parse_node_key_strict(node_key: Any) -> tuple[str, str, str]:
@@ -4952,10 +4760,6 @@ def _read_session_run_index_from_path(path: Path) -> dict[str, Any]:
 def _json_transaction_exclusive_lock(transaction_dir: Path) -> Iterator[None]:
     """Serialize every session-index writer with registration/recovery transactions."""
     lock_path = transaction_dir / "session_run_index.json.lock"
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        _fcntl_warn_once("Codex registration transaction")
-        yield
-        return
     with _fcntl_exclusive_lock(lock_path):
         yield
 
@@ -5228,10 +5032,8 @@ def _active_children_dir(repo_root: Path, orchestration_id: str) -> Path:
     """Backend-neutral per-arid active-child marker directory (Adv-16).
 
     Each launched child writes `active_children/<agent_run_id>.txt` here.
-    deactivate_child / record_agent_run terminal / record_timeout's success
-    path remove the marker. record_timeout REFUSES to proceed while the
-    marker exists — this gives Codex the same refusal that Claude gets from
-    active_child_agent_run_id.txt.
+    deactivate_child / record_agent_run terminal remove the marker.
+    `finalize_child` refuses an arid whose marker is gone.
     """
     return _orchestration_root(repo_root, orchestration_id) / "active_children"
 
@@ -5247,7 +5049,7 @@ def _clear_stale_active_child_markers(
 
     When the host process exits while a child launch is in flight (interrupted /
     hung child, or a token-limit kill), no live host is left to finalize the child, and
-    nobody has yet run deactivate-child / record-timeout by hand, so `active_child_agent_run_id.txt` and the
+    nobody has yet run deactivate-child by hand, so `active_child_agent_run_id.txt` and the
     `active_children/<arid>.txt` markers persist. The Claude-backend sequential
     check in `record_launch` then rejects the next launch, permanently wedging the
     documented recovery (`launch_incomplete_active_child` / `llm_launch_interrupted`).
@@ -5490,29 +5292,8 @@ def _orchestration_meta_lock_path(repo_root: Path, orchestration_id: str) -> Pat
     return _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json.lock"
 
 
-_FCNTL_FALLBACK_WARNED = False
-
-
-def _fcntl_warn_once(scope: str) -> None:
-    global _FCNTL_FALLBACK_WARNED
-    if _FCNTL_FALLBACK_WARNED:
-        return
-    _FCNTL_FALLBACK_WARNED = True
-    import sys as _sys
-    print(
-        "orchestration_runtime: WARNING — fcntl is unavailable on this "
-        f"platform; {scope} serialization is a no-op. Concurrent invocations "
-        "may race. Restrict orchestration to a single process or run on a "
-        "POSIX system to enable lock serialization.",
-        file=_sys.stderr,
-    )
-
-
 @contextlib.contextmanager
 def _fcntl_exclusive_lock(lock_path: Path) -> Iterator[None]:
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        yield
-        return
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
@@ -5533,16 +5314,6 @@ def _fcntl_exclusive_lock(lock_path: Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def _runs_jsonl_exclusive_lock(repo_root: Path, orchestration_id: str) -> Iterator[None]:
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        # L-NEW-4: on non-POSIX platforms (Windows, etc.) fcntl is unavailable,
-        # so the lock degrades to a no-op. Two concurrent finalizers would
-        # then race silently. Single-process workflows are unaffected, but
-        # any multi-process driver would defeat Adv-24 serialization without
-        # warning. Emit a one-shot stderr message so the operator sees the
-        # downgrade rather than discovering it via corrupt state.
-        _fcntl_warn_once("agent_runs.jsonl")
-        yield
-        return
     with _fcntl_exclusive_lock(_runs_jsonl_lock_path(repo_root, orchestration_id)):
         yield
 
@@ -5552,10 +5323,6 @@ def _orchestration_meta_exclusive_lock(
     repo_root: Path, orchestration_id: str
 ) -> Iterator[None]:
     """Serialize the terminal-status critical section in update_orchestration_status."""
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        _fcntl_warn_once("orchestration_meta.json")
-        yield
-        return
     with _fcntl_exclusive_lock(_orchestration_meta_lock_path(repo_root, orchestration_id)):
         yield
 
@@ -5805,7 +5572,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
         invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
 
 FAIL_CLOSED_REASON_CODES = {
-    "child_agent_forbidden_by_session_policy",
     "child_agent_unavailable_on_execution_platform",
     "required_child_agent_kind_mismatch",
     "phase_body_started_before_launch",
@@ -5979,16 +5745,11 @@ def _write_phase_state(repo_root: Path, orchestration_id: str, doc: dict[str, An
 
 
 def _load_phase_state(repo_root: Path, orchestration_id: str) -> dict[str, Any] | None:
+    """The host-written `phase_state.json` (sole writer `_write_phase_state`), or None."""
     path = _phase_state_path(repo_root, orchestration_id)
     if not path.exists():
         return None
-    try:
-        data = _read_json(path)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"phase_state.json is invalid JSON: {path}") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError(f"phase_state.json must be object: {path}")
-    return data
+    return _read_json(path)
 
 
 def _current_hostname_for_record() -> str:
@@ -6045,11 +5806,6 @@ def reconcile_phase_state_for_resume(
             },
         )
         return doc
-    orch_id = existing.get("orchestration_id")
-    if orch_id != orchestration_id:
-        raise RuntimeError(
-            f"phase_state.json orchestration_id mismatch: expected {orchestration_id!r}, got {orch_id!r}"
-        )
     merged = dict(existing)
     merged["node_states"] = _merge_node_states(merged.get("node_states"), orchestration_id)
     _write_phase_state(repo_root, orchestration_id, merged)
@@ -6141,11 +5897,6 @@ def _transition_phase_state(
     doc = _load_phase_state(repo_root, orchestration_id)
     if doc is None:
         doc = _new_phase_state_document(orchestration_id)
-    elif doc.get("orchestration_id") not in (orchestration_id, None):
-        raise RuntimeError(
-            "phase_state.json orchestration_id mismatch: "
-            f"expected {orchestration_id!r}, got {doc.get('orchestration_id')!r}"
-        )
     prev = doc.get("current_state")
     doc["current_state"] = new_state
     if doc.get("orchestration_id") != orchestration_id:
@@ -6191,11 +5942,6 @@ def _transition_node_step_phase_state(
     doc = _load_phase_state(repo_root, orchestration_id)
     if doc is None:
         doc = _new_phase_state_document(orchestration_id)
-    elif doc.get("orchestration_id") not in (orchestration_id, None):
-        raise RuntimeError(
-            "phase_state.json orchestration_id mismatch: "
-            f"expected {orchestration_id!r}, got {doc.get('orchestration_id')!r}"
-        )
     doc["orchestration_id"] = orchestration_id
     ns_any = doc.get("node_states")
     ns: dict[str, Any] = ns_any if isinstance(ns_any, dict) else {}
@@ -6341,41 +6087,6 @@ ONE caller since issue #171 PR-2: the record-launch request validator, which rea
     return role
 
 
-def _execution_platform_launchable(preflight: dict[str, Any], required_child_agent: str) -> bool:
-    if required_child_agent == "step":
-        return preflight.get("can_launch_step_agents") is True
-    if required_child_agent == "substep":
-        return preflight.get("can_launch_substep_agents") is True
-    return False
-
-
-def _check_session_policy_launchable(
-    preflight: dict[str, Any], required_child_agent: str
-) -> dict[str, Any]:
-    session_policy = preflight.get("session_policy")
-    fallback_key = (
-        "can_launch_step_agents" if required_child_agent == "step" else "can_launch_substep_agents"
-    )
-    launchable = False
-    scope = "session_policy_missing"
-    if isinstance(session_policy, dict):
-        key = (
-            "allow_step_agent_launch"
-            if required_child_agent == "step"
-            else "allow_substep_agent_launch"
-        )
-        if isinstance(session_policy.get(key), bool):
-            launchable = bool(session_policy.get(key))
-            scope = f"session_policy.{key}"
-        elif isinstance(session_policy.get(fallback_key), bool):
-            launchable = bool(session_policy.get(fallback_key))
-            scope = f"session_policy.{fallback_key}"
-    elif isinstance(preflight.get("session_policy_launchable"), bool):
-        launchable = bool(preflight.get("session_policy_launchable"))
-        scope = "session_policy_launchable"
-    return {"launchable": launchable, "blocking_policy_scope": scope}
-
-
 def _dependency_ready(
     repo_root: Path, orchestration_id: str, *, step: str
 ) -> tuple[bool, str | None]:
@@ -6404,45 +6115,16 @@ def _dependency_ready(
         # derivation key over its inputs, its output's `artifact_hashes`), so nothing a
         # fingerprint of the selected files saw is invisible to it.
         spec_ref = meta.get("spec_ref")
-        # Codex round 28 F1: `_compute_dep_readiness` reaches `_read_deps_yaml` /
-        # `_load_spec_catalog_from_bytes`, which raise `RuntimeError` when PyYAML is not
-        # installed (round 27 F1). Letting that escape `_dependency_ready` turns a missing
-        # package into an un-handled launch-gate exception (the upstream CLI prints a
-        # traceback instead of `dependency_not_ready`). Convert the install failure into a
-        # deterministic fail-closed gate result with a specific reason. The no-deps-leaf
-        # shortcut that used to stand here (rounds 29–31: trust a persisted `certified_deps
-        # == []` bound to a byte fingerprint of deps.yaml) went with the fingerprint; no
-        # production launch reaches this branch without PyYAML, because `run_workflow.py`
-        # reads the catalog through it before any orchestration exists (`resolve_node`).
         target = _target_of_orchestration_meta(repo_root, meta)
-        try:
-            recomputed, _certified, fail_reason = _compute_dep_readiness(
-                repo_root, spec_ref, target=target)
-        except RuntimeError as exc:
-            if "PyYAML" in str(exc):
-                return False, "pyyaml_unavailable"
-            raise
+        recomputed, _certified, fail_reason = _compute_dep_readiness(
+            repo_root, spec_ref, target=target)
         if recomputed is None:
-            # Codex round 20 F1: production launch checks MUST fail closed when
-            # live recomputation cannot run — there is no way to re-verify
-            # artifacts, so trusting persisted booleans means trusting whatever
-            # `orchestration_meta.json` happens to say. The persisted-boolean
-            # fallback is preserved ONLY for test scaffolding via an explicit
-            # opt-in env var so unit-test fixtures (`_mark_dependencies_ready`)
-            # that intentionally skip building a real deps.yaml continue to work.
-            # Production environments do not set this variable; missing/unparseable
-            # OR malformed-schema deps.yaml at gate time → reject with the
-            # specific fail_reason (Codex round 25 F2: don't collapse distinct
-            # verification failures into one generic reason).
-            if os.environ.get("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK") != "1":
-                return False, fail_reason or "deps_yaml_missing_or_unparseable"
-            if step_token == "compile":
-                if readiness.get("direct_dependency_compile_readiness") is not True:
-                    return False, "direct_dependency_compile_readiness_not_pass"
-                return True, None
-            if readiness.get("direct_dependency_execution_readiness") is not True:
-                return False, "direct_dependency_execution_readiness_not_pass"
-            return True, None
+            # Codex round 20 F1: launch checks fail closed when live recomputation cannot
+            # run — there is no way to re-verify artifacts, and the persisted booleans are
+            # audit-only. A missing/unparseable OR malformed-schema deps.yaml at gate time is
+            # refused with the specific fail_reason (Codex round 25 F2: don't collapse
+            # distinct verification failures into one generic reason).
+            return False, fail_reason or "deps_yaml_missing_or_unparseable"
         # A dependency that is not ready is named with the stage that refused it and why —
         # a key that moved names the input that moved (`derivation_key_mismatch:<input>`) —
         # instead of leaving the operator with an opaque `..._readiness_not_pass`. Computed
@@ -6498,8 +6180,6 @@ def workflow_launch_check(
     if required_flag not in {"step", "substep"}:
         raise ValueError("--require-child-agent must be step or substep")
 
-    execution_platform_launchable = False
-    session_policy_launchable = True
     blocking_scope = "default_allow"
     reason_code: str | None = None
     reason_detail: str | None = None
@@ -6522,7 +6202,6 @@ def workflow_launch_check(
             "required_child_agent": required_flag,
             "required_child_agent_by_step": required_by_step,
             "execution_platform_launchable": False,
-            "session_policy_launchable": False,
             "reason_code": "child_agent_unavailable_on_execution_platform",
             "reason_detail": str(exc),
             "blocking_policy_scope": "preflight",
@@ -6552,17 +6231,8 @@ def workflow_launch_check(
             f"got {preflight_backend.strip().lower()!r}"
         )
 
-    execution_platform_launchable = _execution_platform_launchable(preflight, required_flag)
-    if not execution_platform_launchable and reason_code is None:
-        reason_code = "child_agent_unavailable_on_execution_platform"
-        reason_detail = f"preflight cannot launch required child agent kind: {required_flag}"
-
-    session_eval = _check_session_policy_launchable(preflight, required_flag)
-    session_policy_launchable = bool(session_eval.get("launchable"))
-    blocking_scope = str(session_eval.get("blocking_policy_scope") or "default_allow")
-    if not session_policy_launchable and reason_code is None:
-        reason_code = "child_agent_forbidden_by_session_policy"
-        reason_detail = f"session policy forbids required child agent kind: {required_flag}"
+    # `_require_preflight_launchable` above refused unless BOTH `can_launch_*` flags are true.
+    execution_platform_launchable = True
 
     dep_ready, dep_detail = _dependency_ready(repo_root, orchestration_id, step=step)
     if not dep_ready and reason_code is None:
@@ -6578,7 +6248,6 @@ def workflow_launch_check(
         "required_child_agent": required_flag,
         "required_child_agent_by_step": required_by_step,
         "execution_platform_launchable": execution_platform_launchable,
-        "session_policy_launchable": session_policy_launchable,
         "reason_code": reason_code,
         "reason_detail": reason_detail,
         "blocking_policy_scope": blocking_scope,
@@ -6824,34 +6493,6 @@ def _is_safe_path_id(tok: str) -> bool:
     capability_invalid_empty_write_roots).
     """
     return bool(_SAFE_PATH_ID_RE.fullmatch(tok))
-
-def _orchestration_holds_launch_record(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> bool:
-    """Adv-5 ownership proof: did THIS orchestration launch `agent_run_id`?
-
-    `workspace/tmp/` is a FLAT namespace with no orchestration prefix, so two
-    orchestrations that reuse an agent_run_id share the directory. Anything that deletes
-    under it has to establish ownership first, or terminating one run wipes another's live
-    scratch. `_cleanup_agent_tmp_root` has enforced that since Adv-5 and is the ONE caller
-    left; `run_gate`'s durable gate-result unlink read the same proof through this function
-    until issue #171 PR-2 deleted the subcommand.
-
-    This is the LAUNCH-RECORD half only. `_cleanup_agent_tmp_root` accepts a second proof
-    (the orchestration agent's own arid, from `orchestration_meta.json`) because an
-    orchestration agent is not launched via `record-launch`.
-    """
-    # `.strip()` on BOTH ids, because the inline form this replaced stripped both and
-    # `_orchestration_root` does not. Without it a padded `orchestration_id` resolves to a
-    # directory that does not exist, ownership silently fails, and `_cleanup_agent_tmp_root`
-    # refuses -- leaving the run in cleanup-pending and its tmp scratch on disk. Caught by
-    # diffing this extraction against the code it replaced, not by any test.
-    return (
-        _orchestration_root(repo_root, orchestration_id.strip())
-        / "launches"
-        / f"{agent_run_id.strip()}.request.json"
-    ).is_file()
-
 
 def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, Any]:
     """The toolchain of the target a launch's pipeline is built for, read off the store
@@ -7741,7 +7382,7 @@ LEAF_ENV_PREFIX_EXCEPTIONS = ("SPEC2SCIENCE_HOME",)
 # Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling, the
 # auto-memory closure, and the closure of the CLI's nonessential traffic (telemetry, update
 # checks; issue #534 step 4 — inside the leaf's network namespace each would be a refused
-# route, logged as one). Named here so the render-time name validation accepts them.
+# route, logged as one).
 CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
                           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 
@@ -7817,14 +7458,11 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
 
 
 # The environment variables that relocate a backend CLI's configuration home.
-# TWO roles. (1) `render_bwrap_command` declares them through the sandbox — that
-# `--setenv` is the ONLY route by which a prepared home reaches a leaf. (2) the same
-# tuple names what the conductor's `_child_env` pops, so a second spelling cannot name a
-# different home than the one whose settings were SHA-pinned. What ENFORCES that is
-# `leaf_env_from` (these names are outside the allowlist and outside the prefix) plus
-# this function's own name validation; the pop is defence in depth. An earlier version
-# said the tuple "is the exclusion set `_child_env` enforces", which the conductor-side
-# comment had already retracted — leaving the rule's two homes disagreeing.
+# `render_bwrap_command` declares them through the sandbox — that `--setenv` is the ONLY
+# route by which a prepared home reaches a leaf; `leaf_env_from` keeps the host's
+# spellings out (these names are outside the allowlist and outside the prefix), so a
+# second spelling cannot name a different home than the one whose settings were
+# SHA-pinned.
 # `CLAUDE_CONFIG_DIR` left this tuple with the agentic leaf (Z4, issue #171) and is back with
 # the `workshop leaf` (issue #534): a workshop lineage has a private claude home, declared
 # through the sandbox exactly as a codex lineage home is. A PURE claude leaf still takes
@@ -8205,9 +7843,8 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
     repo_root (repo root, ~, /) exposes the whole repo, and an in-repo home (e.g.
     SPEC2SCIENCE_HOME=$repo/workspace) makes that subtree — including other agents'
     artifacts/audit logs — writable beyond the child's declared write_roots. Reject
-    both. A missing config *dir* is created (the only file, ~/.claude.json, is
-    existence-gated at source) so bwrap can bind it writable; a creation failure must
-    fail closed rather than emit a profile missing the required auth/session home.
+    both. Both lineage directories exist before the build (the home preparer creates
+    them); a missing one fails the launch at bwrap.
     Used by build_lineage_bwrap_profile, the one profile builder left.
     """
     resolved_repo = repo_root.resolve()
@@ -8222,13 +7859,6 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
                 f"runtime rw bind {_rwp!r} is not outside repo_root {resolved_repo}; a "
                 f"backend config home inside/covering the repo would grant writes beyond "
                 f"the child write_roots and defeat the sandbox")
-        if not _pp.exists():
-            try:
-                _pp.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise ValueError(
-                    f"runtime rw bind {_rwp!r} (backend config home) is absent and could "
-                    f"not be created: {exc}") from exc
         backend_rw.append(_rwp)
     return backend_rw
 
@@ -8273,8 +7903,8 @@ def build_lineage_bwrap_profile(
 ) -> dict[str, Any]:
     """The bwrap profile of a `workshop leaf` lineage (issue #534) — the one profile any leaf
     runs under since issue #534 PR-J4-b. (The function keeps the name of the READ-ONLY profile
-    the pure leaf ran under, `readonly: True` and no `leaf_mode`; that profile is refused here
-    and at `render_bwrap_command`, and `Conductor.spawn_leaf` refuses it by name.)
+    the pure leaf ran under, `readonly: True` and no `leaf_mode`; that profile is refused at
+    `render_bwrap_command` and by `Conductor.spawn_leaf`.)
 
     Four parameters make it a lineage's: `leaf_mode="workshop"`, `readonly=False`,
     `workdir=<the lineage's tree>` and, for claude, `credential_rw_mapping=(<the operator's
@@ -8332,30 +7962,17 @@ def build_lineage_bwrap_profile(
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
     if env_overrides:
         child_env.update(env_overrides)
-    if leaf_mode != WORKSHOP_PROFILE_LEAF_MODE or readonly is not False:
-        raise ValueError(
-            f"a leaf profile is a workshop lineage's (leaf_mode={WORKSHOP_PROFILE_LEAF_MODE!r}, "
-            f"readonly=False); got leaf_mode={leaf_mode!r}, readonly={readonly!r} — the "
-            "read-only profile of the pure leaf went in issue #534 PR-J4-b")
-    family = workshop_profile_family(env_overrides or {})
-    if workdir is None:
-        raise ValueError("a workshop profile needs its tree as workdir")
-    if not isinstance(network, Mapping):
-        raise ValueError("a workshop profile needs its network block (leaf_netns.network_block)"
-                         "; every CLI leaf runs in a network namespace since issue #534 step 4")
+    # The shape (`leaf_mode`, `readonly`, `workdir`, `network`, the credential mapping) is
+    # recorded as passed; the renderer and `Conductor.spawn_leaf` (`_admissible_leaf_profile`,
+    # the last check before a leaf process exists) admit it.
+    workshop_profile_family(env_overrides or {})
     child_env.update(leaf_netns.PROXY_ENV)
     # The claude CLI's token refresh renames onto the bound credential, fails `EBUSY`, and
     # writes in place onto the bound inode, so the credential is bound read-write and the
     # refresh reaches the host (a host-side rename leaves the leaf a stale inode: issue #616,
     # detected by the conductor); codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
-    # kwargs`), and a codex workshop profile binding a credential read-write is refused.
-    if (credential_rw_mapping is not None) != (family == "claude"):
-        raise ValueError(
-            f"a {family} workshop profile "
-            + ("needs its credential mapping" if family == "claude"
-               else "binds no credential read-write"))
-    profile_extra: dict[str, Any] = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE,
-                                     "network": dict(network)}
+    # kwargs`), and binds no credential read-write.
+    profile_extra: dict[str, Any] = {"leaf_mode": leaf_mode, "network": dict(network)}
     if credential_rw_mapping is not None:
         profile_extra["runtime_rw_credential_mapping"] = [str(credential_rw_mapping[0]),
                                                           str(credential_rw_mapping[1])]
@@ -8379,7 +7996,7 @@ def build_lineage_bwrap_profile(
         "workdir": str(workdir),
         "env": child_env,
         "generated_at": _utc_now_iso(),
-        "readonly": False,
+        "readonly": readonly,
         **profile_extra,
     }
 
@@ -8390,19 +8007,17 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
 
     ``child_env`` is the dict the conductor's ``_child_env`` AUTHORED for this leaf,
     threaded in so the profile records and delivers the environment that is actually
-    used rather than a second, independently-derived one. It is validated against the
-    ids this builder was called with: a profile that carried another leaf's ids would
-    hand the leaf a `SPEC2SCIENCE_CHILD_AGENT_RUN_ID` naming a different run, and the whole
-    point of threading it is that record and reality are the same object.
+    used rather than a second, independently-derived one: record and reality are the same
+    object. `_child_env` sets both per-launch ids from the same values this builder is
+    called with.
 
     ``None`` — a conductor-less caller (a test fixture, the standalone CLI) — falls back
     to filtering the host environment, so those callers stay allowlist-true too.
 
-    Whichever path is taken, the returned dict CARRIES BOTH per-launch ids with this
-    builder's own values: a disagreement raises, an absence is filled, and a stale
-    inherited value is overwritten. Under ``--clearenv`` the profile is the only route
-    into the leaf, so "the ids are present and correct" has to be a property of this
-    function rather than of its callers.
+    Whichever path is taken, the returned dict CARRIES BOTH per-launch ids: an absence is
+    filled, and on the fallback a stale inherited value is overwritten. Under
+    ``--clearenv`` the profile is the only route into the leaf, so "the ids are present"
+    has to be a property of this function rather than of its callers.
     """
     per_launch = (("SPEC2SCIENCE_ORCHESTRATION_ID", orchestration_id),
                   ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", agent_run_id))
@@ -8425,27 +8040,10 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
         # job is to rebuild an environment from an unrelated one.
         body = leaf_env_from(os.environ)
         body.update(per_launch)
-    elif not isinstance(child_env, Mapping):
-        raise ValueError("child_env must be a mapping of str to str")
     else:
-        body = {}
-        for key, value in child_env.items():
-            if not isinstance(key, str) or not isinstance(value, str):
-                raise ValueError(f"child_env entries must be str -> str, got {key!r}")
-            body[key] = value
-        # THE THREADED PATH VALIDATES. Here the dict was AUTHORED for this launch by
-        # `_child_env`, so a disagreeing id is not staleness — it is the caller handing
-        # this builder another leaf's environment, and the profile would then both
-        # record and `--setenv` an id naming a different run. Refuse rather than
-        # silently correct, because there is no way to tell which half is wrong.
-        for name, expected in per_launch:
-            got = body.get(name)
-            if got is not None and got != expected:
-                raise ValueError(
-                    f"child_env {name}={got!r} disagrees with the profile's {expected!r}")
-    # BOTH PATHS END WITH BOTH IDS PRESENT. Absence used to be tolerated on the threaded
-    # path (the check above only compares a key that exists), and `--clearenv` is what
-    # made that consequential: the profile is now the ONLY route into the leaf, so a
+        body = dict(child_env)
+    # BOTH PATHS END WITH BOTH IDS PRESENT. `--clearenv` is what made that
+    # consequential: the profile is now the ONLY route into the leaf, so a
     # profile missing `SPEC2SCIENCE_ORCHESTRATION_ID` used to produce a leaf whose build-runtime
     # MCP server read "not under a run" and stopped requiring a capability token — an ungated
     # server, from an omission. That gate is retired (issue #171 PR-2) and no leaf carries an
@@ -8454,22 +8052,10 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     # FILLED, not refused. Refusing would be the fourth over-refusal on this branch and
     # the second on this very function: a caller that omits an id has told us nothing
     # that contradicts these values, and the ids are the one thing this builder knows for
-    # certain, since they are its own arguments. Only a DISAGREEMENT is a real conflict,
-    # and that still raises above.
+    # certain, since they are its own arguments.
     for name, expected in per_launch:
         body.setdefault(name, expected)
     return body
-
-
-# The profile fields that once carried a repository grant into the mount set. Each must be
-# empty; `render_bwrap_command` refuses a profile where one is not.
-_UNRENDERED_PROFILE_GRANTS: tuple[str, ...] = (
-    "read_roots",
-    "write_roots",
-    "runtime_rw_bind_mappings",
-    "runtime_rw_rel_paths",
-    "runtime_rw_file_paths",
-)
 
 
 def render_bwrap_command(
@@ -8477,23 +8063,12 @@ def render_bwrap_command(
     profile: dict[str, Any],
     command_argv: Sequence[str],
 ) -> list[str]:
-    if not command_argv:
-        raise ValueError("command_argv must be non-empty")
     repo_root = str(profile.get("repo_root") or "").strip()
     tmp_dir = str(profile.get("tmp_dir") or "").strip()
-    if not repo_root or not tmp_dir:
-        raise ValueError("profile must include repo_root and tmp_dir")
-    # NOTHING UNDER THE CHECKOUT IS GRANTED, and a profile that says otherwise is refused
-    # rather than ignored. `build_lineage_bwrap_profile` records these five as empty, and
-    # their mounting arms went with the agentic leaf (issue #445). A profile is also re-read
-    # from `sandbox_profiles/<arid>.json` by the conductor; one carrying a grant there was
-    # altered after it was written, and rendering it without the grant would launch a leaf
-    # under a profile its record misstates.
-    for field in _UNRENDERED_PROFILE_GRANTS:
-        if profile.get(field):
-            raise ValueError(
-                f"profile field {field!r} must be empty: a leaf is granted no path under the "
-                f"checkout beyond its own scratch roots (got {profile.get(field)!r})")
+    # NOTHING UNDER THE CHECKOUT IS GRANTED: `read_roots`, `write_roots`,
+    # `runtime_rw_bind_mappings`, `runtime_rw_rel_paths` and `runtime_rw_file_paths` are
+    # recorded empty by `build_lineage_bwrap_profile`, and nothing below reads them (their
+    # mounting arms went with the agentic leaf, issue #445).
     # THE WORKSHOP PROFILE (issue #534) differs in its renderings, each refused on any other
     # profile: its working directory is its tree, and its CLI home is one of its rw binds — a
     # claude one declares `CLAUDE_CONFIG_DIR` and binds one credential file read-write, a codex
@@ -8676,37 +8251,16 @@ def render_bwrap_command(
         if not (Path(source).is_file() and Path(destination).is_file()):
             raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
         cmd.extend(["--ro-bind", source, destination])
-    ws_rw = str(profile.get("workspace_tmp_rw_abs") or "").strip()
-    if not ws_rw:
-        raise ValueError("profile must include workspace_tmp_rw_abs")
-    ws_path = Path(ws_rw)
-    if not ws_path.is_dir():
-        raise ValueError(f"workspace_tmp_rw_abs must be existing directory: {ws_rw}")
-    ws_abs = str(ws_path.resolve())
+    # Indexed, not defaulted: an absent field fails here rather than resolving to the
+    # process's working directory and binding that read-write.
+    ws_abs = str(Path(profile["workspace_tmp_rw_abs"]).resolve())
     cmd.extend(["--bind", ws_abs, ws_abs])
     cmd.extend(["--ro-bind", network["socket_dir"], leaf_netns.NET_MOUNT])
-    # Every name the leaf gets, one `--setenv` each, after the head's `--clearenv`.
-    # FAIL CLOSED on an absent or empty env: with `--clearenv` in force that would
-    # launch a leaf with no PATH, no config home and no orchestration id — a shape no
-    # profile should ever have, and one that a `if isinstance(...)` guard would have
-    # rendered silently. The spawn seam converts this to SandboxEnforcementError.
-    profile_env = profile.get("env")
-    if not isinstance(profile_env, dict) or not profile_env:
-        raise ValueError(
-            "profile must include a non-empty env: with --clearenv the leaf gets "
-            "exactly these names and nothing else")
-    # Name validation. The deliverer may carry only what an author is allowed to have
-    # produced, plus the two backend-home names that ONLY the deliverer adds and the
-    # TMPDIR it resolves itself. A stranger here means something built an environment
-    # outside `leaf_env_from` — the one question this whole layer exists to answer — so
-    # it is refused rather than passed through and recorded as if it were declared.
-    # Types BEFORE sorting: `sorted()` on mixed key types raises TypeError, which the
-    # spawn seam does not convert (it catches ValueError), so a mistyped profile would
-    # escape as a raw crash instead of a named fail-closed. Found by the test that was
-    # written for this branch precisely because review noticed the check was undriven.
-    for name, value in profile_env.items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise ValueError(f"profile env entries must be str -> str, got {name!r}")
+    # Every name the leaf gets, one `--setenv` each, after the head's `--clearenv`. The
+    # env is the one `workshop_profile_family` read above, so it is a dict declaring a CLI
+    # home. Which names it may carry is decided where it is authored (`leaf_env_from`, and
+    # the host-named additions of `Conductor._child_env` and the builder).
+    profile_env = env_of_profile
     claude_home = profile_env.get("CLAUDE_CONFIG_DIR")
     if claude_home is not None and not (family == "claude" and claude_home in rw_paths):
         raise ValueError(
@@ -8720,26 +8274,8 @@ def render_bwrap_command(
             raise ValueError(
                 f"profile env {name} must be {value!r}, the leaf's own in-namespace relay (got "
                 f"{profile_env.get(name)!r}); the operator's proxy values are never forwarded")
-    for name, value in sorted(profile_env.items()):
-        allowed = (
-            name in LEAF_ENV_ALLOWLIST
-            or name in _BACKEND_HOME_ENV_VARS
-            or name in CLAUDE_LEAF_ENV_EXTRAS
-            or name in leaf_netns.PROXY_ENV
-            or name == "TMPDIR"
-            or (name not in LEAF_ENV_PREFIX_EXCEPTIONS
-                and any(name.startswith(p) for p in LEAF_ENV_ALLOWED_PREFIXES))
-        )
-        if not allowed:
-            raise ValueError(
-                f"profile env carries undeclared name {name!r}; the leaf environment is "
-                f"an allowlist (orchestration_runtime.LEAF_ENV_ALLOWLIST)")
     # TMPDIR is the sandbox's, not whatever a caller put in the dict: the bind above is
-    # what makes it writable, so a disagreeing value would name an unwritable path.
-    env_tmp = profile_env.get("TMPDIR")
-    if env_tmp is not None and env_tmp != ws_abs:
-        raise ValueError(
-            f"profile env TMPDIR={env_tmp!r} disagrees with workspace_tmp_rw_abs {ws_abs!r}")
+    # what makes it writable, so it is set to that bind below.
     # The both-ids floor, again, on the DELIVERER. `_profile_child_env` guarantees it for
     # profiles built in this process, but this function also renders a profile READ OFF
     # DISK (`spawn_leaf` -> `_sandbox_profile_for`), which that guarantee never touched —
@@ -8779,13 +8315,6 @@ def render_bwrap_command(
 # leaf-authored code, so each runs confined to what the leaf is confined to and no more. The
 # conductor renders the head below and hands it to the build-runtime library as
 # `sandbox_argv_prefix`; the library splices it in front of the command it composes.
-
-#: The environment names every wrapper run is declared, beside the ones its caller declares
-#: (the launch shape's, for `run`). `--clearenv` drops the rest.
-WRAPPER_ENV_BASE_NAMES: tuple[str, ...] = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
-
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
 
 def wrapper_toolchain_ro_roots(executables: Sequence[str],
                                repo_root: Path | None = None) -> list[str]:
@@ -8853,7 +8382,6 @@ def render_wrapper_sandbox_prefix(
     ro_binds: Sequence[Path] = (),
     toolchain_ro_roots: Sequence[str] = (),
     env: Mapping[str, str],
-    declared_env_names: Sequence[str] = (),
 ) -> list[str]:
     """The `bwrap ... --` head of one wrapper run, ending in `--`.
 
@@ -8868,24 +8396,17 @@ def render_wrapper_sandbox_prefix(
     which is bound back read-only over it; then exactly `rw_binds` read-write and `ro_binds`
     read-only, each at its own host path, and `--chdir project_dir`.
 
-    Refuses (`ValueError`): a bind that is not an existing absolute path or that has a
-    containment relation with the checkout (a bind at or under it would mount the checkout
-    back over the tmpfs; one covering it would expose all of it); a `project_dir` not inside
-    a read-write bind; an install root inside the checkout other than one of its virtualenv
+    Refuses (`ValueError`): a bind that has a containment relation with the checkout (a bind
+    at or under it would mount the checkout back over the tmpfs; one covering it would expose
+    all of it); an install root inside the checkout other than one of its virtualenv
     directories; an install root that aliases the checkout
-    (`_refuse_backend_ro_alias_of_repo`); an env name outside `WRAPPER_ENV_BASE_NAMES` and
-    `declared_env_names`, or a non-string value."""
+    (`_refuse_backend_ro_alias_of_repo`)."""
     resolved_repo = repo_root.resolve()
 
     def _checked(paths: Sequence[Path], kind: str) -> list[str]:
         out: list[str] = []
         for raw in paths:
-            path = Path(raw)
-            if not path.is_absolute():
-                raise ValueError(f"wrapper {kind} bind {str(raw)!r} must be absolute")
-            if not path.exists():
-                raise ValueError(f"wrapper {kind} bind {str(raw)!r} does not exist")
-            resolved = path.resolve()
+            resolved = Path(raw).resolve()
             if (resolved == resolved_repo or resolved.is_relative_to(resolved_repo)
                     or resolved_repo.is_relative_to(resolved)):
                 raise ValueError(
@@ -8896,12 +8417,7 @@ def render_wrapper_sandbox_prefix(
 
     rw = _checked(rw_binds, "rw")
     ro = _checked(ro_binds, "ro")
-    if not rw:
-        raise ValueError("a wrapper run needs at least one read-write bind (its project_dir)")
     project = str(Path(project_dir).resolve())
-    if not any(project == r or Path(project).is_relative_to(Path(r)) for r in rw):
-        raise ValueError(
-            f"wrapper project_dir {project} is not inside a read-write bind of the run")
     system_ro = _runtime_ro_bind_paths()
     toolchain: list[str] = []
     in_checkout: list[str] = []
@@ -8917,16 +8433,6 @@ def render_wrapper_sandbox_prefix(
         else:
             toolchain.append(str(raw))
     _refuse_backend_ro_alias_of_repo(repo_root, toolchain, system_ro)
-    allowed = set(WRAPPER_ENV_BASE_NAMES) | {str(n) for n in declared_env_names}
-    for name, value in env.items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise ValueError(f"wrapper env entries must be str -> str, got {name!r}")
-        if not _ENV_NAME_RE.fullmatch(name):
-            raise ValueError(f"wrapper env name {name!r} is not a variable name")
-        if name not in allowed:
-            raise ValueError(
-                f"wrapper env carries undeclared name {name!r}; a wrapper run is declared "
-                f"{sorted(allowed)}")
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -8956,15 +8462,6 @@ def render_wrapper_sandbox_prefix(
         cmd.extend(["--setenv", name, value])
     cmd.extend(["--chdir", project, "--"])
     return cmd
-
-
-def render_wrapper_run_command(*, command_argv: Sequence[str], **prefix_kwargs: Any) -> list[str]:
-    """`render_wrapper_sandbox_prefix(**prefix_kwargs)` followed by `command_argv`: the whole
-    argv of one wrapper run, for a caller that runs it itself rather than through the
-    build-runtime library."""
-    if not command_argv:
-        raise ValueError("command_argv must be non-empty")
-    return render_wrapper_sandbox_prefix(**prefix_kwargs) + [str(a) for a in command_argv]
 
 
 def _compute_sha256(path: Path) -> str:
@@ -8997,8 +8494,9 @@ def _cleanup_agent_tmp_root(
     Returns:
       True  — cleanup succeeded OR the tmp dir was already absent. The caller
               may now write the cleanup_committed marker (Adv-36).
-      False — cleanup was REFUSED (ownership / collision / symlink) or the
-              destructive `rmtree` raised. The committed marker MUST NOT be
+      False — cleanup was REFUSED (a symlink, or a target outside
+              `workspace/tmp/`) or the destructive `rmtree` raised. The
+              committed marker MUST NOT be
               written; the run remains in cleanup-pending state so the
               validator keeps tmp scratch exempt for diagnostics.
 
@@ -9008,16 +8506,8 @@ def _cleanup_agent_tmp_root(
       for terminal-status agents, so there is no in-flight risk.
     - Validates that the target lives under repo_root/workspace/tmp/ before
       unlinking — refuses to traverse symlinks pointing elsewhere.
-    - **Adv-5 ownership guard**: only deletes if the calling orchestration owns
-      the launch record for `<agent_run_id>` (i.e.,
-      `workspace/orchestrations/<orchestration_id>/launches/<arid>.request.json`
-      exists). The tmp namespace is shared (`workspace/tmp/<arid>/` with no
-      orchestration prefix), so two orchestrations that happen to reuse the
-      same `arid` would share the directory — terminating one must not delete
-      the other's live scratch. Without this guard, a single record-agent-run
-      could wipe a concurrent orchestration's in-flight workspace.
     - rmtree errors are not raised (cleanup must not fail the calling
-      record-agent-run / record-timeout flow), but they are surfaced via
+      record-agent-run flow), but they are surfaced via
       the False return so callers can suppress the cleanup_committed marker.
     """
     if not isinstance(agent_run_id, str) or not agent_run_id.strip():
@@ -9028,105 +8518,29 @@ def _cleanup_agent_tmp_root(
         return False
     if not isinstance(orchestration_id, str) or not orchestration_id.strip():
         return False
-    # Adv-5/Adv-7: refuse to delete unless this orchestration owns the arid.
-    # Two ownership proofs are accepted (covering both child agents and the
-    # orchestration agent itself):
-    #   (a) Step/substep agents: launches/<arid>.request.json exists.
-    #   (b) Orchestration agent: orchestration_meta.json#orchestration_agent_run_id
-    #       equals arid (orchestration agents are not "launched" via record-launch
-    #       and have no request file, but their identity is pinned in the meta).
-    # Without either proof we refuse to delete — a concurrent orchestration
-    # that happens to reuse the same arid (the workspace/tmp/ namespace is flat)
-    # may be using the directory as live scratch.
-    orch_root_dir = repo_root / "workspace" / "orchestrations" / orchestration_id.strip()
-    is_owner_via_launch = _orchestration_holds_launch_record(repo_root, orchestration_id, arid)
-    is_owner_via_orchestration = False
-    if not is_owner_via_launch:
-        meta_path = orch_root_dir / "orchestration_meta.json"
-        if meta_path.is_file():
-            try:
-                meta_doc = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                meta_doc = None
-            if isinstance(meta_doc, dict):
-                expected = meta_doc.get("orchestration_agent_run_id")
-                if isinstance(expected, str) and expected.strip() == arid:
-                    is_owner_via_orchestration = True
-    if not (is_owner_via_launch or is_owner_via_orchestration):
-        return False
-    # Adv-11: cross-orchestration collision check. The flat workspace/tmp/<arid>/
-    # namespace cannot disambiguate which orchestration owns the directory's
-    # contents when two orchestrations have launched the same arid. If ANY
-    # other orchestration also claims this arid (via a launch record OR as its
-    # own orchestration_agent_run_id), refuse to delete — wiping the shared
-    # directory would destroy the colliding orchestration's live scratch.
-    # This matches the validator's collision-aware exemption (Adv-10):
-    # workspace/tmp/<arid>/ is treated as ambiguous and surfaced; cleanup is
-    # likewise refused.
-    #
-    # Codex round 20 F2: serialize the cross-orchestration scan + rmtree under
-    # an fcntl lock on `workspace/tmp/<arid>.lock`. Two concurrent cleanup
-    # attempts (or a cleanup race against a same-orchestration replay) cannot
-    # observe stale ownership state. The lock further narrows — but does not
-    # fully eliminate — the legacy M4 race where a record-launch in another
-    # orchestration creates `launches/<arid>.request.json` between the scan
-    # and the rmtree. With UUID4 arids (the documented norm) collision is
-    # astronomically rare; namespacing `workspace/tmp/` by orchestration_id
-    # is the long-term elimination (see RUNBOOK.md `tmp-namespace-redesign`).
     workspace_tmp = repo_root / "workspace" / "tmp"
-    workspace_tmp.mkdir(parents=True, exist_ok=True)
-    lock_path = workspace_tmp / f"{arid}.lock"
-    with _fcntl_exclusive_lock(lock_path):
-        orchestrations_root = repo_root / "workspace" / "orchestrations"
-        other_owners = 0
-        if orchestrations_root.is_dir():
-            for other_dir in orchestrations_root.iterdir():
-                if not other_dir.is_dir() or other_dir.name == orchestration_id.strip():
-                    continue
-                if (other_dir / "launches" / f"{arid}.request.json").is_file():
-                    other_owners += 1
-                    continue
-                other_meta_path = other_dir / "orchestration_meta.json"
-                if other_meta_path.is_file():
-                    try:
-                        other_meta = json.loads(other_meta_path.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
-                        continue
-                    if isinstance(other_meta, dict):
-                        other_arid = other_meta.get("orchestration_agent_run_id")
-                        if isinstance(other_arid, str) and other_arid.strip() == arid:
-                            other_owners += 1
-        if other_owners > 0:
+    target = workspace_tmp / arid
+    if not target.exists():
+        # Already absent — counts as "tmp is gone" for the committed marker.
+        return True
+    # Reject symlink redirection — never follow a symlink at <agent_run_id>.
+    try:
+        if target.is_symlink():
             return False
-        target = workspace_tmp / arid
-        if not target.exists():
-            # Already absent — counts as "tmp is gone" for the committed marker.
-            return True
-        # Reject symlink redirection — never follow a symlink at <agent_run_id>.
-        try:
-            if target.is_symlink():
-                return False
-            # Confirm the resolved path stays under workspace/tmp/.
-            resolved_target = target.resolve()
-            resolved_parent = workspace_tmp.resolve()
-            if resolved_target.parent != resolved_parent:
-                return False
-        except OSError:
+        # Confirm the resolved path stays under workspace/tmp/.
+        resolved_target = target.resolve()
+        resolved_parent = workspace_tmp.resolve()
+        if resolved_target.parent != resolved_parent:
             return False
-        import shutil
-        try:
-            shutil.rmtree(target)
-        except OSError:
-            return False
-        # Successful rmtree (or post-rmtree absence). Confirm directory is gone.
-        # NOTE: the `<arid>.lock` fcntl sidecar is intentionally NOT unlinked
-        # here. It is the very primitive serializing this scan + rmtree against
-        # a concurrent cleanup; deleting it would let a waiter proceed on the
-        # orphaned inode while a new entrant O_CREATs a fresh inode and locks
-        # it without contention, breaking serialization. The sidecar is a
-        # 0-byte benign file that `validate_workspace_root` tolerates, so it is
-        # left in place (bounded accumulation under session-scoped scratch).
-        return not target.exists()
+    except OSError:
+        return False
+    import shutil
+    try:
+        shutil.rmtree(target)
+    except OSError:
+        return False
+    # Successful rmtree (or post-rmtree absence). Confirm directory is gone.
+    return not target.exists()
 
 
 def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
@@ -9140,8 +8554,9 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
 # The `multi_agent` feature state, its `multi_agent_enabled` check and the codex
 # `features list` probe that was its only producer went in issue #447 (D1, D4): the conductor
 # spawns independent CLI processes and never uses a platform's own subagents, so the feature
-# said nothing about launchability. On claude the check was `--help` answering, which
-# `claude_help_probe_available` already records and now gates by name.
+# said nothing about launchability. The claude `--version`, `--help` and `--restricted` rows
+# went in issue #643 with the option-set probes of both CLIs: a CLI that cannot run the leaf
+# argv refuses it before any request, and the launch ends `leaf_transport_error`.
 CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_version_available",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
@@ -9151,8 +8566,7 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "sandbox_netns_python", "sandbox_netns_route",
 })
 CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
-    "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
-    "claude_restricted_flag_available", "claude_global_config_env_absent",
+    "claude_prompt_stdin", "claude_global_config_env_absent",
     "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
     "sandbox_netns_python", "sandbox_netns_route",
 })
@@ -9169,7 +8583,7 @@ REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
 # the `exec` help alone would pass on a CLI where the resume argv aborts at parsing, before any
 # `thread.started`, turning every repair turn into a transport death. Keep this in sync with
 # the resume branch of `leaf_command` (a suite row asserts the emitted option set equals this
-# one). The cold argv's options are `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS`.
+# one).
 CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
     "--model", "--json", "--ignore-rules", "--config",
     # The sandbox holds no checkout (issue #227: an empty tmpfs at `repo_root`), and codex
@@ -9193,9 +8607,8 @@ def _codex_check_pass_values(checks: Sequence[Any]) -> dict[str, Any]:
 def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
     """Every reason this preflight document does not allow a launch, in a fixed order; an empty
     list means launchable. The ONE statement of the launch conditions: the read-time gate
-    (`_preflight_allows_agent_launch`) is "this list is empty", and the document validator
-    (`_validate_preflight_payload`) refuses a document that claims launchability while it is
-    not — so the two cannot disagree on any document."""
+    (`_preflight_allows_agent_launch`) is "this list is empty", and every reader of a stored
+    document asks it."""
     reasons: list[str] = []
     checks = payload.get("checks")
     if not isinstance(checks, list):
@@ -9238,19 +8651,6 @@ def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
 def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     """True when `_preflight_launch_refusals` finds nothing."""
     return not _preflight_launch_refusals(payload)
-
-
-def _validate_preflight_payload(payload: dict[str, Any]) -> None:
-    """Refuse a document that claims launchability (either `can_launch_*` flag true) while
-    `_preflight_launch_refusals` is not empty. A document with both flags false claims nothing
-    and is accepted — `main`'s `preflight` subcommand writes exactly that after a failed probe."""
-    claims = (payload.get("can_launch_step_agents") is True
-              or payload.get("can_launch_substep_agents") is True)
-    if not claims:
-        return
-    reasons = _preflight_launch_refusals(payload)
-    if reasons:
-        raise ValueError("preflight claims launchability but " + "; ".join(reasons))
 
 
 def _live_preflight_mode() -> str:
@@ -9371,13 +8771,6 @@ def _reprobe_recorded_providers(
                     "checks": probe.get("checks", []),
                     "launchable": _preflight_allows_agent_launch(probe),
                 }
-                # Unconditional for a CLI surface since issue #534 PR-J4-b (`probe_all_providers`).
-                # A row recorded before it carries no `workshop` stamp; the `--resume` barrier
-                # refuses such an orchestration at start, and this re-probes it if one gets here.
-                check = _workshop_flag_set_check(
-                    str(token), probed["probe_command"], subprocess.run)
-                probed["checks"] = list(probed["checks"]) + [check]
-                probed["launchable"] = bool(probed["launchable"]) and check["pass"] is True
             else:
                 probed = _probe_http_provider({
                     "backend": str(token), "provider": provider_type,
@@ -9412,9 +8805,9 @@ def _run_live_probe_and_update(
 
     Raise a RuntimeError on failure (the caller transitions the orchestration to fail).
     """
-    backend = cached_payload.get("backend")
-    if not isinstance(backend, str) or backend.strip() not in SUPPORTED_BACKENDS:
-        backend = "claude"
+    # `_preflight_launch_refusals` already refused this document unless its backend, so
+    # normalised, names a required set; normalise the same way.
+    backend = str(cached_payload.get("backend", "")).strip().lower()
     command = cached_payload.get("probe_command")
     probe_command = command.strip() if isinstance(command, str) and command.strip() else None
 
@@ -9483,65 +8876,6 @@ def _require_preflight_launchable(
 
     _run_live_probe_and_update(repo_root, orchestration_id, payload)
     return payload
-
-
-def get_preflight_ttl_status(
-    repo_root: Path,
-    orchestration_id: str,
-) -> dict[str, Any]:
-    """For the preflight-status command: return the details of the TTL state."""
-    mode = _live_preflight_mode()
-    ttl_seconds = _live_preflight_ttl_seconds()
-    path = _preflight_path(repo_root, orchestration_id)
-
-    if not path.exists():
-        return {
-            "orchestration_id": orchestration_id,
-            "preflight_exists": False,
-            "live_probe_mode": mode,
-            "ttl_seconds": ttl_seconds,
-            "within_ttl": None,
-            "ttl_remaining_seconds": None,
-            "probe_skippable": False,
-        }
-
-    try:
-        file_payload = _read_json(path)
-    except json.JSONDecodeError:
-        file_payload = {}
-
-    probed_at = file_payload.get("probed_at") if isinstance(file_payload, dict) else None
-    checked_at = file_payload.get("checked_at") if isinstance(file_payload, dict) else None
-    preflight_status = file_payload.get("status") if isinstance(file_payload, dict) else None
-    backend = file_payload.get("backend") if isinstance(file_payload, dict) else None
-
-    within_ttl: bool | None = None
-    ttl_remaining: float | None = None
-    if mode == "ttl" and isinstance(probed_at, str):
-        within_ttl = _is_within_preflight_ttl(probed_at, ttl_seconds)
-        if within_ttl and ttl_seconds > 0:
-            try:
-                pa = datetime.fromisoformat(probed_at.replace("Z", "+00:00"))
-                elapsed = (datetime.now(timezone.utc) - pa).total_seconds()
-                ttl_remaining = max(0.0, ttl_seconds - elapsed)
-            except (ValueError, TypeError):
-                ttl_remaining = None
-
-    probe_skippable = mode == "never" or (mode == "ttl" and within_ttl is True)
-
-    return {
-        "orchestration_id": orchestration_id,
-        "preflight_exists": True,
-        "preflight_status": preflight_status,
-        "backend": backend,
-        "checked_at": checked_at,
-        "probed_at": probed_at,
-        "live_probe_mode": mode,
-        "ttl_seconds": ttl_seconds,
-        "within_ttl": within_ttl,
-        "ttl_remaining_seconds": ttl_remaining,
-        "probe_skippable": probe_skippable,
-    }
 
 
 def _launch_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
@@ -9632,17 +8966,11 @@ _PROMPT_TEMPLATE_FILES = {
 def _load_launch_prompt_templates() -> dict[str, str]:
     """Load every registered launch-prompt template from tools/prompt_templates/, verbatim.
 
-    Keyed by `_PROMPT_TEMPLATE_FILES`; a registered file that is missing is a RuntimeError, so
-    a key and its file are added or removed in one change.
+    Keyed by `_PROMPT_TEMPLATE_FILES`; a registered file that is missing stops the read with
+    its OSError, so a key and its file are added or removed in one change.
     """
-    templates: dict[str, str] = {}
-    for key, fname in _PROMPT_TEMPLATE_FILES.items():
-        path = _PROMPT_TEMPLATE_DIR / fname
-        try:
-            templates[key] = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError(f"launch prompt template missing: {path} ({exc})") from exc
-    return templates
+    return {key: (_PROMPT_TEMPLATE_DIR / fname).read_text(encoding="utf-8")
+            for key, fname in _PROMPT_TEMPLATE_FILES.items()}
 
 
 def _build_dependency_surface_facts(surface: Any) -> str:
@@ -9716,7 +9044,7 @@ def _build_dependency_surface_facts(surface: Any) -> str:
         if block:
             lines.append("  ```yaml")
             lines.extend(
-                f"  {ln}" for ln in _require_yaml().safe_dump(
+                f"  {ln}" for ln in yaml.safe_dump(
                     block, sort_keys=False, allow_unicode=True).rstrip("\n").split("\n"))
             lines.append("  ```")
     if len(lines) == 1:
@@ -10482,12 +9810,8 @@ def _render_leaf_repair_prompt(request_payload: dict[str, Any]) -> str:
     (`_leaf_launch_body`; issue #510) beside the `<tool_surface>` row. (The pure leaf's cold
     repair re-inlined its prior document as `<prior_document>`; that went in issue #534
     PR-J4-b.)"""
-    templates = _load_launch_prompt_templates()
     repair_key = _leaf_repair_template_name(request_payload)
-    if repair_key not in templates:
-        raise ValueError(f"launch request names no rendered prompt: no template for "
-                         f"{repair_key!r}")
-    template = templates[repair_key]
+    template = _load_launch_prompt_templates()[repair_key]
     findings = str(request_payload.get("repair_findings", "")).strip()
     subs: dict[str, str] = {
         "node_key": str(request_payload.get("node_key", "")),
@@ -11034,29 +10358,11 @@ def resume_orchestration(
     and the resume would not hold. The prior terminal narrative is saved to `resumed_from_*`,
     and the history remains in failure_analysis.json / phase_state_log.
 
-    Raise a RuntimeError when the orchestration does not exist.
+    A missing or unreadable `orchestration_meta.json` raises from the read (issue #643: no
+    refusal of its own). Every recorded status is reconciled, whatever it is.
     """
-    # `init` refuses an id that is not a plain path token; a resume must refuse it too,
-    # or a workspace created before that rule restarts and then fails at its first build-runtime
-    # call, several phases in, on the id it was resumed with.
-    if not _is_safe_path_id(str(orchestration_id)):
-        raise RuntimeError(
-            "resume: orchestration_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {orchestration_id!r}); an orchestration created under an older "
-            "id grammar cannot be resumed and must be re-run under a new id"
-        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
-    if not meta_path.exists():
-        raise RuntimeError(
-            f"orchestration not found: {orchestration_id}. "
-            "Run 'init' before enabling checkpoint resume."
-        )
-    try:
-        meta = _read_json(meta_path)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"orchestration_meta.json is invalid: {meta_path}") from exc
-    if not isinstance(meta, dict):
-        raise RuntimeError(f"orchestration_meta.json is invalid: {meta_path}")
+    meta = _read_json(meta_path)
     meta["resumed_at"] = _utc_now_iso()
     if isinstance(spec_ref, str) and spec_ref.strip():
         meta["spec_ref"] = spec_ref.strip()
@@ -11135,95 +10441,69 @@ def resume_orchestration(
     # hold its claim, so a resume that GOT here already knows nothing else is driving this run.
     # The crash reconciliations below therefore have to run for a `running` prior as well, or a
     # resume recovers the status and leaves the dead child's markers, orphan edges and stale
-    # `child_running` phase state behind it.
-    reconcile = isinstance(prior_status, str) and (
-        prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status == "running"
-    )
-    # A status this function cannot reason about REFUSES the resume rather than proceeding
-    # without reconciling. Proceeding was the worse of the two: the resume succeeded, the
-    # reconciliations were skipped, and the run carried on with the dead child's
-    # `active_children/` markers and its `child_running` phase authority still in place — which
-    # wedges the next launch behind a sequential-child gate whose owner is gone, for a reason
-    # nothing reported. Refusing says which value it could not place.
+    # `child_running` phase state behind it. A status the runtime does not write (only a
+    # hand-run `init --status` / `set-status --status` stores one) reconciles the same way; its
+    # refusal went in issue #643.
     #
-    # Reachable, not hypothetical: neither `init --status` nor `set-status --status` declares
-    # argparse `choices=`, so any string an operator or a leaf passes is stored verbatim. The
-    # runtime's own writers only ever produce the statuses below.
-    # EVERY unplaceable value, not just a non-empty string. The first cut of this guard read
-    # `isinstance(prior_status, str) and prior_status.strip() and not reconcile`, which exempted
-    # the three shapes that are EASIEST to produce: an empty string, a JSON `null`, and an
-    # absent key. Measured — `set-status --status ""` exits 0, and the resume then took the
-    # exact path the guard was added to close. Worse, the meta was left at `''` rather than
-    # `running`, so `_warn_about_resumable_priors` (which skips a falsy status) stopped
-    # mentioning the run on the cold path too: invisible in both directions.
-    if not reconcile:
-        raise RuntimeError(
-            f"cannot resume orchestration {orchestration_id}: its recorded status "
-            f"{prior_status!r} is neither terminal ({sorted(IDEMPOTENT_TERMINAL_STATUSES)}) "
-            "nor 'running', so this resume cannot tell whether the crash reconciliations "
-            "(active-child markers, orphan graph edges, stale child_running phase authority) "
-            "are safe to run. Set a status this runtime writes before resuming."
+    # Archive the prior terminal narrative, then hand the resumed run a fresh
+    # in-progress lifecycle so its eventual set-status(pass/fail) is a valid
+    # forward transition from `running` rather than a rejected terminal-to-terminal one.
+    meta["resumed_from_status"] = prior_status
+    for live_field, archive_field in (
+        ("reason_code", "resumed_from_reason_code"),
+        ("reason_detail", "resumed_from_reason_detail"),
+        ("blocking_policy_scope", "resumed_from_blocking_policy_scope"),
+    ):
+        if meta.get(live_field) is not None:
+            meta[archive_field] = meta.get(live_field)
+            meta.pop(live_field, None)
+    # A `resume_directive` left by a pre-#177 run names a `reopen-phase` that no longer
+    # exists; drop it so nothing reads it. A resumed run needs no directive: it re-asks
+    # `check-phase-certified` for every phase, and a phase whose artifact a retry revoked
+    # is refused there — the revocation IS the instruction, and it lives on the artifact
+    # rather than in this record.
+    meta.pop("resume_directive", None)
+    meta.pop("finished_at", None)
+    meta.pop("detected_at", None)
+    meta["status"] = "running"
+    # Drop the prior terminalization's cleanup_committed marker so the resumed
+    # run's eventual terminalization performs a clean two-phase commit and the
+    # validator does not treat reused orch tmp as already revoked.
+    orch_arid = meta.get("orchestration_agent_run_id")
+    if isinstance(orch_arid, str) and orch_arid.strip():
+        marker = _cleanup_committed_marker_path(
+            repo_root, orchestration_id, orch_arid.strip()
         )
-    if reconcile:
-        # Archive the prior terminal narrative, then hand the resumed run a fresh
-        # in-progress lifecycle so its eventual set-status(pass/fail) is a valid
-        # forward transition from `running` rather than a rejected terminal-to-terminal one.
-        meta["resumed_from_status"] = prior_status
-        for live_field, archive_field in (
-            ("reason_code", "resumed_from_reason_code"),
-            ("reason_detail", "resumed_from_reason_detail"),
-            ("blocking_policy_scope", "resumed_from_blocking_policy_scope"),
-        ):
-            if meta.get(live_field) is not None:
-                meta[archive_field] = meta.get(live_field)
-                meta.pop(live_field, None)
-        # A `resume_directive` left by a pre-#177 run names a `reopen-phase` that no longer
-        # exists; drop it so nothing reads it. A resumed run needs no directive: it re-asks
-        # `check-phase-certified` for every phase, and a phase whose artifact a retry revoked
-        # is refused there — the revocation IS the instruction, and it lives on the artifact
-        # rather than in this record.
-        meta.pop("resume_directive", None)
-        meta.pop("finished_at", None)
-        meta.pop("detected_at", None)
-        meta["status"] = "running"
-        # Drop the prior terminalization's cleanup_committed marker so the resumed
-        # run's eventual terminalization performs a clean two-phase commit and the
-        # validator does not treat reused orch tmp as already revoked.
-        orch_arid = meta.get("orchestration_agent_run_id")
-        if isinstance(orch_arid, str) and orch_arid.strip():
-            marker = _cleanup_committed_marker_path(
-                repo_root, orchestration_id, orch_arid.strip()
-            )
-            try:
-                marker.unlink()
-            except FileNotFoundError:
-                pass
-        # Re-open the orchestration's own agent_runs row (terminalized in place by
-        # the prior set-status) so the resumed run's row is `running` again, its
-        # eventual set-status can re-terminalize it, and validate_workspace_root
-        # does not age the live tmp root out as cleanup-pending. Done BEFORE the
-        # meta commit below so the still-terminal on-disk meta gates recovery: if
-        # this is interrupted, a retry re-enters `terminal_reset` and re-runs it
-        # (idempotent — the helper no-ops once the row is already `running`).
-        _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
-        # A host that died mid-launch leaves the active_child window open (no live
-        # host finalized the child, and nobody ran deactivate-child / record-timeout). The terminal status proves
-        # no child is actually running, so clear the stale markers here — otherwise
-        # the resumed agent's first record-launch hits the Claude-backend sequential
-        # check and is rejected, permanently wedging recovery for
-        # launch_incomplete_active_child / llm_launch_interrupted. Captured before the
-        # meta commit so a retry re-enters terminal_reset and re-runs it (idempotent).
-        cleared_active_child = _clear_stale_active_child_markers(repo_root, orchestration_id)
-        # The abandoned child's agent_graph edge was written by record_launch before
-        # the marker and never gets a terminal agent_runs row; prune it so the
-        # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
-        # check in _validate_orchestration_completion_for_pass. Idempotent.
-        pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
-        # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
-        # child is live, and a phase_state that says otherwise misdescribes the run to the
-        # completion vouch and the `--stage pre_judge` audit. The phase-state init below
-        # preserves node_states, so this reset survives into the resumed run.
-        reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+    # Re-open the orchestration's own agent_runs row (terminalized in place by
+    # the prior set-status) so the resumed run's row is `running` again, its
+    # eventual set-status can re-terminalize it, and validate_workspace_root
+    # does not age the live tmp root out as cleanup-pending. Done BEFORE the
+    # meta commit below so the still-terminal on-disk meta gates recovery: if
+    # this is interrupted, a retry re-enters `terminal_reset` and re-runs it
+    # (idempotent — the helper no-ops once the row is already `running`).
+    _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
+    # A host that died mid-launch leaves the active_child window open (no live
+    # host finalized the child, and nobody ran deactivate-child). The terminal status proves
+    # no child is actually running, so clear the stale markers here — otherwise
+    # the resumed agent's first record-launch hits the Claude-backend sequential
+    # check and is rejected, permanently wedging recovery for
+    # launch_incomplete_active_child / llm_launch_interrupted. Captured before the
+    # meta commit so a retry re-enters terminal_reset and re-runs it (idempotent).
+    cleared_active_child = _clear_stale_active_child_markers(repo_root, orchestration_id)
+    # The abandoned child's agent_graph edge was written by record_launch before
+    # the marker and never gets a terminal agent_runs row; prune it so the
+    # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
+    # check in _validate_orchestration_completion_for_pass. Idempotent.
+    pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
+    # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
+    # child is live, and a phase_state that says otherwise misdescribes the run to the
+    # completion vouch and the `--stage pre_judge` audit. The phase-state init below
+    # preserves node_states, so this reset survives into the resumed run.
+    reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
     # The `driver` block is GONE (issue #177): nothing reads it any more, and a record that
     # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
@@ -11260,55 +10540,54 @@ def resume_orchestration(
                 ),
             },
         )
-    if reconcile:
+    _append_phase_state_log(
+        repo_root,
+        orchestration_id,
+        {
+            "ts": _utc_now_iso(),
+            "event": "resume_status_reset",
+            "from": prior_status,
+            "to": "running",
+            "note": f"status reset to running for resume (from {prior_status})",
+        },
+    )
+    if pruned_graph_children:
         _append_phase_state_log(
             repo_root,
             orchestration_id,
             {
                 "ts": _utc_now_iso(),
-                "event": "resume_status_reset",
-                "from": prior_status,
-                "to": "running",
-                "note": f"status reset to running for resume (from {prior_status})",
+                "event": "resume_pruned_orphan_graph_edges",
+                "note": "orphan agent_graph edges (no agent_runs row) pruned for checkpoint resume",
+                "pruned_child_agent_run_ids": pruned_graph_children,
             },
         )
-        if pruned_graph_children:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_pruned_orphan_graph_edges",
-                    "note": "orphan agent_graph edges (no agent_runs row) pruned for checkpoint resume",
-                    "pruned_child_agent_run_ids": pruned_graph_children,
-                },
-            )
-        if cleared_active_child:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_cleared_stale_active_child",
-                    "from": "child_running",
-                    "to": "not_started",
-                    "note": "stale active_child markers cleared for checkpoint resume",
-                    "cleared_active_child_arids": cleared_active_child,
-                },
-            )
-        if reset_child_running:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_reset_stale_child_running",
-                    "from": "child_running",
-                    "to": "not_started",
-                    "note": "stale child_running node/step authority reset for checkpoint resume",
-                    "reset_node_steps": reset_child_running,
-                },
-            )
+    if cleared_active_child:
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_cleared_stale_active_child",
+                "from": "child_running",
+                "to": "not_started",
+                "note": "stale active_child markers cleared for checkpoint resume",
+                "cleared_active_child_arids": cleared_active_child,
+            },
+        )
+    if reset_child_running:
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_reset_stale_child_running",
+                "from": "child_running",
+                "to": "not_started",
+                "note": "stale child_running node/step authority reset for checkpoint resume",
+                "reset_node_steps": reset_child_running,
+            },
+        )
     return meta
 
 
@@ -12857,87 +12136,6 @@ def _probe_codex_home_writable() -> dict[str, Any]:
     return {"name": "codex_home_writable", "pass": ok, "detail": detail_text}
 
 
-def _require_secure_backend_home(home: Path, label: str = "Codex", *,
-                                 tighten: bool = False) -> None:
-    """Fail closed unless ``home`` is a private, non-symlinked directory.
-
-    ONE spelling for every backend home: the Claude private home (issue #63; gone with
-    the agentic leaf in Z4, issue #171) had the same threat model as the Codex one — a world-writable or symlinked home lets
-    another process substitute the very configuration that is about to be
-    SHA-pinned, so the pin would certify bytes the leaf never loads. ``label``
-    only names the backend in the message; the checks are identical by design and
-    must not be allowed to drift apart per backend.
-
-    ``tighten`` decides what a WRONG MODE means, and the two callers want different
-    answers. On REUSE the home already exists and its mode may have drifted — a backup
-    restored without permissions is the ordinary way — so the mode is established, exactly
-    as `_require_secure_home_ancestor` does one level up. Refusing there made a drift on
-    the home itself brick every later launch of that orchestration FOREVER, with no chmod
-    named in the message, while the identical drift on its parent was silently fixed: the
-    justification written for the ancestors applied word for word to the leaf and had not
-    been carried there. Immediately AFTER creation the answer is the opposite and
-    ``tighten`` stays False, because there the check exists to catch a chmod that did not
-    take, and tightening would be the very thing it is watching for.
-
-    Symlink, non-directory and foreign uid refuse in both modes: those are disagreements
-    no chmod resolves.
-    """
-    try:
-        info = home.lstat()
-    except OSError as exc:
-        raise ValueError(f"isolated {label} home is inaccessible: {home}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"isolated {label} home must be a real directory: {home}")
-    if info.st_uid != os.getuid():
-        raise ValueError(f"isolated {label} home is not owned by this user: {home}")
-    if stat.S_IMODE(info.st_mode) != 0o700:
-        if not tighten:
-            raise ValueError(f"isolated {label} home must have mode 0700: {home}")
-        _chmod_directory_no_follow(home, 0o700, label)
-        after = home.lstat()
-        if stat.S_IMODE(after.st_mode) != 0o700:
-            raise ValueError(
-                f"isolated {label} home is still not mode 0700 after chmod (got "
-                f"{stat.S_IMODE(after.st_mode):#o}); the filesystem holding {home} does "
-                "not support it, so the leaf's transcripts cannot be kept private there"
-            )
-
-
-def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
-    """`chmod` a DIRECTORY without following a symlink at that path.
-
-    `os.chmod` follows symlinks, so between the `lstat` that approved a path and the
-    `chmod` that tightens it, the directory can be replaced by a link and the mode of an
-    unrelated path is changed instead — with the re-read then failing and blaming the
-    FILESYSTEM, which sends the operator after the wrong thing entirely. MEASURED: a
-    victim directory outside the tree came back 0o700 while the refusal said "does not
-    support it".
-
-    Opening with `O_NOFOLLOW | O_DIRECTORY` and using `fchmod` closes both halves: the
-    open refuses the substituted link, so nothing else is touched and the diagnosis stays
-    about this path. Only another process of the SAME uid can run the race at all — the
-    tree is 0700 and a leaf cannot see it — which is why this is cheap insurance rather
-    than a defence.
-    """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
-    try:
-        fd = os.open(str(path), flags)
-    except OSError as exc:
-        raise ValueError(
-            f"isolated {label} home path could not be opened as a real directory to set "
-            f"its mode: {path}: {exc}"
-        ) from exc
-    try:
-        os.fchmod(fd, mode)
-    except OSError as exc:
-        raise ValueError(
-            f"isolated {label} home path mode could not be changed to {mode:#o}: "
-            f"{path}: {exc}"
-        ) from exc
-    finally:
-        os.close(fd)
-
-
 # `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
 # `tools/operator_private_root.py`, not defined here. TWO subtrees of the operator-private root are
 # relocatable, and each name moves exactly one of them:
@@ -13100,10 +12298,9 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
                 "There is no working configuration here to preserve. Point it at a "
                 "directory that neither contains nor sits inside the checkout"
             )
-    # Redundant for the VERDICT and load-bearing for the MESSAGE: the very next thing
-    # `_create_workflow_backend_home` does is the ancestors loop, whose
-    # `_require_secure_home_ancestor` refuses a non-directory at the same path — but with a
-    # message that names neither the variable nor the reason. It WAS unpinned for this
+    # Load-bearing for the MESSAGE: without it the ancestors loop of
+    # `_create_workflow_backend_home` fails on a non-directory at the same path with an
+    # `OSError` that names neither the variable nor the reason. It WAS unpinned for this
     # caller (a round-3 census measured `test_orchestration_runtime.py` staying green while
     # only the token-side subtests failed); issue #176 ported that token-side row to the
     # homes caller, so `test_operator_private_root.py::WorkflowHomesRootOverrideTests::
@@ -13129,103 +12326,31 @@ def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
     DETERMINISTIC ON PURPOSE, replacing `tempfile.mkdtemp`. The randomness the mkdtemp
     names carried was a defense for `/tmp`, which is world-writable: any local user could
     pre-create a predictable name and win the race for the directory the home is about to
-    become. Under a 0700 root owned by this uid that threat is gone, and what replaces it
-    is the EXCLUSIVE creation in `_create_workflow_backend_home` — a second creator gets
-    `FileExistsError`, not a shared home.
+    become. Under a 0700 root owned by this uid that threat is gone, and each lineage home
+    inside the backend directory is created exclusively by its cold launch.
 
-    The id becomes a path segment OUTSIDE the repository, so it is refused here unless it
-    is a plain token. `init_orchestration` already refuses anything else, and this is the
-    second wall: a traversal segment would otherwise place a 0700 directory (and later a
-    credential file-bind destination) at an operator-chosen path anywhere on the host.
+    The orchestration id is the operator's (`--orchestration-id`) or host-minted, and the
+    backend a host constant (`WORKFLOW_BACKEND_HOME_DIRNAMES`); neither is checked here
+    (issue #643). `tools/prune_workflow_homes.py` keeps its own id rule.
     """
     oid = (orchestration_id or "").strip()
-    if not _is_safe_path_id(oid):
-        raise ValueError(
-            "isolated backend home: orchestration_id must be a plain [A-Za-z0-9_-] "
-            f"token (got {orchestration_id!r})"
-        )
-    if backend not in WORKFLOW_BACKEND_HOME_DIRNAMES:
-        raise ValueError(
-            f"isolated backend home: unknown backend {backend!r} "
-            f"(expected one of {list(WORKFLOW_BACKEND_HOME_DIRNAMES)})"
-        )
     return _workflow_homes_root() / oid / backend
-
-
-def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bool) -> None:
-    """Fail closed unless an ancestor directory of a backend home is safe to descend.
-
-    Three checks REFUSE, because each is a disagreement this code cannot resolve: a
-    symlink or a non-directory means something other than this tree is deciding where the
-    home lands, and a directory owned by another uid is not ours to touch at all.
-
-    The mode does NOT refuse — it is TIGHTENED. That is the difference between "the
-    caller said something incompatible with me" and "the caller did not say anything",
-    and the mode is the second: a directory at 0755 has not claimed it should stay at
-    0755, and the mode this code wants is one it can simply establish. Refusing instead
-    made an operator following `docs/RUNBOOK.md` — which offers
-    `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
-    plain `mkdir` created the root 0755 under the default umask; and it made a mode drift
-    on `~/.spec2science/homes` (a backup restored without permissions) refuse every launch of
-    every orchestration. The chmod is exactly what the create path does one branch away,
-    so tightening here makes the two agree rather than adding an authority.
-
-    The tightening is `require_private`-gated for the same reason the check was:
-    `~/.spec2science` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
-    start-claim writer both create it best-effort and neither forces its mode, it is
-    shared with `start_claims/`, and it is the one level here that this code did not
-    necessarily create. `docs/RUNBOOK.md` recommends
-    `chmod 700` for it. `homes/` and `homes/<oid>/` are this code's own.
-    """
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise ValueError(f"isolated {label} home ancestor is inaccessible: {path}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"isolated {label} home ancestor must be a real directory: {path}")
-    if info.st_uid != os.getuid():
-        raise ValueError(f"isolated {label} home ancestor is not owned by this user: {path}")
-    if require_private and stat.S_IMODE(info.st_mode) != 0o700:
-        _chmod_directory_no_follow(path, 0o700, label)
-        # Re-read rather than assume: on a filesystem that does not honour the mode
-        # (a FAT/exFAT mount, some network filesystems) the chmod succeeds and changes
-        # nothing, and descending would put the transcripts somewhere world-readable.
-        after = path.lstat()
-        if stat.S_IMODE(after.st_mode) != 0o700:
-            raise ValueError(
-                f"isolated {label} home ancestor is still not mode 0700 after chmod "
-                f"(got {stat.S_IMODE(after.st_mode):#o}); the filesystem holding {path} "
-                "does not support it, so the leaf's transcripts cannot be kept private "
-                "there"
-            )
 
 
 def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
                                   backend: str, label: str) -> Path:
-    """Create `<homes-root>/<oid>/<backend>` exclusively and return it.
+    """Create `<homes-root>/<oid>/<backend>` and return it.
 
-    The replacement for `tempfile.mkdtemp(dir="/tmp")` in both preparers. Three steps,
-    in this order, all of them fail-closed:
+    Each missing ancestor, and the backend directory itself, is created 0700 (`mkdir`'s mode
+    argument is masked by the umask, so a `chmod` follows); the operator-private tree is the
+    operator's own, and its state is not policed beyond that (issue #643). A backend directory
+    that is already there — a run that crashed between creating it and recording it, or a
+    reused orchestration id — is adopted: each lineage home inside it is created exclusively
+    by its cold launch. Then the owner marker is written in the PARENT
+    (`_write_workflow_home_owner`).
 
-      1. secure every ancestor. Each is created with an explicit `mkdir(0o700)` +
-         `chmod` (mkdir's mode argument is masked by the umask; the chmod is not), and
-         an ancestor that ALREADY exists is checked rather than trusted — a symlink or
-         another user's directory anywhere on the way down would otherwise decide where
-         the home lands;
-      2. create the leaf directory with `os.mkdir`, which is EXCLUSIVE. A directory that
-         is already there is not adopted: it means a previous run created it and either
-         crashed before recording it, or its metadata was lost, and adopting it would
-         hand a new orchestration another run's transcripts. The error names the path and
-         the remedy;
-      3. re-check the created directory through `_require_secure_backend_home`, the same
-         spelling both preparers used before, so the property asserted at the end is the
-         one the rest of the code depends on.
-
-    Then the owner marker is written in the PARENT (step 4, see `_write_workflow_home_owner`).
-
-    Called under the caller's `_orchestration_meta_exclusive_lock`, like the mkdtemp it
-    replaces, so two concurrent child launches of the same orchestration cannot both reach
-    step 2.
+    Called under the caller's `_orchestration_meta_exclusive_lock`, so two concurrent child
+    launches of the same orchestration do not both create it.
     """
     home = _workflow_backend_home_path(orchestration_id, backend)
     root = _workflow_homes_root()
@@ -13234,7 +12359,7 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     # location the caller chose, and silently building a deep tree under a typo'd path is
     # the failure mode that costs most. Without one, `~/.spec2science` may legitimately not
     # exist yet (a host that has never run `init_orchestration`).
-    ancestors: list[tuple[Path, bool]] = []
+    ancestors: list[Path] = []
     if override_used:
         # The conditions live in a shared helper. The `subject` WORDING is per-caller so
         # the refusal names the operator's own tree: it carries the backend label, and the
@@ -13243,156 +12368,43 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
         _require_usable_private_root_override(
             WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root",
             repo_root=repo_root)
-        ancestors.append((root, True))
+        ancestors.append(root)
     else:
-        ancestors.append((root.parent, False))  # ~/.spec2science — mode not forced
-        ancestors.append((root, True))          # ~/.spec2science/homes
-    ancestors.append((home.parent, True))  # <homes-root>/<oid>
-    for path, require_private in ancestors:
-        if path.exists() or path.is_symlink():
-            _require_secure_home_ancestor(path, label, require_private=require_private)
+        ancestors.append(root.parent)  # ~/.spec2science
+        ancestors.append(root)         # ~/.spec2science/homes
+    ancestors.append(home.parent)      # <homes-root>/<oid>
+    for path in (*ancestors, home):
+        if path.is_dir():
             continue
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            # Lost a race with another process creating the same ancestor; validate the
-            # winner rather than assuming it.
-            _require_secure_home_ancestor(path, label, require_private=require_private)
-            continue
-        except OSError as exc:
-            raise ValueError(f"cannot create isolated {label} home ancestor {path}: {exc}") from exc
+        path.mkdir(mode=0o700, exist_ok=True)
         os.chmod(path, 0o700)
-    # BEFORE the exclusive creation: a refusal here must leave nothing behind, and a
-    # directory created and then refused would block the legitimate owner's next launch.
-    _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
-    try:
-        os.mkdir(home, 0o700)
-    except FileExistsError as exc:
-        raise ValueError(
-            f"isolated {label} home already exists but is not recorded in this "
-            f"orchestration's metadata: {home}. It belongs to an earlier run whose "
-            "metadata was lost, or to a run that crashed between creating the home and "
-            "recording it. Inspect it, then remove it with `python3 "
-            f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id} "
-            "--delete` — adding --allow-unverifiable if that run's metadata is gone, "
-            "and terminalizing it first (the set-status block under docs/RUNBOOK.md "
-            "#launch-incomplete-recovery) if its recorded status is still non-terminal, "
-            "which the crash case leaves it."
-        ) from exc
-    except OSError as exc:
-        raise ValueError(f"cannot create isolated {label} home {home}: {exc}") from exc
-    os.chmod(home, 0o700)
-    _require_secure_backend_home(home, label)
     _write_workflow_home_owner(repo_root, orchestration_id, home.parent, label)
     return home
 
 
-def _require_owner_marker_agrees(repo_root: Path, orchestration_id: str,
-                                 owner_dir: Path, label: str) -> None:
-    """Refuse when an existing owner marker is a DIFFERENT live claim on this directory.
-
-    Called BEFORE the exclusive `mkdir`, and the order is the whole point: validating
-    after it leaves the refused run's own backend directory on disk, which then blocks
-    the legitimate owner's next launch with the unrecorded-home error. Found by the probe
-    written for this very check — its first control ("the same checkout's second backend
-    must still work") failed on the debris the refusal had just created.
-
-    See `_write_workflow_home_owner` for what the marker is and why the checkout-gone
-    case is adopted instead.
-    """
-    marker_path = owner_dir / WORKFLOW_HOME_OWNER_FILENAME
-    if not marker_path.is_file():
-        return
-    try:
-        existing = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        # Unreadable: the prune tool's `unverifiable` answer, not a launch refusal.
-        #
-        # RESIDUE, and wider than the shape this sentence used to name. A marker that is
-        # unreadable — and equally one that is valid JSON, a dict, and merely INCOMPLETE
-        # (no `repo_root`) — is neither refused here nor replaced by
-        # `_write_workflow_home_owner`'s stale-owner branch, which requires a `repo_root`
-        # STRING that differs. So such an entry stays `unverifiable` forever and is
-        # deletable with `--allow-unverifiable` while its run is live: the end state the
-        # moved-checkout refresh closed, reached by a different route. No code path
-        # produces either shape — it takes filesystem damage or hand editing — which is
-        # why this is recorded rather than fixed.
-        return
-    if not isinstance(existing, dict):
-        return
-    other_oid = existing.get("orchestration_id")
-    if isinstance(other_oid, str) and other_oid and other_oid != orchestration_id:
-        raise ValueError(
-            f"isolated {label} home directory {owner_dir} is claimed by orchestration "
-            f"{other_oid!r}, not {orchestration_id!r}. Inspect it with `python3 "
-            f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id}` "
-            "before removing anything."
-        )
-    other_repo = existing.get("repo_root")
-    if (isinstance(other_repo, str) and other_repo
-            and other_repo != str(Path(repo_root).resolve())
-            and _orchestration_meta_path_exists(Path(other_repo), orchestration_id)):
-        raise ValueError(
-            f"isolated {label} home directory {owner_dir} belongs to a different checkout "
-            f"({other_repo}) whose metadata for {orchestration_id!r} is still present, so "
-            "both are live claims on one orchestration id. Use a distinct orchestration "
-            "id for this run; a home shared between two checkouts would hand each the "
-            "other's transcripts, and the prune tool would read the wrong checkout's "
-            "status when deciding to delete."
-        )
-
-
-def _resecure_workflow_home_on_reuse(repo_root: Path, orchestration_id: str,
-                                     home: Path, label: str) -> None:
-    """Re-assert the ancestors AND the owner marker for a home that ALREADY exists.
-
-    Two things ran only on the creation path, and both are about the state a home is
-    FOUND in rather than the state it is made in — which is the reuse path's whole
-    subject.
-
-    THE ANCESTORS. `docs/RUNBOOK.md` says a mode that "later drifts (a backup restored
-    without permissions)" is tightened, and that held only for a launch that CREATED a
-    home: a warm reuse checked the home itself and never looked above it. Measured before
-    this — with `<homes-root>` or `<homes-root>/<oid>` dropped to 0755, relaunching left
-    them there indefinitely. The transcripts stayed 0700, so what leaked was the metadata
-    (which orchestrations exist, which backends ran), but the document's claim was false
-    and the drift persisted until some unrelated new orchestration rebuilt the path.
-
-    THE MARKER.
+def _refresh_workflow_home_owner_on_reuse(repo_root: Path, orchestration_id: str,
+                                          home: Path, label: str) -> None:
+    """Re-write the owner marker for a home that ALREADY exists.
 
     The marker's whole reason for being refreshed — a checkout that moved, so the recorded
     path locates nothing — is a RESUME scenario, and the refresh lived only on the
-    creation path. `_write_workflow_home_owner`'s own docstring named the moved-checkout
-    operator as the case it handles, while nothing on the reuse path ever ran it.
-
-    The consequence was not cosmetic. A moved checkout's run stayed `unverifiable`
-    forever, and that verdict is the one `--allow-unverifiable` releases — and that route
-    skips the locked status re-read entirely, so `refused:orchestration_not_terminal`,
-    documented as having no override, became unreachable for it. Reproduced end to end:
-    `prune --all --allow-unverifiable --delete` removed the home of an orchestration whose
-    recorded status was `running`.
+    creation path once. A moved checkout's run then stayed `unverifiable` to the prune tool
+    forever, and `--allow-unverifiable` deletes such a home without the locked status
+    re-read: `prune --all --allow-unverifiable --delete` removed the home of an orchestration
+    whose recorded status was `running` (reproduced end to end).
 
     SCOPED TO OUR OWN LAYOUT. A home recorded before issue #64 lives wherever it lived — a
-    `mkdtemp` directory directly under `/tmp`, whose leaf name carries a random suffix and
-    whose parent is `/tmp`, which is nobody's orchestration directory. TWO guards reject
-    it and the NAME one runs first: `_workflow_backend_home_path` raises unless
-    `home.name` is a declared backend dirname, and this function returns on that
-    `ValueError` before the parent comparison below is reached. Writing a marker there
-    would litter a shared tmpfs with a file claiming an orchestration id. So the refresh
-    runs only when the home sits exactly where this code puts one.
+    `mkdtemp` directory directly under `/tmp`, whose parent is nobody's orchestration
+    directory — and writing a marker there would litter a shared tmpfs with a file claiming
+    an orchestration id. So the refresh runs only when the home sits exactly where this code
+    puts one.
     """
-    try:
-        expected = _workflow_backend_home_path(orchestration_id, home.name)
-    except ValueError:
-        return
+    expected = _workflow_backend_home_path(orchestration_id, home.name)
     try:
         if home.resolve() != expected.resolve():
             return
     except (OSError, RuntimeError, ValueError):
         return
-    _require_secure_home_ancestor(_workflow_homes_root(), label, require_private=True)
-    _require_secure_home_ancestor(home.parent, label, require_private=True)
-    _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
     _write_workflow_home_owner(repo_root, orchestration_id, home.parent, label)
 
 
@@ -13412,23 +12424,9 @@ def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
     `orchestration_meta.json` — the file the host writes under a lock. Treating the marker
     as the authority would let anything that could write it decide a deletion.
 
-    The bytes are NOT verified, because `created_at` is regenerated on every call and the
-    second backend of the same orchestration legitimately arrives with the marker already
-    there. What IS verified is the pair that identifies the run — and this is a refusal
-    rather than a fill, because a marker naming a different orchestration or a different
-    LIVE checkout is a DISAGREEMENT: two runs claiming one directory.
-
-    That mattered, measured. Two checkouts using the same explicit orchestration id with
-    different backends each got their own `<oid>/<backend>` (the exclusive creation is
-    per backend), while the second silently inherited the FIRST's marker. The prune tool
-    then read the first checkout's status — terminal — and deleted the second checkout's
-    LIVE codex home. Reproduced end to end before this check existed.
-
-    A marker whose checkout is GONE is adopted rather than refused, and that is the fill
-    half: the previous owner cannot be asked anything, nothing contradicts this run, and
-    refusing would break the ordinary case of an operator who moved a checkout and
-    resumed. The discriminator is whether the recorded path still holds metadata for
-    this same orchestration — if it does, both are live claims and the launch stops.
+    A marker naming another checkout is REPLACED by this one (the operator who moved a
+    checkout and resumed is the ordinary case). Two checkouts running one orchestration id
+    on one homes root is the operator's own configuration and is not policed (issue #643).
     """
     marker_path = owner_dir / WORKFLOW_HOME_OWNER_FILENAME
     resolved_repo = str(Path(repo_root).resolve())
@@ -13441,10 +12439,8 @@ def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
         },
         sort_keys=True,
     ).encode("utf-8")
-    # A marker naming a checkout that is GONE is REPLACED, not kept. `_require_owner_
-    # marker_agrees` has already decided that case is safe to adopt (nothing else claims
-    # the id), and leaving the stale path in place would make the locator locate nothing
-    # forever — the prune tool would answer `unverifiable` for a run whose owner is
+    # A marker naming another checkout is REPLACED, not kept: leaving the stale path in place
+    # would make the locator locate nothing forever — the prune tool would answer `unverifiable` for a run whose owner is
     # perfectly identifiable, which is fail-closed but useless. A marker that AGREES is
     # left alone rather than rewritten, so `created_at` keeps meaning "when this
     # orchestration directory was created" instead of "when a backend last launched".
@@ -13574,8 +12570,7 @@ def codex_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any
 
 
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage_id: str,
-                                 *, resume: bool, workshop: bool = True
-                                 ) -> dict[str, str] | None:
+                                 *, resume: bool) -> dict[str, str] | None:
     """Prepare the private Codex home of ONE `workshop leaf` lineage of an orchestration (issue
     #534 step 2 PR-2): the lineage home is `workshop_tree.LineagePaths(backend="codex").home` —
     `config/` (0700, the leaf's `CODEX_HOME`, holding the `config.toml` that marks the TREE
@@ -13585,11 +12580,6 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
     `record_launch` prepares it warm on both of the lineage's launches. Returns `{home, config,
     tree, auth, auth_destination, config_toml, lineage_id, homes_root}`
     (`_prepare_codex_workshop_lineage`).
-
-    `workshop` must be True. The pure codex leaf's THREAD lineage — a bare `CODEX_HOME` at
-    `<container>/<lineage_id>/`, bound rw whole — was the other layout this prepared, and it
-    went with the pure leaf in issue #534 PR-J4-b; asking for it is refused rather than
-    answered with the workshop layout.
 
     Two levels, and the leaf sees only the lower one:
 
@@ -13602,10 +12592,9 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
         read, a sibling: the sibling is simply not mounted. This is what closed the shared
         per-orchestration home TODO recorded from issue #227 (issue #245).
 
-    `lineage_id` is the `agent_run_id` of the lineage's cold launch, and it becomes a path
-    segment outside the repository, so it is refused unless it is a plain token
-    (`_is_safe_path_id`), the same wall `_workflow_backend_home_path` puts before the
-    orchestration id. `record_launch` refuses a malformed one first; this is the second wall.
+    `lineage_id` is the `agent_run_id` of the lineage's cold launch (a host-minted id; a
+    recorded one is refused by `record_launch` unless it is a plain token), and it becomes a
+    path segment outside the repository.
 
     ``resume`` decides what a lineage directory's presence means: cold, the lineage home is
     created EXCLUSIVELY (one already there is refused, not adopted); warm, it must ALREADY
@@ -13617,20 +12606,11 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
     The container part is unchanged from the per-orchestration design: its path is persisted
     so the same tree is reused across `--resume`, a vanished container (an operator prune, a
     lost filesystem) is re-created at the same path — with no lineage inside, so every
-    recorded lineage is cold-fallback only — and an existing one has its mode, ancestors and
-    owner marker re-asserted on every preparation. Authentication is deliberately *not*
+    recorded lineage is cold-fallback only — and an existing one has its owner marker
+    refreshed on every preparation. Authentication is deliberately *not*
     copied: the bwrap profile binds the operator's `auth.json` read-only over the placeholder.
     """
-    if workshop is not True:
-        raise ValueError(
-            "isolated Codex home: only a workshop lineage is prepared; the pure codex thread "
-            "lineage went with the pure leaf in issue #534 PR-J4-b")
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
-    if not _is_safe_path_id(lineage_token):
-        raise ValueError(
-            "isolated Codex home: lineage_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {lineage_id!r})"
-        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     # The container is one 0700 directory per orchestration, named DETERMINISTICALLY
     # since issue #64 (`<homes-root>/<oid>/codex`): the randomness it replaced was a
@@ -13640,8 +12620,6 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
     # lineage creation below, which is why the whole function runs under it.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError("orchestration metadata missing while preparing Codex home")
         raw_home = meta.get("codex_workflow_home")
         container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
@@ -13655,13 +12633,10 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
                 # the `resume=True` missing branch and the conductor goes cold.
                 container = None
             else:
-                # `tighten=True`: a mode that drifted on the container (a backup restored
-                # without permissions) is established, not refused — see
-                # `_require_secure_backend_home`. The CONTAINER path is what the reuse
-                # re-securing takes: it is keyed on `home.name` being a backend dirname,
-                # and would silently return on a lineage path.
-                _require_secure_backend_home(container, tighten=True)
-                _resecure_workflow_home_on_reuse(
+                # The CONTAINER path is what the marker refresh takes: it is keyed on
+                # `home.name` being a backend dirname, and would silently return on a
+                # lineage path.
+                _refresh_workflow_home_owner_on_reuse(
                     repo_root, orchestration_id, container, "Codex")
         if container is None:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for leaf
@@ -13681,7 +12656,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
 def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, container: Path,
                                     home: Path, lineage_token: str, *, resume: bool
                                     ) -> dict[str, str] | None:
-    """The lineage half of `_prepare_codex_workflow_home(workshop=True)`, run under its
+    """The lineage half of `_prepare_codex_workflow_home`, run under its
     metadata lock with the container already established. The claude preparer's lineage half
     (`_prepare_claude_workshop_home`), with codex's two files in `config/`."""
     from tools.workshop_tree import LineagePaths
@@ -13691,8 +12666,6 @@ def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, cont
             home.lstat()
         except FileNotFoundError:
             return None
-        _require_secure_backend_home(home, "Codex", tighten=True)
-        _require_secure_backend_home(config, "Codex", tighten=True)
     else:
         try:
             os.mkdir(home, 0o700)
@@ -13706,10 +12679,8 @@ def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, cont
         except OSError as exc:
             raise ValueError(f"cannot create isolated Codex lineage home {home}: {exc}") from exc
         os.chmod(home, 0o700)
-        _require_secure_backend_home(home, "Codex")
         os.mkdir(config, 0o700)
         os.chmod(config, 0o700)
-        _require_secure_backend_home(config, "Codex")
         LineagePaths(homes_root=container.parent.parent, orchestration_id=orchestration_id,
                      lineage_id=lineage_token,
                      orchestration_dir=_orchestration_root(repo_root, orchestration_id),
@@ -13795,15 +12766,9 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
     actually used (the recorded one on a reuse, so a relocated `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`
     does not split one orchestration's lineages across two roots)."""
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
-    if not _is_safe_path_id(lineage_token):
-        raise ValueError(
-            "isolated Claude home: lineage_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {lineage_id!r})")
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError("orchestration metadata missing while preparing Claude home")
         raw_home = meta.get("claude_workflow_home")
         container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
@@ -13813,8 +12778,7 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
             except FileNotFoundError:
                 container = None
             else:
-                _require_secure_backend_home(container, "Claude", tighten=True)
-                _resecure_workflow_home_on_reuse(
+                _refresh_workflow_home_owner_on_reuse(
                     repo_root, orchestration_id, container, "Claude")
         if container is None:
             container = _create_workflow_backend_home(
@@ -13828,8 +12792,6 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
                 home.lstat()
             except FileNotFoundError:
                 return None
-            _require_secure_backend_home(home, "Claude", tighten=True)
-            _require_secure_backend_home(config, "Claude", tighten=True)
         else:
             try:
                 os.mkdir(home, 0o700)
@@ -13844,10 +12806,8 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
                 raise ValueError(
                     f"cannot create isolated Claude lineage home {home}: {exc}") from exc
             os.chmod(home, 0o700)
-            _require_secure_backend_home(home, "Claude")
             os.mkdir(config, 0o700)
             os.chmod(config, 0o700)
-            _require_secure_backend_home(config, "Claude")
             from tools.workshop_tree import LineagePaths
             LineagePaths(homes_root=container.parent.parent,
                          orchestration_id=orchestration_id, lineage_id=lineage_token,
@@ -13877,9 +12837,9 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
 
 def _prepare_codex_workshop_home(repo_root: Path, orchestration_id: str, lineage_id: str,
                                  *, resume: bool) -> dict[str, str] | None:
-    """`_prepare_codex_workflow_home(workshop=True)`, in the claude preparer's signature."""
+    """`_prepare_codex_workflow_home`, in the claude preparer's signature."""
     return _prepare_codex_workflow_home(repo_root, orchestration_id, lineage_id,
-                                        resume=resume, workshop=True)
+                                        resume=resume)
 
 
 def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_id: str,
@@ -13896,15 +12856,9 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
 
     Returns `{home, tree, lineage_id, homes_root}`."""
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
-    if not _is_safe_path_id(lineage_token):
-        raise ValueError(
-            "HTTP workshop home: lineage_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {lineage_id!r})")
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError("orchestration metadata missing while preparing the HTTP home")
         raw_home = meta.get("http_workflow_home")
         container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
@@ -13914,8 +12868,7 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
             except FileNotFoundError:
                 container = None
             else:
-                _require_secure_backend_home(container, "HTTP", tighten=True)
-                _resecure_workflow_home_on_reuse(
+                _refresh_workflow_home_owner_on_reuse(
                     repo_root, orchestration_id, container, "HTTP")
         if container is None:
             container = _create_workflow_backend_home(
@@ -13928,7 +12881,6 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
                 home.lstat()
             except FileNotFoundError:
                 return None
-            _require_secure_backend_home(home, "HTTP", tighten=True)
         else:
             try:
                 os.mkdir(home, 0o700)
@@ -13943,7 +12895,6 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
                 raise ValueError(
                     f"cannot create HTTP workshop lineage home {home}: {exc}") from exc
             os.chmod(home, 0o700)
-            _require_secure_backend_home(home, "HTTP")
             from tools.workshop_tree import LineagePaths
             LineagePaths(homes_root=container.parent.parent,
                          orchestration_id=orchestration_id, lineage_id=lineage_token,
@@ -14275,18 +13226,6 @@ def _probe_codex_backend(
     return checks, version_proc.stdout.strip()
 
 
-def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Make each check's `pass` lookupable by name. `pass` is bool or None (skipped, not run)."""
-    by_name: dict[str, Any] = {}
-    for item in checks:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name")
-        if isinstance(name, str):
-            by_name[name] = item.get("pass")
-    return by_name
-
-
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
     """The probe-time gate on both backends. The `pass` key is required, an explicit False
     `pass` is a failure, at least one non-None `pass` must exist, and all of those must be True.
@@ -14325,16 +13264,16 @@ def _probe_claude_backend(
     """A probe specific to the claude backend; returns (checks, agent_version).
 
     `claude features list` is not a CLI subcommand (claude answers it as a chat prompt), so it
-    is not run. The `--help` probe requires (a) exit 0 and (b) help text on stdout, so an
-    empty-output binary named `claude` does not pass.
+    is not run. `--version` is run for the recorded `agent_version` and does not gate. The
+    CLI's option set is not probed (issue #643, reversing issues #453 and #534): a CLI that
+    lacks an option the leaf argv carries refuses it before any request, and the launch ends
+    `fail_closed` / `leaf_transport_error` with the CLI's message in the failure summary.
     """
     # SPLIT, like the codex prober and like `Conductor._provider_command_base`: a configured
     # command may carry flags (`mywrap --flag`), and the leaf is launched with it split. Passing
     # the whole string as argv[0] probes an executable of that literal name, which does not
     # exist — so every wrapper failed preflight before any leaf could run.
     command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
-    if not command_argv:
-        raise ValueError("claude command must be non-empty")
     version_proc = runner([*command_argv, "--version"], text=True, capture_output=True,
                           check=False)
 
@@ -14348,27 +13287,7 @@ def _probe_claude_backend(
                               check=False, input="")
     stdin_probe_text = (stdin_probe_proc.stdout or "") + "\n" + (stdin_probe_proc.stderr or "")
 
-    help_proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
-    help_stdout = help_proc.stdout.strip()
-    # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
-    # weak proxy — any binary named `claude` that exits 0 (even with no output)
-    # would otherwise pass.  Requiring help text on stdout rules out broken or
-    # substitute binaries.
-    help_probe_pass = help_proc.returncode == 0 and bool(help_stdout)
-    help_detail = help_stdout or help_proc.stderr.strip()
-    help_probe_detail = help_detail if help_detail else "(no stdout/stderr from --help)"
-
     checks = [
-        {
-            "name": f"{backend_token}_version_available",
-            "pass": version_proc.returncode == 0,
-            "detail": version_proc.stdout.strip() or version_proc.stderr.strip(),
-        },
-        {
-            "name": f"{backend_token}_help_probe_available",
-            "pass": help_probe_pass,
-            "detail": help_probe_detail,
-        },
         {
             "name": f"{backend_token}_prompt_stdin",
             # The REFUSAL's own wording, and a non-zero exit to prove it refused. A bare
@@ -14381,167 +13300,9 @@ def _probe_claude_backend(
                      and "through stdin" in stdin_probe_text),
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
-        {
-            # `workshop_leaf_flags()` opens with `--restricted`, which keeps the operator's
-            # settings files out of the leaf (issue #453). A CLI that does not know the flag
-            # refuses the whole argv, so every leaf would die as a transport failure; this
-            # moves that to preflight. Matched as an OPTION LINE of the help — the flag at
-            # the start of a line, after an optional short alias — so a longer option
-            # (`--restricted-mode`) or a mention inside another option's description does
-            # not answer for it.
-            "name": f"{backend_token}_restricted_flag_available",
-            "pass": (help_proc.returncode == 0
-                     and _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout) is not None),
-            # The verdict first, so the one line an operator is shown says what is missing.
-            "detail": ("`--help` names `--restricted` as an option"
-                       if _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout)
-                       else "`--help` names no `--restricted` option; this CLI cannot run a "
-                            "leaf (issue #453)") + "\n" + help_probe_detail,
-        },
         _claude_global_config_env_check(backend_token),
     ]
     return checks, version_proc.stdout.strip()
-
-
-# An option line of the help: a short indent (2 on CLI 2.1.294), an optional short alias,
-# then the flag. The indent is BOUNDED because the help wraps descriptions at column 40 and a
-# wrapped line can itself begin with an option name (17 lines do on 2.1.294), so an unbounded
-# indent let a description that merely mentions `--restricted` answer for the option.
-_CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(
-    r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--restricted(?![\w-])")
-
-#: Every option a claude `workshop leaf`'s argv carries (`leaf_contract.workshop_leaf_flags`, the
-#: producing and the reading kind; issue #534). A CLI missing one refuses the whole argv, so
-#: every launch would die as a transport failure; `claude_workshop_flag_set_available` moves
-#: that to preflight. An EXPLICIT tuple since issue #534 PR-J4-b: it was the workshop flags
-#: minus the pure leaf's, whose `pure_leaf_flags` is gone. A suite row derives the argv's
-#: option set and compares it to this one, so a flag added to the launch without being added
-#: here is a red row rather than an unprobed option.
-CLAUDE_WORKSHOP_REQUIRED_OPTIONS: tuple[str, ...] = (
-    "--restricted", "--system-prompt", "--tools", "--mcp-config", "--strict-mcp-config",
-    "--permission-mode", "--permission-prompts", "--allowedTools",
-    "--disable-slash-commands", "--output-format")
-
-
-def _claude_option_line_re(option: str) -> re.Pattern[str]:
-    """An OPTION LINE of `claude --help` naming `option`: the flag at the start of a line,
-    after an optional short alias, and not a longer option's prefix (the
-    `_CLAUDE_RESTRICTED_OPTION_LINE_RE` rule)."""
-    return re.compile(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?" + re.escape(option) + r"(?![\w-])")
-
-
-def _claude_workshop_flag_set_check(
-    command: str | Sequence[str],
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> dict[str, Any]:
-    """`claude_workshop_flag_set_available`: `--help` names every option of
-    `CLAUDE_WORKSHOP_REQUIRED_OPTIONS` as an option line."""
-    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
-    try:
-        proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
-        help_text, rc = proc.stdout or "", proc.returncode
-    except Exception as exc:  # an unavailable CLI is a capability failure, as elsewhere
-        help_text, rc = "", f"{type(exc).__name__}: {exc}"
-    missing = [opt for opt in CLAUDE_WORKSHOP_REQUIRED_OPTIONS
-               if _claude_option_line_re(opt).search(help_text) is None]
-    ok = rc == 0 and not missing
-    return {
-        "name": "claude_workshop_flag_set_available",
-        "pass": ok,
-        "detail": ("`--help` names every workshop-leaf option" if ok else
-                   f"`--help` (exit {rc}) names no option line for {', '.join(missing) or '-'}; "
-                   "this CLI cannot run a workshop leaf (issue #534)"),
-    }
-
-
-#: The `codex exec --help` options a codex `workshop leaf`'s cold argv spells (issue #534 step 2
-#: PR-2; `Conductor.leaf_command`'s workshop branch). The warm argv's are
-#: `CODEX_EXEC_RESUME_REQUIRED_FLAGS`, which `codex_exec_resume` already certifies; the
-#: `--config` overrides both carry (`leaf_contract.codex_workshop_overrides`) are config keys, which
-#: no help text lists, and are pinned by the unbilled CLI rows instead.
-CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS: tuple[str, ...] = (
-    "--model", "--sandbox", "--config", "--json", "--skip-git-repo-check", "--ignore-rules")
-
-#: The sandbox mode the workshop argv names, which `codex exec --help` lists among the values of
-#: `--sandbox`.
-CODEX_WORKSHOP_SANDBOX_MODE = "workspace-write"
-
-
-def _codex_option_line_re(option: str) -> re.Pattern[str]:
-    """An OPTION LINE of a codex `--help` naming `option`, after an optional short alias, and
-    not a longer option's prefix — the claude rule, `_claude_option_line_re`."""
-    return re.compile(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?" + re.escape(option) + r"(?![\w-])")
-
-
-def _codex_option_values(help_text: str, option: str) -> tuple[str, ...]:
-    """The `[possible values: a, b, …]` a codex `--help` lists for `option`, read from that
-    option's own block — its option line up to the next option line — so a value another
-    option's description happens to mention does not answer for it (codex-cli 0.164.0's
-    `--approve-for-me` description names "the workspace-write sandbox")."""
-    match = _codex_option_line_re(option).search(help_text)
-    if match is None:
-        return ()
-    rest = help_text[match.end():]
-    following = re.search(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--[\w-]", rest)
-    block = rest[:following.start()] if following else rest
-    values = re.search(r"\[possible values:([^\]]*)\]", block)
-    return tuple(v.strip() for v in values.group(1).split(",")) if values else ()
-
-
-def _codex_workshop_flag_set_check(
-    command: str | Sequence[str],
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> dict[str, Any]:
-    """`codex_workshop_flag_set_available`: `exec --help` names every option of
-    `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` as an option line and lists `workspace-write` among
-    the possible values of `--sandbox` (`_codex_option_values`), and `mcp add --help` names `--url` — the streamable-HTTP route the wrapper's endpoint
-    takes exists on this CLI (`codex mcp add <name> --url <url>` is the persisted spelling of
-    the per-launch `mcp_servers.<name>.url` override)."""
-    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
-    texts: dict[str, str] = {}
-    rcs: dict[str, Any] = {}
-    for key, tail in (("exec", ["exec", "--help"]), ("mcp add", ["mcp", "add", "--help"])):
-        try:
-            proc = runner([*command_argv, *tail], text=True, capture_output=True, check=False)
-            texts[key], rcs[key] = proc.stdout or "", proc.returncode
-        except Exception as exc:  # an unavailable CLI is a capability failure, as elsewhere
-            texts[key], rcs[key] = "", f"{type(exc).__name__}: {exc}"
-    missing = [f"exec {opt}" for opt in CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS
-               if _codex_option_line_re(opt).search(texts["exec"]) is None]
-    if CODEX_WORKSHOP_SANDBOX_MODE not in _codex_option_values(texts["exec"], "--sandbox"):
-        missing.append(f"exec --sandbox {CODEX_WORKSHOP_SANDBOX_MODE}")
-    if _codex_option_line_re("--url").search(texts["mcp add"]) is None:
-        missing.append("mcp add --url")
-    ok = all(rc == 0 for rc in rcs.values()) and not missing
-    return {
-        "name": "codex_workshop_flag_set_available",
-        "pass": ok,
-        "detail": ("`exec --help` and `mcp add --help` name every workshop-leaf option" if ok
-                   else f"exit {rcs}; no option line for {', '.join(missing) or '-'}; this CLI "
-                        "cannot run a workshop leaf (issue #534)"),
-    }
-
-
-#: The preflight row a `workshop leaf` surface takes, by backend token: the check function's
-#: NAME, resolved at call time, so the one function each row runs is the module attribute.
-WORKSHOP_FLAG_SET_CHECKS: dict[str, str] = {
-    "claude": "_claude_workshop_flag_set_check",
-    "codex": "_codex_workshop_flag_set_check",
-}
-
-
-def _workshop_flag_set_check(
-    backend_token: str, command: str | Sequence[str],
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> dict[str, Any]:
-    """The workshop preflight row of `backend_token`'s CLI (`WORKSHOP_FLAG_SET_CHECKS`); a
-    backend with no row fails it, so a workshop surface is never certified by the other CLI's
-    probe."""
-    name = WORKSHOP_FLAG_SET_CHECKS.get(backend_token)
-    if name is None:
-        return {"name": "workshop_flag_set_available", "pass": False,
-                "detail": f"backend {backend_token!r} runs no workshop leaf"}
-    return globals()[name](command, runner)
 
 
 def _claude_global_config_paths() -> tuple[Path, ...]:
@@ -14757,10 +13518,9 @@ def probe_all_providers(
     called for `defaults` exactly as before. This adds the per-provider layer above it."""
     from tools.llm_config import apply_defaults_overrides, describe_providers, load_llm_config
 
-    # `config` is an ALREADY-LOADED snapshot: the caller hashed and parsed one set of bytes,
-    # and re-reading the file here would leave a window in which the hash approves one version
-    # while the probes certify another. `llm_config_path` remains for callers that have no
-    # snapshot to hand.
+    # `config` is an ALREADY-LOADED snapshot: the caller parsed one set of bytes, and
+    # re-reading the file here would probe a version the caller did not load.
+    # `llm_config_path` remains for callers that have no snapshot to hand.
     #
     # The overrides are the `defaults` the CALLER resolved. This runs in the `preflight`
     # SUBPROCESS, which reloads the file and would otherwise re-derive them independently, so
@@ -14774,11 +13534,8 @@ def probe_all_providers(
     cfg = apply_defaults_overrides(
         config, model=model_override, command=command_override)
     providers: dict[str, dict[str, Any]] = {}
-    # Every CLI surface takes its CLI's workshop row (`claude_workshop_flag_set_available` /
-    # `codex_workshop_flag_set_available`): every leaf is a workshop leaf since issue #534
-    # PR-J4-b (`defaults` included — it serves the `escalate` diagnostician), so the row is no
-    # longer conditional on an entry selecting `leaf: workshop`. The recorded surface keeps
-    # its `workshop` stamp, which records that the row was run.
+    # Every CLI surface is a workshop surface since issue #534 PR-J4-b (`defaults` included —
+    # it serves the `escalate` diagnostician); the recorded surface keeps its `workshop` stamp.
     for row in describe_providers(cfg):
         token = row["backend"]
         workshop = row["provider"] in ("claude_cli", "codex_cli")
@@ -14792,10 +13549,6 @@ def probe_all_providers(
                 "checks": probe.get("checks", []),
                 "launchable": _preflight_allows_agent_launch(probe),
             }
-            if workshop:
-                check = _workshop_flag_set_check(token, entry["probe_command"], runner)
-                entry["checks"] = list(entry["checks"]) + [check]
-                entry["launchable"] = bool(entry["launchable"]) and check["pass"] is True
         else:
             entry = _probe_http_provider(row, opener=opener)
         # Every surface is recorded, not just the first. The row is what the TTL re-probe
@@ -14829,33 +13582,20 @@ def probe_execution_platform(
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     backend_token = backend.strip().lower()
-    if backend_token not in SUPPORTED_BACKENDS:
-        raise ValueError(f"unsupported backend: {backend}")
-
     default_command = DEFAULT_BACKEND_COMMANDS[backend_token]
     command = (
         agent_command.strip()
         if isinstance(agent_command, str) and agent_command.strip()
         else default_command
     )
-    for known_backend, known_command in DEFAULT_BACKEND_COMMANDS.items():
-        if command != known_command:
-            continue
-        if known_backend != backend_token:
-            raise ValueError(
-                f"agent_command/backend mismatch: backend={backend_token} requires "
-                f"{DEFAULT_BACKEND_COMMANDS[backend_token]} (or custom command), got {command}"
-            )
-        break
 
     prober = _BACKEND_PROBERS[backend_token]
     checks, agent_version = prober(backend_token, command, runner)
 
     # Every probe check gates, on both backends — a check added to a prober later fails
     # closed by default rather than silently becoming non-gating.
-    # What a claude leaf needs of its host is only that the CLI is there, answers
-    # `--version` and `--help` (naming `--restricted`), takes its prompt on stdin, and finds
-    # no `env` block in its global config (issue #453): a pure leaf loads no
+    # What a claude leaf needs of its host is only that the CLI takes its prompt on stdin
+    # and finds no `env` block in its global config (issue #453): a pure leaf loads no
     # customization (`--safe-mode`), is launched with no MCP configuration and no tools, and
     # runs no hook. The three probes that stood here — the committed leaf configuration, the MCP
     # registry, and the live tool-roster measurement of issue #71 — each measured a surface
@@ -14874,14 +13614,6 @@ def probe_execution_platform(
     sandbox_checks, sandbox_enforced = _probe_bwrap_sandbox()
     checks.extend(sandbox_checks)
     can_launch_agents = can_launch_agents and sandbox_enforced
-    session_policy = {
-        "allow_step_agent_launch": os.environ.get("SPEC2SCIENCE_ALLOW_STEP_AGENT_LAUNCH", "1").strip().lower()
-        not in {"0", "false", "no"},
-        "allow_substep_agent_launch": os.environ.get(
-            "SPEC2SCIENCE_ALLOW_SUBSTEP_AGENT_LAUNCH", "1"
-        ).strip().lower()
-        not in {"0", "false", "no"},
-    }
     return {
         "checked_at": _utc_now_iso(),
         "backend": backend_token,
@@ -14892,11 +13624,6 @@ def probe_execution_platform(
         "sandbox_enforced": sandbox_enforced,
         "can_launch_step_agents": can_launch_agents,
         "can_launch_substep_agents": can_launch_agents,
-        "session_policy": session_policy,
-        "session_policy_launchable": (
-            bool(session_policy["allow_step_agent_launch"])
-            and bool(session_policy["allow_substep_agent_launch"])
-        ),
         "status": "pass" if can_launch_agents else "fail",
     }
 
@@ -14959,14 +13686,6 @@ def init_orchestration(
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # The id becomes a directory name and is later interpolated into every gate's path,
-    # where anything but a plain token is refused. Refuse it here so an operator learns
-    # at `init` rather than losing the run at its first build-runtime call.
-    if not _is_safe_path_id(str(orchestration_id)):
-        raise RuntimeError(
-            "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {orchestration_id!r})"
-        )
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)
@@ -15030,23 +13749,10 @@ def init_orchestration(
         # phases never run. The provenance argument above is about the CLOSURE BACK-LINK, which
         # must describe the current run; what the vouch requires to have been certified is not
         # provenance and is not this invocation's to lower.
-        # The caller's own `until_phase_high_water` is DISCARDED, not merged. `invocation` is
-        # the dict `--invocation-json` supplied, so a `setdefault` here let the caller hand in
-        # its own high water and win — re-opening, through the preservation logic, the exact
-        # hole the high water was introduced to close: a run started for `validate` re-inited
-        # with `{"until_phase":"compile","until_phase_high_water":"compile"}` reached `pass`
-        # with three phases never run. This field is derived from what the orchestration has
-        # RECORDED, never supplied.
-        #
-        # NOT PINNED, and kept anyway (enforcement skill rule 1-b: "the mutation survives" is
-        # not grounds for deletion). Replacing this `pop` with `pass` leaves the suite green,
-        # and that is correct rather than a missing test: the loop below ASSIGNS rather than
-        # `setdefault`s, so a prior record with a usable phase overwrites the supplied value;
-        # and when the prior has none, `_record_until_phase_high_water` takes the max with this
-        # invocation's own `until_phase`, so a supplied value can only ever raise the bar. The
-        # `pop` is the third guard on the same property, and it is the one that states the
-        # intent — that this field is derived and not an input — so it stays.
-        invocation.pop("until_phase_high_water", None)
+        # A caller-supplied `until_phase_high_water` cannot lower the bar: the loop below
+        # ASSIGNS rather than `setdefault`s, so a prior record with a usable phase overwrites
+        # it, and when the prior has none `_record_until_phase_high_water` takes the max with
+        # this invocation's own `until_phase`, so a supplied value can only raise it.
         prior_invocation = meta.get("invocation")
         if isinstance(prior_invocation, dict):
             for key in ("until_phase_high_water", "until_phase"):
@@ -15063,11 +13769,6 @@ def init_orchestration(
     if not orchestration_agent_run_id:
         orchestration_agent_run_id = str(uuid.uuid4())
     backend_token = str(agent_backend).strip().lower()
-    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
-            f"got {agent_backend!r}"
-        )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
     # NO read / output manifest for the orchestration agent either. The pair described what a
@@ -15145,26 +13846,11 @@ def write_preflight(
     orchestration_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    _validate_preflight_payload(payload)
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     pre_orchestration_start(repo_root, orchestration_id, event="preflight")
 
     stored = dict(payload)
-    if not isinstance(stored.get("session_policy"), dict):
-        allow_step = stored.get("can_launch_step_agents") is True
-        allow_substep = stored.get("can_launch_substep_agents") is True
-        stored["session_policy"] = {
-            "allow_step_agent_launch": allow_step,
-            "allow_substep_agent_launch": allow_substep,
-        }
-    if not isinstance(stored.get("session_policy_launchable"), bool):
-        policy = stored.get("session_policy")
-        allow_step = bool(policy.get("allow_step_agent_launch")) if isinstance(policy, dict) else True
-        allow_substep = (
-            bool(policy.get("allow_substep_agent_launch")) if isinstance(policy, dict) else True
-        )
-        stored["session_policy_launchable"] = allow_step and allow_substep
     if "probed_at" not in stored:
         stored["probed_at"] = stored.get("checked_at") or _utc_now_iso()
 
@@ -15195,101 +13881,13 @@ def write_preflight(
                 # fingerprint of the selected files detected nothing it does not, and the
                 # record it reset is not what the gate decides from.
                 existing = meta.get("dependency_readiness")
-                # Codex round 33 F1: when PyYAML is unavailable we cannot
-                # recompute the full fingerprint that a previously-verified
-                # non-leaf record was built with. Synthesizing a byte-only
-                # fallback (round 32) caused a guaranteed fingerprint
-                # MISMATCH and overwrote verified state with fail-closed —
-                # a transient packaging issue on the controller erased
-                # every non-leaf orchestration's verified state. Skip the
-                # invalidation block entirely on PyYAML outage:
-                #   - existing verified record → preserved (degraded mode)
-                #   - no existing record → write minimal fail-closed inline
-                #     so the gate refuses launches until PyYAML is restored.
-                try:
-                    computed = _compute_initial_dependency_readiness(
-                        repo_root, meta.get("spec_ref"),
-                        target=_target_of_orchestration_meta(repo_root, meta),
-                    )
-                except SpecCatalogCorruption:
-                    # Codex round 34 F2: catalog corruption / missing.
-                    # Same treatment as PyYAML outage: preserve existing
-                    # verified state, or write fail-closed if no prior
-                    # record. mark-dependency-readiness will surface the
-                    # specific reason loudly when next invoked.
-                    if isinstance(existing, dict):
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_preserved_spec_catalog_unavailable",
-                                "reason": "spec_catalog_corrupt_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                    else:
-                        meta["dependency_readiness"] = {
-                            "direct_dependency_compile_readiness": False,
-                            "direct_dependency_execution_readiness": False,
-                            "detail": {
-                                "ir_ref_verified": False,
-                                "pipeline_ref_verified": False,
-                                "aggregate_verdict_verified": False,
-                            },
-                        }
-                        _write_json(meta_path, meta)
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_degraded_init",
-                                "reason": "spec_catalog_corrupt_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                except RuntimeError as exc:
-                    if "PyYAML" not in str(exc):
-                        raise
-                    if isinstance(existing, dict):
-                        # Preserve existing readiness; record degraded mode
-                        # in the phase state log so operators can correlate.
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_preserved_pyyaml_unavailable",
-                                "reason": "pyyaml_unavailable_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                    else:
-                        # No prior record — write a minimal fail-closed
-                        # payload (no fingerprint we can compute, no
-                        # certified_deps) so the gate refuses launch.
-                        meta["dependency_readiness"] = {
-                            "direct_dependency_compile_readiness": False,
-                            "direct_dependency_execution_readiness": False,
-                            "detail": {
-                                "ir_ref_verified": False,
-                                "pipeline_ref_verified": False,
-                                "aggregate_verdict_verified": False,
-                            },
-                        }
-                        _write_json(meta_path, meta)
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_degraded_init",
-                                "reason": "pyyaml_unavailable_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                if computed is None:
-                    # PyYAML-degraded mode handled above; skip the rest of
-                    # the invalidation/refresh logic.
-                    pass
-                elif not isinstance(existing, dict) or (
+                # A corrupt catalog or a missing PyYAML raises out of the preflight, and the
+                # run stops before any launch (issue #643: the gate recomputes live anyway).
+                computed = _compute_initial_dependency_readiness(
+                    repo_root, meta.get("spec_ref"),
+                    target=_target_of_orchestration_meta(repo_root, meta),
+                )
+                if not isinstance(existing, dict) or (
                         existing != computed
                         and (computed.get("direct_dependency_compile_readiness") is True
                              or existing.get("certified_deps") == [])):
@@ -16099,10 +14697,9 @@ def record_launch(
             child_agent_run_id,
         )
     # Adv-16: backend-neutral per-arid active-child marker. Codex lack
-    # the single-active-child constraint that the Claude marker enforces, but
-    # record-timeout still refuses to finalize a run whose child is marked
-    # active. Marker is created here for ALL backends and removed by
-    # deactivate-child / record-agent-run terminal.
+    # the single-active-child constraint that the Claude marker enforces;
+    # `finalize-child` requires this marker on every backend. Marker is created
+    # here for ALL backends and removed by deactivate-child / record-agent-run terminal.
     marker_dir = _active_children_dir(repo_root, orchestration_id)
     marker_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(
@@ -16119,12 +14716,7 @@ def _agent_runs_writer_active(runs_path: Path) -> bool:
     free (no active writer). Used to distinguish an in-flight concurrent
     append (which legitimately leaves the trailing line truncated) from
     durable crash corruption that masquerades as the same shape.
-
-    On non-POSIX platforms (no fcntl) we conservatively return True so that
-    legacy single-process workflows keep tolerating partial reads.
     """
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        return True
     lock_path = runs_path.parent / (runs_path.name + ".lock")
     if not lock_path.exists():
         # No lock file means no record_agent_run has ever held the lock here.
@@ -16213,259 +14805,6 @@ def _read_existing_run_ids(path: Path, *, caller_holds_lock: bool = False) -> se
     return run_ids
 
 
-def record_timeout(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    reason: str,
-    force_reason: str | None = None,
-) -> dict[str, Any]:
-    """Canonical recovery for substep/step API stream idle timeout.
-
-    Normal path: the caller observes the child leaf returning, calls
-    deactivate-child → record-timeout. The Adv-14/16 guards refuse to finalize
-    while liveness markers are still present.
-
-    Adv-26 escape hatch: pass `force_reason` (or --force-reason on CLI) to
-    bypass the active-children/legacy-marker guards. deactivate-child verifies
-    nothing about the leaf (it only clears markers), so the one state it
-    refuses is a Claude sequential pointer naming a DIFFERENT child — and
-    there the per-arid marker stays, so record-timeout refuses too. The bypass
-    clears both markers on the operator's responsibility; force_reason is
-    appended to the audit trail (timeout_reason) and recorded as
-    `forced=True` in the run payload.
-    """
-    if not isinstance(agent_run_id, str) or not agent_run_id.strip():
-        raise ValueError("record-timeout requires non-empty --agent-run-id")
-    arid = agent_run_id.strip()
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("record-timeout requires non-empty --reason")
-    reason_text = reason.strip()
-    forced = isinstance(force_reason, str) and force_reason.strip() != ""
-    forced_reason_text = force_reason.strip() if forced else None
-
-    orch_root = _orchestration_root(repo_root, orchestration_id)
-    req_path = orch_root / "launches" / f"{arid}.request.json"
-    resp_path = orch_root / "launches" / f"{arid}.response.json"
-    if not req_path.exists():
-        raise ValueError(
-            f"record-timeout cannot find launch request: {req_path}. "
-            "Ensure record-launch was executed before the child leaf launch."
-        )
-    if not resp_path.exists():
-        raise ValueError(
-            f"record-timeout cannot find launch response: {resp_path}."
-        )
-    try:
-        req_doc = _read_json(req_path)
-        resp_doc = _read_json(resp_path)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"record-timeout failed to read launch artifacts: {exc}") from exc
-    if not isinstance(req_doc, dict) or not isinstance(resp_doc, dict):
-        raise ValueError("record-timeout: launch request/response must be JSON objects")
-
-    role_token = ""
-    role_obj = req_doc.get("agent_role")
-    if isinstance(role_obj, str) and role_obj.strip():
-        role_token = role_obj.strip().lower()
-    if role_token not in {"step", "substep"}:
-        raise ValueError(
-            f"record-timeout only supports step/substep agents; agent_role={role_token!r}. "
-            "Use set-status for orchestration timeouts."
-        )
-
-    backend_obj = resp_doc.get("backend")
-    backend_token = backend_obj.strip().lower() if isinstance(backend_obj, str) and backend_obj.strip() else ""
-    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"record-timeout: launch response backend={backend_token!r} not in "
-            f"{sorted(SUPPORTED_PROVIDER_TOKENS)}"
-        )
-
-    # Adv-14: liveness/ownership guards before fabricating a terminal record
-    # and wiping workspace/tmp/<arid>/. record-timeout cannot directly verify
-    # that the child process is dead, but it MUST refuse obvious mis-fires
-    # (duplicate timer, delayed callback, mis-routed retry) that would
-    # finalize a still-active run and destroy its scratch.
-    runs_path = orch_root / "agent_runs.jsonl"
-    # H3: this early read is unlocked. record_agent_run runs another check
-    # under fcntl.LOCK_EX (Adv-24) so a race between this read and a
-    # concurrent in-progress record_agent_run for the same arid is caught
-    # there. Distinguish the two cases in the error message:
-    #   - "already finalized": the entry was durably present when we read.
-    #   - "raced concurrent finalizer": the locked re-check at
-    #     record_agent_run will surface this with its own message; this
-    #     unlocked path errs on the side of failing fast with the safer
-    #     wording that matches the most common cause.
-    if runs_path.is_file() and not _agent_runs_writer_active(runs_path):
-        # No writer holds the lock at this instant → the existing entry, if
-        # any, is durable rather than mid-write. Safe to claim "already
-        # finalized" without ambiguity.
-        existing_run_ids = _read_existing_run_ids(runs_path)
-        if arid in existing_run_ids:
-            raise ValueError(
-                f"record-timeout: agent_run_id={arid!r} already has a durable "
-                f"entry in agent_runs.jsonl (the run was already finalized). "
-                f"Refusing to add a duplicate terminal record — investigate "
-                f"why the timeout path was re-entered."
-            )
-    elif runs_path.is_file():
-        # Writer active: defer to record_agent_run's locked re-check, which
-        # will raise "race detected on locked re-check" with precise wording
-        # if and only if the racing writer commits an entry for this arid.
-        pass
-    # session_run_index status check — the index is updated to the terminal
-    # status on successful record-agent-run, so any non-running status here
-    # signals that another finalization path already won the race.
-    index_doc = _read_session_run_index_consistent(repo_root, orchestration_id)
-    for _entry in index_doc.get("entries", []) or []:
-        if isinstance(_entry, dict) and _entry.get("agent_run_id") == arid:
-            _sess_status = _entry.get("status")
-            if isinstance(_sess_status, str) and _sess_status.strip().lower() != "running":
-                raise ValueError(
-                    f"record-timeout: session_run_index for {arid!r} shows "
-                    f"status={_sess_status!r}, not 'running'. Refusing — the "
-                    f"run has already terminated or was never launched."
-                )
-            break
-    # Adv-16: backend-neutral active-child marker check. record-launch creates
-    # `active_children/<arid>.txt` for ALL backends; deactivate-child removes
-    # it once the caller has seen the child leaf exit. While the marker exists
-    # nobody has said the child finished — firing record-timeout in that state
-    # would race the still-pending leaf return on Codex as well as Claude.
-    # Adv-26: forced=True skips this guard for genuinely-wedged children
-    # (operator override; force_reason is recorded in the audit trail).
-    # Adv-37: forced bypass NO LONGER unlinks markers up-front. If
-    # record_agent_run() below fails (validation, locked re-check, etc.)
-    # the run must remain protected by its existing markers so a retry is
-    # possible. Marker removal happens AFTER record_agent_run succeeds.
-    marker_path = _active_child_marker_path(repo_root, orchestration_id, arid)
-    forced_marker_to_remove: list[Path] = []
-    if marker_path.is_file():
-        if not forced:
-            raise ValueError(
-                f"record-timeout: active-child marker {marker_path.name} still exists "
-                f"under workspace/orchestrations/{orchestration_id}/active_children/. "
-                f"Once the child leaf process has exited, run "
-                f"`deactivate-child --child-run-id {arid}`, then retry record-timeout. "
-                f"If deactivate-child refuses because the Claude sequential pointer "
-                f"names a different child, use --force-reason '<text>' to bypass."
-            )
-        # Forced bypass: queue the marker for removal AFTER record_agent_run
-        # commits the durable terminal entry.
-        forced_marker_to_remove.append(marker_path)
-    # Defensive: also check the legacy Claude single-file marker for backward
-    # compat (record-launch keeps writing it for sequential-child enforcement).
-    if backend_token == "claude":
-        active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
-        if active_path.is_file():
-            try:
-                active_arid = active_path.read_text(encoding="utf-8").strip()
-            except OSError:
-                active_arid = ""
-            if active_arid == arid:
-                if not forced:
-                    raise ValueError(
-                        f"record-timeout: active_child_agent_run_id.txt still points "
-                        f"to {arid!r}. Once the child leaf process has exited, run "
-                        f"`deactivate-child --child-run-id {arid}`, then retry "
-                        f"record-timeout."
-                    )
-                forced_marker_to_remove.append(active_path)
-    started_at = resp_doc.get("started_at")
-    if not isinstance(started_at, str) or not started_at.strip():
-        started_at = _utc_now_iso()
-
-    # Resolve identity fields from authoritative sources rather than synthesising them.
-    # Order of precedence (Adv-3):
-    #   1. session_run_index.json — written by record-launch with the actual launched
-    #      identity (agent_session_id may differ from agent_run_id for Codex backend
-    #      and may be reused across runs under repair_strategy=reuse).
-    #   2. launches/<arid>.response.json (record-launch persists the response payload).
-    #   3. launches/<arid>.request.json for fields the response does not carry
-    #      (parent_agent_run_id, context_id when explicitly set in request).
-    #   4. arid itself, as last-resort default for Claude Code where
-    #      agent_session_id == context_id == agent_run_id by contract.
-    # index_doc was loaded above for the Adv-14 liveness guards.
-    index_entry: dict[str, Any] = {}
-    for entry in index_doc.get("entries", []) or []:
-        if isinstance(entry, dict) and entry.get("agent_run_id") == arid:
-            index_entry = entry
-            break
-
-    def _first_str(*candidates: Any) -> str | None:
-        for c in candidates:
-            if isinstance(c, str) and c.strip():
-                return c.strip()
-        return None
-
-    session_value = _first_str(
-        index_entry.get("agent_session_id"),
-        resp_doc.get("agent_session_id"),
-        arid,
-    ) or arid
-    context_value = _first_str(
-        index_entry.get("context_id"),
-        req_doc.get("context_id"),
-        resp_doc.get("context_id"),
-        # Claude Code contract: context_id == agent_run_id.
-        arid if backend_token == "claude" else None,
-        session_value,
-    ) or session_value
-    parent_value = _first_str(req_doc.get("parent_agent_run_id"))
-
-    composed_reason = reason_text
-    if forced:
-        composed_reason = f"{reason_text} | FORCED: {forced_reason_text}"
-    payload: dict[str, Any] = {
-        "agent_run_id": arid,
-        "agent_role": role_token,
-        "agent_backend": backend_token,
-        "status": "timeout",
-        "started_at": started_at,
-        "finished_at": _utc_now_iso(),
-        "agent_session_id": session_value,
-        "context_id": context_value,
-        "context_isolated": True,
-        "timeout_reason": composed_reason,
-        # _extract_agent_summary_text scans for keys ending in "summary"/"reason";
-        # surface the timeout reason as result_summary so agent.summary.txt
-        # validation passes without requiring callers to duplicate the field.
-        "result_summary": f"timeout: {composed_reason}",
-    }
-    if forced:
-        payload["forced"] = True
-        payload["forced_reason"] = forced_reason_text
-    if parent_value is not None:
-        payload["parent_agent_run_id"] = parent_value
-    for field in ("node_key", "step", "substep", "agent_model"):
-        val = req_doc.get(field)
-        if isinstance(val, str) and val.strip():
-            payload[field] = val.strip()
-    # `derivation_key` (issue #250) is NOT copied here: `record_agent_run` below backfills it
-    # from the same launch request for every step / substep row, so a timeout row carries it
-    # through the one reader rather than two (a hunk sweep measured the copy here inert).
-
-    result = record_agent_run(
-        repo_root=repo_root,
-        orchestration_id=orchestration_id,
-        payload=payload,
-    )
-    # Adv-37: only after the durable terminal record committed do we touch
-    # forced-bypass markers. The row written above is always a step / substep
-    # row with status `timeout`, so record_agent_run's terminal branch has
-    # already unlinked both markers and this pass changes nothing today: it
-    # duplicates that branch, and no test pins it. (Until issue #447 (D2) it
-    # also removed the child-return ack, which only it did.)
-    for stale_marker in forced_marker_to_remove:
-        try:
-            stale_marker.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return result
-
-
 def record_agent_run(
     repo_root: Path,
     orchestration_id: str,
@@ -16549,8 +14888,7 @@ def record_agent_run(
         # for step/substep launches), so we backfill them here rather than rely
         # on the caller's record-agent-run payload — which the canonical field
         # tables historically omitted, leaving every step/substep entry without
-        # them and failing pre_judge. Mirrors the record_timeout path which
-        # already pulls both from the launch request. Read defensively: if the
+        # them and failing pre_judge. Read defensively: if the
         # request is missing/unreadable, leave the fields absent so the terminal
         # validator and pre_judge still fail loud rather than silently passing.
         try:
@@ -16882,8 +15220,8 @@ def deactivate_child_agent(
     # Adv-18: validate-first, unlink-second. The previous implementation
     # unlinked the per-arid backend-neutral marker (Adv-16) BEFORE checking
     # the legacy Claude marker, which meant a stray/misrouted deactivate-child
-    # call could clear a still-running child's record-timeout liveness guard
-    # and enable a downstream record-timeout to wipe live tmp scratch.
+    # call could clear a still-running child's per-arid marker, after which
+    # that child's own finalize-child is refused.
     # Both marker checks now run before any state mutation.
     active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
     legacy_marker_present = active_path.is_file()
@@ -17019,8 +15357,7 @@ def finalize_child(
             f"finalize-child: no active_children/{arid}.txt marker — the run was never "
             f"launched, is already finalized, or was released by a manual "
             f"`deactivate-child`. Nothing was written. A run released by hand and not yet "
-            f"finalized is terminalized with `record-timeout --agent-run-id {arid} "
-            f"--reason <text>`."
+            f"finalized is recovered with `--resume`, which prunes the unfinalized child."
         )
     deactivation = deactivate_child_agent(
         repo_root,
@@ -17266,11 +15603,6 @@ def revoke_artifact(
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     step_token = step.strip().lower()
-    if step_token not in STEP_KEYS_FOR_NODE_STATE:
-        raise RuntimeError(
-            f"revoke-artifact: unsupported --step {step!r}; expected one of "
-            f"{list(STEP_KEYS_FOR_NODE_STATE)}"
-        )
     meta_path = _revocable_stage_meta_path(
         repo_root, orchestration_id, node_key=node_key, step=step_token)
     result: dict[str, Any] = {
@@ -17346,11 +15678,6 @@ def reset_phase(
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     from_token = from_phase.strip().lower()
-    if from_token not in STEP_KEYS_FOR_NODE_STATE:
-        raise RuntimeError(
-            f"reset-phase: unsupported --from-phase {from_phase!r}; expected one of "
-            f"{list(STEP_KEYS_FOR_NODE_STATE)}"
-        )
     affected = list(STEP_KEYS_FOR_NODE_STATE[STEP_KEYS_FOR_NODE_STATE.index(from_token):])
     node_safe = _node_key_to_safe(node_key.strip())
     transitions: list[dict[str, str]] = []
@@ -17589,6 +15916,8 @@ def update_orchestration_status(
     blocking_policy_scope: str | None = None,
 ) -> dict[str, Any]:
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    # Kept before the lock: taking the lock creates the orchestration directory, so a
+    # mistyped id would otherwise leave a `workspace/orchestrations/<id>/` holding only the lock.
     if not meta_path.exists():
         raise FileNotFoundError(meta_path)
     # F3: serialize the full read-check-write-cleanup-marker section. Without this
@@ -17597,8 +15926,6 @@ def update_orchestration_status(
     # final reason_code/reason_detail becomes nondeterministic.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError(f"invalid orchestration_meta.json: {meta_path}")
         current_status_pre = meta.get("status")
         is_same_terminal_replay = (
             isinstance(current_status_pre, str)
@@ -17970,21 +16297,13 @@ def reserve_phase_root(
 ) -> dict[str, Any]:
     """Reserve the ir_id (`step=compile`) or the pipeline_id (`step=generate`) a node's run
     writes under. A pipeline reservation also records the `target_id` its pipeline is built
-    for (issue #284) — required there, refused on a compile one: a pipeline id names a
+    for (issue #284), which the conductor passes for a generate one alone: a pipeline id names a
     directory only together with its target (`workspace/pipelines/<safe>/<target_id>/<id>`),
     and the readers that turn a reservation back into a directory (`resume_node_refs`,
     `_revocable_stage_meta_path`, `audit_orchestration`) read it from here."""
     step_key = step.strip().lower()
     _required_child_agent_kind(step_key)
     target_token = target_id.strip() if isinstance(target_id, str) else ""
-    if step_key == "generate" and not is_target_id(target_token):
-        raise ValueError(
-            f"reserve-phase-root: a generate (pipeline) reservation requires --target naming "
-            f"the target its pipeline is built for; got {target_id!r}")
-    if step_key != "generate" and target_token:
-        raise ValueError(
-            f"reserve-phase-root: --target applies to a generate (pipeline) reservation only "
-            f"(the {step_key} output is target-free); got {target_id!r}")
     # Codex round 32 F2: validate `reserved_id` against `_SLUG_DATE_SEQ3_PATTERN`
     # at the canonical reservation entrypoint. Round-31 tightened the
     # freshness reader to this same grammar but left the writer side
@@ -18290,13 +16609,9 @@ def main(argv: list[str] | None = None) -> int:
     # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the
     # file, so an edit in between would certify commands the conductor will never launch —
     # it keeps the object it already has.
-    preflight_parser.add_argument("--llm-config-sha256", default=None)
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
-    preflight_status_parser = subparsers.add_parser("preflight-status")
-    preflight_status_parser.add_argument("--repo-root", required=True)
-    preflight_status_parser.add_argument("--orchestration-id", required=True)
 
     _NODE_KEY_HELP = (
         "node_key in '<spec_kind>/<spec_id>@<spec_version>' format "
@@ -18490,37 +16805,6 @@ def main(argv: list[str] | None = None) -> int:
     record_reply_parser.add_argument("--reply-text")
     record_reply_parser.add_argument("--reply-from-stdin", action="store_true")
 
-    record_timeout_parser = subparsers.add_parser(
-        "record-timeout",
-        description=(
-            "Canonical recovery for substep/step API stream idle timeout. "
-            "Reads launches/<agent_run_id>.request.json and .response.json to "
-            "build a record-agent-run payload with status='timeout' and "
-            "delegates to record-agent-run (which validates partial writes and "
-            "cleans up workspace/tmp/<agent_run_id>/)."
-        ),
-    )
-    record_timeout_parser.add_argument("--repo-root", required=True)
-    record_timeout_parser.add_argument("--orchestration-id", required=True)
-    record_timeout_parser.add_argument("--agent-run-id", required=True)
-    record_timeout_parser.add_argument(
-        "--reason",
-        required=True,
-        help="Human-readable timeout reason (e.g., 'API stream idle timeout after 600s').",
-    )
-    record_timeout_parser.add_argument(
-        "--force-reason", default=None,
-        help=(
-            "Adv-26 escape hatch: bypass the active-children/legacy marker guards "
-            "when deactivate-child refuses (the Claude sequential pointer names a "
-            "different child). "
-            "Required text becomes part of timeout_reason and the run payload "
-            "carries forced=True + forced_reason for audit. Use sparingly — the "
-            "normal deactivate-child → record-timeout flow is preferred whenever "
-            "possible."
-        ),
-    )
-
     status_parser = subparsers.add_parser("set-status")
     status_parser.add_argument("--repo-root", required=True)
     status_parser.add_argument("--orchestration-id", required=True)
@@ -18551,7 +16835,7 @@ def main(argv: list[str] | None = None) -> int:
     launch_check_parser = subparsers.add_parser(
         "workflow-launch-check",
         description=(
-            "Pre-phase gate: checks execution platform availability, session policy, "
+            "Pre-phase gate: checks execution platform availability, "
             "dependency readiness, and required child agent kind. "
             "Returns JSON with status ('pass'|'fail_closed') and next_action. "
             "Run once before the first phase; fail_closed must stop the orchestration."
@@ -18615,8 +16899,9 @@ def main(argv: list[str] | None = None) -> int:
     reserve_root_parser.add_argument(
         "--target", default=None,
         help=("Target id the reserved pipeline is built for (spec/targets/<id>.yaml). "
-              "Required with --step generate, refused with --step compile: the pipeline "
-              "lives at workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>."))
+              "The conductor passes it with --step generate, where the pipeline lives at "
+              "workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>; it is not "
+              "checked against --step (an omitted one records an empty target_id)."))
 
     check_phase_certified_parser = subparsers.add_parser(
         "check-phase-certified",
@@ -18685,7 +16970,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Findings excerpt to record on the meta, overwriting its own.",
     )
     revoke_artifact_parser.add_argument(
-        "--severity", default=None, choices=sorted(REVOCATION_SEVERITIES),
+        "--severity", default=None,
         help=(
             "G5 severity of the finding that drove the re-derivation, recorded as "
             "revocation_severity. A resumed repair reads it to choose reuse vs restart; "
@@ -18693,7 +16978,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     revoke_artifact_parser.add_argument(
-        "--repair-strategy", default=None, choices=sorted(REVOCATION_REPAIR_STRATEGIES),
+        "--repair-strategy", default=None,
         help=(
             "Repair strategy of the decision that drove the re-derivation, recorded as "
             "revocation_repair_strategy. Needed BESIDE --severity: `major` defaults to reuse "
@@ -18783,15 +17068,7 @@ def main(argv: list[str] | None = None) -> int:
             invocation_record: dict[str, Any] | None = None
             invocation_json = getattr(args, "invocation_json", None)
             if isinstance(invocation_json, str) and invocation_json.strip():
-                try:
-                    parsed_invocation = json.loads(invocation_json)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"--invocation-json must be valid JSON: {exc}"
-                    ) from exc
-                if not isinstance(parsed_invocation, dict):
-                    raise ValueError("--invocation-json must be a JSON object")
-                invocation_record = parsed_invocation
+                invocation_record = json.loads(invocation_json)
             result = init_orchestration(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -18815,22 +17092,12 @@ def main(argv: list[str] | None = None) -> int:
             agent_command=agent_command,
             repo_root=repo_root,
         )
-        expected_sha = getattr(args, "llm_config_sha256", None)
         llm_config_snapshot = None
         if getattr(args, "llm_config", None):
-            # ONE snapshot: read the bytes, parse THOSE, and check the hash of THOSE. Hashing
-            # the path and then re-reading it to probe would approve one version and certify
-            # another, which under two wrapper commands on one backend token is a launch the
-            # `providers` map never saw.
+            # ONE snapshot: read the bytes and parse THOSE.
             from tools.llm_config import load_llm_config as _load_llm_config
             _raw = Path(args.llm_config).read_bytes()
             llm_config_snapshot = _load_llm_config(args.llm_config, content=_raw)
-            if expected_sha and llm_config_snapshot.sha256 != expected_sha:
-                raise ValueError(
-                    f"preflight: leaf-LLM configuration {args.llm_config} changed between the "
-                    f"caller loading it ({expected_sha}) and this probe "
-                    f"({llm_config_snapshot.sha256}); the probe would certify a configuration "
-                    f"the run will not launch")
         if getattr(args, "llm_config", None):
             # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
             # (i.e. `defaults`), and `providers` adds one entry per distinct provider the
@@ -18853,11 +17120,6 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id=args.orchestration_id,
             payload=preflight_payload,
         )
-    elif args.command == "preflight-status":
-        result = get_preflight_ttl_status(
-            repo_root=repo_root,
-            orchestration_id=args.orchestration_id,
-        )
     elif args.command == "record-launch":
         request_payload = (
             args.request_json if args.request_json is not None else args.request_json_file
@@ -18865,21 +17127,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             child_env_payload: dict[str, str] | None = None
             if getattr(args, "child_env_from_stdin", False):
-                raw = sys.stdin.read()
-                try:
-                    parsed = json.loads(raw or "")
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"--child-env-from-stdin is not JSON: {exc}") from exc
-                if not isinstance(parsed, dict) or not parsed:
-                    raise ValueError(
-                        "--child-env-from-stdin must be a non-empty JSON object; with "
-                        "--clearenv an empty one launches a leaf with no environment")
-                child_env_payload = {}
-                for key, value in parsed.items():
-                    if not isinstance(key, str) or not isinstance(value, str):
-                        raise ValueError(
-                            f"--child-env-from-stdin entries must be str -> str, got {key!r}")
-                    child_env_payload[key] = value
+                # The conductor's `_child_env`, serialized by the conductor.
+                child_env_payload = json.loads(sys.stdin.read())
             _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
                 repo_root=repo_root,
@@ -18981,18 +17230,6 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-    elif args.command == "record-timeout":
-        try:
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id=args.orchestration_id,
-                agent_run_id=args.agent_run_id,
-                reason=args.reason,
-                force_reason=args.force_reason,
-            )
-        except (ValueError, RuntimeError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
     elif args.command == "check-phase-certified":
         try:
             result = check_phase_certified(
@@ -19083,18 +17320,6 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, FileNotFoundError) as exc:
             print(f"mark-dependency-readiness: {exc}", file=sys.stderr)
             return 1
-        except RuntimeError as exc:
-            # Codex round 28 F2: PyYAML not installed → `_require_yaml()`
-            # raises `RuntimeError` from `_read_deps_yaml` /
-            # `_load_spec_catalog_from_bytes`. Surface as a clean stderr
-            # message under the same CLI contract as other expected
-            # verification failures rather than letting wrappers see a
-            # Python traceback (which would be classified as an
-            # infrastructure crash, not a dependency rejection).
-            if "PyYAML" not in str(exc):
-                raise
-            print(f"mark-dependency-readiness: {exc}", file=sys.stderr)
-            return 1
     elif args.command == "workflow-launch-check":
         # Convert expected validation failures (e.g. an unsupported --step like
         # 'plan') into a clean stderr message + exit 1 rather than letting a
@@ -19124,8 +17349,6 @@ def main(argv: list[str] | None = None) -> int:
             reserved_by_agent_run_id=args.reserved_by_agent_run_id,
             target_id=args.target,
         )
-    else:
-        raise RuntimeError(f"unhandled command: {args.command}")
 
     if not getattr(args, "verbose", False):
         result = _project_terse_result(args.command, result)

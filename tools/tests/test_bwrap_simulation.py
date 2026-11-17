@@ -2330,7 +2330,7 @@ class _CodexLeafCliCase(unittest.TestCase):
         self.entry = self.conductor.entry_for(*self.PAIR)
         self.lineage = str(uuid.uuid4())
         self.iso = ort._prepare_codex_workflow_home(self.repo, self.orch, self.lineage,
-                                                    resume=False, workshop=True)
+                                                    resume=False)
         self.config, self.tree = Path(self.iso["config"]), Path(self.iso["tree"])
         self.paths = self.conductor._workshop_paths(self.entry, self.iso, self.lineage)
 
@@ -2400,7 +2400,7 @@ class _CodexLeafCliCase(unittest.TestCase):
 class CodexWorkshopLeafCliTests(_CodexLeafCliCase):
     """UNBILLED (issue #534 step 2 PR-2): the real codex CLI under a codex workshop leaf's
     launch shape — the production argv (`Conductor.leaf_command` with the wrapper's endpoint)
-    under the rendered profile (`_prepare_codex_workflow_home(workshop=True)` +
+    under the rendered profile (`_prepare_codex_workflow_home` +
     `codex_workshop_profile_kwargs`, a real bwrap) against a scripted Responses-API stand-in and
     the real wrapper endpoint (its operation stubbed). The measurements MX1-MX5 of the step-2
     plan, kept as rows so a CLI version that moves one turns a row red. The stand-in's provider

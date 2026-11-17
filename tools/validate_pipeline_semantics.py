@@ -8,7 +8,6 @@ import hashlib
 import json
 import math
 import copy
-import os
 import re
 import threading
 
@@ -37,7 +36,6 @@ try:
     # the variables its build had to be handed.
     from tools import capture_store
     from tools import checked_build
-    from tools import leaf_netns
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -58,8 +56,6 @@ try:
     from tools.leaf_contract import (
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
-        WORKSHOP_CLI_ENDPOINTS,
-        WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
@@ -87,7 +83,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     # the variables its build had to be handed.
     from tools import capture_store
     from tools import checked_build
-    from tools import leaf_netns
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -104,8 +99,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.leaf_contract import (
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
-        WORKSHOP_CLI_ENDPOINTS,
-        WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
@@ -653,224 +646,17 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
     return launch_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
 
 
-# The provider tokens whose leaf is answered over HTTPS from the CONDUCTOR's own process (issue
-# #28; a pure leaf, and since issue #534 PR-J3-b a workshop leaf's host loop) and therefore has
-# no child process to confine and no bwrap profile to audit. Duplicated from
-# `orchestration_runtime._HTTP_PROVIDER_TOKENS` rather than imported: this module may not import
-# the runtime (module-boundary rule), and the two are compared by
-# `test_http_pure_leaf_backends_matches_the_runtime`.
-_HTTP_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
-
-
-#: A workshop profile's CLI-home env name by backend family. Duplicated from
-#: `orchestration_runtime.WORKSHOP_PROFILE_HOME_ENV` under the module-boundary rule, and
-#: compared with it by `test_validate_pipeline_semantics`.
-_WORKSHOP_PROFILE_HOME_ENV: dict[str, str] = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
-
-
-
-#: The launch-response fields a workshop launch records the wrapper's endpoint under
-#: (`Conductor._launch_setting_surface`), one per CLI family.
-_WORKSHOP_ENDPOINT_RESPONSE_FIELDS: tuple[str, ...] = ("claude_mcp_config", "codex_mcp_config")
-
-
-def _workshop_endpoint_violations(request: dict, response: dict) -> list[str]:
-    """What is wrong with the endpoint a persisted workshop launch names (issue #534 step 3): a
-    READING launch — a judging pair or the diagnostician's (`leaf_contract.is_workshop_reading_pair`) — is served no wrapper
-    operation, so its response names no endpoint; a PRODUCING launch is served its operations
-    over one, so its response names one. The kind is the request's pair, never a field of the
-    response."""
-    from tools.leaf_contract import is_workshop_reading_pair
-    named = [f for f in _WORKSHOP_ENDPOINT_RESPONSE_FIELDS if response.get(f)]
-    if is_workshop_reading_pair(request.get("step"), request.get("substep")):
-        if named:
-            return [(f"workshop reading launch ({request.get('step')}."
-                     f"{request.get('substep')}) must name no wrapper endpoint (got "
-                     f"{', '.join(named)})")]
-        return []
-    if not named:
-        return [(f"workshop producing launch ({request.get('step')}."
-                 f"{request.get('substep')}) must name its wrapper endpoint "
-                 "(claude_mcp_config / codex_mcp_config)")]
-    return []
-
-
-def _http_workshop_record_violations(request: dict, response: dict) -> list[str]:
-    """What is wrong with a persisted HTTP `workshop leaf` launch (issue #534 PR-J3-b), whose
-    host loop runs in the conductor's process with no sandbox profile: its response names no
-    wrapper endpoint (`*_mcp_config`: the loop calls the operations in-process), names the
-    lineage the request names (`workshop_lineage_id`) and the home it ran in
-    (`http_workflow_home`, whose last segment is that lineage), and declares exactly the KIND's
-    tool surface (`http_tool_surface`): the five file tools on a reading pair, and the five
-    plus the pair's operations (`workshop_wrapper.WORKSHOP_OPS_BY_PAIR`) on a producing pair —
-    compared against that table, never against the request."""
-    from tools.leaf_contract import HTTP_FILE_TOOLS
-    from tools.workshop_wrapper import WORKSHOP_OPS_BY_PAIR
-    out: list[str] = []
-    endpoint = sorted(k for k in response if isinstance(k, str) and k.endswith("_mcp_config"))
-    if endpoint:
-        out.append(f"http workshop launch must name no wrapper endpoint (got "
-                   f"{', '.join(endpoint)})")
-    lineage = request.get("workshop_lineage_id")
-    lineage = lineage.strip() if isinstance(lineage, str) else ""
-    if not lineage:
-        out.append("http workshop launch request names no workshop_lineage_id")
-    if response.get("workshop_lineage_id") != lineage or not lineage:
-        out.append(f"http workshop launch response must name the request's lineage "
-                   f"{lineage!r} as workshop_lineage_id (got "
-                   f"{response.get('workshop_lineage_id')!r})")
-    home = response.get("http_workflow_home")
-    if not (isinstance(home, str) and home.strip()
-            and Path(home).name == lineage and Path(home).parent.name == "http"):
-        out.append(f"http workshop launch response must name its lineage home "
-                   f"<homes>/<oid>/http/{lineage} as http_workflow_home (got {home!r})")
-    pair = (str(request.get("step") or "").strip().lower(),
-            str(request.get("substep") or "").strip().lower())
-    expected = [*HTTP_FILE_TOOLS, *WORKSHOP_OPS_BY_PAIR.get(pair, ())]
-    if response.get("http_tool_surface") != expected:
-        out.append(f"http workshop launch ({pair[0]}.{pair[1]}) must declare the tool surface "
-                   f"{expected} (got {response.get('http_tool_surface')!r})")
-    return out
-
-
-def _workshop_profile_violations(profile: dict, request: dict | None = None,
-                                 repo_root: Path | None = None) -> list[str]:
-    """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): it must be
-    `leaf_mode: workshop`, `readonly: false`, `write_roots: []`, with exactly two rw binds —
-    the `config` and `tree` of ONE lineage home, spelled as normalized absolute paths, outside
-    the checkout (`repo_root`), in the lineage directory the request names
-    (`workshop_lineage_id`) — and its tree as its workdir; and its CLI home is `config/`, with
-    the claude credential mapped read-write onto `config/.credentials.json`, or codex's
-    `auth.json` and `config.toml` remounted read-only into it and no credential read-write
-    (issue #534 step 2 PR-2) — the family being, when the request names a `workshop_provider`,
-    the one it names. The persisted-record twin of
-    `workflow_conductor._admissible_leaf_profile`, which refuses the spawn and keys the family
-    on the entry's provider instead."""
-    out: list[str] = []
-    if profile.get("leaf_mode") != "workshop" or profile.get("readonly") is not False:
-        out.append(f"workshop launch sandbox profile must be leaf_mode=workshop, readonly=false "
-                   f"(got leaf_mode={profile.get('leaf_mode')!r}, "
-                   f"readonly={profile.get('readonly')!r})")
-    if profile.get("write_roots") != []:
-        out.append(f"workshop launch sandbox profile write_roots must be [] (got "
-                   f"{profile.get('write_roots')!r})")
-    rw = profile.get("runtime_rw_bind_paths")
-    paths = ([Path(p) for p in rw] if isinstance(rw, list)
-             and all(isinstance(p, str) and p for p in rw) else None)
-    if (paths is None or sorted(p.name for p in paths) != ["config", "tree"]
-            or len({p.parent for p in paths}) != 1):
-        out.append(f"workshop launch sandbox profile must bind exactly one lineage home's "
-                   f"config/ and tree/ read-write (got {rw!r})")
-        return out
-    if any(not p.is_absolute() or str(p) != os.path.normpath(str(p)) for p in paths):
-        out.append(f"workshop launch sandbox profile rw binds must be normalized absolute "
-                   f"paths (got {rw!r})")
-    if repo_root is not None:
-        repo = Path(os.path.normpath(str(Path(repo_root).absolute())))
-        if any(p == repo or p.is_relative_to(repo) or repo.is_relative_to(p) for p in paths):
-            out.append(f"workshop launch sandbox profile rw binds must lie outside the "
-                       f"checkout {repo} (got {rw!r})")
-    if request is not None:
-        lineage = request.get("workshop_lineage_id")
-        if not (isinstance(lineage, str) and lineage.strip()):
-            out.append("workshop launch request names no workshop_lineage_id")
-        elif paths[0].parent.name != lineage.strip():
-            out.append(f"workshop launch sandbox profile binds lineage "
-                       f"{paths[0].parent.name!r}, not the request's {lineage.strip()!r}")
-    tree = next(p for p in paths if p.name == "tree")
-    config = next(p for p in paths if p.name == "config")
-    credential = profile.get("runtime_rw_credential_mapping")
-    env = profile.get("env") if isinstance(profile.get("env"), dict) else {}
-    # The CLI family is the one whose home the environment declares — exactly one (the
-    # runtime's `workshop_profile_family`, duplicated under the module-boundary rule), and it
-    # must name the lineage's `config/`.
-    homes = {family: env.get(name) for family, name in _WORKSHOP_PROFILE_HOME_ENV.items()
-             if env.get(name)}
-    family = next(iter(homes)) if len(homes) == 1 else None
-    if family is None or homes[family] != str(config):
-        out.append(f"workshop launch sandbox profile must declare exactly one CLI home "
-                   f"({' or '.join(_WORKSHOP_PROFILE_HOME_ENV.values())}) naming {config} "
-                   f"(got {homes!r})")
-    elif (request is not None and request.get("workshop_provider") is not None
-          and WORKSHOP_LINEAGE_BACKENDS.get(str(request.get("workshop_provider"))) != family):
-        # The spawn-side twin keys the family on the ENTRY's provider; the record's is the
-        # request's `workshop_provider`, which the prompt's tool surface was rendered for. A
-        # request that names none claims nothing to disagree with: the field arrived with step 2
-        # PR-1, and every step-1 record (claude, the only family then) lacks it.
-        out.append(f"workshop launch sandbox profile is a {family} profile, but the request's "
-                   f"workshop_provider is {request.get('workshop_provider')!r}")
-    elif family == "claude":
-        if not (isinstance(credential, list) and len(credential) == 2
-                and str(credential[1]) == str(config / ".credentials.json")):
-            out.append(f"workshop launch sandbox profile must map the credential onto "
-                       f"{config / '.credentials.json'} (got {credential!r})")
-    else:
-        mappings = profile.get("runtime_ro_bind_mappings")
-        destinations = sorted(str(m[1]) for m in mappings
-                              if isinstance(m, list) and len(m) == 2) if isinstance(
-                                  mappings, list) else None
-        if credential is not None:
-            out.append(f"a codex workshop launch sandbox profile binds no credential "
-                       f"read-write (got {credential!r})")
-        if destinations != sorted(str(config / n) for n in ("auth.json", "config.toml")):
-            out.append(f"a codex workshop launch sandbox profile must remount exactly "
-                       f"{config / 'auth.json'} and {config / 'config.toml'} read-only (got "
-                       f"{mappings!r})")
-    if str(profile.get("workdir") or "") != str(tree):
-        out.append(f"workshop launch sandbox profile workdir must be its tree (got "
-                   f"{profile.get('workdir')!r})")
-    out.extend(_workshop_profile_network_violations(profile, family, env, repo_root))
-    return out
-
-
-def _workshop_profile_network_violations(profile: dict, family: str | None, env: dict,
-                                         repo_root: Path | None) -> list[str]:
-    """The network-namespace half of `_workshop_profile_violations` (issue #534 step 4): the
-    profile's `network` block (`leaf_netns.network_block_violations`, the reader the renderer
-    and the spawn admission share, against the family's constant endpoint set), the
-    namespace's own proxy values in its environment, and its RECORDED command —
-    `--unshare-net` and `--unshare-pid` in the bwrap head, the socket directory bound read-only
-    at `leaf_netns.NET_MOUNT`, and the relay head (`leaf_netns.relay_argv`, `-I` included)
-    right after the head's `--`. The socket directory is not read: it is gone once the launch
-    ends. A profile with no block at all was recorded before step 4 — the `--resume` barrier,
-    named."""
-    network = profile.get("network")
-    if network is None:
+def _workshop_profile_violations(profile: dict) -> list[str]:
+    """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): a profile
+    with no network block was recorded before issue #534 step 4 — the `--resume` barrier,
+    named. The profile's shape is admitted before the launch, at spawn
+    (`workflow_conductor._admissible_leaf_profile`)."""
+    if profile.get("network") is None:
         return [("workshop launch sandbox profile carries no network block: it was recorded "
                  "before issue #534 step 4 put every CLI leaf in a network namespace, so this "
                  "orchestration cannot be resumed — start a fresh run; certified nodes are "
                  "reused")]
-    out: list[str] = []
-    if family not in WORKSHOP_CLI_ENDPOINTS:
-        return out  # the family is refused above; there is no endpoint set to compare
-    out.extend(f"workshop launch sandbox profile {problem}" for problem in
-               leaf_netns.network_block_violations(
-                   network, endpoints=WORKSHOP_CLI_ENDPOINTS[family],
-                   repo_root=str(repo_root) if repo_root is not None else None))
-    if out:
-        return out
-    for name, value in leaf_netns.PROXY_ENV.items():
-        if env.get(name) != value:
-            out.append(f"workshop launch sandbox profile env {name} must be {value!r} (got "
-                       f"{env.get(name)!r})")
-    rendered = profile.get("rendered_command")
-    if not (isinstance(rendered, list) and "--" in rendered):
-        return [*out, (f"workshop launch sandbox profile records no rendered_command (got "
-                       f"{rendered!r})")]
-    split = rendered.index("--")
-    head, tail = rendered[:split], rendered[split + 1:]
-    for flag in ("--unshare-net", "--unshare-pid"):
-        if flag not in head:
-            out.append(f"workshop launch sandbox profile rendered_command lacks {flag}")
-    bind = ["--ro-bind", network["socket_dir"], leaf_netns.NET_MOUNT]
-    if not any(head[i:i + 3] == bind for i in range(len(head))):
-        out.append(f"workshop launch sandbox profile rendered_command does not bind "
-                   f"{network['socket_dir']} read-only at {leaf_netns.NET_MOUNT}")
-    relay = leaf_netns.relay_argv([], wrapper_port=network.get("wrapper_port"))
-    if tail[:len(relay)] != relay:
-        out.append(f"workshop launch sandbox profile rendered_command does not run the relay "
-                   f"{relay!r} (got {tail[:len(relay)]!r})")
-    return out
+    return []
 
 
 def _launch_request_is_workshop(request_payload: dict) -> bool:
@@ -7894,31 +7680,8 @@ def _validate_orchestration_hierarchy(
             if not required.exists():
                 violations.append(f"{required}: missing")
 
-        if preflight_path.exists():
-            try:
-                preflight = _read_json(preflight_path)
-            except json.JSONDecodeError:
-                violations.append(f"{preflight_path}: invalid json")
-            else:
-                if not isinstance(preflight, dict):
-                    violations.append(f"{preflight_path}: must be json object")
-                else:
-                    if preflight.get("status") != "pass":
-                        violations.append(f"{preflight_path}:status must be pass")
-                    if preflight.get("can_launch_step_agents") is not True:
-                        violations.append(
-                            f"{preflight_path}:can_launch_step_agents must be true"
-                        )
-                    if preflight.get("can_launch_substep_agents") is not True:
-                        violations.append(
-                            f"{preflight_path}:can_launch_substep_agents must be true"
-                        )
-                    # The per-backend capability checks are not re-read here: `write_preflight`
-                    # refuses a document that claims launchability while any required check
-                    # is missing (`_preflight_launch_refusals`). The `multi_agent` requirement
-                    # that stood here went in issue #447 (D1).
-                    if not isinstance(preflight.get("checks"), list):
-                        violations.append(f"{preflight_path}:checks must be list")
+        # The contents of `preflight.json` are not re-read here: it is host-written, and every
+        # launch is gated on the same document by `_preflight_launch_refusals` (issue #643).
 
         if meta_path.exists():
             try:
@@ -8132,7 +7895,6 @@ def _validate_orchestration_hierarchy(
                                 # it is what says an HTTP pure leaf ran in the conductor's own
                                 # process and therefore has no sandbox profile to audit.
                                 resp_payload_for_launch = None
-                                sbx_ref_for_launch = ""
                                 resp_ref = launch_refs.get("launch_response_ref")
                                 if isinstance(resp_ref, str) and resp_ref.strip():
                                     resp_path = workspace_path.parent / resp_ref
@@ -8141,11 +7903,6 @@ def _validate_orchestration_hierarchy(
                                             resp_payload_for_launch = _read_json(resp_path)
                                         except json.JSONDecodeError:
                                             resp_payload_for_launch = None
-                                        if isinstance(resp_payload_for_launch, dict):
-                                            _ref = resp_payload_for_launch.get(
-                                                "sandbox_profile_ref")
-                                            sbx_ref_for_launch = (
-                                                _ref.strip() if isinstance(_ref, str) else "")
                                 req_ref = launch_refs.get("launch_request_ref")
                                 if isinstance(req_ref, str):
                                     req_path = workspace_path.parent / req_ref
@@ -8244,8 +8001,8 @@ def _validate_orchestration_hierarchy(
                                     # None of the three is written now. What survives is (4) and (5) below — the
                                     # sandbox profile, which bwrap enforces, and the terminal row's `output_refs`,
                                     # which the host's own bundle writer would contradict if it were wrong.
-                                    # (4) The sandbox profile. A pure leaf launched as a CHILD
-                                    # PROCESS must have one, read-only and write-root-free. An
+                                    # (4) The sandbox profile. A leaf launched as a CHILD
+                                    # PROCESS must have one. An
                                     # HTTP pure leaf (issue #28) is answered from the conductor's
                                     # own process over HTTPS: there is no process to confine, so
                                     # `record_launch` writes no profile and stamps the response
@@ -8253,66 +8010,14 @@ def _validate_orchestration_hierarchy(
                                     # would fail every such run at this gate — as `unrecoverable`,
                                     # after the whole pipeline was paid for, naming a file the
                                     # operator cannot create. The exemption is read from the
-                                    # host-authored launch RESPONSE and requires BOTH the
-                                    # transport marker and a genuine HTTP provider token, so a
-                                    # CLI launch cannot claim it by dropping its profile.
-                                    resp_backend = (
-                                        resp_payload_for_launch.get("backend")
-                                        if isinstance(resp_payload_for_launch, dict) else None
-                                    )
+                                    # host-authored launch RESPONSE's transport marker.
                                     resp_transport = (
                                         str(resp_payload_for_launch.get("leaf_transport") or "")
                                         .strip().lower()
                                         if isinstance(resp_payload_for_launch, dict) else ""
                                     )
-                                    http_leaf = (
-                                        resp_transport == "http"
-                                        and isinstance(resp_backend, str)
-                                        and resp_backend.strip().lower()
-                                        in _HTTP_LEAF_BACKENDS
-                                    )
-                                    if http_leaf and is_workshop:
-                                        # An HTTP WORKSHOP record (issue #534 PR-J3-b): no
-                                        # profile, as a pure HTTP record, and in its place the
-                                        # lineage stamps and the kind's declared tool surface.
-                                        violations.extend(
-                                            f"{runs_path}:line {idx + 1} {why}"
-                                            for why in _http_workshop_record_violations(
-                                                req_payload_for_launch
-                                                if isinstance(req_payload_for_launch, dict)
-                                                else {},
-                                                resp_payload_for_launch
-                                                if isinstance(resp_payload_for_launch, dict)
-                                                else {}))
+                                    http_leaf = resp_transport == "http"
                                     if http_leaf:
-                                        if sbx_ref_for_launch:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} http pure launch must "
-                                                f"NOT reference a sandbox profile (got "
-                                                f"{sbx_ref_for_launch!r})"
-                                            )
-                                        # A genuine HTTP launch writes no profile, so one
-                                        # EXISTING alongside the exemption is incoherent — and
-                                        # is exactly how a tampered CLI record would claim the
-                                        # exemption to escape the profile-content audit below.
-                                        # Checking the file costs a stat and closes that.
-                                        if (orchestration_dir / "sandbox_profiles"
-                                                / f"{run_id}.json").exists():
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} http pure launch "
-                                                f"claims no sandbox, but "
-                                                f"sandbox_profiles/{run_id}.json exists"
-                                            )
-                                        # The row must agree with the response it points at: an
-                                        # exemption granted on a response whose provider the row
-                                        # does not claim is a record disagreeing with itself.
-                                        row_backend = str(item.get("agent_backend") or "").strip()
-                                        if row_backend.lower() not in _HTTP_LEAF_BACKENDS:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} http pure launch row "
-                                                f"agent_backend must be an http provider (got "
-                                                f"{row_backend!r})"
-                                            )
                                         sbx_doc = None
                                         sbx_path = None
                                     else:
@@ -8334,44 +8039,9 @@ def _validate_orchestration_hierarchy(
                                             f"missing/unreadable ({sbx_path.name})"
                                         )
                                     elif is_workshop:
-                                        # A workshop leaf's profile (issue #534) is the one
-                                        # writable profile, and only in its own lineage home:
-                                        # exactly `config/` and `tree/`, siblings, outside the
-                                        # checkout, nothing under it.
                                         violations.extend(
                                             f"{runs_path}:line {idx + 1} {why}"
-                                            for why in _workshop_profile_violations(
-                                                sbx_doc,
-                                                req_payload_for_launch
-                                                if isinstance(req_payload_for_launch, dict)
-                                                else {},
-                                                workspace_path.parent))
-                                        # The KIND the pair is decides whether the launch was
-                                        # served the wrapper's endpoint (issue #534 step 3): a
-                                        # producing record names one, a reading record (a
-                                        # judging substep) names none.
-                                        violations.extend(
-                                            f"{runs_path}:line {idx + 1} {why}"
-                                            for why in _workshop_endpoint_violations(
-                                                req_payload_for_launch
-                                                if isinstance(req_payload_for_launch, dict)
-                                                else {},
-                                                resp_payload_for_launch
-                                                if isinstance(resp_payload_for_launch, dict)
-                                                else {}))
-                                    else:
-                                        if sbx_doc.get("readonly") is not True:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} pure launch sandbox "
-                                                f"profile must be readonly (got readonly="
-                                                f"{sbx_doc.get('readonly')!r})"
-                                            )
-                                        if sbx_doc.get("write_roots") != []:
-                                            violations.append(
-                                                f"{runs_path}:line {idx + 1} pure launch sandbox "
-                                                f"profile write_roots must be [] (got "
-                                                f"{sbx_doc.get('write_roots')!r})"
-                                            )
+                                            for why in _workshop_profile_violations(sbx_doc))
                                     # (5) M-C 修正2 mirror: a PASSING pure terminal row carries an
                                     # output_refs of EXACTLY [] (the host writes the bundle artifacts
                                     # after the child window; a pure leaf holds no write authority). A

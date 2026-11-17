@@ -711,7 +711,7 @@ def _scan_workspace_for_forbidden_scripts(workspace_root: Path) -> list[str]:
     """Reject *.py under workspace/ EXCEPT inside per-agent tmp dirs of LIVE runs.
 
     workspace/tmp/<agent_run_id>/ is a sanctioned scratch root while the agent
-    is still in flight. record-agent-run / record-timeout removes the directory
+    is still in flight. record-agent-run removes the directory
     at terminal status, so any *.py that survives a terminal entry indicates a
     cleanup bug and MUST be surfaced (otherwise leaked executable content
     accumulates undetected).
@@ -818,13 +818,11 @@ def _scan_workspace_layout(workspace_root: Path) -> list[str]:
     if tmp_root.exists() and tmp_root.is_dir():
         for child in sorted(tmp_root.iterdir()):
             if not child.is_dir():
-                # Runtime-managed fcntl cleanup sidecar (orchestration_runtime.py
-                # _cleanup_agent_tmp_root locks workspace/tmp/<arid>.lock; the
-                # unauthorized-write guard already exempts it at :6586-6591).
-                # The sidecar persists by design (it is the serialization
-                # primitive and is never unlinked) — tolerate it so a residual
-                # one does not dead-lock the gate for sibling verify/judge
-                # substeps. Narrow the exemption to exactly what the runtime
+                # Former fcntl cleanup sidecar (`_cleanup_agent_tmp_root` locked
+                # workspace/tmp/<arid>.lock until issue #643 removed the lock and
+                # never unlinked it, so existing workspaces hold thousands) —
+                # tolerate it so a residual one does not dead-lock the gate for
+                # sibling verify/judge substeps. Narrow the exemption to exactly what the runtime
                 # produces: a valid <arid>.lock name AND a real, empty, regular
                 # file (NOT a symlink, NOT non-empty). Anything else — arbitrary
                 # content, a symlink redirect, a fifo/socket — is still flagged.

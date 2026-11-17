@@ -2209,10 +2209,6 @@ def _wait_for_leaf_exit(process: Any, deadline: float | None,
             continue
 
 
-#: The named refusal of a read-only / lineage-less sandbox profile at `spawn_leaf`.
-_LEAF_PROFILE_NOT_A_LINEAGE = "leaf_profile_not_a_workshop_lineage"
-
-
 def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
                              repo_root: Path | None = None) -> bool:
     """Whether `spawn_leaf` may launch a leaf under `profile`: a WORKSHOP lineage's (issue
@@ -2227,7 +2223,7 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
     False — the READ-ONLY profile (`readonly: True`, no `leaf_mode`) every pure leaf ran under
     included: no in-tree launch shape builds one since the pure path went (issue #534
     PR-J4-b), and a leaf under it would edit the sandbox's own tmpfs and leave an empty tree
-    to snapshot. `spawn_leaf` names that refusal (`_LEAF_PROFILE_NOT_A_LINEAGE`).
+    to snapshot.
 
     And the profile carries the leaf's network namespace (issue #534 step 4): a `network`
     block `leaf_netns.network_block_violations` answers nothing for, against the ENTRY's
@@ -4443,14 +4439,7 @@ class Conductor:
             # checkout — with the tree as its working directory. Asserted at the spawn site
             # rather than left to follow from today's callers: a guard that rests on the caller
             # set goes quiet the moment a new caller appears. The READ-ONLY profile of the
-            # deleted pure leaf (issue #534 PR-J4-b) is refused by name, so a caller that still
-            # builds one fails here rather than launching a leaf whose edits vanish.
-            if profile.get("readonly") is True or profile.get("leaf_mode") is None:
-                raise SandboxEnforcementError(
-                    f"{_LEAF_PROFILE_NOT_A_LINEAGE}: the sandbox profile for {child_arid!r} is "
-                    "the read-only profile of the retired pure leaf (readonly: true, no "
-                    "leaf_mode); every leaf runs in a workshop lineage since issue #534 "
-                    "PR-J4-b, so a profile without one is a host defect (fail-closed)")
+            # deleted pure leaf (issue #534 PR-J4-b) is one of the shapes it refuses.
             if not _admissible_leaf_profile(profile, entry, self.repo_root):
                 raise SandboxEnforcementError(
                     f"the sandbox profile for {child_arid!r} is not a workshop lineage's "
@@ -4460,8 +4449,8 @@ class Conductor:
             try:
                 argv = render_bwrap_command(profile=profile, command_argv=argv)
             except ValueError as exc:
-                # A structurally invalid/corrupted profile (missing repo_root/tmp_dir,
-                # bad file pin, …) must also fail closed as a sandbox error, not bubble
+                # A profile the renderer refuses (a shape it checks, a bad file
+                # mapping, …) must also fail closed as a sandbox error, not bubble
                 # up as a generic conductor error.
                 raise SandboxEnforcementError(
                     f"sandbox profile for {child_arid} is invalid: {exc}") from exc
@@ -5540,8 +5529,7 @@ class Conductor:
             # There is no CLI leaf and no argv (`spawn_leaf` refuses an HTTP entry). An HTTP
             # workshop leaf (issue #534 PR-J3-b) records the tools the host loop declares to it
             # — the five file tools, plus the pair's operations on a producing pair
-            # (`WORKSHOP_OPS_BY_PAIR`) — which the launch-record audit compares against the
-            # kind's surface.
+            # (`WORKSHOP_OPS_BY_PAIR`).
             return {"http_tool_surface": self._http_workshop_tool_names(
                 request.get("step"), request.get("substep"))}
         # `session_id=child_arid` because the claude argv carries it (`--session-id`), and this
@@ -8102,7 +8090,10 @@ class Conductor:
         from tools.workshop_tree import read_lineage_record
         try:
             isolation = self._prepare_workshop_home(entry, lineage_id, resume=True)
-        except ValueError:
+        except (ValueError, OSError):
+            # An OSError re-creating a vanished container (an operator filesystem fault) falls
+            # back to a cold launch like a missing home, whose own failure is the named
+            # `workshop_lineage_setup_failed` (issue #643 U12 removed the re-wrap to ValueError).
             return None
         if isolation is None:
             return None
@@ -10345,10 +10336,7 @@ class Conductor:
         # no `--model` — neither of which any artifact records. `leaf_env_from` is the
         # single owner of which names survive and why; this method is the single AUTHOR
         # of a leaf's environment, adding only the per-run values below.
-        from tools.orchestration_runtime import (
-            _BACKEND_HOME_ENV_VARS,
-            leaf_env_from,
-        )
+        from tools.orchestration_runtime import leaf_env_from
         env = leaf_env_from(self.env)
         # A name the configuration DECLARES as an `api_key_env` holds a credential — the
         # file has said so — and the filter cannot know that: `SPEC2SCIENCE_*` is passed by
@@ -10405,8 +10393,8 @@ class Conductor:
             # CLAUDE_CONFIG_DIR is deliberately NOT set here: naming a home here would point the
             # leaf at a configuration surface nothing prepared, hashed or recorded. A WORKSHOP
             # leaf (issue #534) has its own, and it reaches the leaf the way a codex lineage home does — through the profile's
-            # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`); the pop
-            # below keeps this dict from carrying a second spelling of it.
+            # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`);
+            # `leaf_env_from` keeps the host's spelling of it out of this dict.
         elif entry.provider == "codex_cli":
             # SPEC2SCIENCE_HOME was the historical private alias for CODEX_HOME. An operator
             # who set BOTH to different homes has said two incompatible things, and the
@@ -10436,20 +10424,6 @@ class Conductor:
                 key_value = self.env.get(key_name)
                 if isinstance(key_value, str) and key_value:
                     env[key_name] = key_value
-        # Single-route invariant: the two backend-home names reach a leaf through the
-        # profile's `--setenv` alone. DEFENCE IN DEPTH — what enforces the invariant is
-        # `leaf_env_from` on the way in (both names are outside the allowlist and outside
-        # the prefix) and `render_bwrap_command`'s name validation on the way out. This
-        # loop matters when a per-kind branch above puts one back: the HTTP branch re-adds
-        # whatever name the entry's `api_key_env` declares, and
-        # `test_the_pop_is_what_keeps_a_declared_backend_home_out` fails without the loop.
-        # (Three earlier versions of this comment each asserted something review then
-        # falsified — that the loop enforces the rule, that the HTTP path makes it
-        # reachable in production, and that deleting it leaves the suite green, the last
-        # of which contradicted the test added in its own commit. Kept short deliberately:
-        # the archaeology is what the stale clause kept hiding in.)
-        for var in _BACKEND_HOME_ENV_VARS:
-            env.pop(var, None)
         return env
 
     def read_case_ids(self, refs: NodeRefs) -> tuple[str, ...]:
@@ -16982,8 +16956,8 @@ class Conductor:
                                 reason_detail=str(exc)[:200])
                 return "fail_closed"
             except LaunchCheckRefused as exc:
-                # The runtime refused the phase start (a dependency not ready, preflight, the
-                # session policy). Its reason is a fail_closed code already; one outside the
+                # The runtime refused the phase start (a dependency not ready, preflight).
+                # Its reason is a fail_closed code already; one outside the
                 # allowlist (`backend_not_probed`) is carried under the generic code and leads
                 # the detail, so nothing the check said is lost (issue #383).
                 detail = exc.reason_detail
