@@ -8090,7 +8090,10 @@ class Conductor:
         from tools.workshop_tree import read_lineage_record
         try:
             isolation = self._prepare_workshop_home(entry, lineage_id, resume=True)
-        except ValueError:
+        except (ValueError, OSError):
+            # An OSError re-creating a vanished container (an operator filesystem fault) falls
+            # back to a cold launch like a missing home, whose own failure is the named
+            # `workshop_lineage_setup_failed` (issue #643 U12 removed the re-wrap to ValueError).
             return None
         if isolation is None:
             return None
@@ -16953,8 +16956,8 @@ class Conductor:
                                 reason_detail=str(exc)[:200])
                 return "fail_closed"
             except LaunchCheckRefused as exc:
-                # The runtime refused the phase start (a dependency not ready, preflight, the
-                # session policy). Its reason is a fail_closed code already; one outside the
+                # The runtime refused the phase start (a dependency not ready, preflight).
+                # Its reason is a fail_closed code already; one outside the
                 # allowlist (`backend_not_probed`) is carried under the generic code and leads
                 # the detail, so nothing the check said is lost (issue #383).
                 detail = exc.reason_detail
