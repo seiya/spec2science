@@ -15398,15 +15398,16 @@ class Conductor:
         else:
             self_verdict = "pass"
 
-        # Direct-dependency `blocked` rule. The blocking decision uses the SAME readiness
-        # predicate the pre_judge substep and the `--stage pre_judge` gate use
-        # (`_closure_node_validated_in_own_pipeline` — a dep is ready iff any binary-bound
-        # verdict in its own pipeline is pass/xfail), so the derived `aggregate_verdict` can
-        # never contradict a readiness gate that already passed (a dep that regressed to a
-        # newer `fail` verdict but retains an older bound pass is still ready — pre_judge
-        # admits it, so we must not blindly block on its LATEST verdict). `_resolve_dependency_
-        # facts` (orientation-only, latest bound verdict) supplies each dep's display verdict +
-        # pipeline/run refs; it is NEVER the blocking signal.
+        # Direct-dependency `blocked` rule. A dep counts as ready only when BOTH answers say
+        # so: the readiness predicate the pre_judge substep and the `--stage pre_judge` gate
+        # use (`_closure_node_validated_in_own_pipeline` — any binary-bound verdict in its own
+        # pipeline is pass/xfail, version- and key-agnostic), AND its certified Validate output
+        # resolves through `DerivationResolver.select` (`_resolve_dependency_facts`), which is
+        # where its contribution (`xfail` or `pass`) is read. A dep that regressed to a newer
+        # `fail` verdict but retains an older bound pass is still ready. A dep readiness admits
+        # but `select` does not (revoked or re-keyed since the gate ran) folds as NOT ready:
+        # before issue #643's S3 fix it folded as `pass`, which recorded a ready dep's `xfail`
+        # as `pass` (ver_defects item 3).
         from tools.validate_pipeline_semantics import (
             _closure_node_validated_in_own_pipeline,
             _dependency_expected_node_keys, _normalize_node_key_token,
@@ -15427,6 +15428,8 @@ class Conductor:
         dependency_nodes: list[dict[str, Any]] = []
         dep_counts = {"total": 0, "pass": 0, "xfail": 0, "fail": 0, "blocked": 0}
         blocking_direct_deps: list[str] = []
+        not_validated: list[str] = []
+        verdict_unresolved: list[str] = []
         fold_order = {"pass": 0, "xfail": 1, "fail": 2, "blocked": 3}
         fold_inv = {0: "pass", 1: "xfail", 2: "fail", 3: "blocked"}
         worst = fold_order.get(self_verdict, 0)
@@ -15444,7 +15447,12 @@ class Conductor:
                 ready = False
                 token = None
             fact = facts_by_token.get(token, {}) if token else {}
-            # Display verdict = the dep's latest bound aggregate (informational; may show a
+            if not ready:
+                not_validated.append(node_key)
+            elif not fact:
+                ready = False
+                verdict_unresolved.append(node_key)
+            # Display verdict = the dep's selected aggregate (informational; may show a
             # regression), else pass/unknown per readiness.
             agg_ref = fact.get("aggregate_verdict_ref")
             display = ""
@@ -15475,14 +15483,21 @@ class Conductor:
 
         # aggregate_verdict: `blocked` when any immediate dep is not ready; else the transitive
         # fold (precedence blocked > fail > xfail > pass) over {self_verdict} + ready-dep
-        # contributions. On the post_judge path (judge passed → self_verdict ∈ {pass,xfail} and
-        # every dep ready) this is always ∈ {pass,xfail}.
+        # contributions. On the post_judge path the judge passed (self_verdict ∈ {pass,xfail})
+        # and the pre_judge gate found every dep ready, so this is ∈ {pass,xfail} unless a
+        # dep's certified verdict no longer resolves through `select`.
         blocked = bool(blocking_direct_deps)
         blocked_reason: str | None = None
         if blocked:
             aggregate_verdict = "blocked"
-            blocked_reason = ("immediate dependency not built+validated in its own pipeline: "
-                              + ", ".join(blocking_direct_deps))
+            reasons: list[str] = []
+            if not_validated:
+                reasons.append("immediate dependency not built+validated in its own pipeline: "
+                               + ", ".join(not_validated))
+            if verdict_unresolved:
+                reasons.append("immediate dependency's certified verdict does not resolve "
+                               "(DerivationResolver.select): " + ", ".join(verdict_unresolved))
+            blocked_reason = "; ".join(reasons)
         else:
             aggregate_verdict = fold_inv[worst]
 

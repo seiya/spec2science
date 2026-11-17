@@ -3511,9 +3511,9 @@ def _resolve_dependency_facts(
     ``DEPENDENCIES.md`` (Generate and Validate), and the conductor's ``post_judge`` aggregate fold
     (``Conductor._author_derived_validate_artifacts``). The fold reads each fact's
     ``aggregate_verdict_ref`` to choose a READY dependency's contribution, ``xfail`` or
-    ``pass``, to the node's ``aggregate_verdict``. A dependency with no fact folds as ``pass``.
-    Whether a dependency is ready, which decides ``blocked``, is read from readiness, not from
-    these facts.
+    ``pass``, to the node's ``aggregate_verdict``. A dependency readiness admits but with no
+    fact here folds as NOT ready (``blocked``): its certified verdict does not resolve through
+    ``select``. Readiness itself is read from the readiness predicate, not from these facts.
 
     Best-effort: NEVER raises. A leaf node (empty ``direct_deps``), a missing/unparseable
     IR, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.

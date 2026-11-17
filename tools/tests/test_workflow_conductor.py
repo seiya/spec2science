@@ -22749,14 +22749,18 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             dep_agg.write_text(json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
             fact = {"node_key": "component/dep@0.1.0", "pipeline_ref": "workspace/pipelines/dep",
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
+            # The harness's fact, which `_resolve_dependency_facts` gives it in production
+            # (`with_target_harness` adds it to the IR's direct deps).
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            autospec=True, return_value=[fact]) as facts, \
+                            autospec=True, return_value=[fact, harness_fact]) as facts, \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=True) as ready:
                 c._author_derived_validate_artifacts(refs)
             # The display facts are the RUN's target's too (issue #284): without it they
-            # resolve nothing, and a ready dependency's latest `xfail` would fold as `pass`.
+            # resolve nothing, and every ready dependency would fold as `blocked`.
             facts.assert_called_once_with(repo, refs.ir_ref, target=c.target)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
@@ -22821,8 +22825,10 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             dep_agg.write_text(json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
             fact = {"node_key": "component/dep@0.1.0", "pipeline_ref": "workspace/pipelines/dep",
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            autospec=True, return_value=[fact]), \
+                            autospec=True, return_value=[fact, harness_fact]), \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=True):
@@ -22834,6 +22840,41 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["aggregate_verdict"], "pass")
             self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "fail")
             self.assertTrue(agg["dependency_nodes"][0]["ready"])
+
+    def test_author_derived_ready_dep_whose_verdict_does_not_resolve_is_not_pass(self) -> None:
+        """Issue #643 S3 (ver_defects item 3): readiness (a version- and key-agnostic glob) can
+        admit a dependency whose certified Validate no longer resolves through
+        `DerivationResolver.select` — revoked or re-keyed since the gate ran — so
+        `_resolve_dependency_facts` gives it no fact. Its contribution cannot be read, and it
+        used to fold as `pass`, recording a dependency's `xfail` as `pass`. It folds as NOT
+        ready: the aggregate is `blocked`, and the reason says the verdict did not resolve."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[harness_fact]), \
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True):
+                c._author_derived_validate_artifacts(refs)
+            rn = repo / refs.run_node_dir()
+            agg = json.loads((rn / "aggregate_verdict.json").read_text())
+            self.assertNotEqual(agg["aggregate_verdict"], "pass")
+            self.assertEqual(agg["aggregate_verdict"], "blocked")
+            self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0"])
+            self.assertIn("certified verdict does not resolve", agg["blocked_reason"])
+            self.assertNotIn("not built+validated", agg["blocked_reason"])
+            self.assertFalse(agg["dependency_nodes"][0]["ready"])
+            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "unknown")
+            summary = json.loads((rn / "summary.json").read_text())
+            self.assertEqual(summary["dependency_summary"]["blocked"], 1)
+            self.assertEqual(summary["dependency_summary"]["pass"], 1)
 
     def test_author_derived_blocked_per_test_not_certifiable(self) -> None:
         """G6 review finding #2: an all-`blocked` per_test must not certify as pass."""
