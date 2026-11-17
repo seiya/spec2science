@@ -2223,40 +2223,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             # The IR deliverable itself: the pass path stamps its sha256 into ir_meta.json.
             (ir_meta_path.parent / "spec.ir.yaml").write_text(
                 "spec: shallow_water2d\n", encoding="utf-8")
-            # Fail-fast executor-role guard: a substep-aware phase (compile) rejects a
-            # non-orchestration --agent-run-id (here the verify-substep and the build
-            # step arid) BEFORE the file is written and BEFORE the phase transitions, so
-            # the phase stays child_finished and the agent can retry with the orch arid.
-            compile_step_dir = (
-                repo_root
-                / "workspace/orchestrations/orch_001/steps"
-                / "problem__shallow_water2d__0.3.0/compile"
-            )
-            for wrong_arid in ("substep_run_plan_generate_001", "step_run_build_001"):
-                with self.assertRaises(RuntimeError):
-                    write_step_result(
-                        repo_root=repo_root,
-                        orchestration_id="orch_001",
-                        node_key="problem/shallow_water2d@0.3.0",
-                        step="compile",
-                        agent_run_id=wrong_arid,
-                        payload={
-                            "status": "pass",
-                            "derivation": _fixture_derivation(repo_root, "compile"),
-                            "required_outputs": [
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                            ],
-                            "failed_substeps": [],
-                            "substep_agent_run_ids": ["substep_run_plan_generate_001"],
-                            "executor_agent_run_id": wrong_arid,
-                            "validation_stage": "compile",
-                        },
-                    )
-                self.assertFalse(
-                    (compile_step_dir / wrong_arid / "step_result.json").exists(),
-                    "guard must reject before writing step_result.json",
-                )
             write_step_result(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2276,25 +2242,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "validation_stage": "compile",
                 },
             )
-            # Symmetric guard: the no-substep Build phase requires the step agent arid,
-            # so the orchestration arid is rejected.
-            with self.assertRaises(RuntimeError):
-                write_step_result(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    node_key="problem/shallow_water2d@0.3.0",
-                    step="build",
-                    agent_run_id="orch_run_001",
-                    payload={
-                        "status": "pass",
-                        "derivation": _fixture_derivation(repo_root, "build"),
-                        "validation_stage": "post_build",
-                        "required_outputs": _seed_build_pass_outputs(repo_root),
-                        "failed_substeps": [],
-                        "substep_agent_run_ids": [],
-                        "executor_agent_run_id": "orch_run_001",
-                    },
-                )
             write_step_result(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -5615,71 +5562,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 },
             )
 
-    def test_rejects_agent_run_when_launch_response_session_id_differs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "agent_role": "step",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_build_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                    "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    "deterministic": True,
-                    "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_build_001"),
-             netns_socket_dir=netns_socket_dir())
-            with self.assertRaisesRegex(ValueError, "agent_session_id must match"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "step_run_build_001",
-                        "agent_role": "step",
-                        "parent_agent_run_id": "orch_run_001",
-                        "step": "build",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "status": "pass",
-                        "agent_backend": "codex",
-                        "agent_model": "gpt-5-codex",
-                        "context_id": "ctx_step_build_001",
-                        "agent_session_id": "sess_step_build_999",
-                        "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                        ],
-                    },
-                )
-
     def test_rejects_duplicate_agent_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -6083,41 +5965,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     repo_root=repo_root,
                     orchestration_id="orch_001",
                     status="pass",
-                )
-
-    def test_record_agent_run_requires_agent_backend(self) -> None:
-        """A payload not including agent_backend raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "agent_backend must be non-empty string"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_001",
-                        "agent_role": "orchestration",
-                        "status": "running",
-                    },
-                )
-
-    def test_record_agent_run_rejects_unknown_backend(self) -> None:
-        """Specifying an unknown backend name in agent_backend raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "agent_backend must be one of"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_001",
-                        "agent_role": "orchestration",
-                        "status": "running",
-                        "agent_backend": "unknown_backend",
-                    },
                 )
 
     def test_record_agent_run_accepts_valid_backends(self) -> None:
@@ -9640,7 +9487,7 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
             (root / "agent_runs_invalid.jsonl").write_text(
                 json.dumps({"agent_run_id": "diverted_1", "agent_role": "substep",
                             "status": "fail",
-                            "fail_reason": "agent_session_id_mismatch"}) + "\n",
+                            "fail_reason": "terminal_payload_validation_error"}) + "\n",
                 encoding="utf-8")
             self.assertEqual(
                 update_orchestration_status(
@@ -14943,18 +14790,6 @@ class RecordTimeoutTests(unittest.TestCase):
             entry = next(e for e in entries if e.get("agent_run_id") == arid)
             self.assertNotIn("usage", entry)
 
-    def test_finalize_child_rejects_agent_run_id_mismatch(self) -> None:
-        from tools.orchestration_runtime import finalize_child
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                finalize_child(
-                    repo_root=Path(tmp),
-                    orchestration_id="o1",
-                    agent_run_id="a",
-                    reply_text="status: pass",
-                    agent_run_payload={"agent_run_id": "DIFFERENT"},
-                )
-
     def test_finalize_child_hard_budget_fails_before_consuming_state(self) -> None:
         from tools.orchestration_runtime import (
             finalize_child, _active_child_marker_path, REPLY_BUDGET_CHARS,
@@ -15539,26 +15374,13 @@ class RecordTimeoutTests(unittest.TestCase):
                 "cleanup_committed marker must be written after cleanup",
             )
 
-    def test_session_id_helper_failure_records_specific_fail_reason(self) -> None:
-        """L-NEW-2: M-FOURTH-1 introduced a pre-set sandbox_fail_reason
-        before _validate_response_agent_session_id so the helper's
-        ValueError records as 'launch_response_session_id_invalid' rather
-        than the generic 'terminal_payload_validation_error'. This regression
-        test pins that behavior."""
+    def test_a_terminal_validation_refusal_records_an_invalid_row(self) -> None:
+        """A terminal payload `_validate_terminal_run_payload` refuses (here a workshop leaf's
+        pass row claiming outputs) is diverted to agent_runs_invalid.jsonl with
+        `fail_reason: terminal_payload_validation_error` and the refusal's message."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            # Corrupt the launch response so _validate_response_agent_session_id
-            # raises (no child agent identifier).
-            resp_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "launches" / f"{arid}.response.json"
-            )
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            for key in ("agent_session_id", "agent_id", "session_id", "child_agent_id",
-                        "child_agent_session_id", "id", "agent", "child_agent", "data"):
-                resp.pop(key, None)
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
 
             with self.assertRaises(ValueError):
                 record_agent_run(
@@ -15577,65 +15399,7 @@ class RecordTimeoutTests(unittest.TestCase):
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "generate",
                         "substep": "generate",
-                        "result_summary": "should fail session_id check",
-                        "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                            "shallow-water2d_20260415_001/source/src_001/"
-                            "source_meta.json"
-                        ],
-                    },
-                )
-            invalid_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "agent_runs_invalid.jsonl"
-            )
-            entries = [
-                json.loads(line) for line in invalid_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            arid_entries = [e for e in entries if e.get("agent_run_id") == arid]
-            self.assertEqual(len(arid_entries), 1)
-            self.assertEqual(
-                arid_entries[0].get("fail_reason"), "launch_response_session_id_invalid",
-                f"specific session_id reason expected, got {arid_entries[0]}",
-            )
-
-    def test_sandbox_violation_records_specific_fail_reason(self) -> None:
-        """L-NEW-1: when record_agent_run raises due to a sandbox violation
-        (sandbox_runtime != bwrap, etc.), the agent_runs_invalid.jsonl entry
-        must record the specific reason rather than a generic
-        'terminal_payload_validation_error'."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Fixture sets sandbox_runtime=bwrap; corrupt it to trigger the
-            # sandbox_runtime_not_bwrap branch.
-            resp_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "launches" / f"{arid}.response.json"
-            )
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["sandbox_runtime"] = "wrong-runtime"
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    payload={
-                        "agent_run_id": arid,
-                        "agent_role": "substep",
-                        "agent_backend": "claude",
-                        "status": "pass",
-                        "started_at": "2026-05-09T08:00:00Z",
-                        "finished_at": "2026-05-09T09:00:00Z",
-                        "agent_session_id": arid,
-                        "context_id": arid,
-                        "context_isolated": True,
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "generate",
-                        "substep": "generate",
-                        "result_summary": "should fail sandbox check",
+                        "result_summary": "should fail the empty output_refs check",
                         "output_refs": [
                             "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                             "shallow-water2d_20260415_001/source/src_001/"
@@ -15655,50 +15419,10 @@ class RecordTimeoutTests(unittest.TestCase):
             arid_entries = [e for e in entries if e.get("agent_run_id") == arid]
             self.assertEqual(len(arid_entries), 1)
             self.assertEqual(
-                arid_entries[0].get("fail_reason"), "sandbox_runtime_not_bwrap",
-                f"specific sandbox reason expected, got {arid_entries[0]}",
+                arid_entries[0].get("fail_reason"), "terminal_payload_validation_error",
+                f"terminal validation reason expected, got {arid_entries[0]}",
             )
-            self.assertIn("fail_message", arid_entries[0])
-
-    def test_a_launch_without_the_network_stamp_is_refused_by_name(self) -> None:
-        """Issue #534 step 4: every row that requires `sandbox_runtime: bwrap` requires
-        `sandbox_network: "namespace"` on its launch response — absent (a launch recorded
-        before step 4) and any other value alike — as `sandbox_network_missing`, with a
-        violation record. The fixture's own launch carries the stamp and is the control."""
-        for label, value in (("absent", None), ("another value", "host"), ("control", "ok")):
-            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                arid = self._setup_substep_launch(repo_root)
-                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                resp_path = orch_root / "launches" / f"{arid}.response.json"
-                resp = json.loads(resp_path.read_text(encoding="utf-8"))
-                self.assertEqual(resp["sandbox_network"], "namespace")
-                if value is None:
-                    del resp["sandbox_network"]
-                elif value != "ok":
-                    resp["sandbox_network"] = value
-                resp_path.write_text(json.dumps(resp), encoding="utf-8")
-                payload = {
-                    "agent_run_id": arid, "agent_role": "substep", "agent_backend": "claude",
-                    "status": "fail", "started_at": "2026-05-09T08:00:00Z",
-                    "finished_at": "2026-05-09T09:00:00Z", "agent_session_id": arid,
-                    "context_id": arid, "context_isolated": True,
-                    "node_key": "problem/shallow_water2d@0.3.0", "step": "generate",
-                    "substep": "generate", "result_summary": "x", "output_refs": []}
-                if value == "ok":
-                    record_agent_run(repo_root=repo_root, orchestration_id="orch_to_001",
-                                     payload=payload)
-                    continue
-                with self.assertRaisesRegex(ValueError, "sandbox_network="):
-                    record_agent_run(repo_root=repo_root, orchestration_id="orch_to_001",
-                                     payload=payload)
-                rows = [json.loads(line) for line in (orch_root / "agent_runs_invalid.jsonl")
-                        .read_text(encoding="utf-8").splitlines() if line.strip()]
-                self.assertEqual([r.get("fail_reason") for r in rows if r.get("agent_run_id")
-                                  == arid], ["sandbox_network_missing"])
-                violation = json.loads(next((orch_root / "violations").glob("*.json"))
-                                       .read_text(encoding="utf-8"))
-                self.assertIn("sandbox_network_missing", json.dumps(violation))
+            self.assertIn("output_refs to be exactly []", arid_entries[0]["fail_message"])
 
     def test_record_agent_run_locked_recheck_catches_concurrent_duplicate(self) -> None:
         """Adv-24: under fcntl serialization, even if the unlocked early
@@ -22731,9 +22455,9 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertFalse((repo_root / "workspace/orchestrations/orch_001"
                               / "agent_runs_invalid.jsonl").exists())
 
-    def test_a_cli_leaf_still_must_prove_its_sandbox(self) -> None:
-        """The exemption is granted on the launch RESPONSE's provider token, so it cannot be
-        claimed by a CLI launch whose profile is missing."""
+    def test_a_cli_leaf_does_not_get_the_http_exemption(self) -> None:
+        """The exemption is granted on the launch RESPONSE's provider token, so a CLI launch
+        whose response names the HTTP transport is still recorded as sandboxed."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)
@@ -22744,8 +22468,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             response["sandbox_runtime"] = "none"      # a CLI launch claiming the exemption
             response["leaf_transport"] = "http"
             (launches / f"{arid}.response.json").write_text(json.dumps(response), "utf-8")
-            with self.assertRaises(ValueError) as ctx:
-                record_agent_run(
+            row = record_agent_run(
                     repo_root=repo_root, orchestration_id="orch_001",
                     payload={
                         "agent_run_id": arid, "agent_role": "substep",
@@ -22759,7 +22482,8 @@ class MultiProviderPreflightTests(unittest.TestCase):
                         "step": "generate", "substep": "generate",
                         "output_refs": [], "result_summary": "x",
                     })
-            self.assertIn("sandbox_runtime=bwrap", str(ctx.exception))
+            self.assertEqual(row["sandbox_runtime"], "bwrap")
+            self.assertNotIn("leaf_transport", row)
 
     def test_an_http_token_on_a_non_workshop_launch_is_refused(self) -> None:
         """`record_launch` is the authorization gate; it must not be the one layer that assumes
@@ -22911,29 +22635,6 @@ class JsonPayloadFileArgTests(unittest.TestCase):
         self.assertEqual(captured[0]["agent_run_payload"], agent_run)
         self.assertEqual(captured[0]["reply_text"], "done")
 
-    def test_a_bad_payload_error_names_the_argument_the_caller_actually_passed(self) -> None:
-        """The shared record-agent-run validator runs FIRST on the finalize-child path, so
-        its default label would send an operator to a subcommand they did not run and a
-        flag the conductor never passes."""
-        path = self._write_json({"agent_run_id": "child-1", "agent_backend": "claude"})
-        stderr = io.StringIO()
-        with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("done")):
-            code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
-        self.assertEqual(code, 1)
-        # Anchor on the colon the message format puts after the label: the inline label
-        # is a PREFIX of the file one, so an unanchored assertion cannot tell the two
-        # branches apart and passes with the ternary collapsed to a constant.
-        self.assertIn("finalize-child --agent-run-json-file:", stderr.getvalue())
-        self.assertNotIn("record-agent-run", stderr.getvalue())
-
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
-            code = main(self._finalize_argv(
-                "--reply-text", "done", "--agent-run-json",
-                json.dumps({"agent_run_id": "child-1", "agent_backend": "claude"})))
-        self.assertEqual(code, 1)
-        self.assertIn("finalize-child --agent-run-json:", stderr.getvalue())
-
     def test_empty_stdin_reply_is_a_dispatch_error_not_a_silent_pass(self) -> None:
         """The conductor's `input=""` guard against a hung read is only a remedy if the
         runtime rejects the empty reply it produces. Pinned here, on the runtime side."""
@@ -23026,7 +22727,9 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # `test_launch_requires_exactly_the_role_its_step_demands` was here until issue #643:
         # the launch-side role check it drove (`_require_child_agent_role_for_step`) is
         # deleted; the conductor writes the role from the same table.
-        "test_terminal_payload_rejects_a_role_outside_the_vocabulary",
+        # `test_terminal_payload_rejects_a_role_outside_the_vocabulary` was here until issue
+        # #643: it drove the CLI-dispatch copy of the role check, which went as a twin of the
+        # one inside `record_agent_run` (pinned by the next test).
         "test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary",
         # `test_the_write_audit_runs_for_every_role_in_the_vocabulary` was here until PR-2 of
         # issue #171: the terminal write audit it drove for every role
@@ -23104,46 +22807,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                 )
                 _validate_launch_request_payload(payload)
 
-    def test_terminal_payload_rejects_a_role_outside_the_vocabulary(self) -> None:
-        """`record_agent_run` accepted ANY string before, and `_validate_actual_write_paths`
-        then returned early for it — recording a terminal status under a misspelled role
-        switched the unauthorized-write audit OFF instead of being refused. Iterates the
-        vocabulary so a new role must be added to the constant, not smuggled in."""
-        from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
-            _validate_record_agent_run_fields,
-        )
-
-        def payload(role: str) -> dict[str, object]:
-            return {
-                "agent_run_id": "arid_x", "agent_backend": "claude", "status": "pass",
-                "node_key": "component/x@0.1.0", "agent_session_id": "sess_x",
-                "agent_role": role,
-            }
-
-        for role in sorted(AGENT_RUN_ROLES):
-            with self.subTest(accepted=role):
-                _validate_record_agent_run_fields(payload(role))
-        for role in ("bogus", "orchestrator", "substeps", "skipped", "SUBSTEP_"):
-            with self.subTest(rejected=role):
-                with self.assertRaisesRegex(ValueError, "must be one of"):
-                    _validate_record_agent_run_fields(payload(role))
-        # The field has three accepted spellings; closing one of them would close a
-        # spelling rather than the family.
-        for key in ("agent_role", "agent_type", "role"):
-            with self.subTest(alias=key):
-                p = payload("bogus")
-                del p["agent_role"]
-                p[key] = "bogus"
-                with self.assertRaisesRegex(ValueError, "must be one of"):
-                    _validate_record_agent_run_fields(p)
-
     def test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary(self) -> None:
-        """`_validate_record_agent_run_fields` is only the CLI-dispatch check; the conductor
-        calls `record_agent_run` in-process, and that function carried its own role handling
-        which accepted any string. Pinned separately because a mutation check showed the
-        library-side rejection surviving while only the dispatch-side one was covered —
-        exactly the "helper pinned, handler unpinned" shape this repository keeps hitting.
+        """The conductor calls `record_agent_run` in-process, and that function carried its own
+        role handling which accepted any string. It is the one copy of the role check since
+        issue #643 removed the CLI-dispatch copy (`record-agent-run` and `finalize-child`
+        reach this function).
 
         PINNED: the accept side iterates `AGENT_RUN_ROLES`. SAMPLED: the junk spelling."""
         from tools.orchestration_runtime import AGENT_RUN_ROLES, record_agent_run

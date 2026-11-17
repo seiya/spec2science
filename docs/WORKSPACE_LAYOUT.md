@@ -83,15 +83,9 @@ workspace/
 │       │
 │       └── violations/                          (created only when one occurs — nothing
 │           └── <id>.json                            pre-creates it since issue #171 PR-2.
-│                                                    One writer, sandbox enforcement, six
-│                                                    reasons: sandbox_profile_build_failed
-│                                                    at record-launch, and
-│                                                    sandbox_runtime_not_bwrap /
-│                                                    sandbox_not_enforced /
-│                                                    sandbox_network_missing /
-│                                                    sandbox_profile_missing /
-│                                                    sandbox_profile_not_found at
-│                                                    record-agent-run)
+│                                                    One writer, sandbox enforcement, one
+│                                                    reason: sandbox_profile_build_failed
+│                                                    at record-launch)
 │
 ├── tmp/
 │   └── <agent_run_id>/                            each agent's allowed_tmp_root (referenced directly by literal path)

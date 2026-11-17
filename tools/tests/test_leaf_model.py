@@ -1285,9 +1285,9 @@ class SandboxViolationReasonsAreStatedWhereTheyAreAuditedTests(unittest.TestCase
     and dropped the four at `record_agent_run`. Both times every statement site agreed with
     the others and none agreed with the code, which is what the skill's coupling rule is for.
 
-    It matters because bwrap is now the ONLY thing confining a leaf: the four terminal reasons
-    are the record that it was in force, and an auditor who greps for the launch one alone
-    reads their absence as clean.
+    It matters because bwrap is now the ONLY thing confining a leaf: a reason is the record
+    that it was not in force. The five `record_agent_run` reasons went in issue #643 (they
+    re-read the host-written launch response), so the set is now the launch one alone.
 
     Coupled by MEMBERS, derived from the CODE (the `reason` argument at every
     `_write_sandbox_enforcement_violation` call site, read by AST) and compared against the
@@ -1347,14 +1347,14 @@ class SandboxViolationReasonsAreStatedWhereTheyAreAuditedTests(unittest.TestCase
     def test_the_derivation_finds_the_call_sites_at_all(self) -> None:
         # Self-test: a rename of the writer makes every row below vacuously true otherwise.
         self.assertTrue(hasattr(ort, "_write_sandbox_enforcement_violation"))
-        self.assertGreaterEqual(len(self._reasons()), 2,
-                                "fewer than two reasons found; the derivation is measuring "
+        self.assertGreaterEqual(len(self._reasons()), 1,
+                                "no reason found; the derivation is measuring "
                                 "the wrong thing and every assertion below is vacuous")
 
-    def test_both_subcommands_still_write_one(self) -> None:
+    def test_the_writing_subcommands_are_the_ones_derived(self) -> None:
         # The shape of the finding: a count taken from ONE function reads as the whole set.
         functions = set(self._reasons().values())
-        self.assertEqual(functions, {"record_launch", "record_agent_run"})
+        self.assertEqual(functions, {"record_launch"})
 
     def test_every_reason_is_named_in_every_document_that_audits_them(self) -> None:
         reasons = self._reasons()

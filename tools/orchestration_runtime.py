@@ -5682,14 +5682,10 @@ def _ensure_orchestration_audit_dirs(repo_root: Path, orchestration_id: str) -> 
     # ONE directory. Four more were created here unconditionally — `access_policies/`,
     # `access_logs/`, `violations/` and `capabilities/` — and three of them now have no
     # writer at all (issue #171 PR-2). `violations/` has ONE live writer FUNCTION,
-    # `_write_sandbox_enforcement_violation`, reached from SIX call sites: one in
-    # `record_launch` (the sandbox profile could not be built) and five in `record_agent_run`
-    # (`sandbox_runtime_not_bwrap`, `sandbox_not_enforced`, `sandbox_network_missing` — issue
-    # #534 step 4 —, `sandbox_profile_missing`, `sandbox_profile_not_found`). Counting it as
-    # "one, at record-launch" is wrong and was written twice — by PR-2 and again by its round-1
-    # correction — so the count is derived here by name: grep
-    # `_write_sandbox_enforcement_violation`. Since bwrap is the only confinement left, those
-    # five are the last record that it was actually in force.
+    # `_write_sandbox_enforcement_violation`, reached from one call site in `record_launch`
+    # (the sandbox profile could not be built). The five `record_agent_run` sites re-read the
+    # host-written launch response and went in issue #643. Derive the count by name rather
+    # than from this comment: grep `_write_sandbox_enforcement_violation`.
     # The directory is deliberately NOT pre-created: an empty `violations/` is a record that
     # something is expected to write there, and the completion criterion for this change is
     # that a clean run leaves neither the directory nor its contents. `_write_json` creates the parent when a violation actually happens.
@@ -6518,8 +6514,8 @@ def _allowed_output_paths_for_launch(
     what a leaf could write — and there is no capability any more: the one caller left is a
     DETERMINISTIC substep, which runs in the conductor's own process and is bound by nothing
     this function returns. The phase-contract half stays, because it answers a different
-    question — is this path where this phase's output BELONGS — and its readers
-    (`determine_substep_status`, `_validate_pass_output_refs_against_launch`) still ask it.
+    question — is this path where this phase's output BELONGS — and its reader
+    (`determine_substep_status`) still asks it.
     """
     raw_candidates = (
         request_payload.get("allowed_output_paths")
@@ -10352,66 +10348,6 @@ def default_agent_model_for_backend(backend: str) -> str:
     return ""
 
 
-def _workspace_path_is_under_ref(path: str, base: str) -> bool:
-    p = path.strip().rstrip("/")
-    b = base.strip().rstrip("/")
-    return p == b or p.startswith(b + "/")
-
-
-def _validate_pass_output_refs_against_launch(
-    repo_root: Path,
-    payload: dict[str, Any],
-) -> None:
-    """Require each output_ref to lie under ir_ref or pipeline_ref from the saved launch request.
-
-    Only applies to ``step`` / ``substep`` runs that have a launch request on disk.
-    ``orchestration`` and other roles do not set ``launch_request_ref``; skip validation.
-    """
-    role = payload.get("agent_role")
-    if not isinstance(role, str) or role.strip().lower() not in {"step", "substep"}:
-        return
-
-    output_refs = payload.get("output_refs")
-    if not isinstance(output_refs, list) or not output_refs:
-        return
-
-    launch_request_ref = payload.get("launch_request_ref")
-    if not isinstance(launch_request_ref, str) or not launch_request_ref.strip():
-        raise ValueError("launch_request_ref must be non-empty string for pass output_refs validation")
-    launch_path = repo_root / launch_request_ref.strip()
-    if not launch_path.exists():
-        raise ValueError(f"launch_request_ref target not found: {launch_request_ref}")
-    try:
-        launch_payload = _read_json(launch_path)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"launch_request_ref must be valid json: {launch_request_ref}") from exc
-    if not isinstance(launch_payload, dict):
-        raise ValueError(f"launch request must be object: {launch_request_ref}")
-
-    ir_ref = launch_payload.get("ir_ref")
-    pipeline_ref = launch_payload.get("pipeline_ref")
-    if not isinstance(ir_ref, str) or not ir_ref.strip():
-        raise ValueError("launch request ir_ref missing for output_refs validation")
-    if not isinstance(pipeline_ref, str) or not pipeline_ref.strip():
-        raise ValueError("launch request pipeline_ref missing for output_refs validation")
-
-    ir_root = ir_ref.strip().rstrip("/")
-    pipe_root = pipeline_ref.strip().rstrip("/")
-
-    for idx, ref in enumerate(output_refs):
-        if not isinstance(ref, str) or not ref.strip():
-            raise ValueError(f"output_refs[{idx}] must be non-empty string")
-        r = ref.strip()
-        if not r.startswith("workspace/"):
-            raise ValueError(f"output_refs[{idx}] must start with workspace/: {r!r}")
-        if _workspace_path_is_under_ref(r, ir_root) or _workspace_path_is_under_ref(r, pipe_root):
-            continue
-        raise ValueError(
-            f"output_refs[{idx}] must be under ir_ref or pipeline_ref root "
-            f"({ir_root!r} or {pipe_root!r}); got {r!r}"
-        )
-
-
 def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> None:
     """Validate the leaf-specific shape of a host-rendered launch request.
 
@@ -10512,18 +10448,17 @@ def _load_run_records(
     *,
     caller_holds_lock: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Load `agent_runs.jsonl` into a dict keyed by agent_run_id.
+    """Load `agent_runs.jsonl` into a dict keyed by agent_run_id: the one parser of the
+    ledger (`_read_existing_run_ids` reads through it).
 
-    M-NEW-1: shares the same parse-resilience contract as
-    `_read_existing_run_ids` — Adv-21 trailing-line tolerance combined with
-    Adv-40 in-flight detection. A truncated last line whose corruption is
-    plausibly a concurrent appender's mid-write is silently skipped; any
-    other malformed line raises `RuntimeError("...durable corruption...")`.
+    Adv-21 trailing-line tolerance combined with Adv-40 in-flight detection. A truncated
+    last line whose corruption is plausibly a concurrent appender's mid-write is silently
+    skipped; any other malformed line raises `RuntimeError("...durable corruption...")`.
     Without this, callers like `_validate_orchestration_completion_for_pass`
     would crash on `JSONDecodeError` whenever `record_agent_run` is appending
     concurrently.
 
-    H-FOURTH-1: caller_holds_lock mirrors `_read_existing_run_ids`. When the
+    H-FOURTH-1 / NEW-H1: when the
     caller already holds the runs-jsonl fcntl lock (typically via
     `_runs_jsonl_exclusive_lock` inside `record_agent_run`), the
     writer-active probe would self-contend and falsely report in-flight,
@@ -10640,8 +10575,8 @@ def _validate_terminal_run_payload(
         # passing row therefore carries `output_refs == []`, ENFORCED BIDIRECTIONALLY: an empty
         # list is required (the bundle's provenance is `bundle_meta.json`, not this row), and a
         # NON-empty one is rejected — a leaf with no write authority that claims outputs is a
-        # forged provenance, fail-closed. The output-manifest checks below (which raise on the
-        # absent manifest) and `_validate_pass_output_refs_against_launch` are skipped for pure.
+        # forged provenance, fail-closed. The non-empty `output_refs` check below is skipped for
+        # pure.
         # Detected from the launch request (`leaf_mode == "pure"`), the single source the
         # producer stamps, not a field on this payload the leaf could set.
         agent_run_id = str(payload.get("agent_run_id") or "").strip()
@@ -10668,35 +10603,16 @@ def _validate_terminal_run_payload(
         for idx, item in enumerate(output_refs):
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(f"output_refs[{idx}] must be non-empty string")
-        # `_validate_pass_output_refs_against_launch` reads the LAUNCH REQUEST's
-        # `allowed_output_paths`, which is host-authored and still recorded. The second check
-        # that stood here re-read the same list from `output_manifests/<arid>.json`, a copy of
-        # it written for a leaf to read; issue #171 PR-2 stopped writing the copy, and the
-        # check against the original stays.
-        _validate_pass_output_refs_against_launch(repo_root, payload)
+        # A non-workshop step/substep pass row is a DETERMINISTIC one: its `output_refs` are the
+        # conductor's own subset of the request's `allowed_output_paths`, so the prefix check
+        # against the request's `ir_ref` / `pipeline_ref` that stood here re-read a host value.
         # P2-7 retired the apply_patch_writes gate, and issue #171 PR-2 retired the FS-diff
         # that replaced it. A leaf writes no artifact at all: the host writes every one after
         # the child window, so there is nothing about this row's writes left to verify.
         return
 
     # orchestration role (the trusted, unconfined conductor): output_refs are optional
-    # bookkeeping. The retired apply_patch_writes gate previously tied each declared ref
-    # to write evidence; its P2-7 replacement is an existence check — a `pass` that
-    # declares output_refs must have actually produced them, so it cannot claim
-    # missing/unproduced artifacts.
-    if not isinstance(output_refs, list) or not output_refs:
-        return
-    missing: list[str] = []
-    for idx, item in enumerate(output_refs):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"output_refs[{idx}] must be non-empty string")
-        if not (repo_root / _normalize_rel_posix(item.strip())).exists():
-            missing.append(item.strip())
-    if missing:
-        raise ValueError(
-            "pass status for orchestration declares output_refs that were not produced "
-            "(do not exist): " + ", ".join(sorted(missing))
-        )
+    # bookkeeping, and no orchestration row carries them.
 
 
 def _read_launch_request_payload(
@@ -10921,9 +10837,9 @@ def _validate_orchestration_completion_for_pass(
     # This clause is about graph INTEGRITY and nothing else, and the distinction cost a round to
     # get right. An earlier cut of issue #177 made it refuse the invalid-log child outright, to
     # catch an unacknowledged unauthorized write. It caught that — and everything else diverted
-    # by the same `except ValueError`, which is far wider than the write audit: a
-    # `launch_response_not_object`, an `agent_session_id_mismatch`, a `sandbox_profile_not_found`,
-    # an empty `output_refs` on a pass payload. None of those implies a write outside the window,
+    # by the same `except ValueError`, which is far wider than the write audit: an empty
+    # `output_refs` on a pass payload, and at the time a malformed launch response or a
+    # missing sandbox stamp in it. None of those implies a write outside the window,
     # and each would have wedged an honest run permanently. It also did not actually close the
     # hole: `_prune_orphan_agent_graph_edges` keeps the dangling edge only BECAUSE the child is in
     # the invalid log, so deleting that log prunes the edge and the clause has nothing left to
@@ -11370,8 +11286,6 @@ def _validate_step_result_payload(
         step_token=step_token,
     )
     required_outputs = payload.get("required_outputs")
-    if not isinstance(required_outputs, list):
-        raise ValueError("step_result.required_outputs must be list")
     declared_outputs = {item.strip() for item in required_outputs if isinstance(item, str) and item.strip()}
 
     # Z2 pure substeps (leaf_mode==pure, the M-C producer + M-D verify reviewer) hold NO write
@@ -14026,61 +13940,16 @@ def _agent_runs_writer_active(runs_path: Path) -> bool:
 
 
 def _read_existing_run_ids(path: Path, *, caller_holds_lock: bool = False) -> set[str]:
-    """Return the set of agent_run_ids recorded in agent_runs.jsonl.
+    """Return the set of agent_run_ids recorded in agent_runs.jsonl (`path`).
 
-    Adv-21: writers append without holding a Python-level lock per write
-    line, so a reader that lands mid-write can observe a truncated trailing
-    line. Tolerate exactly one JSONDecodeError on the LAST non-empty line
-    when it is plausibly an in-flight append.
-    Adv-40: distinguish in-flight from durable corruption by probing the
-    record_agent_run fcntl lock. If no writer is currently holding the
-    lock, a malformed trailing line is durable corruption and must surface
-    as a controlled RuntimeError rather than be silently swallowed (which
-    could let a duplicate terminal entry slip past `record_agent_run`'s
-    duplicate-id check).
-    NEW-H1: when the caller already holds the fcntl lock (the locked
-    re-check inside record_agent_run), the writer-active probe would
-    self-contend and falsely return True — masking durable corruption.
-    `caller_holds_lock=True` skips the heuristic and treats every
-    malformed line as durable corruption, which is the correct behavior
-    when no other writer can be active by definition.
+    The one parser is `_load_run_records`, which this reads through: a truncated last line
+    is skipped only while a writer holds the record_agent_run fcntl lock (Adv-21 / Adv-40),
+    and any other malformed line raises `RuntimeError("...durable corruption...")`, which
+    is what keeps a duplicate terminal entry from slipping past `record_agent_run`'s
+    duplicate-id check. `caller_holds_lock=True` (the locked re-check inside
+    record_agent_run, NEW-H1) treats every malformed line as durable corruption.
     """
-    if not path.exists():
-        return set()
-    run_ids: set[str] = set()
-    non_empty_lines = [s for s in (raw.strip() for raw in path.read_text(encoding="utf-8").splitlines()) if s]
-    n_lines = len(non_empty_lines)
-    for idx, line in enumerate(non_empty_lines):
-        is_last = idx == n_lines - 1
-        # NEW-H1: when the caller holds the fcntl lock, no other writer can
-        # be active — a malformed line is unconditionally durable corruption.
-        in_flight = (
-            is_last
-            and not caller_holds_lock
-            and _agent_runs_writer_active(path)
-        )
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError as exc:
-            if in_flight:
-                continue
-            raise RuntimeError(
-                f"agent_runs.jsonl has malformed JSON at line {idx + 1}: {exc} "
-                f"(no active writer detected — durable corruption; quarantine "
-                f"the ledger and roll forward explicitly)"
-                if is_last else
-                f"agent_runs.jsonl has malformed non-trailing JSON at line {idx + 1}: {exc}"
-            ) from exc
-        if not isinstance(item, dict):
-            if in_flight:
-                continue
-            raise RuntimeError(
-                f"agent_runs.jsonl line {idx + 1} is not a JSON object: {item!r}"
-            )
-        run_id = item.get("agent_run_id")
-        if isinstance(run_id, str) and run_id.strip():
-            run_ids.add(run_id.strip())
-    return run_ids
+    return set(_load_run_records(path.parent, caller_holds_lock=caller_holds_lock))
 
 
 def record_agent_run(
@@ -14120,15 +13989,9 @@ def record_agent_run(
             enforce_live_probe=False,
         )
 
-    agent_backend = payload.get("agent_backend")
-    if not isinstance(agent_backend, str) or not agent_backend.strip():
-        raise ValueError("agent_backend must be non-empty string")
-    backend_token = agent_backend.strip().lower()
-    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
-            f"got {agent_backend!r}"
-        )
+    # `agent_backend` is the conductor's `entry.backend_token`, authorized per launch by
+    # `record_launch`; it is normalized here, not re-checked.
+    backend_token = str(payload.get("agent_backend") or "").strip().lower()
     payload["agent_backend"] = backend_token
 
     existing = _read_existing_run_ids(runs_path)
@@ -14188,12 +14051,6 @@ def record_agent_run(
     if isinstance(status, str) and status.strip().lower() in TERMINAL_STATUSES:
         payload.setdefault("finished_at", _utc_now_iso())
 
-    # NEW-H2: sandbox checks moved into the locked region below so two
-    # concurrent finalizers cannot race on `_write_sandbox_enforcement_violation`
-    # writes, and so failures are recorded in agent_runs_invalid.jsonl
-    # alongside other terminal-validation failures rather than only as
-    # violation sidecars.
-
     dialogs_root = root / "agents" / agent_run_id / "dialogs"
     dialogs_root.mkdir(parents=True, exist_ok=True)
     result_ref, summary_ref = _agent_result_refs(orchestration_id, agent_run_id)
@@ -14219,42 +14076,15 @@ def record_agent_run(
                 f"duplicate agent_run_id: {agent_run_id} "
                 f"(race detected on locked re-check)"
             )
-        # L-NEW-1: capture sandbox-violation reason so the invalid-log entry
-        # records the specific failure (e.g. sandbox_runtime_not_bwrap)
-        # rather than the generic "terminal_payload_validation_error".
-        sandbox_fail_reason: str | None = None
         try:
-            # NEW-H2: sandbox checks run under the lock and route violations
-            # through the same invalid-entry log as _validate_terminal_run_payload.
             if role_token in {"step", "substep"}:
                 launch_response_path = repo_root / payload["launch_response_ref"]
                 launch_response_payload = _read_json(launch_response_path)
-                if not isinstance(launch_response_payload, dict):
-                    sandbox_fail_reason = "launch_response_not_object"
-                    raise ValueError("launch response must be json object")
-                # M-FOURTH-1: pre-set the reason so a ValueError raised by
-                # the helper carries the specific identity-failure tag into
-                # agent_runs_invalid.jsonl rather than the generic
-                # "terminal_payload_validation_error" bucket.
-                sandbox_fail_reason = "launch_response_session_id_invalid"
-                response_agent_session_id = _validate_response_agent_session_id(launch_response_payload)
-                # Helper accepted the response → reset to None so the next
-                # check's failure (if any) records its own specific reason.
-                sandbox_fail_reason = None
-                payload_agent_session_id = payload.get("agent_session_id")
-                if not isinstance(payload_agent_session_id, str) or not payload_agent_session_id.strip():
-                    sandbox_fail_reason = "agent_session_id_empty"
-                    raise ValueError("agent_session_id must be non-empty string")
-                if payload_agent_session_id.strip() != response_agent_session_id:
-                    sandbox_fail_reason = "agent_session_id_mismatch"
-                    raise ValueError(
-                        "agent_session_id must match child agent identifier in launch response"
-                    )
                 sandbox_ref = launch_response_payload.get("sandbox_profile_ref")
                 # An HTTP leaf (issue #28) is answered from the conductor's own process: there
                 # is no child process, so there is nothing for bwrap to confine and
                 # `record_launch` records `leaf_transport: "http"` with no profile. The
-                # sandbox block below asserts a profile that, for such a launch, correctly does
+                # sandbox stamps below name a profile that, for such a launch, correctly does
                 # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored,
                 # and outside every read-write bind of a leaf's sandbox — and only when it names a genuine HTTP
                 # provider token, so a leaf cannot claim it. Everything else about the terminal
@@ -14298,10 +14128,9 @@ def record_agent_run(
                         _launch_request_payload = _read_json(
                             repo_root / _launch_request_ref.strip())
                     except (OSError, ValueError, json.JSONDecodeError):
-                        # An unreadable request leaves the exemption UNCLAIMED, which falls
-                        # through to the `sandbox_runtime == "bwrap"` requirement below. That
-                        # is the fail-closed direction: a row that cannot prove it was a
-                        # deterministic launch is treated as one that needed a sandbox.
+                        # An unreadable request leaves the exemption UNCLAIMED: a row that
+                        # cannot prove it was a deterministic launch is recorded as a sandboxed
+                        # one.
                         _launch_request_payload = None
                 _in_process_leaf = (
                     str(launch_response_payload.get("leaf_transport") or "").strip().lower()
@@ -14313,65 +14142,10 @@ def record_agent_run(
                     payload.setdefault("sandbox_enforced", False)
                     payload.setdefault(
                         "leaf_transport", "http" if _http_leaf else "in_process")
-                elif launch_response_payload.get("sandbox_runtime") != "bwrap":
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_runtime_not_bwrap",
-                        detail={"launch_response_ref": payload["launch_response_ref"]},
-                    )
-                    sandbox_fail_reason = "sandbox_runtime_not_bwrap"
-                    raise ValueError("launch response must record sandbox_runtime=bwrap")
-                elif launch_response_payload.get("sandbox_enforced") is not True:
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_not_enforced",
-                        detail={"launch_response_ref": payload["launch_response_ref"]},
-                    )
-                    sandbox_fail_reason = "sandbox_not_enforced"
-                    raise ValueError("launch response must record sandbox_enforced=true")
-                elif (launch_response_payload.get("sandbox_network")
-                      != SANDBOX_NETWORK_NAMESPACE):
-                    # Every CLI leaf runs in a network namespace (issue #534 step 4); a launch
-                    # recorded before that, or without it, is not one.
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_network_missing",
-                        detail={"launch_response_ref": payload["launch_response_ref"],
-                                "sandbox_network": launch_response_payload.get(
-                                    "sandbox_network")},
-                    )
-                    sandbox_fail_reason = "sandbox_network_missing"
-                    raise ValueError(
-                        f"launch response must record sandbox_network="
-                        f"{SANDBOX_NETWORK_NAMESPACE!r} (got "
-                        f"{launch_response_payload.get('sandbox_network')!r})")
-                elif not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_profile_missing",
-                        detail={"launch_response_ref": payload["launch_response_ref"]},
-                    )
-                    sandbox_fail_reason = "sandbox_profile_missing"
-                    raise ValueError("launch response must include sandbox_profile_ref")
-                elif not (repo_root / str(sandbox_ref).strip()).exists():
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_profile_not_found",
-                        detail={"sandbox_profile_ref": sandbox_ref},
-                    )
-                    sandbox_fail_reason = "sandbox_profile_not_found"
-                    raise ValueError(f"sandbox_profile_ref target not found: {sandbox_ref}")
                 else:
+                    # `record_launch` stamps bwrap, enforcement, the network namespace and the
+                    # profile on every CLI launch or fails closed, and `spawn_leaf` refuses to
+                    # launch without the profile; the response is host-written.
                     payload.setdefault("sandbox_runtime", "bwrap")
                     payload.setdefault("sandbox_enforced", True)
                     payload.setdefault("sandbox_profile_ref", str(sandbox_ref).strip())
@@ -14379,8 +14153,7 @@ def record_agent_run(
                 repo_root, orchestration_id, payload, caller_holds_lock=True,
             )
         except ValueError as exc:
-            # Unauthorized write or sandbox violation detected during terminal
-            # validation.  Persist a fail entry to a SEPARATE log so audit
+            # Terminal validation refused the payload. Persist a fail entry to a SEPARATE log so audit
             # tools can see that this agent_run_id reached record-agent-run
             # with an invalid payload — without polluting agent_runs.jsonl
             # (which the duplicate-detection check would otherwise refuse on
@@ -14390,11 +14163,7 @@ def record_agent_run(
             fail_entry: dict[str, Any] = dict(payload)
             fail_entry["status"] = "fail"
             fail_entry["finished_at"] = _utc_now_iso()
-            # L-NEW-1: prefer the specific sandbox/identity reason; fall
-            # back to the generic terminal-validation tag for everything
-            # else (output manifest violations, etc., raised by
-            # _validate_terminal_run_payload itself).
-            fail_entry["fail_reason"] = sandbox_fail_reason or "terminal_payload_validation_error"
+            fail_entry["fail_reason"] = "terminal_payload_validation_error"
             fail_entry["fail_message"] = str(exc)
             with invalid_path.open("a", encoding="utf-8") as _h:
                 _h.write(json.dumps(fail_entry, ensure_ascii=False) + "\n")
@@ -14572,8 +14341,8 @@ def finalize_child(
     functions unchanged so every guard is preserved (the active_child ordering, and the
     reply budget guard which reads the reply written by step 2).
 
-    `agent_run_payload` is the `record-agent-run` payload; its `agent_run_id` must match
-    the `--agent-run-id` argument (a mismatch is a caller error).
+    `agent_run_payload` is the `record-agent-run` payload; the conductor writes its
+    `agent_run_id` and `--agent-run-id` from one value.
     """
     arid = agent_run_id.strip() if isinstance(agent_run_id, str) else ""
     if not arid:
@@ -14584,17 +14353,6 @@ def finalize_child(
     if not isinstance(reply_text, str) or not reply_text.strip():
         raise ValueError(
             "finalize-child requires a non-empty reply (--reply-text or --reply-from-stdin)")
-    if not isinstance(agent_run_payload, dict):
-        raise ValueError(
-            "finalize-child requires the agent-run payload "
-            "(--agent-run-json / --agent-run-json-file) to be a JSON object")
-    payload_arid = agent_run_payload.get("agent_run_id")
-    if not (isinstance(payload_arid, str) and payload_arid.strip() == arid):
-        raise ValueError(
-            f"finalize-child: agent-run payload agent_run_id ({payload_arid!r}) must equal "
-            f"--agent-run-id ({arid!r}). When the payload came from --agent-run-json-file, "
-            f"the offending file is launches/{arid}.agent_run.input.json"
-        )
     # Hard reply-budget gate runs BEFORE any state-consuming side effect. Without this,
     # record_agent_run's hard check (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1) would fire only after
     # deactivate-child has already consumed the active marker, leaving the run un-retriable
@@ -14694,9 +14452,6 @@ def write_step_result(
     step_token = step.strip().lower()
     root = _orchestration_root(repo_root, orchestration_id)
     result_path = root / "steps" / node_safe / step_token / agent_run_id / "step_result.json"
-    # Read once: nothing below appends to agent_runs.jsonl, and the executor-role guard
-    # needs the same snapshot the payload validation does.
-    run_records = _load_run_records(root)
 
     _phase_state_allows_write_step_result(
         repo_root,
@@ -14704,42 +14459,6 @@ def write_step_result(
         node_key=node_key,
         step=step,
     )
-    # Fail-fast executor-role guard. For substep-aware phases the executor must be
-    # the orchestration agent (the substeps' parent), and for the no-substep Build
-    # phase it must be the step agent. Without this, a wrong --agent-run-id (e.g. a
-    # verify-substep arid) is only caught downstream at the Validate pre_judge gate
-    # (validate_pipeline_semantics.py), by which point the phase is locked at
-    # step_result_written with no public reset. Raising here — before _write_json and
-    # the phase transition below — leaves the phase at child_finished so the agent can
-    # simply re-run with the correct arid.
-    # Only enforce when the executor's role is resolvable from agent_runs.jsonl. An
-    # absent record (unresolved role) is left to the downstream validator's
-    # "parent directory must match existing executor agent_run_id" check; in a real
-    # run the executor is always recorded (orchestration row at init, step agent via
-    # record-agent-run), so the recurrence case — a recorded wrong-role arid — is
-    # fully covered here.
-    executor_role = str(run_records.get(agent_run_id.strip(), {}).get("agent_role") or "").strip().lower()
-    if executor_role:
-        if step_token in SUBSTEP_AWARE_STEPS:
-            if executor_role != "orchestration":
-                raise RuntimeError(
-                    f"write_step_result: step {step_token!r} is substep-aware; --agent-run-id must be "
-                    f"the orchestration agent_run_id (role=orchestration), got role={executor_role!r} "
-                    f"for {agent_run_id}. The phase stays child_finished — re-run write-step-result with the "
-                    f"orchestration arid as both --agent-run-id and executor_agent_run_id."
-                )
-        elif executor_role != "step":
-            raise RuntimeError(
-                f"write_step_result: step {step_token!r} is a no-substep phase; --agent-run-id must be the "
-                f"step agent_run_id (role=step), got role={executor_role!r} for {agent_run_id}."
-            )
-    explicit_executor = payload.get("executor_agent_run_id")
-    if isinstance(explicit_executor, str) and explicit_executor.strip() and explicit_executor.strip() != agent_run_id.strip():
-        raise RuntimeError(
-            f"write_step_result: executor_agent_run_id ({explicit_executor.strip()}) must equal "
-            f"--agent-run-id ({agent_run_id.strip()})."
-        )
-
     result = dict(payload)
     result.setdefault("executor_agent_run_id", agent_run_id)
     result.setdefault("required_outputs", [])
@@ -15621,67 +15340,6 @@ def _json_file_arg(raw: str) -> dict[str, Any]:
     return value
 
 
-def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None = None) -> None:
-    """Validate the required fields of the record-agent-run payload at CLI dispatch time.
-
-    `label` names the argument the operator actually passed. `finalize-child` runs this
-    same validator before its own checks, so the default would send an operator to inspect
-    a subcommand they did not run and a flag the conductor never passes (it always uses
-    `--agent-run-json-file`).
-    """
-    label = label or "record-agent-run --agent-run-json"
-    for key in ("agent_run_id", "agent_backend", "status"):
-        value = payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{label}: required field {key!r} is missing or empty")
-    role_raw = payload.get("agent_role") or payload.get("agent_type") or payload.get("role")
-    if not isinstance(role_raw, str) or not role_raw.strip():
-        raise ValueError(f"{label}: required field 'agent_role' is missing or empty")
-    role_token = _normalized_agent_role(role_raw)
-    # Reject an out-of-vocabulary role at CLI dispatch too, not only inside
-    # `record_agent_run`. Both read the same three spellings of the field
-    # (`agent_role` / `agent_type` / `role`), so closing only one of them would close a
-    # spelling rather than the family.
-    if role_token not in AGENT_RUN_ROLES:
-        raise ValueError(
-            f"{label}: field 'agent_role' must be one of {sorted(AGENT_RUN_ROLES)}; "
-            f"got {role_token!r}"
-        )
-    if role_token in {"step", "substep"}:
-        for key in ("node_key", "agent_session_id"):
-            value = payload.get(key)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(
-                    f"{label}: field {key!r} is required for agent_role={role_token!r}"
-                )
-
-
-def _validate_write_step_result_fields(payload: dict[str, Any], step: str) -> None:
-    """Validate the required fields of write-step-result --result-json at CLI dispatch time."""
-    label = "write-step-result --result-json"
-    status_raw = payload.get("status")
-    if not isinstance(status_raw, str) or not status_raw.strip():
-        raise ValueError(f"{label}: required field 'status' is missing or empty")
-    status_token = status_raw.strip().lower()
-    substep_ids = payload.get("substep_agent_run_ids")
-    if not isinstance(substep_ids, list):
-        type_name = type(substep_ids).__name__ if substep_ids is not None else "missing"
-        raise ValueError(
-            f"{label}: required field 'substep_agent_run_ids' must be a list (got {type_name}). "
-            "Use an empty list [] for step-only phases (build)."
-        )
-    step_token = step.strip().lower()
-    if step_token in STEP_REQUIRED_VALIDATION_STAGES and status_token in TERMINAL_STATUSES:
-        allowed = STEP_REQUIRED_VALIDATION_STAGES[step_token]
-        validation_stage = payload.get("validation_stage")
-        if not isinstance(validation_stage, str) or validation_stage.strip() not in allowed:
-            raise ValueError(
-                f"{label}: step={step_token!r} with terminal status={status_token!r} requires "
-                f"'validation_stage' to be one of {sorted(allowed)}; "
-                f"got {validation_stage!r}"
-            )
-
-
 # Default (terse) result projections for the high-frequency bookkeeping
 # subcommands. Each maps a subcommand to the result fields the conductor
 # parses downstream. Anything not listed is dropped from the default stdout (the
@@ -15994,7 +15652,7 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "One-call child finalization: deactivate-child -> record-reply -> "
             "record-agent-run, in that order, reusing each guard. --agent-run-json is the "
-            "record-agent-run payload (its agent_run_id must equal --agent-run-id); "
+            "record-agent-run payload (its agent_run_id is --agent-run-id); "
             "--reply-text is the child's verbatim final message (budget-checked)."
         ),
     )
@@ -16374,7 +16032,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     elif args.command == "record-agent-run":
         try:
-            _validate_record_agent_run_fields(args.agent_run_json)
             result = record_agent_run(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -16395,11 +16052,6 @@ def main(argv: list[str] | None = None) -> int:
             print("finalize-child requires --reply-text or --reply-from-stdin", file=sys.stderr)
             return 1
         try:
-            _validate_record_agent_run_fields(
-                agent_run_payload,
-                label=("finalize-child --agent-run-json-file"
-                       if args.agent_run_json is None else "finalize-child --agent-run-json"),
-            )
             result = finalize_child(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -16412,7 +16064,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     elif args.command == "write-step-result":
         try:
-            _validate_write_step_result_fields(args.result_json, args.step)
             result = write_step_result(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
