@@ -7817,9 +7817,13 @@ class PhaseCertificationTests(unittest.TestCase):
         self.assertEqual(set(ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES), declared)
 
     def test_phase_certified_rejects_an_unknown_step(self) -> None:
+        """A step outside the certified set is answered `unsupported_step` by `select`
+        (OR1-33); the separate `ValueError` that stood before it went in issue #643."""
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                ort._phase_certified(Path(tmp), "o1", self._NK, "promote", target=_TP)
+            repo = Path(tmp)
+            self._certified(repo, through="compile")
+            with accept_any_certified_ir():
+                self.assertEqual(self._reason(repo, "promote"), "unsupported_step:promote")
 
     def test_certified_ir_candidate_adopts_only_a_certified_latest_ir(self) -> None:
         """The cold-run adoption path asks the compile clause WITHOUT a reservation."""
@@ -8515,25 +8519,6 @@ class CertificationStampTests(unittest.TestCase):
             self.assertEqual(doc["verification_status"], "fail")
             self.assertEqual(doc["source_id"], "src_c_001")
 
-    def test_stamp_refuses_a_phase_declaring_more_than_one_certifying_meta(self) -> None:
-        """The `exactly one` rule (security round 2, mutant M21). With it dropped, a phase
-        declaring two metas has the FIRST one stamped silently and the second left
-        uncertified — a phase whose certification names an artifact nobody chose."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="generate")
-            second = f"{refs['pipeline_ref']}/source/src_20260101_002/source_meta.json"
-            (repo / second).parent.mkdir(parents=True, exist_ok=True)
-            (repo / second).write_text("{}", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
-                    required_outputs=[refs["model_ref"], refs["source_meta"], second], derivation=_DERIVATION_RECORD)
-            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
-                    required_outputs=[refs["model_ref"]], derivation=_DERIVATION_RECORD)
-
     def test_validate_pass_stamps_validate_meta_like_the_other_phases(self) -> None:
         """Validate certifies `validate_meta.json` since issue #250 (PR-1): the stamp
         byte-pins every declared run deliverable but the meta itself, writes the output hash
@@ -8572,38 +8557,6 @@ class CertificationStampTests(unittest.TestCase):
             stripped = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
             self.assertEqual(added & set(stripped), set())
             self.assertEqual(stripped["verification_status"], "pass")
-
-    def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
-        """For BUILD this raise is the meta's only reader: `STAGE_META_FILENAME_BY_STEP` has
-        no build entry, so `_validate_step_meta_payload` never opens `binary_meta.json`.
-        Without it a corrupt one takes a PASSING build step_result and the phase is then never
-        certifiable — `set-status pass` refuses the run forever with `binary_not_bound`
-        (correctness round 2, mutant X11)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="build")
-            (repo / refs["binary_meta"]).write_text("{not json", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "cannot read .*binary_meta.json"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                    required_outputs=[refs["exe_ref"], refs["binary_meta"]], derivation=_DERIVATION_RECORD)
-            (repo / refs["binary_meta"]).write_text("[]", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "is not a JSON object"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                    required_outputs=[refs["exe_ref"], refs["binary_meta"]], derivation=_DERIVATION_RECORD)
-
-    def test_stamp_refuses_a_phase_declaring_only_its_own_meta(self) -> None:
-        """A phase whose `required_outputs` carry no hashable deliverable would be stamped
-        with an empty `artifact_hashes`, which the predicate refuses — so the phase would be
-        permanently uncertifiable instead of failing here (correctness round 2, mutant X12)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="compile")
-            with self.assertRaisesRegex(RuntimeError, "no hashable deliverable"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
-                    required_outputs=[refs["ir_meta"]], derivation=_DERIVATION_RECORD)
 
     def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
         """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
@@ -20637,23 +20590,11 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             {"node_key": "component/b@0.1.0", "topo_level": 1},
             {"node_key": "component/c@0.1.0", "topo_level": 0},
             {"node_key": "component/b@0.1.0", "topo_level": 1},  # duplicate: dropped
-            {"node_key": "", "topo_level": 0},                    # blank: dropped
         ]}
         self.assertEqual(_closure_nodes_from_graph(graph, "problem/a@0.1.0"),
                          ["component/c@0.1.0", "component/b@0.1.0"])
+        # The absent sidecar (`_read_json_or_none` -> None) is an empty closure.
         self.assertEqual(_closure_nodes_from_graph(None, "problem/a@0.1.0"), [])
-        self.assertEqual(_closure_nodes_from_graph({"all_nodes": "not a list"}, "x"), [])
-
-    def test_a_malformed_topo_level_does_not_raise(self) -> None:
-        from tools.orchestration_runtime import _closure_nodes_from_graph
-        graph = {"all_nodes": [
-            {"node_key": "component/b@0.1.0", "topo_level": "0"},
-            {"node_key": "component/c@0.1.0", "topo_level": True},
-            {"node_key": "component/d@0.1.0", "topo_level": 1},
-        ]}
-        self.assertEqual(_closure_nodes_from_graph(graph, "problem/a@0.1.0"),
-                         ["component/b@0.1.0", "component/c@0.1.0", "component/d@0.1.0"])
-
 
 class HostPycacheRedirectRootTest(unittest.TestCase):
     """The in-process conductor host redirects its bytecode cache to workspace/.pycache/
@@ -23093,24 +23034,8 @@ class DerivationInputsTests(unittest.TestCase):
 
 
 class DerivationRecordStampTests(unittest.TestCase):
-    """`_validated_derivation_record`: the shape a pass step_result's `derivation` must have."""
-
-    def test_each_malformed_shape_is_refused_by_name(self) -> None:
-        good = dict(_DERIVATION_RECORD)
-        cases = [
-            (None, "must carry a `derivation` record"),
-            ({**good, "derivation_key": "abc"}, "derivation_key must be 'sha256:<hex>'"),
-            ({**good, "derivation_key": "sha256:"}, "derivation_key must be 'sha256:<hex>'"),
-            ({**good, "derivation_inputs": []}, "derivation_inputs must be an object"),
-            ({**good, "transformation": []}, "transformation must be a non-empty list"),
-            ({**good, "transformation": ["ok", ""]}, "transformation must be a non-empty list"),
-            ({**good, "transformation": "pure-43"}, "transformation must be a non-empty list"),
-            ({k: v for k, v in good.items() if k != "derivation_inputs"}, r"lacks \['derivation_inputs'\]"),
-        ]
-        for record, pattern in cases:
-            with self.subTest(record=record), self.assertRaisesRegex(RuntimeError, pattern):
-                ort._validated_derivation_record(record, "compile")
-        self.assertEqual(ort._validated_derivation_record(good, "compile"), good)
+    """The `derivation` record a pass step_result carries into the stamp. Its shape is
+    `phase_derivation`'s and is not re-checked (issue #643); the stamp INDEXES it."""
 
     def test_write_step_result_pass_refuses_a_missing_record_before_writing(self) -> None:
         """A pass without a derivation is refused like a pass whose deliverable is absent:
@@ -23120,7 +23045,7 @@ class DerivationRecordStampTests(unittest.TestCase):
             _setup_certifiable_generate(repo)
             meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
             model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
-            with self.assertRaisesRegex(RuntimeError, "must carry a `derivation` record"):
+            with self.assertRaises(TypeError):
                 write_step_result(
                     repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
                     agent_run_id="orch_run_001",
@@ -25772,17 +25697,11 @@ class ProfileExpansionTests(unittest.TestCase):
             self.assertFalse(sel.ok)
             self.assertEqual(sel.reason, "derivation_key_mismatch:dependency_graph")
 
-    def test_the_profile_term_is_order_insensitive_and_shape_validated(self) -> None:
-        """Two rows the round-2 sweeps found unpinned, and they pull in opposite directions.
-
-        `profile_keys.sort()` — its two siblings `out.sort()` / `trans.sort()` each have a
-        pinning row; without it, reordering the `profiles:` entries of a node that adopts two
-        spuriously restales it.
-
-        The non-dict refusal — this is the ONE signature term whose corruption would read
-        FRESH rather than stale: on a node that adopts none, degrading an unusable `profiles`
-        value to "adopts none" makes it compare equal, where the identical checks on
-        `all_nodes` / `transitive_deps` report the sidecar unusable."""
+    def test_the_profile_term_is_order_insensitive(self) -> None:
+        """`profile_keys` is sorted — its two siblings `out` / `trans` each have a pinning
+        row; without it, reordering the `profiles:` entries of a node that adopts two
+        spuriously restales it. (The shape refusals this row also pinned went in issue #643:
+        the one caller passes `build_dependency_graph`'s in-process result.)"""
         from tools.orchestration_runtime import _closure_signature
         two = {"node_key": "problem/t@1.0.0",
                "all_nodes": [{"node_key": "problem/t@1.0.0", "topo_level": 0}],
@@ -25791,11 +25710,6 @@ class ProfileExpansionTests(unittest.TestCase):
         reordered = dict(two, profiles=list(reversed(two["profiles"])))
         self.assertEqual(_closure_signature(two), _closure_signature(reordered))
         self.assertEqual(_closure_signature(two)[2], ["profile/a@0.1.0", "profile/b@0.1.0"])
-        for unusable in ("not-a-list", 7, [{"node_key": "profile/a@0.1.0"}, "bare-string"],
-                         [{"node_key": ""}], [{"profile_id": "a"}]):
-            with self.subTest(profiles=unusable):
-                self.assertIsNone(
-                    _closure_signature(dict(two, profiles=unusable)))
         # `None` and the absent key both mean "adopts none" — the normalization that keeps a
         # pre-#175 sidecar from restaling the corpus.
         self.assertEqual(_closure_signature(dict(two, profiles=None))[2], [])

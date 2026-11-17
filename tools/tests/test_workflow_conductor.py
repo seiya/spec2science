@@ -15716,13 +15716,11 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertIn("/src_20260101_001/", staged[1]["model_source_ref"])
             self.assertEqual(staged[1]["source_id"], "src_20260101_001")
 
-    def test_dependency_closure_nodes_survives_a_malformed_topo_level(self) -> None:
+    def test_dependency_closure_nodes_is_the_readiness_derivation(self) -> None:
         """The closure ORDER is single-sourced in `orchestration_runtime._closure_nodes_from_graph`
-        so that Build's staging and the readiness comparison cannot disagree — and the move is not
-        a pure move: the inlined version this replaced read `n.get("topo_level") or 0`, which puts
-        a `str` into the sort key and makes `list.sort` raise `TypeError`. That is a crash where
-        readiness promises a verdict, so a non-`int` level falls to 0. This is the conductor half
-        of that pin: it is RED against the inlined implementation."""
+        so that Build's staging and the readiness comparison cannot disagree. (The non-`int`
+        `topo_level` tolerance this row also pinned went in issue #643: the sidecar is
+        host-written.)"""
         from tools.orchestration_runtime import _closure_nodes_from_graph
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -15730,7 +15728,7 @@ class WriteMakefileTest(unittest.TestCase):
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._write_dep_graph_sidecar(repo, refs, all_nodes=[
-                {"node_key": "component/base@0.1.0", "topo_level": "0"},
+                {"node_key": "component/base@0.1.0", "topo_level": 0},
                 {"node_key": "component/mid@0.1.0", "topo_level": 1},
                 {"node_key": "component/top@0.1.0", "topo_level": 2},
             ], transitive_deps=[])

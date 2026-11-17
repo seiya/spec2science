@@ -225,17 +225,6 @@ class DerivationKeyTargetTests(unittest.TestCase):
                 "target_id": FORTRAN_CPU.target_id, "profile": FORTRAN_CPU.sha256,
                 "threads_per_rank": FORTRAN_CPU.threads_per_rank, "preset": "make_test"})
 
-    def test_a_pipeline_key_without_a_target_is_unresolvable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", _NK, through="compile")
-            with self.assertRaises(ort.DerivationInputsUnresolvable):
-                ort.phase_derivation_inputs(
-                    repo, node_key=_NK, step="generate",
-                    spec_ref=ort.DerivationResolver(repo).spec_ref(_NK),
-                    ir_ref=refs["ir_ref"])
-
-
 class StoreCoordinateTests(unittest.TestCase):
     def test_a_target_id_is_never_a_store_id(self) -> None:
         self.assertTrue(tp.is_target_id(FORTRAN_CPU.target_id))

@@ -906,11 +906,13 @@ def _freshness_key_from_id(name: str) -> tuple[str, int] | None:
 
 
 def _closure_signature(
-    graph: Any,
-) -> tuple[list[list[Any]], list[str], list[str]] | None:
+    graph: Mapping[str, Any],
+) -> tuple[list[list[Any]], list[str], list[str]]:
     """Canonical comparable form of a dependency graph: the sorted `all_nodes`
     `[[node_key, topo_level], ...]`, the sorted `transitive_deps` node_key list, AND the
-    sorted `profiles[].node_key` list. `None` when the graph is unusable.
+    sorted `profiles[].node_key` list. Its one caller passes `build_dependency_graph`'s
+    in-process result, whose shape that builder fixes; the shape is not re-checked here
+    (issue #643).
 
     `all_nodes` alone is NOT a faithful signature. `topo_level` is a node's height, so two
     genuinely different closures can share every `(node_key, topo_level)` pair: with nodes
@@ -934,32 +936,12 @@ def _closure_signature(
 
     Sorting on `node_key` alone is total: a graph names each `(kind, spec_id)` at exactly one
     version (`build_dependency_graph.node_key_of`), so node_keys are unique. It also avoids
-    ordering on `topo_level`, whose value comes from an on-disk sidecar and may be any JSON
+    ordering on `topo_level`, whose value may be any JSON
     type — a mixed-type sort key would raise, and a `str()` cast would order 10 before 2. The
     level still participates in the EQUALITY comparison, which is all the caller needs."""
-    if not isinstance(graph, dict):
-        return None
-    nodes = graph.get("all_nodes")
-    transitive = graph.get("transitive_deps")
-    if not isinstance(nodes, list) or not isinstance(transitive, list):
-        return None
-    out: list[list[Any]] = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            return None
-        node_key = node.get("node_key")
-        if not isinstance(node_key, str) or not node_key.strip():
-            return None
-        out.append([node_key.strip(), node.get("topo_level")])
-    out.sort(key=lambda item: item[0])
-    trans: list[str] = []
-    for node in transitive:
-        if not isinstance(node, dict):
-            return None
-        node_key = node.get("node_key")
-        if not isinstance(node_key, str) or not node_key.strip():
-            return None
-        trans.append(node_key.strip())
+    out = sorted(([node["node_key"].strip(), node.get("topo_level")]
+                  for node in graph["all_nodes"]), key=lambda item: item[0])
+    trans = [node["node_key"].strip() for node in graph["transitive_deps"]]
     trans.sort()
     # Issue #175: the adopted `profile` set is part of the resolution, and it is the ONLY part
     # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
@@ -979,19 +961,7 @@ def _closure_signature(
     #
     # A MISSING key normalizes to `[]` rather than to `None`: a node adopting no profile
     # derives `[]`, and a sidecar written before issue #175 reads the same way.
-    profiles = graph.get("profiles")
-    profile_keys: list[str] = []
-    if profiles is not None:
-        if not isinstance(profiles, list):
-            return None
-        for entry in profiles:
-            if not isinstance(entry, dict):
-                return None
-            node_key = entry.get("node_key")
-            if not isinstance(node_key, str) or not node_key.strip():
-                return None
-            profile_keys.append(node_key.strip())
-        profile_keys.sort()
+    profile_keys = sorted(entry["node_key"].strip() for entry in graph.get("profiles") or [])
     return (out, trans, profile_keys)
 
 
@@ -1881,8 +1851,6 @@ def _phase_certification(
     phases answer `target_unresolved`.
     """
     step_token = step.strip().lower()
-    if step_token not in STEP_KEYS_FOR_NODE_STATE:
-        raise ValueError(f"unsupported step for certification: {step!r}")
     if target is None and step_token != "compile":
         target = _orchestration_target(repo_root, orchestration_id)
     resolver = DerivationResolver(
@@ -1913,46 +1881,6 @@ def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -
         if norm not in refs:
             refs.append(norm)
     return refs
-
-
-_DERIVATION_RECORD_KEYS: tuple[str, ...] = (
-    "derivation_key", "derivation_inputs", "transformation")
-
-
-def _validated_derivation_record(derivation: Any, step_token: str) -> dict[str, Any]:
-    """The derivation record a pass step_result carries, checked for SHAPE: a `sha256:<hex>`
-    key, an object of inputs, a non-empty list of version strings. The key is not recomputed
-    here — the inputs it was taken over are the phase-START inputs, and recomputing at stamp
-    time would answer a different question (see `_stamp_certification`). Type-checked
-    because `DerivationResolver.select` compares the stamped key with a recomputation, and a
-    structurally wrong stamp would read as a stale phase and send the operator hunting for
-    an input nobody changed."""
-    if not isinstance(derivation, dict):
-        raise RuntimeError(
-            f"certification stamp: pass step_result for {step_token} must carry a "
-            f"`derivation` record ({{derivation_key, derivation_inputs, transformation}}, "
-            f"as `phase_derivation` computes it at phase start); got {type(derivation).__name__}")
-    missing = [k for k in _DERIVATION_RECORD_KEYS if k not in derivation]
-    if missing:
-        raise RuntimeError(
-            f"certification stamp: {step_token} derivation record lacks {missing}")
-    key = derivation.get("derivation_key")
-    if not (isinstance(key, str) and key.startswith("sha256:") and len(key) > len("sha256:")):
-        raise RuntimeError(
-            f"certification stamp: {step_token} derivation_key must be 'sha256:<hex>', got {key!r}")
-    inputs = derivation.get("derivation_inputs")
-    if not isinstance(inputs, dict):
-        raise RuntimeError(
-            f"certification stamp: {step_token} derivation_inputs must be an object, "
-            f"got {type(inputs).__name__}")
-    transformation = derivation.get("transformation")
-    if (not isinstance(transformation, list) or not transformation
-            or not all(isinstance(v, str) and v.strip() for v in transformation)):
-        raise RuntimeError(
-            f"certification stamp: {step_token} transformation must be a non-empty list of "
-            f"version strings, got {transformation!r}")
-    return {"derivation_key": key, "derivation_inputs": inputs,
-            "transformation": list(transformation)}
 
 
 def _stamp_certification(
@@ -1988,7 +1916,7 @@ def _stamp_certification(
       - it is itself an enforcement gate a later `set-status pass` trusts, so a phase that
         could not be stamped must not get a passing step_result.
 
-    Failure is a `RuntimeError`, not a warning. The ledger this replaces updated on a
+    Failure raises, never a warning. The ledger this replaces updated on a
     best-effort basis (`update_checkpoint` was WARN-only), which was affordable because a
     missing entry only cost a re-run; an unstamped meta is instead indistinguishable from a
     meta whose author skipped the stamp, and `_phase_certified` refuses both — so failing
@@ -1998,31 +1926,18 @@ def _stamp_certification(
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step_token)
     if meta_filename is None:
         return None
-    derivation_doc = _validated_derivation_record(derivation, step_token)
+    # `required_outputs` and the stage meta are the conductor's (`phase_required_outputs`
+    # declares exactly one certifying meta per phase and at least one deliverable beside it,
+    # and the meta is host-written), and `derivation` is `phase_derivation`'s record, carried
+    # in process: neither is re-checked here (issue #643). The record is INDEXED, so a pass
+    # without one raises rather than stamping a key no lookup selects.
     refs = [r.strip() for r in required_outputs if isinstance(r, str) and r.strip()]
-    meta_refs = [r for r in refs if _normalize_rel_posix(r).rsplit("/", 1)[-1] == meta_filename]
-    if len(meta_refs) != 1:
-        raise RuntimeError(
-            f"certification stamp: pass step_result for {step_token} must declare exactly one "
-            f"{meta_filename} in required_outputs, got {meta_refs}"
-        )
-    meta_ref = _normalize_rel_posix(meta_refs[0])
+    meta_ref = _normalize_rel_posix(next(
+        r for r in refs if _normalize_rel_posix(r).rsplit("/", 1)[-1] == meta_filename))
     meta_path = repo_root / meta_ref
-    try:
-        doc = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(
-            f"certification stamp: cannot read {meta_ref}: {exc}"
-        ) from exc
-    if not isinstance(doc, dict):
-        raise RuntimeError(f"certification stamp: {meta_ref} is not a JSON object")
+    doc = json.loads(meta_path.read_text(encoding="utf-8"))
 
     artifact_refs = _certifiable_artifact_refs(refs, meta_ref)
-    if not artifact_refs:
-        raise RuntimeError(
-            f"certification stamp: {step_token} declares no hashable deliverable besides "
-            f"{meta_filename} (required_outputs={refs})"
-        )
     hashes: dict[str, str] = {}
     for ref in artifact_refs:
         digest = _compute_sha256(repo_root / ref)
@@ -2038,9 +1953,9 @@ def _stamp_certification(
     # attempt id is the step_result's own `executor_agent_run_id` / the launch rows, not
     # repeated here.
     doc["output_hash"] = _output_hash(hashes, stage_dir=meta_ref.rsplit("/", 1)[0])
-    doc["derivation_key"] = derivation_doc["derivation_key"]
-    doc["derivation_inputs"] = derivation_doc["derivation_inputs"]
-    doc["derivation_transformation"] = derivation_doc["transformation"]
+    doc["derivation_key"] = derivation["derivation_key"]
+    doc["derivation_inputs"] = derivation["derivation_inputs"]
+    doc["derivation_transformation"] = list(derivation["transformation"])
 
     if step_token in {"generate", "build"}:
         # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
@@ -3004,8 +2919,9 @@ def phase_derivation_inputs(
     upstream that is not certified, a dependency with no certified output and an unreadable
     spec file all raise `DerivationInputsUnresolvable`. `resolver` is the evaluation's
     memo of dependency selections (`DerivationResolver`); one is created for `target` when
-    none is passed. A pipeline phase's inputs are the resolver's target's (issue #284), and a
-    resolver without one raises `DerivationInputsUnresolvable` for them."""
+    none is passed. A pipeline phase's inputs are the resolver's target's (issue #284). No
+    caller reaches here for one with a target-less resolver: `select` answers
+    `target_unresolved` first, and the conductor's resolver always carries its target."""
     step_token = step.strip().lower()
     if step_token not in DERIVATION_STEPS:
         raise ValueError(f"unsupported step for a derivation: {step!r}")
@@ -3023,23 +2939,13 @@ def phase_derivation_inputs(
         spec = need("spec_ref", spec_ref)
         graph = _derived_closure_graph(repo_root, node_key, spec)
         signature = _closure_signature(graph)
-        if signature is None:
-            raise DerivationInputsUnresolvable(
-                f"derivation_inputs_unresolvable: derived dependency graph of {node_key} "
-                "is malformed")
         profiles: list[dict[str, str]] = []
+        # `build_dependency_graph`'s profile expansion has already resolved each adopted
+        # profile to one spec directory (it refuses `profile_spec_ref_unresolved` otherwise).
         for entry in graph.get("profiles") or []:
-            pid = entry.get("profile_id") if isinstance(entry, dict) else None
-            pnk = entry.get("node_key") if isinstance(entry, dict) else None
-            if not (isinstance(pid, str) and pid.strip()):
-                continue
-            profile_ref = resolve_spec_ref_for(repo_root, "profile", pid.strip())
-            if not profile_ref:
-                raise DerivationInputsUnresolvable(
-                    f"derivation_inputs_unresolvable: adopted profile {pid!r} of {node_key} "
-                    "does not resolve to one spec directory")
+            profile_ref = resolve_spec_ref_for(repo_root, "profile", entry["profile_id"])
             profiles.append({
-                "node_key": str(pnk or "").strip(),
+                "node_key": entry["node_key"],
                 "controlled_spec": _spec_file_hash(repo_root, profile_ref, "controlled_spec.md"),
             })
         profiles.sort(key=lambda p: p["node_key"])
@@ -3065,10 +2971,6 @@ def phase_derivation_inputs(
 
     ir = need("ir_ref", ir_ref)
     target = resolver.target
-    if target is None:
-        raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: {step_token} derivation of {node_key} needs a "
-            "target profile (the resolver was built without one)")
     ir_hash = _certified_output_hash(
         repo_root, repo_root / ir / "ir_meta.json", what=f"{node_key} compile")
     closure_nodes = _pipeline_closure_for_key(repo_root, ir, node_key, target)
@@ -3444,34 +3346,28 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
     `topo_level` ascending, deepest first, because a deeper dep provides what the shallower
     ones consume and must be built first.
 
-    Pure and NEVER raises: a missing / malformed / non-dict document, and an `all_nodes` that is
-    not a list, each yield `[]`. Single-sourced here so the conductor's staging order and the
-    derivation inputs (`pipeline_closure_nodes`, the `closure[]` of the generate and build keys)
-    cannot disagree on WHICH nodes the closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
-    spec_id-collision guard, which is a build-naming rule and not part of the closure derivation).
+    A document that is not a mapping — the ABSENT sidecar, which `_read_json_or_none` reads as
+    `None` — yields `[]`; without that arm `select` would raise out of a readiness evaluator.
+    Single-sourced here so the conductor's staging order and the derivation inputs
+    (`pipeline_closure_nodes`, the `closure[]` of the generate and build keys) cannot disagree on
+    WHICH nodes the closure holds or in what order — the caller adds its own policy (the
+    conductor keeps the L6 spec_id-collision guard, which is a build-naming rule and not part of
+    the closure derivation).
 
-    The never-raises contract is load-bearing rather than decorative, and it costs two type tests
-    that read as redundant. `for n in all_nodes or []` raises `TypeError` on a non-iterable
-    (`all_nodes: 5`), and `list.sort` raises `TypeError` when a `topo_level` is not comparable with
-    an `int` (`"0"`) — both inside a readiness evaluator whose callers are promised a verdict. So
-    `all_nodes` must be a `list` (a `str` is iterable and would otherwise be walked character by
-    character), and a `topo_level` that is not an `int` — `bool` included, which `isinstance(x,
-    int)` alone accepts — falls to 0."""
-    all_nodes = graph.get("all_nodes") if isinstance(graph, dict) else None
-    if not isinstance(all_nodes, list):
+    The sidecar is host-written (`json.dumps(build_dependency_graph(...))`), so its entries are
+    `{node_key: str, topo_level: int}` by construction and their types are not re-checked here
+    (issue #643)."""
+    if not isinstance(graph, dict):
         return []
     levels: dict[str, int] = {}
     closure: list[str] = []
     seen: set[str] = set()
-    for n in all_nodes or []:
-        if not (isinstance(n, dict) and isinstance(n.get("node_key"), str)):
-            continue
+    for n in graph["all_nodes"]:
         nk = n["node_key"].strip()
-        if not nk or nk == self_node_key or nk in seen:
+        if nk == self_node_key or nk in seen:
             continue
         seen.add(nk)
-        level = n.get("topo_level")
-        levels[nk] = level if isinstance(level, int) and not isinstance(level, bool) else 0
+        levels[nk] = n["topo_level"]
         closure.append(nk)
     closure.sort(key=lambda nk: levels.get(nk, 0))
     return closure
