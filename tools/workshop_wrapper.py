@@ -11,7 +11,7 @@ one conductor method it calls is the IR contract an IR context binds
 (`Conductor._leaf_ir_document_violations`, and the declaration reader beside it), which reads
 only the frozen node refs and class constants.
 
-What the leaf chooses is the CONTENT of its tree and, for `run`, a binary basename, a
+What the leaf chooses is the CONTENT of its tree and, for `run`, a binary name, a
 tree-relative case file and case ids. Every path and every build-runtime argument is composed
 here, under the lineage's own directories; the build-runtime library checks none of them
 (`docs/BUILD_RUNTIME.md` §Operations rules, issues #457 and #643). Of the leaf's choices only

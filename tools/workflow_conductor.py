@@ -5766,8 +5766,7 @@ class Conductor:
         rules come from the conductor-authored `dependency_graph.json` sidecar's `all_nodes`;
         Model B), so the conductor
         authors it too and the generate leaf must not. Single source of truth for the live
-        author call AND the write-authorization removal, so they cannot disagree (which would
-        orphan the Makefile, or leave it double-owned). A node that is not make+fortran keeps LLM
+        author call. A node whose toolchain has no control-file writer would keep LLM
         authoring — unreachable today for every node kind, because the toolchain is the run's
         target's (`_read_toolchain`, issue #284) and the launch gate refuses a target whose
         toolchain the host cannot serve."""
@@ -6307,7 +6306,8 @@ class Conductor:
         A non-empty dependency closure (Model B, docs/design) emits per-dep object rules +
         a `DEP_OBJS` link list; the conductor stages each `<dep>_model.f90` into `$(OBJDIR)`
         before `make` (`_stage_dependency_sources`, called from `_build_inproc`). `run_phase`
-        authors this for every make+fortran node (leaf or dependency) — see
+        authors this for every node (leaf or dependency) whose toolchain has a control-file
+        writer — see
         `_conductor_authors_makefile`.
         """
         tc = self._read_toolchain(refs)
