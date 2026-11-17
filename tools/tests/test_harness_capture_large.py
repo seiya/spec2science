@@ -115,6 +115,14 @@ class CaptureLargeDocumentTests(unittest.TestCase):
         self.assertEqual(a.sum(), 768 * 131328)
         # a multiple of 0.5 below 2^52 is exact in binary64, so every partial sum is
         self.assertLess(a.sum(), 2.0 ** 52)
+        for spec_id in HARNESSES:
+            tests = _text(spec_id, "tests.md")
+            row = tests[tests.index(f"- `test_id`: `{CASE}`"):]
+            judgment = re.search(r"`judgment`[^\n]*", row).group(0)
+            with self.subTest(spec_id=spec_id):
+                self.assertIn(f"the `[{N},{N}]` array `big`", judgment)
+                self.assertIn(f"largest element `{a.max():g}`, its smallest `{a.min():g}` and its "
+                              f"sum `{int(a.sum())}` (`768 * 131328`)", judgment)
         spec = _text(HARNESSES[0], "controlled_spec.md")
         self.assertIn(f"`big(i,j) = i + j/2` for `i, j = 1..{N}`", spec)
         self.assertIn(f"an array of zeros of extents `[{N},{N}]`", spec)
