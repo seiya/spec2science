@@ -26,7 +26,8 @@ the store of the format that wrote it (`capture_store.store(<format>).read_recor
 are compared member by member: the same member names, the same nesting and extents, and every
 number the same binary64 (NaN equal to NaN). There is no tolerance: a difference is a finding.
 
-Exit 0 when every record of every case is equal and both stores hold the same records; 1
+Exit 0 when both runs had no problem (pass 1 exit status, every continuation merged), every case
+holds a final record, every record of every case is equal and both stores hold the same records; 1
 otherwise, with the first differences printed.
 """
 from __future__ import annotations
@@ -196,6 +197,7 @@ def main() -> int:
         tempfile.mkdtemp(prefix="v_b_"))
     try:
         records = {}
+        run_problems: list[str] = []
         for fmt, harness_src, harness_name, drv, ordr in (
                 ("json", json_harness, JSON_H, runner_text, order),
                 ("netcdf", netcdf_harness_src, NETCDF_H, netcdf_runner_text, nc_order)):
@@ -203,6 +205,7 @@ def main() -> int:
                      f"{NODE}_runner": drv}
             binary = _build(tmp / fmt / "build", files, ordr, fmt)
             problems = _run(ir, binary, tmp / fmt, fmt)
+            run_problems += problems
             for p in problems:
                 print(f"RUN {p}")
             records[fmt] = _records(tmp / fmt / "run", fmt, case_ids)
@@ -221,7 +224,11 @@ def main() -> int:
               f"{numbers} numbers; {len(diffs)} differences")
         for line in diffs[:40]:
             print(f"DIFF {line}")
-        return 0 if not diffs and keys_a else 1
+        # a case that failed on both sides is missing from both stores alike: a run problem
+        # fails the comparison, and so does a case with no final record
+        no_final = [c for c in case_ids if (c, capture_store.FINAL, None) not in keys_a]
+        print(f"cases without a final record: {no_final}")
+        return 0 if not diffs and not run_problems and not no_final else 1
     finally:
         if not args.keep:
             shutil.rmtree(tmp, ignore_errors=True)

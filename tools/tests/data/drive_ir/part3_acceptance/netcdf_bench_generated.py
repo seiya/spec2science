@@ -15,7 +15,12 @@ the two that edit the model's text:
   same set of failed predicates the hand model's row expects. They are re-expressions written by
   hand, not the hand model's defects: what is shown is that each written-down breakage is
   caught, not that the generated model has no other one.
-- the fanout row's carried-count variants, re-expressed the same way (`CARRIED`).
+- the fanout row, whose two carried-count variants edit the model and are re-expressed the same
+  way (`CARRIED`); its other variants edit the self-test only and run as in the hand row.
+
+The generated model declares its record counters without an initial value (the hand model's are
+`save`d at 0), so in the carried-count variants the FIRST case reads a counter the compiler left
+at 0; the carried value shows in the second case, as in the hand row.
 
 The substitutions are bound to one source; `--model` is refused unless its sha256 is `MODEL_SHA256`.
 Exit 0 when every row passes.
@@ -102,12 +107,33 @@ class GeneratedNetcdfBench(g.FortranCpuNetcdfCaptureGroupTests):
 
     def test_the_fanout_case_judges_the_records_it_commits_and_the_carried_counts(
             self) -> None:
-        """The hand row's two carried-count variants on the generated text: the restart
+        """The hand row on the generated model: the fanout records skipped or one group left
+        out of the self-test fail the predicate, and the two carried-count variants on the
+        generated text: the restart
         points' counter carried fails the fanout predicate when the fanout case runs second,
         and fails the capture-group case when it runs first."""
         def satisfied(run: g._Run) -> list[bool]:
             return [r["satisfied"] for r in self._fanout(run)]
         self.assertEqual(satisfied(self.clean[-1]), [True])
+        fanout = g.fanout_commits(self.h.spec_id)
+        skipped = self.h.selftest_text.replace(fanout, g.FANOUT_OPEN_JSON)
+        self.assertNotEqual(skipped, self.h.selftest_text)
+        binary = g._build(self.h, self.h.model_text, self.root / "fanout_skipped", skipped)
+        run = g._Run(self.h, binary, self.root / "fanout_skipped_run", self.h.launches[-1])
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+        self.assertEqual(satisfied(run), [False])
+        for group in ("history", "restart_point", "series"):
+            with self.subTest(left_out=group):
+                text = self.h.selftest_text.replace(fanout, "".join(
+                    line for line in fanout.splitlines(keepends=True)
+                    if f"('{group}'," not in line))
+                self.assertNotEqual(text, self.h.selftest_text)
+                binary = g._build(self.h, self.h.model_text, self.root / f"fanout_no_{group}",
+                                  text)
+                run = g._Run(self.h, binary, self.root / f"fanout_no_{group}_run",
+                             self.h.launches[-1])
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+                self.assertEqual(satisfied(run), [False])
         carried = _apply(self.h.model_text, [CARRIED])
         binary = g._build(self.h, carried, self.root / "fanout_carried")
         run = g._Run(self.h, binary, self.root / "fanout_carried_run", self.h.launches[-1])

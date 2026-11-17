@@ -235,7 +235,9 @@ def main() -> int:
 
     # netcdf: killed mid-run
     def some_points(o: Path) -> bool:
-        return (time.monotonic() - started) > 15
+        # the case's file exists and the run is well into it
+        return (time.monotonic() - started) > 15 and any(
+            capture_store.snapshot_dir(o).glob(f"{base}*"))
     started = time.monotonic()
     nc = work / "netcdf_killed"
     rc, rec = killed("fortran_cpu_netcdf", config, nc, some_points)
@@ -243,7 +245,8 @@ def main() -> int:
         capture_store.store("netcdf").read_record(snap(nc), capture_store.FINAL, base)
         message = None
     except capture_store.CaptureError as exc:
-        message = str(exc)
+        # an absent file names the case too: what is shown is the refusal of a file that is there
+        message = None if exc.absent else str(exc)
     print(f"netcdf: rc={rc} status={rec['status']} kept={rec.get('kept')}; store: {message}")
     check(message is not None and base in message,
           f"netcdf: the store refuses the killed case, naming it ({message!r})")
