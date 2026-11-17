@@ -8954,65 +8954,6 @@ def _require_preflight_launchable(
     return payload
 
 
-def get_preflight_ttl_status(
-    repo_root: Path,
-    orchestration_id: str,
-) -> dict[str, Any]:
-    """For the preflight-status command: return the details of the TTL state."""
-    mode = _live_preflight_mode()
-    ttl_seconds = _live_preflight_ttl_seconds()
-    path = _preflight_path(repo_root, orchestration_id)
-
-    if not path.exists():
-        return {
-            "orchestration_id": orchestration_id,
-            "preflight_exists": False,
-            "live_probe_mode": mode,
-            "ttl_seconds": ttl_seconds,
-            "within_ttl": None,
-            "ttl_remaining_seconds": None,
-            "probe_skippable": False,
-        }
-
-    try:
-        file_payload = _read_json(path)
-    except json.JSONDecodeError:
-        file_payload = {}
-
-    probed_at = file_payload.get("probed_at") if isinstance(file_payload, dict) else None
-    checked_at = file_payload.get("checked_at") if isinstance(file_payload, dict) else None
-    preflight_status = file_payload.get("status") if isinstance(file_payload, dict) else None
-    backend = file_payload.get("backend") if isinstance(file_payload, dict) else None
-
-    within_ttl: bool | None = None
-    ttl_remaining: float | None = None
-    if mode == "ttl" and isinstance(probed_at, str):
-        within_ttl = _is_within_preflight_ttl(probed_at, ttl_seconds)
-        if within_ttl and ttl_seconds > 0:
-            try:
-                pa = datetime.fromisoformat(probed_at.replace("Z", "+00:00"))
-                elapsed = (datetime.now(timezone.utc) - pa).total_seconds()
-                ttl_remaining = max(0.0, ttl_seconds - elapsed)
-            except (ValueError, TypeError):
-                ttl_remaining = None
-
-    probe_skippable = mode == "never" or (mode == "ttl" and within_ttl is True)
-
-    return {
-        "orchestration_id": orchestration_id,
-        "preflight_exists": True,
-        "preflight_status": preflight_status,
-        "backend": backend,
-        "checked_at": checked_at,
-        "probed_at": probed_at,
-        "live_probe_mode": mode,
-        "ttl_seconds": ttl_seconds,
-        "within_ttl": within_ttl,
-        "ttl_remaining_seconds": ttl_remaining,
-        "probe_skippable": probe_skippable,
-    }
-
-
 def _launch_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
     prefix = f"workspace/orchestrations/{orchestration_id}/launches/{agent_run_id}"
     return f"{prefix}.request.json", f"{prefix}.response.json"
@@ -17216,9 +17157,6 @@ def main(argv: list[str] | None = None) -> int:
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
-    preflight_status_parser = subparsers.add_parser("preflight-status")
-    preflight_status_parser.add_argument("--repo-root", required=True)
-    preflight_status_parser.add_argument("--orchestration-id", required=True)
 
     _NODE_KEY_HELP = (
         "node_key in '<spec_kind>/<spec_id>@<spec_version>' format "
@@ -17743,11 +17681,6 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=repo_root,
             orchestration_id=args.orchestration_id,
             payload=preflight_payload,
-        )
-    elif args.command == "preflight-status":
-        result = get_preflight_ttl_status(
-            repo_root=repo_root,
-            orchestration_id=args.orchestration_id,
         )
     elif args.command == "record-launch":
         request_payload = (

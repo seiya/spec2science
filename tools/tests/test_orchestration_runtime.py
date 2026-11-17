@@ -54,7 +54,6 @@ from tools.orchestration_runtime import (
     _update_preflight_probed_at,
     _validate_agent_summary_text,
     resume_orchestration,
-    get_preflight_ttl_status,
     init_orchestration,
     main,
     _project_terse_result,
@@ -11935,93 +11934,6 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                      netns_socket_dir=netns_socket_dir())
                     self.assertEqual(probe_mock.call_count, 2)
 
-    def test_get_preflight_ttl_status_within_ttl(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            write_preflight(
-                repo_root=repo,
-                orchestration_id="o1",
-                payload=_launchable_preflight_dict(
-                    probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=10)),
-                ),
-            )
-            with patch.dict(
-                os.environ,
-                {
-                    "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
-                },
-            ):
-                st = get_preflight_ttl_status(repo, "o1")
-            self.assertTrue(st["preflight_exists"])
-            self.assertTrue(st["within_ttl"])
-            self.assertTrue(st["probe_skippable"])
-            self.assertIsNotNone(st["ttl_remaining_seconds"])
-
-    def test_get_preflight_ttl_status_no_preflight(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
-                st = get_preflight_ttl_status(repo, "o1")
-            self.assertFalse(st["preflight_exists"])
-            self.assertFalse(st["probe_skippable"])
-
-    def test_get_preflight_ttl_status_always_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            write_preflight(
-                repo_root=repo,
-                orchestration_id="o1",
-                payload=_launchable_preflight_dict(
-                    probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=5)),
-                ),
-            )
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
-                st = get_preflight_ttl_status(repo, "o1")
-            self.assertFalse(st["probe_skippable"])
-
-    def test_preflight_status_cli_outputs_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1")
-            _mark_dependencies_ready(repo, "o1")
-            write_preflight(
-                repo_root=repo,
-                orchestration_id="o1",
-                payload=_launchable_preflight_dict(
-                    probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=10)),
-                ),
-            )
-            buf = io.StringIO()
-            with patch.dict(
-                os.environ,
-                {
-                    "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
-                },
-            ):
-                with redirect_stdout(buf):
-                    rc = main(
-                        [
-                            "preflight-status",
-                            "--repo-root",
-                            str(repo),
-                            "--orchestration-id",
-                            "o1",
-                        ]
-                    )
-            self.assertEqual(rc, 0)
-            out = json.loads(buf.getvalue())
-            self.assertEqual(out["orchestration_id"], "o1")
-            self.assertTrue(out["preflight_exists"])
-            self.assertIn("ttl_remaining_seconds", out)
-            self.assertTrue(out["probe_skippable"])
 
 
 class TestPhase1RuleSourceAudit(unittest.TestCase):
