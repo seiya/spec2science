@@ -161,6 +161,10 @@ RETIRED_NAMES: dict[str, str] = {
 #: open drift.
 _RETIRED_NAME_ROOTS: tuple[str, ...] = ("docs", "spec", "tools/prompt_templates")
 _RETIRED_NAME_SUFFIXES: tuple[str, ...] = (".md", ".yaml", ".json", ".txt")
+#: A dated record of the tree at one commit (issue #643's inventory at `ec2ddda3`). It quotes code
+#: identifiers and test names verbatim, some of which still carry a retired token, and it is not
+#: edited as the tree moves on.
+_RETIRED_NAME_SKIP: tuple[str, ...] = ("docs/design/check_inventory_643/",)
 
 
 def retired_name_occurrences(root: Path) -> list[str]:
@@ -176,6 +180,8 @@ def retired_name_occurrences(root: Path) -> list[str]:
             if not path.is_file() or path.suffix not in _RETIRED_NAME_SUFFIXES:
                 continue
             rel = path.relative_to(root).as_posix()
+            if rel.startswith(_RETIRED_NAME_SKIP):
+                continue
             for lineno, line in enumerate(
                     path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 for name in RETIRED_NAMES:
