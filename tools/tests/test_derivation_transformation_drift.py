@@ -2061,11 +2061,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # The digest `execute-22` shipped with at 66d77304:
     "execute-22@66d77304": "c22f5e7cf3ef798640047ce9d2e96322a4e64534c74793dcfec02ffc48062bf8",
     # execute-22 re-pinned in place again (the R3 stop of issue #644): `_execute_inproc` names the
-    # build-runtime library's reason (a timeout) for a run or a quality-check re-run it stopped,
-    # in the failure text a repair leaf reads; no verdict, record or certified output moves.
+    # build-runtime library's reason (a timeout) for a quality-check re-run it stopped, in
+    # trial_meta.json#failure_excerpt, and for a run it stopped, in the operator's log; only a
+    # failed attempt's text moves, and no key (keys hold the version label, not this digest).
     # The digest `execute-22` shipped with at 2b60b8c4:
     "execute-22@2b60b8c4": "7e164fc524b7025f839e59af008497e22810ae11700251683070e0bb97f090ad",
-    "execute-22": "c3a25088a0fe550fe8c4c0736ecdcd7c29ecdd27aac92579b7501c31372cb376",
+    "execute-22": "786b9f363017168893cc886ecbee5a155154500da3ec50d004cce0984b0ed57c",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

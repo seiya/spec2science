@@ -1,10 +1,10 @@
 """The large-capture case of the harness suites (`l0_capture_large_pass`).
 
-A generated `harness_fortran_cpu` once built each record by appending every value to the text of
-the whole record, so a `256 x 256` history record took about a minute to write and a consuming
-node's run passed its time bound. The case captures one `[512,512]` array, and every other case
-writes it as a zero placeholder, so a writer that copies the record built so far once per value
-runs past the run's time bound in the harness's own Validate. These rows pin what the
+A generated `harness_fortran_cpu` once built an array's text by appending each element to the
+text built so far for that array, so a `256 x 256` history record of three variables took about a
+minute to write and a consuming node's run passed its time bound. The case captures one
+`[512,512]` array, and every other case writes it as a zero placeholder, so such a writer runs
+past the run's time bound in the harness's own Validate. These rows pin what the
 documents state of the case and that the host's own readers judge it: the predicates pass the
 Compile-stage gates and hold on the record the case describes, and fail on a record with one
 value changed. They do not time a writer: a generated harness is judged by its own run.
@@ -45,7 +45,7 @@ def _text(spec_id: str, name: str) -> str:
 
 
 def big() -> np.ndarray:
-    """`big(i,j) = i + j/2`, `i, j = 1..N`, the leading index `i` first."""
+    """`big(i,j) = i + 0.5 * j`, `i, j = 1..N`, the leading index `i` first."""
     i = np.arange(1, N + 1, dtype=float)[:, None]
     j = np.arange(1, N + 1, dtype=float)[None, :]
     return i + 0.5 * j
@@ -124,7 +124,7 @@ class CaptureLargeDocumentTests(unittest.TestCase):
                 self.assertIn(f"largest element `{a.max():g}`, its smallest `{a.min():g}` and its "
                               f"sum `{int(a.sum())}` (`768 * 131328`)", judgment)
         spec = _text(HARNESSES[0], "controlled_spec.md")
-        self.assertIn(f"`big(i,j) = i + j/2` for `i, j = 1..{N}`", spec)
+        self.assertIn(f"`big(i,j) = i + 0.5 * j` for `i, j = 1..{N}`", spec)
         self.assertIn(f"an array of zeros of extents `[{N},{N}]`", spec)
 
     def test_the_predicates_pass_the_compile_stage_gates(self) -> None:
