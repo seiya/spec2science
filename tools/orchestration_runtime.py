@@ -4506,21 +4506,6 @@ _SLUG_DATE_SEQ3_PATTERN = re.compile(
     .replace(r"([0-9]{3})", r"[0-9]{3}")
 )
 
-# `run_id` is the one id in the family that is NOT a `<slug>_<date>_<seq3>`
-# value: it carries a fixed literal `run_` prefix (`run_<YYYYMMDD>_<seq3>`,
-# e.g. `run_20260605_001`). A slug-shaped run_id like `run-rsn-p0_20260605_001`
-# (mistakenly generalized from the ir_id/pipeline_id naming rule) MATCHES
-# `_SLUG_DATE_SEQ3_PATTERN` (slug=`run-rsn-p0`) and therefore used to slip
-# through the `_matches_phase_contract` write-acceptance boundary, yet the
-# Validate `post_execute` run discovery in `tools/validate_pipeline_semantics.py`
-# only recognizes the canonical `runs/run_<date>_<seq>/...` layout and reports
-# "no execution artifacts found". The validate run-dir branches in
-# `_matches_phase_contract` enforce THIS stricter shape so the format drift
-# fails fast at launch (record-launch raises "outside phase contract") instead
-# of a silent downstream no-match. IMPORTANT: keep this in lock-step with the
-# canonical run dir grammar that `post_execute` discovery relies on.
-_RUN_ID_RE = re.compile(r"^run_[0-9]{8}_[0-9]{3}$")
-
 
 def _parse_node_key_strict(node_key: Any) -> tuple[str, str, str]:
     """Validate `node_key` and return `(spec_kind, spec_id_dotted, spec_version)`.
@@ -6197,41 +6182,19 @@ def _downstream_phase_launch_gate(
     pipeline_ref: str,
     launch_request: dict[str, Any],
 ) -> tuple[bool, str | None]:
-    """Check the downstream phase start condition only when `pipeline_ref` exists on disk."""
+    """Check the downstream phase start condition only when `pipeline_ref` exists on disk.
+
+    Only `validate.judge` is checked here. A build or `validate.execute` launch is held by
+    `record_launch`, which binds the request's OWN source (its `source_meta.json` at
+    `verification_status: pass`) and, for execute, its own binary's `binary_meta.json`; the
+    judge's `perf.json` is an execute deliverable `determine_substep_status` requires fresh
+    (issue #643)."""
     rel = _normalize_rel_posix(pipeline_ref)
     pr_abs = repo_root / rel
     if not pr_abs.is_dir():
         return True, None
     st = step.strip().lower()
     substep = str(launch_request.get("substep") or "").strip().lower()
-    if st == "build":
-        gen_root = pr_abs / "source"
-        if not gen_root.is_dir():
-            return False, "downstream:source_dir_missing"
-        for gen_dir in sorted(gen_root.iterdir()):
-            if not gen_dir.is_dir():
-                continue
-            meta = gen_dir / "source_meta.json"
-            if not meta.is_file():
-                continue
-            try:
-                data = _read_json(meta)
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(data, dict) and str(data.get("verification_status", "")).strip().lower() == "pass":
-                return True, None
-        return False, "downstream:source_meta_verification_status_not_pass"
-    if st == "validate" and substep == "execute":
-        build_root = pr_abs / "binary"
-        if not build_root.is_dir():
-            return False, "downstream:binary_dir_missing"
-        for bdir in sorted(build_root.iterdir()):
-            if not bdir.is_dir():
-                continue
-            bin_dir = bdir / "bin"
-            if bin_dir.is_dir() and any(bin_dir.iterdir()):
-                return True, None
-        return False, "downstream:binary_bin_dir_missing"
     if st == "validate" and substep == "judge":
         base, err = _resolve_judge_execution_dir(
             repo_root,
@@ -6241,8 +6204,6 @@ def _downstream_phase_launch_gate(
         )
         if base is None:
             return False, f"downstream:{err or 'judge_path'}"
-        if not (base / "perf.json").is_file():
-            return False, "downstream:judge_missing:perf.json"
         raw_dir = base / "raw"
         if not raw_dir.is_dir():
             return False, "downstream:judge_raw_dir_missing"
@@ -6379,370 +6340,42 @@ def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, 
     return load_pipeline_target(repo_root, pipeline_ref).toolchain
 
 
-def _mandatory_phase_outputs_for_launch(
-    request_payload: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-) -> list[str]:
-    """Canonical phase outputs that MUST be pre-authorized for the launch.
-
-    The Validate ``post_execute`` gate (``tools/validate_pipeline_semantics.py``)
-    requires the snapshot schema at
-    ``<pipeline_ref>/runs/<run_id>/<node_safe>/raw/state_snapshots/snapshot_schema.json``
-    whenever the spec mandates state-snapshot evidence. Its ``.json`` name is not
-    covered by a bare ``raw/state_snapshots/`` directory allowlist entry (the
-    directory-allowlist source-extension set excludes it, same reason the
-    ``Makefile`` needs an explicit pin), so an executor that writes it without
-    listing it gets rejected with ``allowed_output_paths manifest violation`` and
-    the orchestration restarts. Pre-authorizing the canonical path is harmless
-    when the spec does not require snapshots (the file is simply never written),
-    so we inject it for the Validate.execute substep and let the
-    ``_matches_phase_contract`` check below confirm it stays in-contract.
-
-    Restricted to the ``execute`` substep: only execute writes ``raw/`` evidence,
-    and the ``judge`` contract rejects ``raw/`` paths — injecting there would make
-    ``_matches_phase_contract`` raise. It mirrored
-    ``_mandatory_file_tool_pins_for_launch``, which produced the file-tool pins a leaf's
-    Edit/Write grant needed and went with that grant in issue #171 PR-2: returns paths to be
-    merged into ``allowed`` only when missing; never raises.
-    """
-    step_token = str(request_payload.get("step") or "").strip().lower()
-    substep_token = str(request_payload.get("substep") or "").strip().lower()
-    pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
-    # Phase-2: the pipeline ``lineage.json`` is no longer a leaf output — it sits at the
-    # pipeline root, and a pure leaf writes nothing. The conductor authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
-    # post_generate gate runs, so it is NOT injected into the generate child's
-    # allowed_output_paths (historical audit: orch_20260615T095217Z_74450292 predates this).
-    if step_token != "validate" or substep_token != "execute" or not pipeline_ref:
-        return []
-    node_key = str(request_payload.get("node_key") or "").strip()
-    node_safe = _node_key_to_safe(node_key) if node_key else ""
-    if not node_safe:
-        return []
-    validate_prefix = f"{pipeline_ref}/runs/"
-    run_id = str(request_payload.get("run_id") or "").strip()
-    if not run_id:
-        # Single-namespace enforcement guarantees at most one run_id under the
-        # validate prefix; derive it from the listed paths when the request does
-        # not carry an explicit `run_id` field.
-        run_ids: set[str] = set()
-        for item in allowed_output_paths:
-            if not isinstance(item, str):
-                continue
-            tok = _normalize_rel_posix(item)
-            if not tok.startswith(validate_prefix):
-                continue
-            tail = tok[len(validate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                run_ids.add(parts[0])
-        if len(run_ids) == 1:
-            run_id = next(iter(run_ids))
-    if not run_id:
-        # run_id not determinable → inject nothing and preserve the loud
-        # downstream failure rather than guessing a placement.
-        return []
-    from tools.capture_store import SNAPSHOT_DIR_PARTS, SNAPSHOT_SCHEMA_FILENAME
-    return [
-        f"{validate_prefix}{run_id}/{node_safe}/{'/'.join(SNAPSHOT_DIR_PARTS)}/"
-        f"{SNAPSHOT_SCHEMA_FILENAME}"
-    ]
-
-
 def _allowed_output_paths_for_launch(
     *,
     request_payload: dict[str, Any],
 ) -> list[str]:
-    """The paths this launch is CONTRACTED to produce, validated against the phase contract.
+    """The paths a DETERMINISTIC launch declares it will produce, as its request lists them.
 
     It took a `write_roots` argument until issue #171 PR-2 and checked each declared path for
-    containment in the capability's roots as well. That was the authority half — a bound on
-    what a leaf could write — and there is no capability any more: the one caller left is a
-    DETERMINISTIC substep, which runs in the conductor's own process and is bound by nothing
-    this function returns. The phase-contract half stays, because it answers a different
-    question — is this path where this phase's output BELONGS — and its reader
-    (`determine_substep_status`) still asks it.
+    containment in the capability's roots as well; there is no capability any more. Until
+    issue #643 it also matched every path against the phase's contract (where that phase's
+    output belongs), refused a malformed or empty list, required one source / binary / run id,
+    and injected the canonical command logs and the snapshot schema. None of that decided
+    anything: the conductor builds the list from host constants for every deterministic
+    substep, `determine_substep_status` reads the conductor's own in-memory list, the
+    persisted request is the conductor's, and the one reader of what this returns
+    (`_canonical_command_log_paths_for_request`) derives the cross-phase log from `source_id`.
+
+    The reserved `tune` / `promote` flows (issue #174) keep their contract match: no launcher
+    builds their requests yet, and their output layout is stated here and nowhere else.
     """
     raw_candidates = (
         request_payload.get("allowed_output_paths")
         or request_payload.get("required_outputs")
         or request_payload.get("output_refs")
+        or []
     )
-    if not isinstance(raw_candidates, list):
-        raise ValueError(
-            "record-launch requires explicit allowed_output_paths list for step/substep agents"
-        )
     allowed: list[str] = []
-    for idx, item in enumerate(raw_candidates):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"allowed_output_paths[{idx}] must be non-empty string")
-        token_raw = item.strip().replace("\\", "/")
-        # Reject path-traversal segments BEFORE prefix/contract checks.
-        # `_normalize_rel_posix` does not collapse `..`, so a path like
-        # `releases/<spec>/.../r1/../../somewhere_else` would pass the
-        # startswith() prefix and identifier checks. Refuse any `.` or
-        # `..` segment anywhere in the candidate.
-        for _seg in token_raw.split("/"):
-            if _seg in ("", ".") and not (_seg == "" and token_raw.endswith("/")):
-                # Tolerate a trailing slash (directory entry) but not bare "/"
-                # repeats elsewhere.
-                if _seg == "":
-                    # Skip — duplicate slashes get normalized; treat as harmless.
-                    continue
-            if _seg in (".", ".."):
-                raise ValueError(
-                    f"allowed_output_paths[{idx}] must not contain '.'/'..' segments: {item!r}"
-                )
-        if token_raw.endswith("/"):
-            # Directory allowlist entry: stored with trailing slash preserved
-            token = _normalize_rel_posix(token_raw.rstrip("/")) + "/"
-        else:
-            token = _normalize_rel_posix(token_raw)
-        if not token or token == "/":
-            raise ValueError(f"allowed_output_paths[{idx}] must be valid relative path")
-        allowed.append(token)
+    for item in raw_candidates:
+        token = _normalize_rel_posix(str(item).strip().replace("\\", "/"))
+        if token not in allowed:
+            allowed.append(token)
     step_token = str(request_payload.get("step") or "").strip().lower()
-    substep_token = str(request_payload.get("substep") or "").strip().lower()
-    ir_ref = _normalize_rel_posix(str(request_payload.get("ir_ref") or ""))
     pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
     node_key = str(request_payload.get("node_key") or "").strip()
-    node_safe = _node_key_to_safe(node_key) if node_key else ""
-    compile_required = {
-        f"{ir_ref}/spec.ir.yaml",
-        f"{ir_ref}/ir_meta.json",
-    } if ir_ref else set()
-    generate_prefix = f"{pipeline_ref}/source/" if pipeline_ref else ""
-    build_prefix = f"{pipeline_ref}/binary/" if pipeline_ref else ""
-    validate_prefix = f"{pipeline_ref}/runs/" if pipeline_ref else ""
     tune_prefix = f"{pipeline_ref}/tune/" if pipeline_ref else ""
-    # source_id closure for cross-phase placement check below.
-    source_id = str(request_payload.get("source_id") or "").strip()
 
     def _matches_phase_contract(path: str) -> bool:
-        # Directory allowlist entries (trailing slash): validate the directory itself is permitted.
-        if path.endswith("/"):
-            dir_path = path.rstrip("/")
-            if step_token == "generate":
-                if generate_prefix and dir_path.startswith(generate_prefix):
-                    # Allow only <source_id>/src and its subdirectories; the source root itself is forbidden
-                    tail = dir_path[len(generate_prefix):]
-                    parts = [seg for seg in tail.split("/") if seg]
-                    if len(parts) >= 2 and parts[1] == "src":
-                        return True
-            return False
-        if step_token == "compile":
-            # Compile.static deliverable: the conductor-authored, freshness-gated
-            # compile_static_meta.json sits at the IR root (<ir_ref>/compile_static_meta.json),
-            # a sibling of spec.ir.yaml / ir_meta.json. Gated to the deterministic Compile.static
-            # substep ONLY (same rationale as generate's gate_meta above: a
-            # Compile.generate / Compile.verify leaf launch must NOT be able to list a
-            # conductor-authored verdict as its own output). The --stage compile validator is
-            # read-only on the IR; only this meta is written, inside the substep's own write_root.
-            # Compile.static's ONLY deliverable is compile_static_meta.json (exhaustive, like
-            # the generate.gate branch — a compile.static request listing any other compile path is
-            # rejected, not silently accepted via the compile_required fall-through).
-            # NOTE: the dependency-graph sidecar <ir_ref>/dependency_graph.json is
-            # conductor-authored (workflow_conductor._write_dependency_graph) and NOT a leaf
-            # deliverable — it is absent from compile_required ({spec.ir.yaml,
-            # ir_meta.json}; a membership allowlist, NOT a required set — an
-            # under-declaring request is accepted; only deterministic substeps reach it), so a compile.generate /
-            # compile.verify leaf declaring it as an output is rejected here.
-            # The retired view-only companion `algorithm.summary.md` is likewise absent:
-            # the conductor's compile.generate allowed_output_paths never listed it, so a
-            # leaf that authored one was blocked at the hook while this set silently
-            # permitted it at record-launch. Both sides now name the same two files.
-            if substep_token == "static":
-                return bool(ir_ref) and path == f"{ir_ref}/compile_static_meta.json"
-            # Compile.verify authors NOTHING in spec.ir.yaml — generate authors all 5 sections
-            # (incl. io_contract) and Compile.static validated the IR before verify runs. Verify's
-            # sole write is ir_meta.json; restricting its contract here prevents verify from
-            # mutating the IR post-gate (which would bypass --stage compile).
-            if substep_token == "verify":
-                return bool(ir_ref) and path == f"{ir_ref}/ir_meta.json"
-            return path in compile_required
-        if step_token == "generate":
-            # lineage.json is NOT a generate leaf output (it is authored host-side by the
-            # conductor; see workflow_conductor._write_lineage). The generate leaf writes
-            # only the source tree.
-            if generate_prefix and path.startswith(generate_prefix):
-                if "/src/" in path:
-                    return True
-                if path.endswith("/source_meta.json"):
-                    return True
-                # Generate.gate deliverable: the conductor-authored, freshness-gated
-                # gate_meta.json (the single unioned lint/syntax/static verdict) sits at the
-                # source root (source/<source_id>/gate_meta.json), a sibling of source_meta.json
-                # — not under src/. See workflow_conductor._gate_inproc and
-                # docs/workflow/phases/phase_02_generate.md. Gated to the deterministic
-                # Generate.gate substep ONLY: it is conductor-authored and leaf-non-writable, so a
-                # Generate.generate / Generate.verify leaf launch must NOT be able to list it as an
-                # output. A leaf writes nothing at all since issue #171, so this is a
-                # statement about the declaration rather than a refusal of a write.
-                if substep_token == "gate" and path.endswith("/gate_meta.json"):
-                    return True
-            return False
-        if step_token == "build":
-            # Cross-phase exception: in-source Make builds for Fortran/C
-            # family run compile_project with project_dir=<source_id>/src/, so the
-            # command log lands under the generate tree. Strict bind to
-            # request.source_id (record_launch verifies pass-state).
-            if generate_prefix and path.startswith(generate_prefix):
-                if not source_id:
-                    return False
-                expected_cross_phase_build = (
-                    f"{generate_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
-                )
-                return path == expected_cross_phase_build
-            if build_prefix and path.startswith(build_prefix):
-                # Codex round 29 F2: enforce canonical `<slug>_YYYYMMDD_NNN`
-                # on `binary_id` (the first segment after build_prefix).
-                # The round-23 freshness selector filters by this same
-                # suffix when dependency_readiness inspects another
-                # orchestration's `binary/<binary_id>/binary_meta.json` —
-                # so a non-canonical binary_id would silently be ignored
-                # by downstream dep checks. Reject the write at the
-                # earliest boundary instead of letting it land and be
-                # silently dropped later.
-                tail = path[len(build_prefix):]
-                tail_parts = [part for part in tail.split("/") if part]
-                if not tail_parts or not _SLUG_DATE_SEQ3_PATTERN.match(tail_parts[0]):
-                    return False
-                if "/bin/" in path or path.endswith("/binary_meta.json"):
-                    return True
-                # The bounds-checked binary Build makes beside the certified one when the
-                # target's compiler declares checked flags (issue #589 PR-0):
-                # `<binary_id>/bin_checked/<exe>`, exactly that depth.
-                if len(tail_parts) == 3 and tail_parts[1] == "bin_checked":
-                    return True
-                # `compile_project` writes a side-effect command log to
-                # `<project_dir>/command_log.jsonl`. Per
-                # `docs/workflow/phases/phase_03_build.md`, the in-phase
-                # canonical placement (out-of-source CMake/Meson builds) is
-                # directly under `<binary_id>/`.
-                if (
-                    len(tail_parts) == 2
-                    and tail_parts[1] == "command_log.jsonl"
-                ):
-                    return True
-            return False
-        if step_token == "validate" and substep_token == "execute":
-            if not validate_prefix or not node_safe:
-                return False
-            # Cross-phase exception: docs/workflow/phases/phase_04_validate.md
-            # mandates `run_quality_checks` against
-            # `project_dir=source/<source_id>/src/` for
-            # `toolchain.build_system=make` + Fortran/C-family pipelines. The
-            # build-runtime library's default command_log_path resolves to
-            # `<project_dir>/command_log.jsonl`, so the audit log lands in
-            # the source tree. This is the only legitimate write the
-            # Validate.execute substep makes outside runs/. Strictly bind the
-            # allowed cross-phase placement to the launch request's
-            # `source_id` field — any other source_id (e.g. an older sibling
-            # source under the same pipeline) is not authorized.
-            if generate_prefix and path.startswith(generate_prefix):
-                if not source_id:
-                    return False
-                expected_cross_phase = (
-                    f"{generate_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
-                )
-                return path == expected_cross_phase
-            if not path.startswith(validate_prefix):
-                return False
-            tail = path[len(validate_prefix):]
-            tail_parts = [part for part in tail.split("/") if part]
-            # Validate.execute contract must be under runs/<run_id>/<node_safe>/...
-            # Codex round 29 F2: enforce canonical `run_id` so the round-23
-            # freshness filter for `runs/<run_id>/.../aggregate_verdict.json`
-            # never has to silently drop legitimate verdicts of downstream
-            # consumers.
-            # run_id uses the strict `run_<YYYYMMDD>_<seq3>` grammar
-            # (`_RUN_ID_RE`), NOT the generic `<slug>_<date>_<seq3>` grammar:
-            # a slug-shaped value like `run-rsn-p0_20260605_001` matched the
-            # old `_SLUG_DATE_SEQ3_PATTERN` (slug=`run-rsn-p0`) and slipped
-            # through here, yet the Validate `post_execute` run discovery only
-            # recognizes the literal `run_` layout and silently reported
-            # "no execution artifacts found". Rejecting it at this boundary
-            # surfaces the mistake at launch instead.
-            if (
-                len(tail_parts) < 3
-                or tail_parts[1] != node_safe
-                or not _RUN_ID_RE.fullmatch(tail_parts[0])
-            ):
-                return False
-            rel_under_node = "/".join(tail_parts[2:])
-            allowed_files = {
-                "perf.json",
-                "quality_check.json",
-                "trial_meta.json",
-                "stdout.log",
-                "stderr.log",
-                # `run_program` / `run_quality_checks` side-effect log
-                # (phase_04_validate.md).
-                "command_log.jsonl",
-                # R2: execute authors verdict.json deterministically (the host's predicates over
-                # the captures), so it is part of the execute write-contract
-                # (moved off the judge substep, below). Without this, record_launch for the
-                # deterministic execute substep would reject its own allowed_output_paths.
-                "verdict.json",
-                # Issue #307: the device trace's per-kernel summary, promoted by execute for a
-                # target whose parallel backend declares `device_trace`
-                # (`host_execution.KERNEL_TRACE_ARTIFACT`).
-                "kernel_trace.csv",
-            }
-            return rel_under_node in allowed_files or rel_under_node.startswith("raw/")
-        if step_token == "validate" and substep_token == "judge":
-            if not validate_prefix or not node_safe:
-                return False
-            if not path.startswith(validate_prefix):
-                return False
-            tail = path[len(validate_prefix):]
-            tail_parts = [part for part in tail.split("/") if part]
-            # Validate.judge contract must be under runs/<run_id>/<node_safe>/...
-            # Codex round 29 F2: same canonical-id enforcement as the
-            # execute substep — judge writes the aggregate_verdict that
-            # downstream dependency_readiness consumes. run_id uses the strict
-            # `run_<YYYYMMDD>_<seq3>` grammar (`_RUN_ID_RE`); see the execute
-            # branch above for why the generic slug grammar is insufficient.
-            if (
-                len(tail_parts) < 3
-                or tail_parts[1] != node_safe
-                or not _RUN_ID_RE.fullmatch(tail_parts[0])
-            ):
-                return False
-            rel_under_node = "/".join(tail_parts[2:])
-            # R2: the judge authors ONLY semantic_review.json. verdict.json is host-authored at
-            # execute (per-test predicate evaluation) — removed here so a judge leaf is not even
-            # authorized to overwrite the host-authored verdict. aggregate_verdict / summary /
-            # validate_meta are conductor-authored in the post_judge substep (G6, see below).
-            allowed_files = {
-                "semantic_review.json",
-            }
-            return rel_under_node in allowed_files
-        if step_token == "validate" and substep_token in ("pre_judge", "post_judge"):
-            # G4/G6: the deterministic Validate gate substeps, conductor-authored in-process
-            # under the run-node dir, with the same canonical run_id enforcement as
-            # execute/judge. pre_judge authors ONLY its own meta (exact-match). post_judge
-            # authors post_judge_meta.json PLUS the G6 derived artifacts
-            # (aggregate_verdict / summary / validate_meta hoisted out of the judge leaf).
-            if not validate_prefix or not node_safe:
-                return False
-            if not path.startswith(validate_prefix):
-                return False
-            tail_parts = [p for p in path[len(validate_prefix):].split("/") if p]
-            if (
-                len(tail_parts) < 3
-                or tail_parts[1] != node_safe
-                or not _RUN_ID_RE.fullmatch(tail_parts[0])
-            ):
-                return False
-            rel_under_node = "/".join(tail_parts[2:])
-            if substep_token == "post_judge":
-                return rel_under_node in {
-                    "post_judge_meta.json",
-                    "aggregate_verdict.json",
-                    "summary.json",
-                    "validate_meta.json",
-                }
-            return rel_under_node == "pre_judge_meta.json"
         # NOTE: `tune` / `promote` step branches below are out-of-scope for the
         # core 5-phase workflow. They remain to satisfy the optional flows' contract.
         if step_token == "tune":
@@ -6814,136 +6447,14 @@ def _allowed_output_paths_for_launch(
             return True
         return False
 
-    # Defensive auto-inject: the build-runtime library writes a side-effect
-    # command log to `<project_dir>/command_log.jsonl` (run_linter for
-    # generate per skills/workflow-generate-generate, compile_project per
-    # docs/workflow/phases/phase_03_build.md, run_program /
-    # run_quality_checks per docs/workflow/phases/phase_04_validate.md). If
-    # the canonical log path is not pre-listed in allowed_output_paths, the phase's
-    # declared outputs and its actual ones disagree, which `post_<phase>` structural
-    # validation refuses. (It was record-agent-run that refused it, as an
-    # `unauthorized_write_violation`, until issue #171 PR-2 retired that audit.)
-    # Single-namespace enforcement for generate/build/validate steps:
-    # require listed paths under `<pipeline_ref>/<phase>/` to use exactly one
-    # `<source_id>` / `<binary_id>` / `<run_id>`. Otherwise the step could
-    # authorize build-runtime-owned command logs and outputs across sibling runs in the
-    # same pipeline, breaking provenance isolation.
-    if step_token == "generate" and generate_prefix:
-        gen_ids: set[str] = set()
-        for p in allowed:
-            if not p.startswith(generate_prefix):
-                continue
-            tail = p[len(generate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                gen_ids.add(parts[0])
-        if len(gen_ids) > 1:
-            raise ValueError(
-                f"allowed_output_paths must target a single source_id; "
-                f"got multiple under {generate_prefix!r}: {sorted(gen_ids)!r}"
-            )
-        if source_id and gen_ids and source_id not in gen_ids:
-            raise ValueError(
-                f"allowed_output_paths source_id={sorted(gen_ids)!r} does "
-                f"not match request source_id={source_id!r}"
-            )
-    elif step_token == "build" and build_prefix:
-        build_ids: set[str] = set()
-        for p in allowed:
-            if not p.startswith(build_prefix):
-                continue
-            tail = p[len(build_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                build_ids.add(parts[0])
-        if len(build_ids) > 1:
-            raise ValueError(
-                f"allowed_output_paths must target a single binary_id; "
-                f"got multiple under {build_prefix!r}: {sorted(build_ids)!r}"
-            )
-    elif step_token == "validate" and validate_prefix:
-        run_ids: set[str] = set()
-        for p in allowed:
-            if not p.startswith(validate_prefix):
-                continue
-            tail = p[len(validate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                run_ids.add(parts[0])
-        if len(run_ids) > 1:
-            raise ValueError(
-                f"allowed_output_paths must target a single run_id; "
-                f"got multiple under {validate_prefix!r}: {sorted(run_ids)!r}"
-            )
-        request_run_id = str(
-            request_payload.get("run_id") or ""
-        ).strip()
-        if request_run_id and run_ids and request_run_id not in run_ids:
-            raise ValueError(
-                f"allowed_output_paths run_id={sorted(run_ids)!r} does "
-                f"not match request run_id={request_run_id!r}"
-            )
-    # Inject only the canonical placements derived from listed paths — see
-    # `_canonical_command_log_paths` for the strict per-phase shapes.
-    # `_resolved_build_system` is an internal request_payload field
-    # populated by record_launch (resolved from the target profile of the request's
-    # pipeline) so the helper can gate cross-phase canonical placement on `build_system=make`.
-    # Tests calling this helper directly may set the field explicitly when
-    # cross-phase semantics are exercised; absence simply disables
-    # cross-phase auto-inject (in-phase canonical still applies).
-    _bs_raw = request_payload.get("_resolved_build_system")
-    _bs_norm = (
-        _bs_raw.strip().lower()
-        if isinstance(_bs_raw, str) and _bs_raw.strip()
-        else ""
-    )
-    canonical_logs = _canonical_command_log_paths(
-        step_token=step_token,
-        pipeline_ref=pipeline_ref,
-        node_safe=node_safe,
-        source_id=source_id,
-        listed_paths=list(allowed),
-        build_system=_bs_norm,
-        substep_token=substep_token,
-    )
-    canonical_logs_set: set[str] = set(canonical_logs)
-    for log_path in canonical_logs:
-        if log_path not in allowed:
-            allowed.append(log_path)
-
-    # Mandatory canonical phase outputs (e.g. Validate's snapshot_schema.json)
-    # whose names are not covered by a directory allowlist entry. Inject so the
-    # executor's write is authorized rather than failing post_execute and forcing
-    # a restart. The _matches_phase_contract pass below validates placement.
-    for mandatory_output in _mandatory_phase_outputs_for_launch(request_payload, allowed):
-        if mandatory_output not in allowed:
-            allowed.append(mandatory_output)
-
-    for idx, path in enumerate(allowed):
-        if path in canonical_logs_set:
-            # Canonical build-runtime-owned command logs are pre-validated against
-            # canonical phase placements (including legitimate cross-phase
-            # placements like Execute's run_quality_checks log under
-            # source/<source_id>/src/).
+    if step_token in ("tune", "promote"):
+        for idx, path in enumerate(allowed):
             if not _matches_phase_contract(path):
                 raise ValueError(
-                    f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
+                    f"allowed_output_paths[{idx}] is outside phase contract outputs for "
+                    f"step={step_token!r}: {path!r}"
                 )
-            continue
-        if not _matches_phase_contract(path):
-            raise ValueError(
-                f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
-            )
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for path in allowed:
-        if path in seen:
-            continue
-        deduped.append(path)
-        seen.add(path)
-    if not deduped:
-        raise ValueError("allowed_output_paths must be non-empty for step/substep agents")
-    return deduped
+    return allowed
 
 
 # Integrity-protected audit logs written exclusively by the build-runtime library as evidence
@@ -7034,10 +6545,8 @@ def _canonical_command_log_paths(
             )
     elif step_token == "validate" and substep_token == "execute" and node_safe:
         # Only the Validate.execute substep emits command logs (run_program
-        # / run_quality_checks). Validate.judge runs no build-runtime entry point, so no
-        # auto-injection — adding command_log.jsonl would later fail
-        # phase contract validation since judge does not list it as an allowed
-        # output filename.
+        # / run_quality_checks). Validate.judge runs no build-runtime entry point, so it has
+        # no canonical log placement.
         prefix = f"{pipeline_ref}/runs/"
         for tok in listed_paths:
             if not isinstance(tok, str) or not tok.startswith(prefix):
@@ -7086,28 +6595,20 @@ def _builds_in_source(build_system: str | None) -> bool:
 def _canonical_command_log_paths_for_request(
     request_payload: dict[str, Any],
     allowed_output_paths: Sequence[str],
-    *,
-    repo_root: Path | None = None,
 ) -> list[str]:
     step_token = str(request_payload.get("step") or "").strip().lower()
     pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
     node_key = str(request_payload.get("node_key") or "").strip()
     node_safe = _node_key_to_safe(node_key) if node_key else ""
     source_id = str(request_payload.get("source_id") or "").strip()
-    # Resolve toolchain.build_system, preferring (1) explicit
-    # `_resolved_build_system` in request_payload (set by record_launch from the target
-    # profile of the request's pipeline), then (2) reading that profile directly when
-    # repo_root is provided. Without either, build_system="" which disables cross-phase
-    # canonical placement (Make-only exception).
+    # toolchain.build_system: `_resolved_build_system`, which record_launch sets from the
+    # target profile of the request's pipeline whenever the request carries a `pipeline_ref`
+    # (and refuses the launch when that profile does not load). Without it, build_system=""
+    # disables the cross-phase canonical placement (Make-only exception).
     build_system = ""
     bs_pre = request_payload.get("_resolved_build_system")
     if isinstance(bs_pre, str) and bs_pre.strip():
         build_system = bs_pre.strip().lower()
-    elif repo_root is not None and pipeline_ref:
-        try:
-            build_system = str(_pipeline_target_toolchain(repo_root, pipeline_ref)["build_system"])
-        except TargetProfileError:
-            build_system = ""
     substep_token = str(request_payload.get("substep") or "").strip().lower()
     return _canonical_command_log_paths(
         step_token=step_token,
@@ -13381,14 +12882,14 @@ def record_launch(
         #
         # What still decides something is recorded below: the read-only sandbox profile (which
         # the kernel enforces through bwrap) and the launch request itself, whose
-        # `allowed_output_paths` is what `_validate_pass_output_refs_against_launch` and
-        # `determine_substep_status` read for a deterministic substep.
+        # `allowed_output_paths` is what `determine_substep_status` reads for a deterministic
+        # substep.
         # A workshop leaf writes nothing under the checkout either — the host writes every
         # artifact from its snapshot — so it declares no output path, as a pure leaf does.
         is_pure = _leaf_contract_is_host_rendered_request(request_payload)
         # The toolchain of the target the request's pipeline is built for (issue #284; read
         # off the IR's `impl_defaults` until R4-a PR-2), so the canonical-placement helper can
-        # gate cross-phase auto-inject on the build system (the documented Make-only
+        # gate the cross-phase placement on the build system (the documented Make-only
         # exception). A request whose `pipeline_ref` carries no target is refused here
         # (`TargetProfileError`).
         _pipe_ref_for_tc = str(request_payload.get("pipeline_ref") or "").strip()
@@ -13404,8 +12905,8 @@ def record_launch(
         else:
             # A DETERMINISTIC substep. The list is not an authority — nothing enforces it
             # against the conductor's own process — it is the record of what this substep is
-            # contracted to produce, read back by `determine_substep_status` and
-            # `_validate_pass_output_refs_against_launch`.
+            # contracted to produce; `determine_substep_status` reads the conductor's own copy.
+            # Only the cross-phase log below is derived from it (from `source_id`).
             allowed_output_paths = _allowed_output_paths_for_launch(
                 request_payload=request_payload,
             )
@@ -13486,7 +12987,7 @@ def record_launch(
                     "it claims provenance for."
                 )
         canonical_audit_logs = _canonical_command_log_paths_for_request(
-            request_payload, allowed_output_paths, repo_root=repo_root
+            request_payload, allowed_output_paths
         )
         # Validate cross-phase canonical placements:
         #   - Execute → source/<source_id>/ for run_quality_checks
@@ -15289,9 +14790,8 @@ def main(argv: list[str] | None = None) -> int:
         "skill_name / skill_ref / skill_must_read_refs are NOT required and must be empty: no leaf "
         "reads a SKILL (issue #171). "
         "For a DETERMINISTIC step/substep launch, one of allowed_output_paths|required_outputs|output_refs "
-        "must be provided as a file-path list; the runtime validates each path against the phase contract's "
-        "outputs. (It also validated them against the capability's write_roots until issue #171 PR-2, which "
-        "deleted the capability document.) A PURE launch must leave allowed_output_paths empty -- the host "
+        "lists the files it produces; the runtime matches each path against the phase contract's outputs "
+        "for the reserved tune and promote flows only (issue #643). A PURE launch must leave allowed_output_paths empty -- the host "
         "writes every artifact after the child window closes. allowed_file_tool_paths is accepted and IGNORED: "
         "it named a leaf's Edit/Write grant, and no leaf holds either tool. "
         "ir_id/pipeline_id format: <slug>_<YYYYMMDD>_<seq3> where slug uses hyphens only "
@@ -15301,11 +14801,8 @@ def main(argv: list[str] | None = None) -> int:
         "verification_status=pass), and source_binary_id (the binary_id whose binary execute uses; "
         "record_launch reads <pipeline_ref>/binary/<source_binary_id>/binary_meta.json and verifies "
         "source_source_id == request.source_id to prevent mixed-build forge). "
-        "Cross-phase command log auto-inject (`<source_id>/src/command_log.jsonl`) only fires when "
-        "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds). "
-        "Generate substep extra-required: source_id matches the listed paths' single <source_id>. "
-        "Build step listed paths must use a single <binary_id>; cross-phase Make builds also accept "
-        "source_id-derived `<source_id>/src/command_log.jsonl` placement."
+        "The cross-phase command log placement (`<source_id>/src/command_log.jsonl`) exists only when "
+        "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds)."
     )
     _RECORD_LAUNCH_RESPONSE_HELP = (
         "JSON object with child agent response. For Claude Code backend use: "

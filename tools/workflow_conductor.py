@@ -1890,9 +1890,8 @@ def build_launch_request(
     # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
     # branch, and `_validate_leaf_launch_request_payload` REFUSES a pure request whose list is
     # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
-    # survives for a deterministic launch, where `_allowed_output_paths_for_launch` checks the
-    # list against the phase contract at record-launch (NOT `post_<phase>` validation, which
-    # never reads the field). The hazard the three layers were defence in depth
+    # survives for a deterministic launch, where `determine_substep_status` reads the list
+    # (record-launch no longer matches it against the phase contract, issue #643). The hazard the three layers were defence in depth
     # against — a source rewritten on a verify turn, which would
     # reach Build uncertified, the lint/syntax/static gates having already run and never re-running
     # — is refused by the sandbox itself, not merely by the hook. The constraint therefore does not
@@ -10646,6 +10645,15 @@ class Conductor:
             # varies by build system) exist AND were authored in this attempt
             # (mtime >= min_mtime), so a retry/reopen never passes on stale files.
             required = [p for p in paths if Path(p).name not in _OPTIONAL_OUTPUT_BASENAMES]
+            if not required:
+                # The premise every branch below rests on: a deterministic substep declares at
+                # least one deliverable (`build_launch_request` lists one for each). With none,
+                # the freshness test is vacuously True and a prior attempt's `pass` meta would
+                # certify this substep — the record-launch refusal of an empty list that used to
+                # state this went in issue #643.
+                raise ValueError(
+                    f"determine_substep_status: {phase}.{substep or ''} declares no deliverable "
+                    f"besides audit logs ({paths})")
             present = [p for p in required if (self.repo_root / p).exists()]
             if len(present) != len(required):
                 return False

@@ -464,7 +464,12 @@ def finish_replay_orchestration(repo_root: Path, replay: ReplayOrchestration, st
 
 def launch_gates(repo_root: Path, orchestration_id: str, source: SourceLaunch
                  ) -> dict[str, Any]:
-    """The two workspace-dependent launch gates `record_launch` would run for this row."""
+    """The two workspace-dependent launch gates `record_launch` would run for this row.
+
+    The downstream gate no longer asks for the run directory's `perf.json` (issue #643: on the
+    workflow path `determine_substep_status` requires it fresh before the judge launches). A
+    replay over a recorded run directory that lacks it is not refused here; it is accepted as a
+    wasted replay, which certifies nothing."""
     from tools.orchestration_runtime import _dependency_ready, _downstream_phase_launch_gate
     step = source.pair[0]
     dep_ok, dep_reason = _dependency_ready(repo_root, orchestration_id, step=step)

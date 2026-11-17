@@ -1759,70 +1759,13 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(sub.get("agent_model"), "claude-opus-4-8")
             self.assertEqual(sub.get("derivation_key"), "sha256:" + "d" * 64)
 
-    def test_phase_contract_accepts_validate_gate_meta_outputs(self) -> None:
-        """record-launch's phase-contract check (`_allowed_output_paths_for_launch`) must accept
-        the pre_judge/post_judge deterministic substeps' ONLY deliverable — their run-node meta —
-        or every validate node crashes at the first substep's record-launch in the real flow.
-        Drives the REAL contract function (not the _FakeConductor stub) so the mock gap that hid
-        this cannot recur."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        pipeline = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/spec-x_20260101_001"
-        node_key = "component/spec_x@0.1.0"
-        node_safe = "component__spec_x__0.1.0"
-        run_id = "run_20260101_001"
-        for sub in ("pre_judge", "post_judge"):
-            good = f"{pipeline}/runs/{run_id}/{node_safe}/{sub}_meta.json"
-            payload = {"agent_role": "substep", "step": "validate", "substep": sub,
-                       "pipeline_ref": pipeline, "node_key": node_key,
-                       "allowed_output_paths": [good]}
-            self.assertEqual(
-                _allowed_output_paths_for_launch(request_payload=payload),
-                [good])
-            # The gate substep may declare ONLY its own meta — not the judge's artifacts.
-            forged = dict(payload, allowed_output_paths=[
-                f"{pipeline}/runs/{run_id}/{node_safe}/semantic_review.json"])
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged)
-
-    def test_phase_contract_execute_authors_verdict_judge_does_not(self) -> None:
-        """R2: verdict.json is part of the Validate.EXECUTE write-contract (host-authored from
-        io_contract.tests and io_contract.predicates) and is NOT a Validate.judge deliverable. Drives the REAL
-        _allowed_output_paths_for_launch (not the _FakeConductor stub) so the mock gap that hid
-        the execute record-launch crash cannot recur."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        pipeline = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/spec-x_20260101_001"
-        node_key = "component/spec_x@0.1.0"
-        node_safe = "component__spec_x__0.1.0"
-        run_id = "run_20260101_001"
-        verdict = f"{pipeline}/runs/{run_id}/{node_safe}/verdict.json"
-        # execute may declare verdict.json (else record-launch crashes before it runs)
-        execute = {"agent_role": "substep", "step": "validate", "substep": "execute",
-                   "pipeline_ref": pipeline, "node_key": node_key,
-                   "allowed_output_paths": [verdict]}
-        self.assertIn(
-            verdict, _allowed_output_paths_for_launch(request_payload=execute))
-        # the judge may NOT declare verdict.json (it authors only semantic_review.json)
-        judge = {"agent_role": "substep", "step": "validate", "substep": "judge",
-                 "pipeline_ref": pipeline, "node_key": node_key,
-                 "allowed_output_paths": [verdict]}
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(request_payload=judge)
-        sem = f"{pipeline}/runs/{run_id}/{node_safe}/semantic_review.json"
-        judge_ok = dict(judge, allowed_output_paths=[sem])
-        self.assertEqual(
-            _allowed_output_paths_for_launch(request_payload=judge_ok), [sem])
-
-    def test_phase_contract_admits_the_traced_execute_request(self) -> None:
+    def test_the_traced_execute_request_lists_the_kernel_summary(self) -> None:
         """Issue #307: the execute request `build_launch_request` builds for a traced target —
-        the real one, not a stub — passes the REAL phase-contract check, so record-launch does
-        not refuse every `cuda` Validate.execute before it runs (round 1 found it did: the
-        conductor tests mock `runtime`, which never reaches this function). The summary's name
-        is the conductor's constant; and it is execute's alone — a judge may not declare it."""
+        the real one, not a stub — lists the per-kernel summary as a deliverable, under the
+        conductor's constant name, and an untraced one does not. (The phase-contract match this
+        row also drove went in issue #643.)"""
         import tools.workflow_conductor as wc
         from tools.host_execution import KERNEL_TRACE_ARTIFACT
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
         refs = wc.NodeRefs(target_id="fortran_cpu", node_key="component/spec_x@0.1.0",
                            spec_path="spec/component/spec_x", ir_id="x_1", pipeline_id="x_1",
@@ -1835,14 +1778,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     orchestration_agent_run_id="a", child_agent_run_id="c", agent_model="m",
                     workflow_mode="dev", case_ids=("c_alpha",), device_trace=traced,
                     output_format="json")
-                outs = _allowed_output_paths_for_launch(request_payload=req)
                 summary = f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"
-                self.assertEqual(summary in outs, traced)
-        judge = {"agent_role": "substep", "step": "validate", "substep": "judge",
-                 "pipeline_ref": refs.pipeline_ref, "node_key": refs.node_key,
-                 "allowed_output_paths": [f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"]}
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(request_payload=judge)
+                self.assertEqual(summary in req["allowed_output_paths"], traced)
 
     # `test_phase_contract_compile_generate_admits_only_conductor_declaration` stood here until
     # Z4 (issue #171). It drove the CAPTURED agentic `compile.generate` request through
@@ -1857,41 +1794,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     # itself and `docs/workflow/phases/phase_01_compile.md`, which the pure compile prompt
     # inlines whole; what is NOT carried forward is this layer's refusal of a third name at the
     # IR root, because no leaf names anything there any more.
-
-    def test_phase_contract_compile_static_is_the_meta_alone(self) -> None:
-        """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`.
-        Review found that widening that `==` to a `startswith` on the IR root was invisible to
-        the whole suite — nothing pinned this branch — so a deterministic substep could have
-        declared write authority over the IR it is supposed to validate read-only. Pinned here
-        next to the generate contract because the two are one rule read at two substeps.
-
-        (Keeping a compile.generate / compile.verify leaf from listing the verdict as ITS output
-        is a different mechanism — `compile_required` membership — already pinned by
-        `test_compile_non_static_launch_rejects_compile_static_meta_json`. An earlier draft of
-        this docstring credited that job to this branch.)
-
-        Unlike the generate contract, this payload is hand-written: `compile.static` has no
-        captured request under tools/tests/data/conductor_launch_requests/, so a conductor-side
-        widening of the static declaration is NOT caught here the way the generate side is by
-        test_reproduces_every_real_substep_payload."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
-        base = {"agent_role": "substep", "step": "compile", "substep": "static",
-                "ir_ref": ir_ref, "node_key": "component/spec_x@0.1.0"}
-        meta = [f"{ir_ref}/compile_static_meta.json"]
-        self.assertEqual(
-            _allowed_output_paths_for_launch(
-                request_payload=dict(base, allowed_output_paths=meta)),
-            meta)
-        # Not even the IR the gate reads, and not a sibling meta: static writes its verdict only.
-        # The trailing-slash entries probe the directory branch, which no file-shaped probe
-        # reaches — see the note in the generate test above.
-        for extra in ("spec.ir.yaml", "ir_meta.json", "compile_static_meta.json.bak",
-                      "zz9_unlisted_artifact.xyz", "", "views/"):
-            forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged)
 
     def test_a_codex_cold_launch_starts_its_own_lineage_and_a_warm_one_reuses_it(self) -> None:
         """End to end through `record_launch`, the registration transaction and the index.
@@ -2711,219 +2613,14 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 ),
             )
 
-    def test_generate_gate_launch_accepts_gate_meta_json(self) -> None:
-        """The deterministic Generate.gate substep declares
-        source/<source_id>/gate_meta.json as its conductor-authored deliverable
-        (workflow_conductor._gate_inproc), plus the canonical src/command_log.jsonl its
-        lint/syntax checkers append to. gate_meta.json sits at the source root — a sibling of
-        source_meta.json, NOT under src/ — so the generate phase contract must accept it.
-        Regression for the billed-E2E fail "allowed_output_paths[0] is outside phase contract
-        outputs for step='generate': .../gate_meta.json".
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_gate_meta_001"
-        gate_meta = f"{_FIX_PIPE_REF}/source/{src_id}/gate_meta.json"
-        command_log = f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "substep": "gate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "allowed_output_paths": [gate_meta, command_log],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertIn(gate_meta, out)
-        self.assertIn(command_log, out)
-
-    def test_generate_non_gate_launch_rejects_gate_meta_json(self) -> None:
-        """gate_meta.json is conductor-authored and leaf-non-writable. A Generate.generate /
-        Generate.verify leaf launch must NOT be able to list it as an output (it would
-        auto-authorize overwriting the gate verdict). The generate phase contract accepts
-        gate_meta.json for the deterministic Generate.gate substep ONLY. The retired per-checker
-        meta names are rejected outright, for the gate substep too.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_gate_meta_002"
-        gate_meta = f"{_FIX_PIPE_REF}/source/{src_id}/gate_meta.json"
-        model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        for substep in ("generate", "verify"):
-            with self.subTest(substep=substep):
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": src_id,
-                    "allowed_output_paths": [model_src, gate_meta],
-                }
-                with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                    _allowed_output_paths_for_launch(
-                        request_payload=req,
-                    )
-
-    def test_compile_static_launch_accepts_compile_static_meta_json(self) -> None:
-        """The deterministic Compile.static substep declares
-        <ir_ref>/compile_static_meta.json as its conductor-authored deliverable
-        (workflow_conductor._compile_static_inproc). It sits at the IR root (a sibling of
-        spec.ir.yaml / ir_meta.json), so the compile phase contract must accept it for the
-        static substep — else every compile node fails at the static substep's record-launch.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        compile_static_meta = f"{_FIX_IR_REF}/compile_static_meta.json"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "compile",
-            "substep": "static",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [compile_static_meta],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertIn(compile_static_meta, out)
-
-    def test_compile_verify_launch_rejects_spec_ir_yaml_write(self) -> None:
-        """Compile.verify authors NOTHING in spec.ir.yaml (io_contract moved to Compile.generate;
-        Compile.static gated the IR before verify). Its sole write is ir_meta.json, so a verify
-        launch that lists spec.ir.yaml as an output is rejected — preventing verify from mutating
-        the IR post-gate (which would bypass --stage compile). ir_meta.json alone is accepted.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        ir_meta = f"{_FIX_IR_REF}/ir_meta.json"
-        ir_yaml = f"{_FIX_IR_REF}/spec.ir.yaml"
-        base = {
-            "agent_role": "substep", "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "compile", "substep": "verify",
-            "ir_ref": _FIX_IR_REF, "pipeline_ref": _FIX_PIPE_REF,
-        }
-        # ir_meta.json alone is accepted.
-        out = _allowed_output_paths_for_launch(
-            request_payload={**base, "allowed_output_paths": [ir_meta]})
-        self.assertEqual(out, [ir_meta])
-        # listing spec.ir.yaml is rejected for verify.
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload={**base, "allowed_output_paths": [ir_yaml, ir_meta]})
-        # ...but Compile.generate (the author) may still list spec.ir.yaml.
-        gen_out = _allowed_output_paths_for_launch(
-            request_payload={**base, "substep": "generate",
-                             "allowed_output_paths": [ir_yaml, ir_meta]})
-        self.assertIn(ir_yaml, gen_out)
-
-    def test_compile_non_static_launch_rejects_compile_static_meta_json(self) -> None:
-        """compile_static_meta.json is conductor-authored and leaf-non-writable. A
-        Compile.generate / Compile.verify leaf launch must NOT be able to list it as an output
-        (it would auto-authorize overwriting the static verdict). The compile phase contract
-        accepts compile_static_meta.json for the deterministic Compile.static substep ONLY.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        compile_static_meta = f"{_FIX_IR_REF}/compile_static_meta.json"
-        ir_yaml = f"{_FIX_IR_REF}/spec.ir.yaml"
-        for substep in ("generate", "verify"):
-            with self.subTest(substep=substep):
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "allowed_output_paths": [ir_yaml, compile_static_meta],
-                }
-                with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                    _allowed_output_paths_for_launch(
-                        request_payload=req,
-                    )
-
-    def test_generate_leaf_launch_rejects_unlisted_source_root_json(self) -> None:
-        """The GENERATE phase contract is a MEMBERSHIP test on source-root JSON: a name it does
-        not list is refused whatever it is called, for every generate substep. `gate_meta.json`
-        is the one accepted name, and only for Generate.gate (the row above).
-
-        WHAT THIS DOES AND DOES NOT COVER, stated because issue #180's round 1 measured the
-        wider version FALSE. It is true of the generate contracts only. Two sibling contracts
-        in `_matches_phase_contract` would accept a retired per-checker name: `validate.execute`
-        admits anything under `raw/` (`orchestration_runtime.py:7856`) and `tune` admits any
-        `*_meta.json` basename (`:7934`). So the enumeration issue #180 deleted from
-        `_allowed_file_tool_paths_for_launch` was NOT redundant with this layer everywhere — it
-        was redundant here, and unreached everywhere, because no request in this tree sets
-        `allowed_file_tool_paths` and nothing reads the three names. That is the evidence the
-        deletion rests on; this row is not it.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_unlisted_meta_002"
-        unlisted = f"{_FIX_PIPE_REF}/source/{src_id}/extra_meta.json"
-        model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        for substep in ("generate", "verify", "gate"):
-            with self.subTest(substep=substep):
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": src_id,
-                    "allowed_output_paths": [model_src, unlisted],
-                }
-                with self.assertRaisesRegex(
-                    ValueError, "outside phase contract outputs"
-                ):
-                    _allowed_output_paths_for_launch(
-                        request_payload=req,
-                    )
-
-    def test_validate_launch_rejects_listed_path_for_other_run_id(self) -> None:
-        """If request.run_id is set, listed paths must use that run_id only."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": "exec_real_001",
-            "allowed_output_paths": [
-                # Caller declares run_id=exec_real_001 but lists a path
-                # under a different run_id.
-                f"{_FIX_PIPE_REF}/runs/run_20260201_002/{node_safe}/perf.json",
-            ],
-        }
-        with self.assertRaisesRegex(
-            ValueError,
-            "must target a single run_id|does not match request run_id",
-        ):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
     def test_build_launch_accepts_cross_phase_log_for_make_build(self) -> None:
         """In-source Make builds (Fortran/C family) run compile_project with
         project_dir=<source_id>/src/, so the command log lands in the generate
-        tree. The build launch must auto-inject the cross-phase canonical
-        placement when source_id is provided.
+        tree. The canonical placements of a build launch carry the cross-phase one when
+        source_id is provided and the build system builds in source (record_launch then checks
+        that source's `source_meta.json` is at pass).
         """
-        from tools.orchestration_runtime import (
-            _allowed_output_paths_for_launch,
-            _canonical_command_log_paths_for_request,
-        )
+        from tools.orchestration_runtime import _canonical_command_log_paths_for_request
 
         src_id = "src_make_build_001"
         binary_id = "build-make_20260101_001"
@@ -2940,45 +2637,32 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "ir_ref": _FIX_IR_REF,
             "pipeline_ref": _FIX_PIPE_REF,
             "source_id": src_id,
-            # `_resolved_build_system` is normally injected by record_launch
-            # from spec.ir.yaml; for direct helper tests we set it.
+            # `_resolved_build_system` is normally set by record_launch from the target
+            # profile of the request's pipeline; for direct helper tests we set it.
             "_resolved_build_system": "make",
             "allowed_output_paths": [
                 f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
                 f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
             ],
         }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        # Both placements (in-phase and cross-phase) auto-injected.
-        self.assertIn(in_phase_log, out)
-        self.assertIn(cross_log, out)
-        canonical = set(_canonical_command_log_paths_for_request(req, out))
+        canonical = set(_canonical_command_log_paths_for_request(
+            req, req["allowed_output_paths"]))
         self.assertIn(in_phase_log, canonical)
         self.assertIn(cross_log, canonical)
-        # Without the record-launch stamp, the build system is the TARGET's, read off the
-        # request's pipeline_ref (issue #284): the make-only cross-phase placement holds when
-        # the profile resolves and is dropped when it does not.
-        from tools.tests.target_fixtures import install_target_profile
+        # Without the record-launch stamp there is no build system, and the make-only
+        # cross-phase placement is not granted.
         bare = {k: v for k, v in req.items() if k != "_resolved_build_system"}
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self.assertNotIn(cross_log, set(_canonical_command_log_paths_for_request(
-                bare, out, repo_root=repo)))
-            install_target_profile(repo)
-            self.assertIn(cross_log, set(_canonical_command_log_paths_for_request(
-                bare, out, repo_root=repo)))
+        self.assertNotIn(cross_log, set(_canonical_command_log_paths_for_request(
+            bare, req["allowed_output_paths"])))
 
     def test_build_launch_skips_cross_phase_log_for_non_make_toolchain(self) -> None:
         """Cross-phase canonical placement is Make-only.
 
         For CMake/Meson/Ninja or any out-of-source build, the cross-phase
-        generate-tree audit log must NOT be auto-injected even when
-        source_id is provided. Otherwise non-Make builds would gain
-        write authority into the generate tree contrary to spec.
+        generate-tree audit log is NOT a canonical placement even when
+        source_id is provided.
         """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+        from tools.orchestration_runtime import _canonical_command_log_paths_for_request
 
         src_id = "src_cmake_001"
         binary_id = "build-cmake_20260101_001"
@@ -3002,46 +2686,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
             ],
         }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        # In-phase log is auto-injected; cross-phase is NOT.
-        self.assertIn(in_phase_log, out)
-        self.assertNotIn(cross_log, out)
-
-    def test_validate_execute_auto_injects_snapshot_schema(self) -> None:
-        """Validate.execute launches must auto-inject the canonical
-        raw/state_snapshots/snapshot_schema.json so an executor that writes it
-        is not rejected by post_execute / restarted (P3)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        node_safe = "problem__shallow_water2d__0.3.0"
-        run_id = "run_20260201_002"
-        run_dir = f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{run_dir}/perf.json",
-                f"{run_dir}/quality_check.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        expected = f"{run_dir}/raw/state_snapshots/snapshot_schema.json"
-        self.assertIn(expected, out)
-        # Idempotent: pre-listing it must not duplicate.
-        req2 = dict(req)
-        req2["allowed_output_paths"] = req["allowed_output_paths"] + [expected]
-        out2 = _allowed_output_paths_for_launch(
-            request_payload=req2,
-        )
-        self.assertEqual([p for p in out2 if p == expected], [expected])
+        canonical = set(_canonical_command_log_paths_for_request(
+            req, req["allowed_output_paths"]))
+        # In-phase log is canonical; cross-phase is NOT.
+        self.assertIn(in_phase_log, canonical)
+        self.assertNotIn(cross_log, canonical)
 
     def test_generate_generate_does_not_inject_lineage(self) -> None:
         """Phase-2: lineage.json is authored host-side by the conductor (it sits at the
@@ -3087,36 +2736,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             request_payload=req,
         )
         self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
-
-    def test_validate_judge_does_not_inject_snapshot_schema(self) -> None:
-        """The judge substep writes no raw/ evidence and its phase contract
-        rejects raw/ paths; the snapshot schema must NOT be injected there
-        (injecting would make _matches_phase_contract raise) (P3)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        node_safe = "problem__shallow_water2d__0.3.0"
-        run_id = "run_20260201_003"
-        run_dir = f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "judge",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{run_dir}/semantic_review.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-            # Judge's production write_root is the narrowed semantic_review.json file pin.
-        )
-        for p in out:
-            self.assertFalse(
-                p.endswith("snapshot_schema.json"),
-                f"unexpected snapshot_schema inject for judge: {p}",
-            )
 
     def test_required_child_agent_kind_lists_valid_steps_on_unknown(self) -> None:
         """An unsupported step must raise a ValueError that enumerates the valid
@@ -3903,144 +3522,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     response_payload=_spawn_response_payload("sess_step_build_failed_gen"),
                  netns_socket_dir=netns_socket_dir())
 
-    def test_build_launch_rejects_listed_paths_for_multiple_build_ids(self) -> None:
-        """A build launch must target exactly one binary_id."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/binary/bin_20260101_002/binary_meta.json",
-                f"{_FIX_PIPE_REF}/binary/bin_20260101_003/binary_meta.json",
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "must target a single binary_id"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
-    def test_build_phase_auto_injects_and_accepts_command_log(self) -> None:
-        """Build step must auto-inject <binary_id>/command_log.jsonl (compile_project log)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        binary_id = "bin_20260510_001"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        expected_log = f"{_FIX_PIPE_REF}/binary/{binary_id}/command_log.jsonl"
-        self.assertIn(expected_log, out)
-
-    def test_build_phase_rejects_log_in_unrecognized_subdir(self) -> None:
-        """Build phase only accepts the log directly under <binary_id>/, not under arbitrary subdirs."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        binary_id = "bin_20260510_002"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                # Log path under an unrecognized subdir (not /bin/, not directly under binary_id).
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/logs/command_log.jsonl",
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
-    def test_execute_phase_auto_injects_and_accepts_command_log(self) -> None:
-        """Execute step must auto-inject <run_id>/<node_safe>/command_log.jsonl."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        run_id = "run_20260510_001"
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        expected_log = (
-            f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/command_log.jsonl"
-        )
-        self.assertIn(expected_log, out)
-
-    def test_record_launch_rejects_slug_shaped_validate_run_id(self) -> None:
-        """Regression for the orch_…_2947d72c failure: a slug-shaped run_id
-        like `run-rsn-p0_20260605_001` matches the generic
-        `_SLUG_DATE_SEQ3_PATTERN` (slug=`run-rsn-p0`) and used to slip past the
-        write-acceptance boundary, but is NOT a canonical run_id (no literal
-        `run_` prefix) so the Validate post_execute discovery silently found no
-        artifacts. The boundary must now reject it at launch."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        run_id = "run-rsn-p0_20260605_001"
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
-    def test_record_launch_accepts_canonical_validate_run_id(self) -> None:
-        """The canonical run_<YYYYMMDD>_<seq3> form must continue to pass."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        run_id = "run_20260605_001"
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertIn(
-            f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json", out
-        )
-
     def test_generate_non_make_launch_does_not_inject_makefile_pin(self) -> None:
         """Fix 1 is Make-scoped: CMake/Meson Generate launches must NOT get a
         Makefile pin auto-injected (out-of-source toolchains do not build with
@@ -4487,99 +3968,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 },
             )
             self.assertEqual(payload["output_refs"], [out_ref])
-
-    def test_execute_launch_rejects_listed_path_for_unrelated_generation(self) -> None:
-        """Defense against authorization-by-listing of an unrelated generation.
-
-        If an execute launch lists `<pipeline_ref>/source/<other>/src/...`
-        in allowed_output_paths (a generation different from the request's
-        `source_id`), the launch must be rejected. Otherwise an older or
-        sibling generation's audit log could gain build-runtime-owned write authority.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            real_gen = "gen_real_001"
-            other_src = "src_other_002"
-            run_id = "run_20260201_001"
-            node_safe = "problem__shallow_water2d__0.3.0"
-            # Both generations exist on disk (e.g., older sibling under same pipeline).
-            for gid in (real_gen, other_src):
-                gdir = repo_root / f"{_FIX_PIPE_REF}/source/{gid}"
-                gdir.mkdir(parents=True, exist_ok=True)
-                (gdir / "source_meta.json").write_text(
-                    '{"verification_status": "pass"}\n', encoding="utf-8"
-                )
-            (repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_003/bin").mkdir(
-                parents=True, exist_ok=True
-            )
-            (repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_003/bin/main").write_text(
-                "binary\n", encoding="utf-8"
-            )
-            perf_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
-            )
-            other_log_ref = (
-                f"{_FIX_PIPE_REF}/source/{other_src}/src/command_log.jsonl"
-            )
-            # Launch with source_id=real_gen but ALSO list a path under
-            # the unrelated other_src tree. The phase contract for execute
-            # should reject the unrelated generate path because it does not
-            # match the request's source_id.
-            with self.assertRaisesRegex(
-                ValueError, "outside phase contract|under capability write_roots"
-            ):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_exec_unrelated",
-                    request_payload={
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "validate", "substep": "execute",
-                        "agent_role": "substep",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "step_run_exec_unrelated",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                        "run_id": run_id,
-                        "source_id": real_gen,
-                        "skill_name": "workflow-validate-execute",
-                        "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "deterministic": True,
-                        "allowed_output_paths": [perf_ref, other_log_ref],
-                        "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_unrelated"),
-                    },
-                    response_payload=_spawn_response_payload("sess_step_exec_unrelated"),
-                 netns_socket_dir=netns_socket_dir())
 
     def test_execute_launch_requires_source_build_id_for_in_phase_log_only(self) -> None:
         """source_binary_id is required for ALL execute launches, not only
@@ -5476,45 +4864,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "node_key": "problem/dom.fam.spec_x@1.0",
                     "allowed_output_paths": [
                         "releases/problem/dom/fam/spec_x/.hidden/lang/r/x.tar.gz",
-                    ],
-                },
-            )
-
-    def test_allowed_output_paths_for_launch_rejects_dotdot_segments(self) -> None:
-        """Regression: `..` segments must be rejected BEFORE prefix/contract
-        checks. Otherwise a path like
-        `releases/<spec>/aarch64/fortran/r1/../../somewhere_else` would pass
-        the startswith() check and the identifier check on the first three
-        tail segments, even though it resolves outside the canonical layout."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        with self.assertRaisesRegex(ValueError, "must not contain '\\.'/'\\.\\.' segments"):
-            _allowed_output_paths_for_launch(
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_role": "step",
-                    "step": "build",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "node_key": "problem/dom.fam.spec_x@1.0",
-                    "allowed_output_paths": [
-                        "releases/problem/dom/fam/spec_x/aarch64/fortran/r1/../../spec/registry/spec_catalog.yaml",
-                    ],
-                },
-            )
-
-    def test_allowed_output_paths_for_launch_rejects_single_dot_segments(self) -> None:
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        with self.assertRaisesRegex(ValueError, "must not contain '\\.'/'\\.\\.' segments"):
-            _allowed_output_paths_for_launch(
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_role": "step",
-                    "step": "build",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "node_key": "problem/dom.fam.spec_x@1.0",
-                    "allowed_output_paths": [
-                        "releases/problem/dom/fam/spec_x/./aarch64/fortran/r1/x.tar.gz",
                     ],
                 },
             )
@@ -18976,110 +18325,6 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
         self.assertLess(compute_idx, exit_idx)
 
 
-class CanonicalIdEnforcementTests(unittest.TestCase):
-    """Codex round 29 F2: the write-acceptance boundary rejects
-    binary_id / run_id segments that do not match the canonical
-    `<slug>_YYYYMMDD_NNN` suffix. Producer-side enforcement guarantees
-    the round-23 freshness selector never silently drops a legitimate
-    artifact from a downstream dependency's `binary/` or `runs/` tree."""
-
-    def _build_payload(self, step: str, substep: str | None, output_paths: list[str]) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "agent_role": "step" if substep is None else "substep",
-            "step": step,
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "allowed_output_paths": output_paths,
-        }
-        if substep is not None:
-            payload["substep"] = substep
-        return payload
-
-    def test_build_rejects_non_canonical_binary_id(self) -> None:
-        """Build step output path with `binary/bin_001/...` (no canonical
-        suffix) must be rejected at the write-acceptance boundary."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        bad = f"{_FIX_PIPE_REF}/binary/bin_001/binary_meta.json"
-        good = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"
-        with self.assertRaises(ValueError) as ctx:
-            _allowed_output_paths_for_launch(
-                request_payload=self._build_payload("build", None, [bad]),
-            )
-        self.assertIn("outside phase contract", str(ctx.exception))
-        # And the canonical form passes.
-        ok_list = _allowed_output_paths_for_launch(
-            request_payload=self._build_payload("build", None, [good]),
-        )
-        self.assertIn(good, ok_list)
-
-    def test_validate_execute_rejects_non_canonical_run_id(self) -> None:
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        node_safe = "problem__shallow_water2d__0.3.0"
-        good = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}/perf.json"
-        # `run_001` lacks the canonical date/seq suffix; `run-rsn-p0_20260605_001`
-        # is slug-shaped (matches `_SLUG_DATE_SEQ3_PATTERN`) yet is NOT a
-        # canonical run_id — run_id requires the literal `run_` prefix.
-        for bad_run_id in ("run_001", "run-rsn-p0_20260605_001"):
-            bad = f"{_FIX_PIPE_REF}/runs/{bad_run_id}/{node_safe}/perf.json"
-            with self.assertRaises(ValueError) as ctx:
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "execute", [bad]),
-                )
-            self.assertIn("outside phase contract", str(ctx.exception))
-        ok_list = _allowed_output_paths_for_launch(
-            request_payload=self._build_payload("validate", "execute", [good]),
-        )
-        self.assertIn(good, ok_list)
-
-    def test_validate_judge_rejects_non_canonical_run_id(self) -> None:
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        node_safe = "problem__shallow_water2d__0.3.0"
-        # R2: semantic_review.json is the judge's only deliverable (verdict.json moved to execute).
-        good = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}/semantic_review.json"
-        # `ex_001` is non-canonical; `run-rsn-p0_20260605_001` is slug-shaped
-        # but still not a canonical run_id (no literal `run_` prefix).
-        for bad_run_id in ("ex_001", "run-rsn-p0_20260605_001"):
-            bad = f"{_FIX_PIPE_REF}/runs/{bad_run_id}/{node_safe}/semantic_review.json"
-            with self.assertRaises(ValueError) as ctx:
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "judge", [bad]),
-                )
-            self.assertIn("outside phase contract", str(ctx.exception))
-        ok_list = _allowed_output_paths_for_launch(
-            request_payload=self._build_payload("validate", "judge", [good]),
-        )
-        self.assertIn(good, ok_list)
-
-    def test_g6_judge_rejects_derived_artifacts_post_judge_accepts(self) -> None:
-        """R2/G6: the judge contract accepts only semantic_review.json; verdict.json is
-        host-authored at execute and aggregate_verdict / summary / validate_meta are authored in
-        the post_judge contract — the judge may write none of them."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        node_safe = "problem__shallow_water2d__0.3.0"
-        run_dir = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}"
-        derived = [f"{run_dir}/aggregate_verdict.json", f"{run_dir}/summary.json",
-                   f"{run_dir}/validate_meta.json"]
-        # judge: its own deliverable passes; verdict.json + each derived artifact is rejected.
-        self.assertIn(f"{run_dir}/semantic_review.json", _allowed_output_paths_for_launch(
-            request_payload=self._build_payload(
-                "validate", "judge", [f"{run_dir}/semantic_review.json"])))
-        for bad in ([f"{run_dir}/verdict.json"] + derived):
-            with self.assertRaises(ValueError) as ctx:
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "judge", [bad]))
-            self.assertIn("outside phase contract", str(ctx.exception))
-        # post_judge: post_judge_meta + all three derived artifacts pass.
-        for good in ([f"{run_dir}/post_judge_meta.json"] + derived):
-            self.assertIn(good, _allowed_output_paths_for_launch(
-                request_payload=self._build_payload("validate", "post_judge", [good])))
-        # pre_judge stays exact-match on its own meta (rejects the derived artifacts).
-        for bad in derived:
-            with self.assertRaises(ValueError):
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "pre_judge", [bad]))
-
-
 class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
     """Codex round 31 F2: the freshness reader must use the SAME grammar
     as the writer (`_SLUG_DATE_SEQ3_PATTERN`). Round 23's loose regex
@@ -19608,7 +18853,7 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
                 recorded = json.loads((Path(tmp) / refs["launch_request_ref"]).read_text())
                 self.assertEqual(recorded["allowed_output_paths"], paths)
 
-    def test_the_matcher_admits_them_by_the_raw_prefix_and_no_sibling_of_it(self) -> None:
+    def test_the_payload_validator_admits_them(self) -> None:
         base = self._recorded()
         node = next(p.rsplit("/raw/state_snapshots/", 1)[0] for p in base["allowed_output_paths"]
                     if "/raw/state_snapshots/" in p)
@@ -19618,13 +18863,6 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
                 payload = dict(base, allowed_output_paths=[*base["allowed_output_paths"],
                                                            f"{node}/{rel}"])
                 ort._validate_launch_request_payload(payload)
-                self.assertIn(f"{node}/{rel}",
-                              ort._allowed_output_paths_for_launch(request_payload=payload))
-        for rel in ("history/c__1.json", "series/c__0.json"):
-            with self.subTest(rel=rel), self.assertRaisesRegex(
-                    ValueError, "outside phase contract outputs"):
-                ort._allowed_output_paths_for_launch(request_payload=dict(
-                    base, allowed_output_paths=[*base["allowed_output_paths"], f"{node}/{rel}"]))
 
     def test_the_builder_lists_initial_and_neither_new_file_and_the_stamp_pins_no_raw(self) -> None:
         import tools.workflow_conductor as wc
@@ -19640,7 +18878,7 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
             evidence_artifacts=("state_snapshots", "state_history", "step_series"),
             output_format="json")
         ort._validate_launch_request_payload(built)
-        listed = ort._allowed_output_paths_for_launch(request_payload=built)
+        listed = built["allowed_output_paths"]
         self.assertTrue(any(p.endswith("/raw/state_snapshots/initial/c_a.json") for p in listed))
         self.assertFalse([p for p in listed if "/history/" in p or "/series/" in p], listed)
         required = wc.phase_required_outputs(refs, "validate")

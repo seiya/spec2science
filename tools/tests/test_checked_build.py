@@ -283,16 +283,15 @@ class BuildTests(unittest.TestCase):
 
     def test_the_runtime_admits_the_checked_deliverable_and_the_stamp_pins_it(self) -> None:
         """Round 1 (the blocker): the launch `run_phase` records for a declaring compiler's Build
-        passes the runtime's own validation — `_validate_launch_request_payload` and the
-        phase-contract matcher `_allowed_output_paths_for_launch`, which `record-launch` runs
-        before the in-process body — and the step result's `required_outputs` carry the same
-        path, so `_certifiable_artifact_refs` (the set `artifact_hashes` is taken over) pins it.
-        Driven over a recorded real build request. A path one level deeper, or beside it under
-        another name, stays refused."""
+        passes the runtime's own validation (`_validate_launch_request_payload`, which
+        `record-launch` runs before the in-process body), and the step result's
+        `required_outputs` carry the same path, so `_certifiable_artifact_refs` (the set
+        `artifact_hashes` is taken over) pins it. Driven over a recorded real build request.
+        (The phase-contract matcher that also refused a path one level deeper, or beside it under
+        another name, went in issue #643.)"""
         import glob
 
         from tools.orchestration_runtime import (
-            _allowed_output_paths_for_launch,
             _certifiable_artifact_refs,
             _validate_launch_request_payload,
         )
@@ -311,7 +310,6 @@ class BuildTests(unittest.TestCase):
         checked = f"{refs.binary_dir()}/bin_checked/{refs.spec_id}_runner"
         self.assertIn(checked, built["allowed_output_paths"])
         _validate_launch_request_payload(built)
-        self.assertIn(checked, _allowed_output_paths_for_launch(request_payload=built))
         required = wc.phase_required_outputs(refs, "build", exe_name=f"{refs.spec_id}_runner",
                                              checked_build=True)
         def binaries(paths):
@@ -323,12 +321,6 @@ class BuildTests(unittest.TestCase):
             required, f"{refs.binary_dir()}/binary_meta.json"))
         self.assertNotIn(checked, wc.phase_required_outputs(
             refs, "build", exe_name=f"{refs.spec_id}_runner"))
-        for wrong in (f"{refs.binary_dir()}/bin_checked/sub/{refs.spec_id}_runner",
-                      f"{refs.binary_dir()}/bin_checkedX/{refs.spec_id}_runner"):
-            with self.subTest(wrong=wrong):
-                bad = dict(built, allowed_output_paths=[*built["allowed_output_paths"], wrong])
-                with self.assertRaises(ValueError):
-                    _allowed_output_paths_for_launch(request_payload=bad)
 
 
 class RunPhaseCallSiteTests(unittest.TestCase):

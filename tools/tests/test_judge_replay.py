@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -575,12 +576,12 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(self._replays(), [])
 
     def test_check_answers_the_downstream_gate(self) -> None:
-        (self.repo / self.node_refs.run_node_dir() / "perf.json").unlink()
+        shutil.rmtree(self.repo / self.node_refs.run_node_dir() / "raw")
         rc, out = self._main("--check")
         check = json.loads(out.strip().splitlines()[-1])["check"]
         self.assertEqual((rc, check["dependency_ready"], check["downstream_ready"]),
                          (1, True, False))
-        self.assertIn("perf.json", check["downstream_reason"])
+        self.assertIn("judge_raw_dir_missing", check["downstream_reason"])
 
     def test_refusals_before_any_orchestration(self) -> None:
         # A prefix naming two launches.
