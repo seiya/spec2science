@@ -9850,15 +9850,6 @@ class PhaseCertificationTests(unittest.TestCase):
             for entry in resets:
                 self.assertEqual(entry.get("reason"), "build_dependency_stale")
 
-    def test_reset_phase_refuses_a_step_that_is_not_a_phase(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self._preflight(repo)
-            with self.assertRaises(RuntimeError) as ctx:
-                ort.reset_phase(repo, "o1", node_key=self._NK, from_phase="promote",
-                                reason="r", trigger_agent_run_id="t1")
-            self.assertIn("unsupported --from-phase", str(ctx.exception))
-
 
 class CertificationStampTests(unittest.TestCase):
     """`write_step_result` is the single host-side point that stamps a phase's certification

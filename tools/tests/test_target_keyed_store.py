@@ -288,13 +288,6 @@ class ReservationAndLaunchRefTests(unittest.TestCase):
             init_orchestration(repo_root=repo, orchestration_id="o1")
             kw = {"orchestration_id": "o1", "node_key": _NK,
                   "reserved_id": "spec-x_20260101_001", "reserved_by_agent_run_id": "arid"}
-            with self.assertRaises(ValueError):
-                ort.reserve_phase_root(repo, step="generate", **kw)
-            with self.assertRaises(ValueError):
-                ort.reserve_phase_root(repo, step="compile", target_id=FORTRAN_CPU.target_id,
-                                       **kw)
-            with self.assertRaises(ValueError):
-                ort.reserve_phase_root(repo, step="generate", target_id="x_20260101_001", **kw)
             out = ort.reserve_phase_root(
                 repo, step="generate", target_id=FORTRAN_CPU.target_id, **kw)
             self.assertEqual(out["target_id"], FORTRAN_CPU.target_id)

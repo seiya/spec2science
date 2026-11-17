@@ -293,7 +293,7 @@ Reserve an `ir_id` or `pipeline_id`. It does not create the actual directory (th
 | `--step` | yes | reserve ir_id with `compile`, reserve pipeline_id with `generate` |
 | `--reserved-id` | yes | `<slug>_<YYYYMMDD>_<seq3>` (an underscore in the slug is invalid; use a hyphen) |
 | `--reserved-by-agent-run-id` | yes | the UUID of the agent that uses the reserved ID |
-| `--target` | with `--step generate` | the `target_id` the pipeline is built for (issue #284): a pipeline id names a directory only under `workspace/pipelines/<node_key_safe>/<target_id>/`. Required with `generate`, refused with `compile` (whose output is target-free), recorded as `generate.json#target_id` |
+| `--target` | with `--step generate` | the `target_id` the pipeline is built for (issue #284): a pipeline id names a directory only under `workspace/pipelines/<node_key_safe>/<target_id>/`. Passed with `generate` alone (a `compile` output is target-free), recorded as `generate.json#target_id` |
 
 ---
 

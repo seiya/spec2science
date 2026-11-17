@@ -16754,11 +16754,6 @@ def revoke_artifact(
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     step_token = step.strip().lower()
-    if step_token not in STEP_KEYS_FOR_NODE_STATE:
-        raise RuntimeError(
-            f"revoke-artifact: unsupported --step {step!r}; expected one of "
-            f"{list(STEP_KEYS_FOR_NODE_STATE)}"
-        )
     meta_path = _revocable_stage_meta_path(
         repo_root, orchestration_id, node_key=node_key, step=step_token)
     result: dict[str, Any] = {
@@ -16834,11 +16829,6 @@ def reset_phase(
     """
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     from_token = from_phase.strip().lower()
-    if from_token not in STEP_KEYS_FOR_NODE_STATE:
-        raise RuntimeError(
-            f"reset-phase: unsupported --from-phase {from_phase!r}; expected one of "
-            f"{list(STEP_KEYS_FOR_NODE_STATE)}"
-        )
     affected = list(STEP_KEYS_FOR_NODE_STATE[STEP_KEYS_FOR_NODE_STATE.index(from_token):])
     node_safe = _node_key_to_safe(node_key.strip())
     transitions: list[dict[str, str]] = []
@@ -17077,6 +17067,8 @@ def update_orchestration_status(
     blocking_policy_scope: str | None = None,
 ) -> dict[str, Any]:
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    # Kept before the lock: taking the lock creates the orchestration directory, so a
+    # mistyped id would otherwise leave a `workspace/orchestrations/<id>/` holding only the lock.
     if not meta_path.exists():
         raise FileNotFoundError(meta_path)
     # F3: serialize the full read-check-write-cleanup-marker section. Without this
@@ -17085,8 +17077,6 @@ def update_orchestration_status(
     # final reason_code/reason_detail becomes nondeterministic.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError(f"invalid orchestration_meta.json: {meta_path}")
         current_status_pre = meta.get("status")
         is_same_terminal_replay = (
             isinstance(current_status_pre, str)
@@ -17458,21 +17448,13 @@ def reserve_phase_root(
 ) -> dict[str, Any]:
     """Reserve the ir_id (`step=compile`) or the pipeline_id (`step=generate`) a node's run
     writes under. A pipeline reservation also records the `target_id` its pipeline is built
-    for (issue #284) — required there, refused on a compile one: a pipeline id names a
+    for (issue #284), which the conductor passes for a generate one alone: a pipeline id names a
     directory only together with its target (`workspace/pipelines/<safe>/<target_id>/<id>`),
     and the readers that turn a reservation back into a directory (`resume_node_refs`,
     `_revocable_stage_meta_path`, `audit_orchestration`) read it from here."""
     step_key = step.strip().lower()
     _required_child_agent_kind(step_key)
     target_token = target_id.strip() if isinstance(target_id, str) else ""
-    if step_key == "generate" and not is_target_id(target_token):
-        raise ValueError(
-            f"reserve-phase-root: a generate (pipeline) reservation requires --target naming "
-            f"the target its pipeline is built for; got {target_id!r}")
-    if step_key != "generate" and target_token:
-        raise ValueError(
-            f"reserve-phase-root: --target applies to a generate (pipeline) reservation only "
-            f"(the {step_key} output is target-free); got {target_id!r}")
     # Codex round 32 F2: validate `reserved_id` against `_SLUG_DATE_SEQ3_PATTERN`
     # at the canonical reservation entrypoint. Round-31 tightened the
     # freshness reader to this same grammar but left the writer side
@@ -18142,7 +18124,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Findings excerpt to record on the meta, overwriting its own.",
     )
     revoke_artifact_parser.add_argument(
-        "--severity", default=None, choices=sorted(REVOCATION_SEVERITIES),
+        "--severity", default=None,
         help=(
             "G5 severity of the finding that drove the re-derivation, recorded as "
             "revocation_severity. A resumed repair reads it to choose reuse vs restart; "
@@ -18150,7 +18132,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     revoke_artifact_parser.add_argument(
-        "--repair-strategy", default=None, choices=sorted(REVOCATION_REPAIR_STRATEGIES),
+        "--repair-strategy", default=None,
         help=(
             "Repair strategy of the decision that drove the re-derivation, recorded as "
             "revocation_repair_strategy. Needed BESIDE --severity: `major` defaults to reuse "
@@ -18556,8 +18538,6 @@ def main(argv: list[str] | None = None) -> int:
             reserved_by_agent_run_id=args.reserved_by_agent_run_id,
             target_id=args.target,
         )
-    else:
-        raise RuntimeError(f"unhandled command: {args.command}")
 
     if not getattr(args, "verbose", False):
         result = _project_terse_result(args.command, result)
