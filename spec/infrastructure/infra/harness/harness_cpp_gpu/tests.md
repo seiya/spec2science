@@ -122,9 +122,9 @@ Each test of §6 judges one quantity, named by its `quantities` line and defined
   - `level`: `L0`
   - `operation_id`: `harness_cpp_gpu__capture_array_r2`
   - `expected_outcome`: `pass`
-  - `judgment`: the `[384,384]` array `big`, `big(i,j) = i + j/2`, captured through `harness_cpp_gpu__capture_array_r2`, reads back with its largest element `576`, its smallest `1.5` and its sum `42577920` (`576 * 73920`); every element is a multiple of `0.5` and every partial sum is below `2^53`, so the three are exact. The element order is judged by `l0_array_emit_pass`, and the store refuses a value whose extents are not the declared ones. The case is the suite's large record: a writer whose cost grows faster than linearly in a record's size (`controlled_spec.md` §3.2) runs past the run's time bound here and in every case's placeholder of `big`, and the run fails.
+  - `judgment`: the `[512,512]` array `big`, `big(i,j) = i + j/2`, captured through `harness_cpp_gpu__capture_array_r2`, reads back with its largest element `768`, its smallest `1.5` and its sum `100859904` (`768 * 131328`); every element is a multiple of `0.5` and every partial sum is below `2^52`, so the three are exact. The element order is judged by `l0_array_emit_pass`, and the host's reader refuses a value whose extents are not the declared ones. `big` is written in twelve records of the run: this case's, every other case's placeholder, and the `initial` record of `l0_capture_groups_pass`. A writer that copies the record built so far once per value put into it (`controlled_spec.md` §3.2) runs past the run's time bound over those records, and the run fails.
   - `quantities`: `capture_large`
-  - `predicate` (quantity `capture_large`, `per_case: true`, three entries): `max(final.big) == 576.0`, `min(final.big) == 1.5` and `sum(final.big) == 42577920.0`.
+  - `predicate` (quantity `capture_large`, `per_case: true`, three entries): `max(final.big) == 768.0`, `min(final.big) == 1.5` and `sum(final.big) == 100859904.0`.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when every predicate of the test holds.

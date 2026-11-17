@@ -2,9 +2,9 @@
 
 A generated `harness_fortran_cpu` once built each record by appending every value to the text of
 the whole record, so a `256 x 256` history record took about a minute to write and a consuming
-node's run passed its time bound. The case captures one `[384,384]` array, and every other case
-writes it as a zero placeholder, so a writer whose cost grows faster than linearly in a record's
-size runs past the run's time bound in the harness's own Validate. These rows pin what the
+node's run passed its time bound. The case captures one `[512,512]` array, and every other case
+writes it as a zero placeholder, so a writer that copies the record built so far once per value
+runs past the run's time bound in the harness's own Validate. These rows pin what the
 documents state of the case and that the host's own readers judge it: the predicates pass the
 Compile-stage gates and hold on the record the case describes, and fail on a record with one
 value changed. They do not time a writer: a generated harness is judged by its own run.
@@ -27,7 +27,17 @@ _HARNESS_DIR = ROOT / "spec" / "infrastructure" / "infra" / "harness"
 HARNESSES = ("harness_fortran_cpu", "harness_fortran_cpu_mpi", "harness_cpp_gpu",
              "harness_fortran_cpu_netcdf")
 CASE = "l0_capture_large_pass"
-N = 384
+
+
+def _extent() -> int:
+    """The extent the first harness's §2 bullet declares for `big` (`[N,N]`)."""
+    spec = (_HARNESS_DIR / HARNESSES[0] / "controlled_spec.md").read_text(encoding="utf-8")
+    first, second = re.search(r"`big` \(rank-2, `\[(\d+),(\d+)\]`\)", spec).groups()
+    assert first == second, (first, second)
+    return int(first)
+
+
+N = _extent()
 
 
 def _text(spec_id: str, name: str) -> str:
@@ -35,7 +45,7 @@ def _text(spec_id: str, name: str) -> str:
 
 
 def big() -> np.ndarray:
-    """`big(i,j) = i + j/2`, `i, j = 1..384`, the leading index `i` first."""
+    """`big(i,j) = i + j/2`, `i, j = 1..N`, the leading index `i` first."""
     i = np.arange(1, N + 1, dtype=float)[:, None]
     j = np.arange(1, N + 1, dtype=float)[None, :]
     return i + 0.5 * j
@@ -101,8 +111,13 @@ class CaptureLargeDocumentTests(unittest.TestCase):
         values = dict(predicates(HARNESSES[0]))
         self.assertEqual(values, {"max(final.big)": a.max(), "min(final.big)": a.min(),
                                   "sum(final.big)": a.sum()})
-        self.assertEqual(a.sum(), 576 * 73920)
-        self.assertLess(a.sum(), 2.0 ** 53)
+        self.assertEqual(a.shape, (512, 512))
+        self.assertEqual(a.sum(), 768 * 131328)
+        # a multiple of 0.5 below 2^52 is exact in binary64, so every partial sum is
+        self.assertLess(a.sum(), 2.0 ** 52)
+        spec = _text(HARNESSES[0], "controlled_spec.md")
+        self.assertIn(f"`big(i,j) = i + j/2` for `i, j = 1..{N}`", spec)
+        self.assertIn(f"an array of zeros of extents `[{N},{N}]`", spec)
 
     def test_the_predicates_pass_the_compile_stage_gates(self) -> None:
         for spec_id in HARNESSES:
