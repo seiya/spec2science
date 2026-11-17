@@ -56,7 +56,7 @@
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 33,
+      "fortran": 35,
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
       "linter-ruff": 3
