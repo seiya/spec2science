@@ -27,12 +27,9 @@ What each class pins:
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
-
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.orchestration_runtime as ort
 from tools import target_profile as tp

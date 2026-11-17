@@ -5571,7 +5571,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
         invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
 
 FAIL_CLOSED_REASON_CODES = {
-    "child_agent_forbidden_by_session_policy",
     "child_agent_unavailable_on_execution_platform",
     "required_child_agent_kind_mismatch",
     "phase_body_started_before_launch",
@@ -6087,41 +6086,6 @@ ONE caller since issue #171 PR-2: the record-launch request validator, which rea
     return role
 
 
-def _execution_platform_launchable(preflight: dict[str, Any], required_child_agent: str) -> bool:
-    if required_child_agent == "step":
-        return preflight.get("can_launch_step_agents") is True
-    if required_child_agent == "substep":
-        return preflight.get("can_launch_substep_agents") is True
-    return False
-
-
-def _check_session_policy_launchable(
-    preflight: dict[str, Any], required_child_agent: str
-) -> dict[str, Any]:
-    session_policy = preflight.get("session_policy")
-    fallback_key = (
-        "can_launch_step_agents" if required_child_agent == "step" else "can_launch_substep_agents"
-    )
-    launchable = False
-    scope = "session_policy_missing"
-    if isinstance(session_policy, dict):
-        key = (
-            "allow_step_agent_launch"
-            if required_child_agent == "step"
-            else "allow_substep_agent_launch"
-        )
-        if isinstance(session_policy.get(key), bool):
-            launchable = bool(session_policy.get(key))
-            scope = f"session_policy.{key}"
-        elif isinstance(session_policy.get(fallback_key), bool):
-            launchable = bool(session_policy.get(fallback_key))
-            scope = f"session_policy.{fallback_key}"
-    elif isinstance(preflight.get("session_policy_launchable"), bool):
-        launchable = bool(preflight.get("session_policy_launchable"))
-        scope = "session_policy_launchable"
-    return {"launchable": launchable, "blocking_policy_scope": scope}
-
-
 def _dependency_ready(
     repo_root: Path, orchestration_id: str, *, step: str
 ) -> tuple[bool, str | None]:
@@ -6154,26 +6118,12 @@ def _dependency_ready(
         recomputed, _certified, fail_reason = _compute_dep_readiness(
             repo_root, spec_ref, target=target)
         if recomputed is None:
-            # Codex round 20 F1: production launch checks MUST fail closed when
-            # live recomputation cannot run — there is no way to re-verify
-            # artifacts, so trusting persisted booleans means trusting whatever
-            # `orchestration_meta.json` happens to say. The persisted-boolean
-            # fallback is preserved ONLY for test scaffolding via an explicit
-            # opt-in env var so unit-test fixtures (`_mark_dependencies_ready`)
-            # that intentionally skip building a real deps.yaml continue to work.
-            # Production environments do not set this variable; missing/unparseable
-            # OR malformed-schema deps.yaml at gate time → reject with the
-            # specific fail_reason (Codex round 25 F2: don't collapse distinct
-            # verification failures into one generic reason).
-            if os.environ.get("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK") != "1":
-                return False, fail_reason or "deps_yaml_missing_or_unparseable"
-            if step_token == "compile":
-                if readiness.get("direct_dependency_compile_readiness") is not True:
-                    return False, "direct_dependency_compile_readiness_not_pass"
-                return True, None
-            if readiness.get("direct_dependency_execution_readiness") is not True:
-                return False, "direct_dependency_execution_readiness_not_pass"
-            return True, None
+            # Codex round 20 F1: launch checks fail closed when live recomputation cannot
+            # run — there is no way to re-verify artifacts, and the persisted booleans are
+            # audit-only. A missing/unparseable OR malformed-schema deps.yaml at gate time is
+            # refused with the specific fail_reason (Codex round 25 F2: don't collapse
+            # distinct verification failures into one generic reason).
+            return False, fail_reason or "deps_yaml_missing_or_unparseable"
         # A dependency that is not ready is named with the stage that refused it and why —
         # a key that moved names the input that moved (`derivation_key_mismatch:<input>`) —
         # instead of leaving the operator with an opaque `..._readiness_not_pass`. Computed
@@ -6229,8 +6179,6 @@ def workflow_launch_check(
     if required_flag not in {"step", "substep"}:
         raise ValueError("--require-child-agent must be step or substep")
 
-    execution_platform_launchable = False
-    session_policy_launchable = True
     blocking_scope = "default_allow"
     reason_code: str | None = None
     reason_detail: str | None = None
@@ -6253,7 +6201,6 @@ def workflow_launch_check(
             "required_child_agent": required_flag,
             "required_child_agent_by_step": required_by_step,
             "execution_platform_launchable": False,
-            "session_policy_launchable": False,
             "reason_code": "child_agent_unavailable_on_execution_platform",
             "reason_detail": str(exc),
             "blocking_policy_scope": "preflight",
@@ -6283,17 +6230,8 @@ def workflow_launch_check(
             f"got {preflight_backend.strip().lower()!r}"
         )
 
-    execution_platform_launchable = _execution_platform_launchable(preflight, required_flag)
-    if not execution_platform_launchable and reason_code is None:
-        reason_code = "child_agent_unavailable_on_execution_platform"
-        reason_detail = f"preflight cannot launch required child agent kind: {required_flag}"
-
-    session_eval = _check_session_policy_launchable(preflight, required_flag)
-    session_policy_launchable = bool(session_eval.get("launchable"))
-    blocking_scope = str(session_eval.get("blocking_policy_scope") or "default_allow")
-    if not session_policy_launchable and reason_code is None:
-        reason_code = "child_agent_forbidden_by_session_policy"
-        reason_detail = f"session policy forbids required child agent kind: {required_flag}"
+    # `_require_preflight_launchable` above refused unless BOTH `can_launch_*` flags are true.
+    execution_platform_launchable = True
 
     dep_ready, dep_detail = _dependency_ready(repo_root, orchestration_id, step=step)
     if not dep_ready and reason_code is None:
@@ -6309,7 +6247,6 @@ def workflow_launch_check(
         "required_child_agent": required_flag,
         "required_child_agent_by_step": required_by_step,
         "execution_platform_launchable": execution_platform_launchable,
-        "session_policy_launchable": session_policy_launchable,
         "reason_code": reason_code,
         "reason_detail": reason_detail,
         "blocking_policy_scope": blocking_scope,
@@ -8669,9 +8606,8 @@ def _codex_check_pass_values(checks: Sequence[Any]) -> dict[str, Any]:
 def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
     """Every reason this preflight document does not allow a launch, in a fixed order; an empty
     list means launchable. The ONE statement of the launch conditions: the read-time gate
-    (`_preflight_allows_agent_launch`) is "this list is empty", and the document validator
-    (`_validate_preflight_payload`) refuses a document that claims launchability while it is
-    not — so the two cannot disagree on any document."""
+    (`_preflight_allows_agent_launch`) is "this list is empty", and every reader of a stored
+    document asks it."""
     reasons: list[str] = []
     checks = payload.get("checks")
     if not isinstance(checks, list):
@@ -8714,19 +8650,6 @@ def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
 def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     """True when `_preflight_launch_refusals` finds nothing."""
     return not _preflight_launch_refusals(payload)
-
-
-def _validate_preflight_payload(payload: dict[str, Any]) -> None:
-    """Refuse a document that claims launchability (either `can_launch_*` flag true) while
-    `_preflight_launch_refusals` is not empty. A document with both flags false claims nothing
-    and is accepted — `main`'s `preflight` subcommand writes exactly that after a failed probe."""
-    claims = (payload.get("can_launch_step_agents") is True
-              or payload.get("can_launch_substep_agents") is True)
-    if not claims:
-        return
-    reasons = _preflight_launch_refusals(payload)
-    if reasons:
-        raise ValueError("preflight claims launchability but " + "; ".join(reasons))
 
 
 def _live_preflight_mode() -> str:
@@ -8881,9 +8804,9 @@ def _run_live_probe_and_update(
 
     Raise a RuntimeError on failure (the caller transitions the orchestration to fail).
     """
-    backend = cached_payload.get("backend")
-    if not isinstance(backend, str) or backend.strip() not in SUPPORTED_BACKENDS:
-        backend = "claude"
+    # `_preflight_launch_refusals` already refused this document unless its backend, so
+    # normalised, names a required set; normalise the same way.
+    backend = str(cached_payload.get("backend", "")).strip().lower()
     command = cached_payload.get("probe_command")
     probe_command = command.strip() if isinstance(command, str) and command.strip() else None
 
@@ -10434,29 +10357,11 @@ def resume_orchestration(
     and the resume would not hold. The prior terminal narrative is saved to `resumed_from_*`,
     and the history remains in failure_analysis.json / phase_state_log.
 
-    Raise a RuntimeError when the orchestration does not exist.
+    A missing or unreadable `orchestration_meta.json` raises from the read (issue #643: no
+    refusal of its own). Every recorded status is reconciled, whatever it is.
     """
-    # `init` refuses an id that is not a plain path token; a resume must refuse it too,
-    # or a workspace created before that rule restarts and then fails at its first build-runtime
-    # call, several phases in, on the id it was resumed with.
-    if not _is_safe_path_id(str(orchestration_id)):
-        raise RuntimeError(
-            "resume: orchestration_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {orchestration_id!r}); an orchestration created under an older "
-            "id grammar cannot be resumed and must be re-run under a new id"
-        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
-    if not meta_path.exists():
-        raise RuntimeError(
-            f"orchestration not found: {orchestration_id}. "
-            "Run 'init' before enabling checkpoint resume."
-        )
-    try:
-        meta = _read_json(meta_path)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"orchestration_meta.json is invalid: {meta_path}") from exc
-    if not isinstance(meta, dict):
-        raise RuntimeError(f"orchestration_meta.json is invalid: {meta_path}")
+    meta = _read_json(meta_path)
     meta["resumed_at"] = _utc_now_iso()
     if isinstance(spec_ref, str) and spec_ref.strip():
         meta["spec_ref"] = spec_ref.strip()
@@ -10535,95 +10440,69 @@ def resume_orchestration(
     # hold its claim, so a resume that GOT here already knows nothing else is driving this run.
     # The crash reconciliations below therefore have to run for a `running` prior as well, or a
     # resume recovers the status and leaves the dead child's markers, orphan edges and stale
-    # `child_running` phase state behind it.
-    reconcile = isinstance(prior_status, str) and (
-        prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status == "running"
-    )
-    # A status this function cannot reason about REFUSES the resume rather than proceeding
-    # without reconciling. Proceeding was the worse of the two: the resume succeeded, the
-    # reconciliations were skipped, and the run carried on with the dead child's
-    # `active_children/` markers and its `child_running` phase authority still in place — which
-    # wedges the next launch behind a sequential-child gate whose owner is gone, for a reason
-    # nothing reported. Refusing says which value it could not place.
+    # `child_running` phase state behind it. A status the runtime does not write (only a
+    # hand-run `init --status` / `set-status --status` stores one) reconciles the same way; its
+    # refusal went in issue #643.
     #
-    # Reachable, not hypothetical: neither `init --status` nor `set-status --status` declares
-    # argparse `choices=`, so any string an operator or a leaf passes is stored verbatim. The
-    # runtime's own writers only ever produce the statuses below.
-    # EVERY unplaceable value, not just a non-empty string. The first cut of this guard read
-    # `isinstance(prior_status, str) and prior_status.strip() and not reconcile`, which exempted
-    # the three shapes that are EASIEST to produce: an empty string, a JSON `null`, and an
-    # absent key. Measured — `set-status --status ""` exits 0, and the resume then took the
-    # exact path the guard was added to close. Worse, the meta was left at `''` rather than
-    # `running`, so `_warn_about_resumable_priors` (which skips a falsy status) stopped
-    # mentioning the run on the cold path too: invisible in both directions.
-    if not reconcile:
-        raise RuntimeError(
-            f"cannot resume orchestration {orchestration_id}: its recorded status "
-            f"{prior_status!r} is neither terminal ({sorted(IDEMPOTENT_TERMINAL_STATUSES)}) "
-            "nor 'running', so this resume cannot tell whether the crash reconciliations "
-            "(active-child markers, orphan graph edges, stale child_running phase authority) "
-            "are safe to run. Set a status this runtime writes before resuming."
+    # Archive the prior terminal narrative, then hand the resumed run a fresh
+    # in-progress lifecycle so its eventual set-status(pass/fail) is a valid
+    # forward transition from `running` rather than a rejected terminal-to-terminal one.
+    meta["resumed_from_status"] = prior_status
+    for live_field, archive_field in (
+        ("reason_code", "resumed_from_reason_code"),
+        ("reason_detail", "resumed_from_reason_detail"),
+        ("blocking_policy_scope", "resumed_from_blocking_policy_scope"),
+    ):
+        if meta.get(live_field) is not None:
+            meta[archive_field] = meta.get(live_field)
+            meta.pop(live_field, None)
+    # A `resume_directive` left by a pre-#177 run names a `reopen-phase` that no longer
+    # exists; drop it so nothing reads it. A resumed run needs no directive: it re-asks
+    # `check-phase-certified` for every phase, and a phase whose artifact a retry revoked
+    # is refused there — the revocation IS the instruction, and it lives on the artifact
+    # rather than in this record.
+    meta.pop("resume_directive", None)
+    meta.pop("finished_at", None)
+    meta.pop("detected_at", None)
+    meta["status"] = "running"
+    # Drop the prior terminalization's cleanup_committed marker so the resumed
+    # run's eventual terminalization performs a clean two-phase commit and the
+    # validator does not treat reused orch tmp as already revoked.
+    orch_arid = meta.get("orchestration_agent_run_id")
+    if isinstance(orch_arid, str) and orch_arid.strip():
+        marker = _cleanup_committed_marker_path(
+            repo_root, orchestration_id, orch_arid.strip()
         )
-    if reconcile:
-        # Archive the prior terminal narrative, then hand the resumed run a fresh
-        # in-progress lifecycle so its eventual set-status(pass/fail) is a valid
-        # forward transition from `running` rather than a rejected terminal-to-terminal one.
-        meta["resumed_from_status"] = prior_status
-        for live_field, archive_field in (
-            ("reason_code", "resumed_from_reason_code"),
-            ("reason_detail", "resumed_from_reason_detail"),
-            ("blocking_policy_scope", "resumed_from_blocking_policy_scope"),
-        ):
-            if meta.get(live_field) is not None:
-                meta[archive_field] = meta.get(live_field)
-                meta.pop(live_field, None)
-        # A `resume_directive` left by a pre-#177 run names a `reopen-phase` that no longer
-        # exists; drop it so nothing reads it. A resumed run needs no directive: it re-asks
-        # `check-phase-certified` for every phase, and a phase whose artifact a retry revoked
-        # is refused there — the revocation IS the instruction, and it lives on the artifact
-        # rather than in this record.
-        meta.pop("resume_directive", None)
-        meta.pop("finished_at", None)
-        meta.pop("detected_at", None)
-        meta["status"] = "running"
-        # Drop the prior terminalization's cleanup_committed marker so the resumed
-        # run's eventual terminalization performs a clean two-phase commit and the
-        # validator does not treat reused orch tmp as already revoked.
-        orch_arid = meta.get("orchestration_agent_run_id")
-        if isinstance(orch_arid, str) and orch_arid.strip():
-            marker = _cleanup_committed_marker_path(
-                repo_root, orchestration_id, orch_arid.strip()
-            )
-            try:
-                marker.unlink()
-            except FileNotFoundError:
-                pass
-        # Re-open the orchestration's own agent_runs row (terminalized in place by
-        # the prior set-status) so the resumed run's row is `running` again, its
-        # eventual set-status can re-terminalize it, and validate_workspace_root
-        # does not age the live tmp root out as cleanup-pending. Done BEFORE the
-        # meta commit below so the still-terminal on-disk meta gates recovery: if
-        # this is interrupted, a retry re-enters `terminal_reset` and re-runs it
-        # (idempotent — the helper no-ops once the row is already `running`).
-        _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
-        # A host that died mid-launch leaves the active_child window open (no live
-        # host finalized the child, and nobody ran deactivate-child). The terminal status proves
-        # no child is actually running, so clear the stale markers here — otherwise
-        # the resumed agent's first record-launch hits the Claude-backend sequential
-        # check and is rejected, permanently wedging recovery for
-        # launch_incomplete_active_child / llm_launch_interrupted. Captured before the
-        # meta commit so a retry re-enters terminal_reset and re-runs it (idempotent).
-        cleared_active_child = _clear_stale_active_child_markers(repo_root, orchestration_id)
-        # The abandoned child's agent_graph edge was written by record_launch before
-        # the marker and never gets a terminal agent_runs row; prune it so the
-        # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
-        # check in _validate_orchestration_completion_for_pass. Idempotent.
-        pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
-        # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
-        # child is live, and a phase_state that says otherwise misdescribes the run to the
-        # completion vouch and the `--stage pre_judge` audit. The phase-state init below
-        # preserves node_states, so this reset survives into the resumed run.
-        reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+    # Re-open the orchestration's own agent_runs row (terminalized in place by
+    # the prior set-status) so the resumed run's row is `running` again, its
+    # eventual set-status can re-terminalize it, and validate_workspace_root
+    # does not age the live tmp root out as cleanup-pending. Done BEFORE the
+    # meta commit below so the still-terminal on-disk meta gates recovery: if
+    # this is interrupted, a retry re-enters `terminal_reset` and re-runs it
+    # (idempotent — the helper no-ops once the row is already `running`).
+    _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
+    # A host that died mid-launch leaves the active_child window open (no live
+    # host finalized the child, and nobody ran deactivate-child). The terminal status proves
+    # no child is actually running, so clear the stale markers here — otherwise
+    # the resumed agent's first record-launch hits the Claude-backend sequential
+    # check and is rejected, permanently wedging recovery for
+    # launch_incomplete_active_child / llm_launch_interrupted. Captured before the
+    # meta commit so a retry re-enters terminal_reset and re-runs it (idempotent).
+    cleared_active_child = _clear_stale_active_child_markers(repo_root, orchestration_id)
+    # The abandoned child's agent_graph edge was written by record_launch before
+    # the marker and never gets a terminal agent_runs row; prune it so the
+    # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
+    # check in _validate_orchestration_completion_for_pass. Idempotent.
+    pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
+    # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
+    # child is live, and a phase_state that says otherwise misdescribes the run to the
+    # completion vouch and the `--stage pre_judge` audit. The phase-state init below
+    # preserves node_states, so this reset survives into the resumed run.
+    reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
     # The `driver` block is GONE (issue #177): nothing reads it any more, and a record that
     # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
@@ -10660,55 +10539,54 @@ def resume_orchestration(
                 ),
             },
         )
-    if reconcile:
+    _append_phase_state_log(
+        repo_root,
+        orchestration_id,
+        {
+            "ts": _utc_now_iso(),
+            "event": "resume_status_reset",
+            "from": prior_status,
+            "to": "running",
+            "note": f"status reset to running for resume (from {prior_status})",
+        },
+    )
+    if pruned_graph_children:
         _append_phase_state_log(
             repo_root,
             orchestration_id,
             {
                 "ts": _utc_now_iso(),
-                "event": "resume_status_reset",
-                "from": prior_status,
-                "to": "running",
-                "note": f"status reset to running for resume (from {prior_status})",
+                "event": "resume_pruned_orphan_graph_edges",
+                "note": "orphan agent_graph edges (no agent_runs row) pruned for checkpoint resume",
+                "pruned_child_agent_run_ids": pruned_graph_children,
             },
         )
-        if pruned_graph_children:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_pruned_orphan_graph_edges",
-                    "note": "orphan agent_graph edges (no agent_runs row) pruned for checkpoint resume",
-                    "pruned_child_agent_run_ids": pruned_graph_children,
-                },
-            )
-        if cleared_active_child:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_cleared_stale_active_child",
-                    "from": "child_running",
-                    "to": "not_started",
-                    "note": "stale active_child markers cleared for checkpoint resume",
-                    "cleared_active_child_arids": cleared_active_child,
-                },
-            )
-        if reset_child_running:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_reset_stale_child_running",
-                    "from": "child_running",
-                    "to": "not_started",
-                    "note": "stale child_running node/step authority reset for checkpoint resume",
-                    "reset_node_steps": reset_child_running,
-                },
-            )
+    if cleared_active_child:
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_cleared_stale_active_child",
+                "from": "child_running",
+                "to": "not_started",
+                "note": "stale active_child markers cleared for checkpoint resume",
+                "cleared_active_child_arids": cleared_active_child,
+            },
+        )
+    if reset_child_running:
+        _append_phase_state_log(
+            repo_root,
+            orchestration_id,
+            {
+                "ts": _utc_now_iso(),
+                "event": "resume_reset_stale_child_running",
+                "from": "child_running",
+                "to": "not_started",
+                "note": "stale child_running node/step authority reset for checkpoint resume",
+                "reset_node_steps": reset_child_running,
+            },
+        )
     return meta
 
 
@@ -12450,22 +12328,11 @@ def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
     become. Under a 0700 root owned by this uid that threat is gone, and each lineage home
     inside the backend directory is created exclusively by its cold launch.
 
-    The id becomes a path segment OUTSIDE the repository, so it is refused here unless it
-    is a plain token. `init_orchestration` already refuses anything else, and this is the
-    second wall: a traversal segment would otherwise place a 0700 directory (and later a
-    credential file-bind destination) at an operator-chosen path anywhere on the host.
+    The orchestration id is the operator's (`--orchestration-id`) or host-minted, and the
+    backend a host constant (`WORKFLOW_BACKEND_HOME_DIRNAMES`); neither is checked here
+    (issue #643). `tools/prune_workflow_homes.py` keeps its own id rule.
     """
     oid = (orchestration_id or "").strip()
-    if not _is_safe_path_id(oid):
-        raise ValueError(
-            "isolated backend home: orchestration_id must be a plain [A-Za-z0-9_-] "
-            f"token (got {orchestration_id!r})"
-        )
-    if backend not in WORKFLOW_BACKEND_HOME_DIRNAMES:
-        raise ValueError(
-            f"isolated backend home: unknown backend {backend!r} "
-            f"(expected one of {list(WORKFLOW_BACKEND_HOME_DIRNAMES)})"
-        )
     return _workflow_homes_root() / oid / backend
 
 
@@ -12531,10 +12398,7 @@ def _refresh_workflow_home_owner_on_reuse(repo_root: Path, orchestration_id: str
     an orchestration id. So the refresh runs only when the home sits exactly where this code
     puts one.
     """
-    try:
-        expected = _workflow_backend_home_path(orchestration_id, home.name)
-    except ValueError:
-        return
+    expected = _workflow_backend_home_path(orchestration_id, home.name)
     try:
         if home.resolve() != expected.resolve():
             return
@@ -13653,10 +13517,9 @@ def probe_all_providers(
     called for `defaults` exactly as before. This adds the per-provider layer above it."""
     from tools.llm_config import apply_defaults_overrides, describe_providers, load_llm_config
 
-    # `config` is an ALREADY-LOADED snapshot: the caller hashed and parsed one set of bytes,
-    # and re-reading the file here would leave a window in which the hash approves one version
-    # while the probes certify another. `llm_config_path` remains for callers that have no
-    # snapshot to hand.
+    # `config` is an ALREADY-LOADED snapshot: the caller parsed one set of bytes, and
+    # re-reading the file here would probe a version the caller did not load.
+    # `llm_config_path` remains for callers that have no snapshot to hand.
     #
     # The overrides are the `defaults` the CALLER resolved. This runs in the `preflight`
     # SUBPROCESS, which reloads the file and would otherwise re-derive them independently, so
@@ -13750,14 +13613,6 @@ def probe_execution_platform(
     sandbox_checks, sandbox_enforced = _probe_bwrap_sandbox()
     checks.extend(sandbox_checks)
     can_launch_agents = can_launch_agents and sandbox_enforced
-    session_policy = {
-        "allow_step_agent_launch": os.environ.get("SPEC2SCIENCE_ALLOW_STEP_AGENT_LAUNCH", "1").strip().lower()
-        not in {"0", "false", "no"},
-        "allow_substep_agent_launch": os.environ.get(
-            "SPEC2SCIENCE_ALLOW_SUBSTEP_AGENT_LAUNCH", "1"
-        ).strip().lower()
-        not in {"0", "false", "no"},
-    }
     return {
         "checked_at": _utc_now_iso(),
         "backend": backend_token,
@@ -13768,11 +13623,6 @@ def probe_execution_platform(
         "sandbox_enforced": sandbox_enforced,
         "can_launch_step_agents": can_launch_agents,
         "can_launch_substep_agents": can_launch_agents,
-        "session_policy": session_policy,
-        "session_policy_launchable": (
-            bool(session_policy["allow_step_agent_launch"])
-            and bool(session_policy["allow_substep_agent_launch"])
-        ),
         "status": "pass" if can_launch_agents else "fail",
     }
 
@@ -13835,14 +13685,6 @@ def init_orchestration(
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # The id becomes a directory name and is later interpolated into every gate's path,
-    # where anything but a plain token is refused. Refuse it here so an operator learns
-    # at `init` rather than losing the run at its first build-runtime call.
-    if not _is_safe_path_id(str(orchestration_id)):
-        raise RuntimeError(
-            "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {orchestration_id!r})"
-        )
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)
@@ -13906,23 +13748,10 @@ def init_orchestration(
         # phases never run. The provenance argument above is about the CLOSURE BACK-LINK, which
         # must describe the current run; what the vouch requires to have been certified is not
         # provenance and is not this invocation's to lower.
-        # The caller's own `until_phase_high_water` is DISCARDED, not merged. `invocation` is
-        # the dict `--invocation-json` supplied, so a `setdefault` here let the caller hand in
-        # its own high water and win — re-opening, through the preservation logic, the exact
-        # hole the high water was introduced to close: a run started for `validate` re-inited
-        # with `{"until_phase":"compile","until_phase_high_water":"compile"}` reached `pass`
-        # with three phases never run. This field is derived from what the orchestration has
-        # RECORDED, never supplied.
-        #
-        # NOT PINNED, and kept anyway (enforcement skill rule 1-b: "the mutation survives" is
-        # not grounds for deletion). Replacing this `pop` with `pass` leaves the suite green,
-        # and that is correct rather than a missing test: the loop below ASSIGNS rather than
-        # `setdefault`s, so a prior record with a usable phase overwrites the supplied value;
-        # and when the prior has none, `_record_until_phase_high_water` takes the max with this
-        # invocation's own `until_phase`, so a supplied value can only ever raise the bar. The
-        # `pop` is the third guard on the same property, and it is the one that states the
-        # intent — that this field is derived and not an input — so it stays.
-        invocation.pop("until_phase_high_water", None)
+        # A caller-supplied `until_phase_high_water` cannot lower the bar: the loop below
+        # ASSIGNS rather than `setdefault`s, so a prior record with a usable phase overwrites
+        # it, and when the prior has none `_record_until_phase_high_water` takes the max with
+        # this invocation's own `until_phase`, so a supplied value can only raise it.
         prior_invocation = meta.get("invocation")
         if isinstance(prior_invocation, dict):
             for key in ("until_phase_high_water", "until_phase"):
@@ -13939,11 +13768,6 @@ def init_orchestration(
     if not orchestration_agent_run_id:
         orchestration_agent_run_id = str(uuid.uuid4())
     backend_token = str(agent_backend).strip().lower()
-    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
-            f"got {agent_backend!r}"
-        )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
     # NO read / output manifest for the orchestration agent either. The pair described what a
@@ -14021,26 +13845,11 @@ def write_preflight(
     orchestration_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    _validate_preflight_payload(payload)
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     pre_orchestration_start(repo_root, orchestration_id, event="preflight")
 
     stored = dict(payload)
-    if not isinstance(stored.get("session_policy"), dict):
-        allow_step = stored.get("can_launch_step_agents") is True
-        allow_substep = stored.get("can_launch_substep_agents") is True
-        stored["session_policy"] = {
-            "allow_step_agent_launch": allow_step,
-            "allow_substep_agent_launch": allow_substep,
-        }
-    if not isinstance(stored.get("session_policy_launchable"), bool):
-        policy = stored.get("session_policy")
-        allow_step = bool(policy.get("allow_step_agent_launch")) if isinstance(policy, dict) else True
-        allow_substep = (
-            bool(policy.get("allow_substep_agent_launch")) if isinstance(policy, dict) else True
-        )
-        stored["session_policy_launchable"] = allow_step and allow_substep
     if "probed_at" not in stored:
         stored["probed_at"] = stored.get("checked_at") or _utc_now_iso()
 
@@ -14071,52 +13880,13 @@ def write_preflight(
                 # fingerprint of the selected files detected nothing it does not, and the
                 # record it reset is not what the gate decides from.
                 existing = meta.get("dependency_readiness")
-                try:
-                    computed = _compute_initial_dependency_readiness(
-                        repo_root, meta.get("spec_ref"),
-                        target=_target_of_orchestration_meta(repo_root, meta),
-                    )
-                except SpecCatalogCorruption:
-                    # Codex round 34 F2: catalog corruption / missing:
-                    # preserve existing
-                    # verified state, or write fail-closed if no prior
-                    # record. mark-dependency-readiness will surface the
-                    # specific reason loudly when next invoked.
-                    if isinstance(existing, dict):
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_preserved_spec_catalog_unavailable",
-                                "reason": "spec_catalog_corrupt_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                    else:
-                        meta["dependency_readiness"] = {
-                            "direct_dependency_compile_readiness": False,
-                            "direct_dependency_execution_readiness": False,
-                            "detail": {
-                                "ir_ref_verified": False,
-                                "pipeline_ref_verified": False,
-                                "aggregate_verdict_verified": False,
-                            },
-                        }
-                        _write_json(meta_path, meta)
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_degraded_init",
-                                "reason": "spec_catalog_corrupt_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                if computed is None:
-                    # Catalog-degraded mode handled above; skip the rest of
-                    # the invalidation/refresh logic.
-                    pass
-                elif not isinstance(existing, dict) or (
+                # A corrupt catalog or a missing PyYAML raises out of the preflight, and the
+                # run stops before any launch (issue #643: the gate recomputes live anyway).
+                computed = _compute_initial_dependency_readiness(
+                    repo_root, meta.get("spec_ref"),
+                    target=_target_of_orchestration_meta(repo_root, meta),
+                )
+                if not isinstance(existing, dict) or (
                         existing != computed
                         and (computed.get("direct_dependency_compile_readiness") is True
                              or existing.get("certified_deps") == [])):
@@ -16839,7 +16609,6 @@ def main(argv: list[str] | None = None) -> int:
     # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the
     # file, so an edit in between would certify commands the conductor will never launch —
     # it keeps the object it already has.
-    preflight_parser.add_argument("--llm-config-sha256", default=None)
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
@@ -17298,15 +17067,7 @@ def main(argv: list[str] | None = None) -> int:
             invocation_record: dict[str, Any] | None = None
             invocation_json = getattr(args, "invocation_json", None)
             if isinstance(invocation_json, str) and invocation_json.strip():
-                try:
-                    parsed_invocation = json.loads(invocation_json)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"--invocation-json must be valid JSON: {exc}"
-                    ) from exc
-                if not isinstance(parsed_invocation, dict):
-                    raise ValueError("--invocation-json must be a JSON object")
-                invocation_record = parsed_invocation
+                invocation_record = json.loads(invocation_json)
             result = init_orchestration(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -17330,22 +17091,12 @@ def main(argv: list[str] | None = None) -> int:
             agent_command=agent_command,
             repo_root=repo_root,
         )
-        expected_sha = getattr(args, "llm_config_sha256", None)
         llm_config_snapshot = None
         if getattr(args, "llm_config", None):
-            # ONE snapshot: read the bytes, parse THOSE, and check the hash of THOSE. Hashing
-            # the path and then re-reading it to probe would approve one version and certify
-            # another, which under two wrapper commands on one backend token is a launch the
-            # `providers` map never saw.
+            # ONE snapshot: read the bytes and parse THOSE.
             from tools.llm_config import load_llm_config as _load_llm_config
             _raw = Path(args.llm_config).read_bytes()
             llm_config_snapshot = _load_llm_config(args.llm_config, content=_raw)
-            if expected_sha and llm_config_snapshot.sha256 != expected_sha:
-                raise ValueError(
-                    f"preflight: leaf-LLM configuration {args.llm_config} changed between the "
-                    f"caller loading it ({expected_sha}) and this probe "
-                    f"({llm_config_snapshot.sha256}); the probe would certify a configuration "
-                    f"the run will not launch")
         if getattr(args, "llm_config", None):
             # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
             # (i.e. `defaults`), and `providers` adds one entry per distinct provider the

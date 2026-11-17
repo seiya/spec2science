@@ -19,15 +19,12 @@ defect would live in. The leaf is `_WorkshopLeafFake`, which writes its document
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
-
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import yaml
 

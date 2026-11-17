@@ -170,6 +170,33 @@ def ensure_spec_entry(
     return spec_ref
 
 
+#: The node a fixture orchestration with no `spec_ref` of its own is recorded for by
+#: `make_dependencies_ready`: an `infrastructure` node with no dependencies, so the live
+#: readiness recompute answers ready without a target harness to certify.
+DEPENDENCY_FREE_NODE_KEY = "infrastructure/dependency_free_fixture@0.1.0"
+
+
+def make_dependencies_ready(repo_root: Path, orchestration_id: str) -> None:
+    """Make the launch gate's live readiness recompute (`_dependency_ready`) answer ready for
+    a fixture orchestration whose meta records no `spec_ref`, or one with no `deps.yaml`
+    under it (a fixture that named a spec it never wrote): record it for
+    `DEPENDENCY_FREE_NODE_KEY`, whose spec directory and catalog entry this writes. An
+    orchestration whose `spec_ref` has a `deps.yaml` is left as it is — its readiness is the
+    test's own subject. Since issue #643 the gate has no persisted-boolean fallback, so a
+    fixture must be recomputable. A no-op when the meta does not exist."""
+    meta_path = (repo_root / "workspace" / "orchestrations" / orchestration_id
+                 / "orchestration_meta.json")
+    if not meta_path.is_file():
+        return
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    spec_ref = meta.get("spec_ref")
+    if (isinstance(spec_ref, str) and spec_ref.strip()
+            and (repo_root / spec_ref.strip() / "deps.yaml").is_file()):
+        return
+    meta["spec_ref"] = ensure_spec_entry(repo_root, DEPENDENCY_FREE_NODE_KEY)
+    _write_json(meta_path, meta)
+
+
 def record_orchestration_target(repo_root: Path, orchestration_id: str,
                                 target: Any = None) -> None:
     """Record `target` as the orchestration's `invocation.target` (what `run_workflow.py`

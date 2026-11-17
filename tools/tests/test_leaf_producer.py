@@ -23,8 +23,6 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
-
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 from tools.tests.target_fixtures import composed_pure_template

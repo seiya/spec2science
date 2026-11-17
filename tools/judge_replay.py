@@ -423,7 +423,6 @@ def create_replay_orchestration(repo_root: Path, source: SourceLaunch, llm_confi
             "--llm-config", str(llm_config.path),
             "--llm-config-defaults-model", llm_config.defaults.model,
             "--llm-config-defaults-command", llm_config.defaults.command,
-            "--llm-config-sha256", llm_config.sha256,
         ]).payload
     except BaseException as exc:
         # `init` committed: an orchestration left `running` would read as a live run.

@@ -7680,31 +7680,8 @@ def _validate_orchestration_hierarchy(
             if not required.exists():
                 violations.append(f"{required}: missing")
 
-        if preflight_path.exists():
-            try:
-                preflight = _read_json(preflight_path)
-            except json.JSONDecodeError:
-                violations.append(f"{preflight_path}: invalid json")
-            else:
-                if not isinstance(preflight, dict):
-                    violations.append(f"{preflight_path}: must be json object")
-                else:
-                    if preflight.get("status") != "pass":
-                        violations.append(f"{preflight_path}:status must be pass")
-                    if preflight.get("can_launch_step_agents") is not True:
-                        violations.append(
-                            f"{preflight_path}:can_launch_step_agents must be true"
-                        )
-                    if preflight.get("can_launch_substep_agents") is not True:
-                        violations.append(
-                            f"{preflight_path}:can_launch_substep_agents must be true"
-                        )
-                    # The per-backend capability checks are not re-read here: `write_preflight`
-                    # refuses a document that claims launchability while any required check
-                    # is missing (`_preflight_launch_refusals`). The `multi_agent` requirement
-                    # that stood here went in issue #447 (D1).
-                    if not isinstance(preflight.get("checks"), list):
-                        violations.append(f"{preflight_path}:checks must be list")
+        # The contents of `preflight.json` are not re-read here: it is host-written, and every
+        # launch is gated on the same document by `_preflight_launch_refusals` (issue #643).
 
         if meta_path.exists():
             try:

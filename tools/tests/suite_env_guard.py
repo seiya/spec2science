@@ -42,10 +42,6 @@ SUITE_OWNED_ENV = {
         "the `_redirect_operator_private_roots` fixture in tools/tests/conftest.py, per "
         "test; ALSO set process-globally for the duration of test_run_workflow.py by its "
         "`setUpModule` — a pre-existing setter this table did not declare",
-    "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
-        "a module-level `os.environ.setdefault` in eight test modules "
-        "(test_orchestration_runtime.py, test_target_keyed_store.py, test_target_free_compile.py "
-        "and the five test_leaf_{compile,judge,producer,verify,wiring} modules), so it appears once any of them is imported",
 }
 
 # Populated by the conftest hook; a witness reads it rather than inferring the guard from a
@@ -228,8 +224,7 @@ def restore_operator_env(environ) -> None:
     """Put back what was stripped.
 
     NOT "leaves the caller's environment as it found it": the suite ADDS names of its own
-    — the eight modules that `setdefault` SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK at
-    import — and those were never in the record, so they survive this.
+    (`SUITE_OWNED_ENV`), and those were never in the record, so they survive this.
 
     UNWITNESSED and currently unreachable: no `pytest.main(` exists anywhere in this
     repository, so nothing observes the restoration and its mutant survives the suite. It

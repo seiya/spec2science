@@ -16,12 +16,6 @@ import unittest
 
 import yaml
 
-# Codex round 20 F1: unit tests use `_mark_dependencies_ready` to inject
-# all-true readiness without setting up a real deps.yaml on disk. Production
-# `_dependency_ready` now fails closed when live recompute cannot run; tests
-# explicitly opt into the legacy persisted-boolean fallback so existing
-# fixtures keep working. Production environments do NOT set this variable.
-os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable, ClassVar
 from datetime import datetime, timedelta, timezone
@@ -390,12 +384,15 @@ def _fixture_generate_downstream_ready(repo_root: Path, *, source_id: str = "src
 
 
 def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001") -> None:
-    """Inject `dependency_readiness` so `_dependency_ready` accepts the launch (under the
-    suite's `SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1`, where a fixture with no
-    deps.yaml falls back to these persisted booleans)."""
+    """Make `_dependency_ready` accept the launch: the orchestration's node is recomputably
+    ready (`orchestration_fixtures.make_dependencies_ready`), and the persisted
+    `dependency_readiness` record says so too."""
     # What a real launch also has (issue #284): the target profile its pipeline names, in the
     # repository `record_launch` loads it from, and the target recorded on the orchestration.
-    from tools.tests.orchestration_fixtures import record_orchestration_target
+    from tools.tests.orchestration_fixtures import (
+        make_dependencies_ready,
+        record_orchestration_target,
+    )
     from tools.tests.target_fixtures import install_target_profile
     install_target_profile(repo_root)
     record_orchestration_target(repo_root, orchestration_id)
@@ -415,6 +412,9 @@ def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001"
         },
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # The gate recomputes readiness live and reads none of the booleans above (issue #643
+    # removed the persisted-boolean fallback): give the orchestration a recomputable node.
+    make_dependencies_ready(repo_root, orchestration_id)
 
 
 
@@ -6196,22 +6196,26 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "missing required capabilities: .*codex_home_writable"):
-                write_preflight(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "status": "pass",
-                        "backend": "codex",
-                        "sandbox_runtime": "bwrap",
-                        "sandbox_enforced": True,
-                        "can_launch_step_agents": True,
-                        "can_launch_substep_agents": True,
-                        "checks": [
-                            {"name": "hooks_enabled", "pass": True},
-                        ],
-                    },
-                )
+            # Written as given (issue #643 removed the write-time mirror); every reader of the
+            # stored document asks the read-time gate, which refuses it.
+            write_preflight(
+                repo_root=repo_root,
+                orchestration_id="orch_001",
+                payload={
+                    "status": "pass",
+                    "backend": "codex",
+                    "sandbox_runtime": "bwrap",
+                    "sandbox_enforced": True,
+                    "can_launch_step_agents": True,
+                    "can_launch_substep_agents": True,
+                    "checks": [
+                        {"name": "hooks_enabled", "pass": True},
+                    ],
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError,
+                                        "missing required capabilities: .*codex_home_writable"):
+                _require_preflight_launchable(repo_root, "orch_001", enforce_live_probe=False)
 
     def test_record_launch_runs_live_probe_when_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10234,7 +10238,8 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
     def test_resume_orchestration_raises_for_nonexistent_orchestration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            with self.assertRaisesRegex(RuntimeError, "orchestration not found"):
+            # No refusal of its own since issue #643: the meta read raises.
+            with self.assertRaises(FileNotFoundError):
                 resume_orchestration(repo, "missing")
 
     def test_resume_orchestration_preserves_existing_fields(self) -> None:
@@ -10382,58 +10387,12 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             init_orchestration(repo_root=repo, orchestration_id="o1")
             self.assertNotIn("driver", json.loads(meta_path.read_text("utf-8")))
 
-    def test_a_prior_that_is_neither_terminal_nor_running_is_refused(self) -> None:
-        """The NEGATIVE control of the reconcile gate, which the inversion took with it.
-
-        `reconcile` is `prior_status in IDEMPOTENT_TERMINAL_STATUSES or prior_status ==
-        "running"`. Before this PR, the `running` case was the only test standing on the False
-        side; inverting it left `reconcile = True` indistinguishable from the real condition —
-        measured, that mutation passes the whole suite. And the False side is reachable:
-        neither `init --status` nor `set-status --status` declares `choices=`, so a status
-        outside both sets is an ordinary string the runtime will store.
-
-        What the gate protects is not academic: reconciliation deletes active-child markers and
-        resets `child_running` phase authority unconditionally. A status nobody can reason about
-        must not be treated as proof that no child is live."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            init_orchestration(repo_root=repo, orchestration_id="o1", status="running")
-            _mark_dependencies_ready(repo, "o1")
-            root = repo / "workspace/orchestrations/o1"
-            meta_path = root / "orchestration_meta.json"
-            doc = json.loads(meta_path.read_text("utf-8"))
-            doc["status"] = "quiescing"          # neither terminal nor `running`
-            meta_path.write_text(json.dumps(doc), encoding="utf-8")
-            del doc
-            child = "live-child-arid"
-            (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
-            markers = root / "active_children"
-            markers.mkdir(exist_ok=True)
-            (markers / f"{child}.txt").write_text(child, encoding="utf-8")
-
-            # REFUSED, not silently un-reconciled. Proceeding was the worse of the two: the
-            # resume succeeded, the reconciliations were skipped, and the run carried on with
-            # the dead child's markers and `child_running` phase authority still in place —
-            # wedging the next launch behind a sequential-child gate whose owner is gone, for
-            # a reason nothing reported.
-            with self.assertRaisesRegex(RuntimeError, "is neither terminal .* nor 'running'"):
-                resume_orchestration(repo, "o1")
-            self.assertTrue((root / "active_child_agent_run_id.txt").exists())
-            self.assertTrue((markers / f"{child}.txt").exists())
-            # The status is left alone: a refusal must not half-apply.
-            self.assertEqual(
-                json.loads((root / "orchestration_meta.json").read_text("utf-8"))["status"],
-                "quiescing")
-
-    def test_every_unplaceable_status_shape_is_refused_not_just_a_non_empty_string(self) -> None:
-        """The first cut of the refusal read `isinstance(str) and status.strip() and not
-        reconcile`, which exempted the three shapes that are EASIEST to produce — an empty
-        string, a JSON `null`, and an absent key. `set-status --status ""` exits 0, and the
-        resume then took the exact path the guard was added to close.
-
-        The second-order effect is worse than the first: the meta is left at `''` rather than
-        `running`, and `_warn_about_resumable_priors` skips a falsy status — so the run stops
-        being mentioned on the cold path too, and becomes invisible in both directions."""
+    def test_every_unplaceable_status_shape_is_reconciled(self) -> None:
+        """A recorded status the runtime does not write — only a hand-run `init --status` /
+        `set-status --status` produces one — is reconciled like any other prior (issue #643
+        removed the refusal): the dead child's markers are cleared and the status is
+        `running`, so no shape leaves the meta at a value `_warn_about_resumable_priors`
+        skips."""
         for label, mutate in (
             ("empty string", lambda d: d.__setitem__("status", "")),
             ("whitespace", lambda d: d.__setitem__("status", "   ")),
@@ -10457,11 +10416,10 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
                 markers.mkdir(exist_ok=True)
                 (markers / f"{child}.txt").write_text(child, encoding="utf-8")
 
-                with self.assertRaisesRegex(RuntimeError, "is neither terminal"):
-                    resume_orchestration(repo, "o1")
-                self.assertTrue((root / "active_child_agent_run_id.txt").exists(),
-                                f"{label}: a refused resume must not clear live markers")
-                self.assertTrue((markers / f"{child}.txt").exists())
+                resume_orchestration(repo, "o1")
+                self.assertFalse((markers / f"{child}.txt").exists(), label)
+                self.assertEqual(
+                    json.loads(meta_path.read_text("utf-8"))["status"], "running", label)
 
     def test_a_resume_records_its_host_and_reports_crossing_one(self) -> None:
         """The ONE fact from the deleted `driver` block that has no substitute.
@@ -10553,7 +10511,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
     def test_init_resume_fails_if_orchestration_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(FileNotFoundError):
                 main(
                     [
                         "init",
@@ -10747,16 +10705,6 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             meta = self._read_meta(repo, "o1")
             self.assertEqual(meta.get("invocation"), inv)
 
-    def test_init_cli_invocation_json_rejects_non_object(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            with self.assertRaises(ValueError):
-                main([
-                    "init", "--repo-root", str(repo),
-                    "--orchestration-id", "o1",
-                    "--invocation-json", "[1, 2, 3]",
-                ])
-
     def test_validate_agent_summary_text_orchestration_rejects_single_line(
         self,
     ) -> None:
@@ -10772,11 +10720,9 @@ def _iso_utc_z(dt: datetime) -> str:
 
 
 class PreflightOneReasonListTests(unittest.TestCase):
-    """The preflight gate and the preflight validator are ONE reason list (issue #433 PR-2):
-    `_preflight_allows_agent_launch` is "`_preflight_launch_refusals` is empty", and
-    `_validate_preflight_payload` refuses exactly a document that claims launchability (either
-    `can_launch_*` flag true) while the list is not empty. Every row calls the real functions;
-    none reconstructs the condition list."""
+    """The preflight gate is ONE reason list (issue #433 PR-2): `_preflight_allows_agent_launch`
+    is "`_preflight_launch_refusals` is empty". (The write-time validator that mirrored it went
+    in issue #643.) Every row calls the real functions; none reconstructs the condition list."""
 
     @staticmethod
     def _claude_launchable() -> dict[str, object]:
@@ -10898,10 +10844,9 @@ class PreflightOneReasonListTests(unittest.TestCase):
         ]
         return out
 
-    def test_the_validator_refuses_exactly_a_claiming_document_the_gate_refuses(self) -> None:
+    def test_the_gate_is_the_reason_list_being_empty(self) -> None:
         from tools.orchestration_runtime import (
             _preflight_allows_agent_launch, _preflight_launch_refusals,
-            _validate_preflight_payload,
         )
         perturbations = self._perturbations()
         # The family must straddle both sides of each decision, or the equivalence is vacuous.
@@ -10915,14 +10860,6 @@ class PreflightOneReasonListTests(unittest.TestCase):
             with self.subTest(label):
                 gate = _preflight_allows_agent_launch(payload)
                 self.assertEqual(gate, not _preflight_launch_refusals(payload))
-                claims = (payload.get("can_launch_step_agents") is True
-                          or payload.get("can_launch_substep_agents") is True)
-                try:
-                    _validate_preflight_payload(payload)
-                    raised = False
-                except ValueError:
-                    raised = True
-                self.assertEqual(raised, claims and not gate)
 
     def test_each_condition_names_its_own_reason(self) -> None:
         from tools.orchestration_runtime import _preflight_launch_refusals
@@ -10934,16 +10871,15 @@ class PreflightOneReasonListTests(unittest.TestCase):
                 else:
                     self.assertIn(reason, reasons)
 
-    def test_the_two_holes_the_mirror_left_are_closed(self) -> None:
-        """Before issue #433 PR-2 the validator ACCEPTED these and the gate refused them, so
-        `write_preflight` persisted a document every later record-launch refused. (A third
-        row, a document without `feature_states`, went with that key in issue #447.)"""
-        from tools.orchestration_runtime import _validate_preflight_payload
+    def test_each_launch_flag_is_its_own_refusal(self) -> None:
+        """Each `can_launch_*` flag is refused by name (the two holes the write-time mirror
+        once left; issue #433 PR-2)."""
+        from tools.orchestration_runtime import _preflight_launch_refusals
         codex = _launchable_preflight_dict()
-        with self.assertRaisesRegex(ValueError, "can_launch_substep_agents must be true"):
-            _validate_preflight_payload({**codex, "can_launch_substep_agents": False})
-        with self.assertRaisesRegex(ValueError, "can_launch_step_agents must be true"):
-            _validate_preflight_payload({**codex, "can_launch_step_agents": False})
+        self.assertIn("can_launch_substep_agents must be true",
+                      _preflight_launch_refusals({**codex, "can_launch_substep_agents": False}))
+        self.assertIn("can_launch_step_agents must be true",
+                      _preflight_launch_refusals({**codex, "can_launch_step_agents": False}))
 
     def test_reasons_keep_the_gate_order_and_hide_none(self) -> None:
         from tools.orchestration_runtime import _preflight_launch_refusals
@@ -10989,11 +10925,6 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
         "sandbox_enforced": True,
         "can_launch_step_agents": True,
         "can_launch_substep_agents": True,
-        "session_policy": {
-            "allow_step_agent_launch": True,
-            "allow_substep_agent_launch": True,
-        },
-        "session_policy_launchable": True,
         "checks": [
             {"name": "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},
@@ -11952,81 +11883,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         self.assertEqual(_required_child_agent_kind("compile"), "substep")
         self.assertEqual(_required_child_agent_kind("build"), "step")
 
-    def test_workflow_launch_check_fail_closed_by_session_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="wf1")
-            _mark_dependencies_ready(repo_root, "wf1")
-            dep_path = repo_root / _FIX_DEP_REF
-            dep_path.parent.mkdir(parents=True, exist_ok=True)
-            dep_path.write_text("ok\n", encoding="utf-8")
-            meta_path = repo_root / "workspace/orchestrations/wf1/orchestration_meta.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_ref"] = _FIX_DEP_REF
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="wf1",
-                payload=_launchable_preflight_dict(
-                    session_policy={"allow_substep_agent_launch": False},
-                ),
-            )
-            out = workflow_launch_check(
-                repo_root,
-                orchestration_id="wf1",
-                node_key="problem/shallow_water2d@0.3.0",
-                step="compile",
-                backend="codex",
-                require_child_agent="substep",
-            )
-            self.assertEqual(out.get("status"), "fail_closed")
-            self.assertEqual(out.get("reason_code"), "child_agent_forbidden_by_session_policy")
-            self.assertEqual(out.get("next_action"), "stop_before_phase_body")
-
-    def test_workflow_launch_check_fail_closed_when_session_policy_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="wf2")
-            _mark_dependencies_ready(repo_root, "wf2")
-            dep_path = repo_root / _FIX_DEP_REF
-            dep_path.parent.mkdir(parents=True, exist_ok=True)
-            dep_path.write_text("ok\n", encoding="utf-8")
-            meta_path = repo_root / "workspace/orchestrations/wf2/orchestration_meta.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_ref"] = _FIX_DEP_REF
-            meta["dependency_readiness"] = {
-                "direct_dependency_compile_readiness": True,
-                "direct_dependency_execution_readiness": True,
-                "detail": {
-                    "ir_ref_verified": True,
-                    "pipeline_ref_verified": True,
-                    "aggregate_verdict_verified": True,
-                },
-            }
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            # Simulate a legacy/manual preflight payload that has no session policy fields.
-            preflight_path = repo_root / "workspace/orchestrations/wf2/preflight.json"
-            preflight_path.parent.mkdir(parents=True, exist_ok=True)
-            legacy_payload = _launchable_preflight_dict()
-            legacy_payload.pop("session_policy", None)
-            legacy_payload.pop("session_policy_launchable", None)
-            preflight_path.write_text(
-                json.dumps(legacy_payload, ensure_ascii=False, indent=2)
-                + "\n",
-                encoding="utf-8",
-            )
-            out = workflow_launch_check(
-                repo_root,
-                orchestration_id="wf2",
-                node_key="problem/shallow_water2d@0.3.0",
-                step="compile",
-                backend="codex",
-                require_child_agent="substep",
-            )
-            self.assertEqual(out.get("status"), "fail_closed")
-            self.assertEqual(out.get("reason_code"), "child_agent_forbidden_by_session_policy")
-            self.assertEqual(out.get("blocking_policy_scope"), "session_policy_missing")
-
     def test_record_launch_rejects_missing_step_or_node_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
                 os.environ, {"CODEX_HOME": str(seed_codex_auth(Path(tmp) / "codex_auth"))}):
@@ -12160,12 +12016,16 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="wf4")
             _mark_dependencies_ready(repo_root, "wf4")
+            # The pre-phase check fails closed on a dependency that is not ready: the node's
+            # spec names no `deps.yaml`, so the live readiness recompute cannot run.
+            meta_path = repo_root / "workspace/orchestrations/wf4/orchestration_meta.json"
+            wf4_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            wf4_meta["spec_ref"] = "spec/problem/no_such_spec"
+            meta_path.write_text(json.dumps(wf4_meta), encoding="utf-8")
             write_preflight(
                 repo_root=repo_root,
                 orchestration_id="wf4",
-                payload=_launchable_preflight_dict(
-                    session_policy={"allow_substep_agent_launch": False},
-                ),
+                payload=_launchable_preflight_dict(),
             )
             req = {
                 "agent_run_id": "plan_sub_fail_closed",
@@ -12241,7 +12101,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 )
             )
             self.assertEqual(meta.get("status"), "fail_closed")
-            self.assertEqual(meta.get("reason_code"), "child_agent_forbidden_by_session_policy")
+            self.assertEqual(meta.get("reason_code"), "dependency_not_ready")
 
     @staticmethod
     def _perm_test_refs(**extra):
@@ -12383,25 +12243,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                     "workspace/pipelines/problem__shallow_water2d__0.3.0/"
                     "shallow-water2d_20260415_001")
 
-    def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
-        """The id becomes a directory name and every gate's path base, so both entry
-        points refuse it. Resume as well as init: a workspace created under an older
-        grammar would otherwise restart and fail at its first build-runtime call instead."""
-        from tools.orchestration_runtime import resume_orchestration
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            for bad in ("../escape", "orch.1", "a/b", " orch_1 "):
-                with self.subTest(orchestration_id=bad):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        init_orchestration(repo_root=repo_root, orchestration_id=bad)
-                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
-                    with self.assertRaises(RuntimeError) as ctx_resume:
-                        resume_orchestration(repo_root, bad)
-                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_resume.exception))
-            # The generated form still works.
-            init_orchestration(repo_root=repo_root,
-                               orchestration_id="orch_20260812T010203Z_ab12cd34")
-
     def test_omitted_build_system_standalone_still_marker_detects(self) -> None:
         """The asymmetry is deliberate: outside an orchestration there is no toolchain
         declaration to agree with, so marker detection stays the answer."""
@@ -12447,13 +12288,13 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 repo_root=repo_root,
                 orchestration_id="g9",
                 status="fail_closed",
-                reason_code="child_agent_forbidden_by_session_policy",
-                reason_detail="session policy denied substep launch",
-                blocking_policy_scope="session_policy.allow_substep_agent_launch",
+                reason_code="dependency_not_ready",
+                reason_detail="deps_yaml_missing_or_unparseable",
+                blocking_policy_scope="default_allow",
             )
             self.assertEqual(meta.get("status"), "fail_closed")
-            self.assertEqual(meta.get("reason_code"), "child_agent_forbidden_by_session_policy")
-            self.assertEqual(meta.get("blocking_policy_scope"), "session_policy.allow_substep_agent_launch")
+            self.assertEqual(meta.get("reason_code"), "dependency_not_ready")
+            self.assertEqual(meta.get("blocking_policy_scope"), "default_allow")
 
     def test_set_status_terminal_writes_cleanup_committed_marker_after_cleanup(self) -> None:
         """Adv-35 invariant: set-status terminal must commit (a) terminal
@@ -12499,7 +12340,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         leftover *.py — Adv-9 only exempts that dir while status='running'."""
         for terminal_status, reason_code in (
             ("fail", None),
-            ("fail_closed", "child_agent_forbidden_by_session_policy"),
+            ("fail_closed", "dependency_not_ready"),
             ("timeout", None),
             ("cancel", None),
         ):
@@ -17000,11 +16841,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
                 },
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
-            # Disable persisted-boolean fallback for this assertion: we want
-            # production strict-mode behavior where the gate uses fail_reason.
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
-                ok, reason = _dependency_ready(repo_root, "frp", step="compile")
+            ok, reason = _dependency_ready(repo_root, "frp", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_malformed_schema",
                              "gate must propagate the specific malformed-schema "
@@ -17039,9 +16876,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
                 },
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
-                ok, reason = _dependency_ready(repo_root, "frp2", step="compile")
+            ok, reason = _dependency_ready(repo_root, "frp2", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_missing_or_unparseable")
 
@@ -17581,46 +17416,29 @@ class MarkDependencyReadinessMalformedCliTests(unittest.TestCase):
 
 
 class DependencyReadinessStrictModeTests(unittest.TestCase):
-    """Codex round 20 F1: production launch checks fail closed when live
-    recompute cannot run (no deps.yaml). The persisted-boolean fallback is
-    gated behind SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1, which only
-    test scaffolding sets."""
+    """Codex round 20 F1: launch checks fail closed when live recompute cannot run (no
+    deps.yaml), whatever the persisted booleans say. The persisted-boolean fallback that test
+    scaffolding could opt into went in issue #643."""
 
     def test_strict_mode_rejects_when_recompute_unavailable(self) -> None:
         from tools.orchestration_runtime import _dependency_ready
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="strict")
-            _mark_dependencies_ready(repo_root, "strict")
-            # No spec_ref / deps.yaml on disk. Disable the fallback.
-            with patch.dict(os.environ, {
-                "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK": "",
-            }, clear=False):
-                # patch.dict can't truly "unset" a var unless we ensure it.
-                os.environ.pop(
-                    "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None,
-                )
-                ok, reason = _dependency_ready(repo_root, "strict", step="compile")
-            self.assertFalse(ok,
-                             "production strict mode must reject when live "
-                             "recompute cannot run")
+            # No spec_ref / deps.yaml on disk; the persisted record claims ready.
+            meta_path = (repo_root / "workspace" / "orchestrations" / "strict"
+                         / "orchestration_meta.json")
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["dependency_readiness"] = {
+                "direct_dependency_compile_readiness": True,
+                "direct_dependency_execution_readiness": True,
+                "detail": {"ir_ref_verified": True, "pipeline_ref_verified": True,
+                           "aggregate_verdict_verified": True},
+            }
+            meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+            ok, reason = _dependency_ready(repo_root, "strict", step="compile")
+            self.assertFalse(ok, "the gate must reject when live recompute cannot run")
             self.assertEqual(reason, "deps_yaml_missing_or_unparseable")
-
-    def test_fallback_mode_allows_persisted_booleans_for_tests(self) -> None:
-        """The opt-in env var explicitly enables the legacy fallback so test
-        fixtures (`_mark_dependencies_ready`) continue to work."""
-        from tools.orchestration_runtime import _dependency_ready
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="fb")
-            _mark_dependencies_ready(repo_root, "fb")
-            # Module-level setdefault already set the env var to "1".
-            self.assertEqual(
-                os.environ.get("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK"),
-                "1",
-            )
-            ok, reason = _dependency_ready(repo_root, "fb", step="compile")
-            self.assertTrue(ok, f"fallback opt-in must allow test scaffolding; reason={reason}")
 
 
 class DependencyReadinessForgeryRejectionTests(unittest.TestCase):
@@ -22926,22 +22744,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         self.assertTrue(all(entry["launchable"] for entry in out.values()))
         self.assertEqual([s.get("workshop") for s in out["claude"]["surfaces"]], [True])
 
-    def test_preflight_refuses_a_snapshot_that_changed_under_it(self) -> None:
-        """The caller resolved one set of bytes; this subprocess reloads the file. If they
-        differ, the probe would certify a configuration the run will not launch."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            argv = ["preflight", "--repo-root", str(repo_root),
-                    "--orchestration-id", "orch_001", "--backend", "claude",
-                    "--llm-config", str(cfg), "--llm-config-sha256", "sha256:stale"]
-            with patch.object(ort, "probe_execution_platform",
-                              return_value=_launchable_preflight_dict(backend="claude")), \
-                 self.assertRaises(ValueError) as ctx:
-                ort.main(argv)
-            self.assertIn("changed between the caller loading it", str(ctx.exception))
-
     def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -22949,8 +22751,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             argv = ["preflight", "--repo-root", str(repo_root),
                     "--orchestration-id", "orch_001", "--backend", "claude",
-                    "--llm-config", str(cfg),
-                    "--llm-config-sha256", lc_config_sha256(cfg)]
+                    "--llm-config", str(cfg)]
             with patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")):
                 ort.main(argv)
@@ -22983,7 +22784,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(seen, ["wrapA"])
 
     def test_preflight_hands_the_prober_its_own_snapshot(self) -> None:
-        """The CLI half: it must pass the object it hashed, not the path."""
+        """The CLI half: it must pass the object it parsed, not the path."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
@@ -22995,8 +22796,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                               side_effect=lambda **kw: captured.update(kw) or {}):
                 ort.main(["preflight", "--repo-root", str(repo_root),
                           "--orchestration-id", "orch_001", "--backend", "claude",
-                          "--llm-config", str(cfg),
-                          "--llm-config-sha256", lc_config_sha256(cfg)])
+                          "--llm-config", str(cfg)])
             self.assertIsNotNone(captured.get("config"))
             self.assertIsNone(captured.get("llm_config_path"))
             self.assertEqual(captured["config"].sha256, lc_config_sha256(cfg))
@@ -23519,7 +23319,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
             self.assertEqual(profile["backend_command"], "claude")
 
-    def test_write_preflight_refuses_what_the_launch_gate_would_refuse(self) -> None:
+    def test_the_launch_gate_refuses_an_unlaunchable_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
@@ -23528,9 +23328,10 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 "claude": {"launchable": True, "checks": []},
                 "openai_compatible": {"launchable": False, "checks": []},
             }
-            with self.assertRaises(ValueError) as ctx:
-                write_preflight(repo_root=repo_root, orchestration_id="orch_001",
-                                payload=payload)
+            write_preflight(repo_root=repo_root, orchestration_id="orch_001", payload=payload)
+            with self.assertRaises(RuntimeError) as ctx:
+                ort._require_preflight_launchable(repo_root, "orch_001",
+                                                  enforce_live_probe=False)
             self.assertIn("openai_compatible", str(ctx.exception))
 
 
@@ -25863,26 +25664,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 runtime._workflow_homes_root()
         self.assertEqual(real_root.exists(), existed_before,
                          "the guard let something be created in the operator's tree")
-
-    def test_an_orchestration_id_that_is_not_a_plain_token_is_refused(self) -> None:
-        """The id becomes a path segment OUTSIDE the repository.
-
-        `init_orchestration` already refuses anything but `[A-Za-z0-9_-]`, and this is
-        the second wall at the point of use: a traversal segment would place a 0700
-        directory — and later the destination of a credential file-bind — at a caller-
-        chosen path anywhere the running user can write.
-        """
-        from tools.orchestration_runtime import _workflow_backend_home_path
-        for bad in ("../escape", "a/b", ".", "..", "", "  ", "o\x00d"):
-            with self.subTest(orchestration_id=bad):
-                with self.assertRaisesRegex(ValueError, "plain"):
-                    _workflow_backend_home_path(bad, "claude")
-        # And an unknown backend cannot invent a directory level either.
-        with self.assertRaisesRegex(ValueError, "unknown backend"):
-            _workflow_backend_home_path("orch_d", "../..")
-        self.assertEqual(
-            _workflow_backend_home_path("orch_d", "codex"),
-            self._homes_root() / "orch_d" / "codex")
 
     def test_a_relative_override_is_resolved_to_an_absolute_path(self) -> None:
         """"The tree that gets created is the tree that gets guarded" needs one more thing.
