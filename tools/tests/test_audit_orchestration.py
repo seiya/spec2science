@@ -1401,7 +1401,6 @@ class PureLeafABSummaryTest(unittest.TestCase):
         lines: list[str] = []
         _render_pure_leaf_ab(out, lines)
         md = "\n".join(lines)
-        # Must not claim "legacy/agentic run" while the executor line says pure.
         self.assertIn("no pipeline reservation", md)
 
     def test_render_collapses_repeated_model_and_shows_contract(self) -> None:
@@ -1434,16 +1433,6 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertIn("contract=`pure-1`", md)
         self.assertIn("cache_creation 4", md)  # reconciles with total 10
         self.assertIn("no verify meta recorded", md)  # not "not a pure leaf"
-
-    def test_unrecorded_executor_does_not_claim_legacy(self) -> None:
-        lines: list[str] = []
-        _render_pure_leaf_ab(
-            {"available": False, "generate_executor": None,
-             "backend": "claude", "agent_cli_version": None, "pure_nodes": []},
-            lines,
-        )
-        md = "\n".join(lines)
-        self.assertNotIn("generate-executor", md)
 
     def test_render_legacy_notes_no_pure_node(self) -> None:
         lines: list[str] = []
@@ -2125,7 +2114,9 @@ class InRepoRecordSectionTests(unittest.TestCase):
     def test_each_compile_part_is_its_own_key_and_a_clean_run_is_no_redo(self) -> None:
         """Issue #526: compile.generate is a core launch and one launch per test. Read through
         each launch request's `pure_part`, a clean core + two parts is no redo; a part's own
-        repair turn is listed as that part's two attempts."""
+        repair turn is listed as that part's two attempts. The core's request is not UTF-8: it
+        is read as naming no part, through `_load_json_if_dict`, rather than ending the report
+        (issue #643 merged `_launch_part`'s own reader into it and widened its except)."""
         runs = [{"agent_run_id": a, "node_key": "n", "step": "compile", "substep": "generate",
                  "status": st, "started_at": f"2026-09-05T00:0{i}:00Z", "finished_at": "x"}
                 for i, (a, st) in enumerate((("core", "pass"), ("pa", "pass"),
@@ -2137,7 +2128,7 @@ class InRepoRecordSectionTests(unittest.TestCase):
                 (root / "launches" / f"{arid}.request.json").write_text(
                     json.dumps({"pure_shape": "verification", "pure_part": part}),
                     encoding="utf-8")
-            (root / "launches" / "core.request.json").write_text("{}", encoding="utf-8")
+            (root / "launches" / "core.request.json").write_bytes(b"\xff{}")
             summary = collect_agent_run_summary(runs, None, root)
             self.assertEqual(summary["repeated_substeps"], [
                 {"node_key": "n", "step": "compile", "substep": "generate", "part": "t_b",

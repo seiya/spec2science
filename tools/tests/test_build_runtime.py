@@ -1168,8 +1168,8 @@ class ArgumentContractTests(unittest.TestCase):
         `compile_project`'s refusal of a missing `build_system` over a directory with no marker
         is observed here and by `test_an_unmarked_directory_is_refused_and_says_to_pass_build_system`.
 
-        Since issue #643 deleted the entry points' own non-empty-string refusals, `run_linter`
-        and `run_syntax_check` index their required arguments, so the refusal is the `KeyError`
+        Since issue #643 deleted the entry points' own non-empty-string refusals, `run_linter`,
+        `run_program` and `run_syntax_check` index their required arguments, so the refusal is the `KeyError`
         naming it; `run_quality_checks`' is `quality_check_command`'s unsupported preset and
         `compile_project`'s is the recommender's — no default stands in for any of them."""
         d = Path(tempfile.mkdtemp())
@@ -1177,11 +1177,12 @@ class ArgumentContractTests(unittest.TestCase):
         (d / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
         full = {
             "run_syntax_check": {"project_dir": str(d), "compiler": "gfortran", "std": "f2008"},
+            "run_program": {"project_dir": str(d), "command": ["/bin/true"]},
             "run_linter": {"project_dir": str(d), "preset": "fortitude"},
             "run_quality_checks": {"project_dir": str(d), "preset": "make_test"},
             "compile_project": {"project_dir": str(d), "build_system": "make"},
         }
-        refusal = {"run_syntax_check": KeyError, "run_linter": KeyError,
+        refusal = {"run_syntax_check": KeyError, "run_program": KeyError, "run_linter": KeyError,
                    "run_quality_checks": ValueError, "compile_project": ValueError}
         for tool, args in full.items():
             with self.subTest(tool=tool):
