@@ -764,6 +764,12 @@ class ExecuteAtTheLocalSiteTests(unittest.TestCase):
                           f"{LOCAL_SITE}", result.stderr)
 
 
+#: `_IR` with an input the case-file writer refuses (`primary_evidence.evaluate_case_inputs`).
+_NON_FINITE_IR = _IR.replace("- case_id: c_alpha\n",
+                             "- case_id: c_alpha\n      inputs: {mode: .nan}\n")
+assert _NON_FINITE_IR != _IR
+
+
 class CaseFilesAtExecuteTests(unittest.TestCase):
     """Issue #589 D2: `Validate.execute` rewrites `<ir>/case_inputs/` at every run, for every node,
     before any command, one file at a time, because one IR directory serves every target's
@@ -843,11 +849,10 @@ class CaseFilesAtExecuteTests(unittest.TestCase):
                 self.assertTrue((n.repo / n.refs.ir_ref / "case_inputs" / "c_beta.json").is_file())
 
     def test_a_writer_refusal_raises_and_runs_nothing(self) -> None:
-        # A real refusal, the writer's own: a case id no file may carry.
+        # A real refusal, the writer's own: an input it cannot evaluate to a finite number.
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp)
-            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(
-                _IR.replace("c_alpha", "bad..id"), encoding="utf-8")
+            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(_NON_FINITE_IR, encoding="utf-8")
             with mock.patch.object(_build_runtime(), "tool_run_program",
                                    side_effect=AssertionError("nothing runs")), \
                     mock.patch.object(_build_runtime(), "tool_run_quality_checks",
@@ -855,15 +860,14 @@ class CaseFilesAtExecuteTests(unittest.TestCase):
                     self.assertRaises(RuntimeError) as caught:
                 n.execute()
             self.assertIn("could not be written at Validate.execute", str(caught.exception))
-            self.assertIn("bad..id", str(caught.exception))
+            self.assertIn("inputs.mode produced a non-finite value", str(caught.exception))
             self.assertFalse((n.repo / n.refs.ir_ref / "case_inputs").exists())
 
     def test_the_refusal_routes_as_a_deterministic_failure(self) -> None:
         # Through the substep: the raise is the host's inconsistency, not the kernel's.
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp)
-            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(
-                _IR.replace("c_alpha", "bad..id"), encoding="utf-8")
+            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(_NON_FINITE_IR, encoding="utf-8")
             result = n.substep()
             self.assertEqual(result.returncode, 1, result)
             self.assertIn("could not be written at Validate.execute", result.stderr)

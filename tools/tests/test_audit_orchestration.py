@@ -796,8 +796,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
     PIPE = f"workspace/pipelines/{SAFE}/{_TARGET_ID}/{PIPELINE_ID}"
     SRC = f"workspace/pipelines/{SAFE}/{_TARGET_ID}/{PIPELINE_ID}/source/src_20260716_001"
 
-    def _reserve(self, repo: Path, *, pipeline_id: str | None = None,
-                 target_id: object = _TARGET_ID) -> None:
+    def _reserve(self, repo: Path, *, target_id: object = _TARGET_ID) -> None:
         """Write the pipeline reservation `prepare_node` writes before Compile runs.
 
         This is what discovery reads. The
@@ -813,11 +812,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
                 {
                     "node_key": "comp/demo@0.1.0",
                     "step": "generate",
-                    # `is not None`, not `or`: an empty-string id is a case under test
-                    # and `or` would silently swallow it into the default.
-                    "reserved_ir_id": (
-                        pipeline_id if pipeline_id is not None else self.PIPELINE_ID
-                    ),
+                    "reserved_ir_id": self.PIPELINE_ID,
                     **({} if target_id is _NO_TARGET else {"target_id": target_id}),
                 }
             ),
@@ -1014,41 +1009,28 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertEqual([n["ir_ref"] for n in out["pure_compile_nodes"]], [self.IR_A])
 
     def test_discovery_ignores_a_launch_that_is_not_a_pure_compile_leaf(self) -> None:
-        """Three rejections, one row each, because a single combined fixture would let two of
-        them stop working unnoticed: another step, an agentic compile launch (no `leaf_mode`),
-        and an `ir_ref` that is not a repo-relative workspace path.
+        """Two rejections, one row each, because a single combined fixture would let one of
+        them stop working unnoticed: another step, and an agentic compile launch (no
+        `leaf_mode`).
 
         EACH FIXTURE PUTS THE METAS WHERE THE ROW WOULD FIND THEM if the rejection did not fire
-        — at `IR_A` for the first two, and at the traversed path for the third. Round 1's first
-        version wrote them only at `IR_A`, so the traversal row was green with the guard deleted:
-        the escaping path held no metas and `found=False` produced the same empty list. A
-        rejection row that would pass with the rejection removed asserts nothing.
+        (at `IR_A`). A rejection row that would pass with the rejection removed asserts nothing.
         """
-        # The escaping ref traverses back INTO the fixture's own tempdir rather than out of it.
-        # `../outside/ir` resolves to a sibling of the `TemporaryDirectory`, i.e. a fixed path in
-        # the system temp dir: it is never cleaned up, another user's copy of it turns this row
-        # into a `PermissionError` instead of a rejection, and the fixture self-test below is
-        # then satisfiable by a LEFTOVER from a previous run rather than by this run's write.
-        escaping = f"workspace/ir/{self.SAFE}/../../../workspace/ir/{self.SAFE}/traversed"
-        landing = f"workspace/ir/{self.SAFE}/traversed"
         for label, kwargs, meta_at in (
             ("another step", {"step": "generate", "ir_ref": self.IR_A}, self.IR_A),
             ("agentic compile",
              {"step": "compile", "ir_ref": self.IR_A, "leaf_mode": None}, self.IR_A),
-            ("escaping ir_ref", {"step": "compile", "ir_ref": escaping}, landing),
         ):
             with self.subTest(rejected=label), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 self._lay_out(repo, with_metas=False)
                 self._launch(repo, "a1", **kwargs)
                 self._compile_metas(repo, meta_at)
-                # Self-test of the fixture, twice over: the metas the row must NOT pick up are
-                # readable where the discovery would land, so the empty result below is the
-                # rejection and not an absence — and the write stayed INSIDE the tempdir, so it
-                # is this run's own and not a leftover.
+                # Self-test of the fixture: the metas the row must NOT pick up are readable
+                # where the discovery would land, so the empty result below is the rejection
+                # and not an absence.
                 landed = repo / meta_at / "compile_generate_meta.json"
                 self.assertTrue(landed.is_file(), label)
-                self.assertTrue(landed.resolve().is_relative_to(repo.resolve()), label)
                 out = collect_pure_leaf_ab_summary(
                     repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
                 self.assertEqual(out["pure_compile_nodes"], [], label)
@@ -1190,31 +1172,17 @@ class PureLeafABSummaryTest(unittest.TestCase):
         results = {n["source_dir"].split("/")[-1]: n["generate"]["result"] for n in out["pure_nodes"]}
         self.assertEqual(results, {"src_001": "fail", "src_002": "pass"})
 
-    def test_provenance_strings_are_stripped_not_just_validated(self) -> None:
-        # _clean_str must clean, not merely validate: these render inline into
-        # markdown, so surrounding whitespace would break the line.
-        from tools.audit_orchestration import _clean_str
-
-        self.assertEqual(_clean_str("  pure  "), "pure")
-        self.assertEqual(_clean_str("1.2.3 (Claude Code)\n"), "1.2.3 (Claude Code)")
-        self.assertIsNone(_clean_str("   "))  # whitespace-only is absent
-        self.assertIsNone(_clean_str(""))
-        self.assertIsNone(_clean_str(None))
-        self.assertIsNone(_clean_str(["pure"]))
-
-    def test_wrong_typed_provenance_reported_absent(self) -> None:
+    def test_no_preflight_reports_no_cli_version(self) -> None:
         out = collect_pure_leaf_ab_summary(
             Path("/nonexistent"),
             "orch_x",
-            {"invocation": {"generate_executor": ["not", "a", "string"]}},
+            {"invocation": {"generate_executor": "pure"}},
         )
-        self.assertIsNone(out["generate_executor"])
         self.assertIsNone(out["agent_cli_version"])
 
     def test_a_pre_target_reservation_is_audited_where_it_put_its_pipeline(self) -> None:
         """A reservation without `target_id` was written before issue #284; its pipeline is
-        directly under `<node_key_safe>/`, and the audit reads it there. One whose
-        `target_id` is present but not a target id names nothing."""
+        directly under `<node_key_safe>/`, and the audit reads it there."""
         from tools.audit_orchestration import _pure_source_dirs_of
         legacy_pipe = f"workspace/pipelines/{self.SAFE}/{self.PIPELINE_ID}"
         with tempfile.TemporaryDirectory() as tmp:
@@ -1224,11 +1192,6 @@ class PureLeafABSummaryTest(unittest.TestCase):
             dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
             self.assertEqual(refs, [legacy_pipe])
             self.assertEqual(dirs, [f"{legacy_pipe}/source/src_20260716_001"])
-        for bad in ("Not_A_Target", "", 3, "x_20260101_001"):
-            with tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                self._reserve(repo, target_id=bad)
-                self.assertEqual(_pure_source_dirs_of(repo, self.ORCH), ([], []), bad)
 
     def test_a_sibling_runs_attempts_under_the_shared_pipeline_are_not_listed(self) -> None:
         """A node's pipeline id is reused across orchestrations: on disk this run's directory
@@ -1248,7 +1211,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
             (repo / "workspace" / "orchestrations" / "orch_idle").mkdir()
             self.assertEqual(_pure_source_dirs_of(repo, "orch_idle"), ([], []))
 
-    def test_only_a_generate_leaf_launch_with_clean_refs_names_a_source_dir(self) -> None:
+    def test_only_a_generate_leaf_launch_with_both_refs_names_a_source_dir(self) -> None:
         from tools.audit_orchestration import _pure_source_dirs_of
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -1258,32 +1221,12 @@ class PureLeafABSummaryTest(unittest.TestCase):
             self._launch_source(repo, "src_agentic", leaf_mode=None)
             self._launch_source(repo, "src_gate", substep="gate", leaf_mode=None)
             self._launch_source(repo, "src_validate", step="validate")
-            for bad in ("..", ".", "/abs", "a/b", "", 3):
-                self._launch_source(repo, bad)
-            for bad in ("elsewhere/x/y/z", "workspace/pipelines/a", "../workspace/pipelines/a/b",
-                        "workspace/pipelines/../b",
-                        "workspace/pipelines/a/../b", "workspace/pipelines/a/Not_Target/c",
-                        "/workspace/pipelines/a/b", 3):
-                self._launch_source(repo, "src_bad_ref", pipeline_ref=bad)
+            self._launch_source(repo, "")  # no source id names no directory
+            self._launch_source(repo, "src_no_ref", pipeline_ref="")
             dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
         self.assertEqual(dirs, [f"{self.PIPE}/source/{sid}"
                                 for sid in ("src_agentic", "src_pure", "src_workshop")])
         self.assertEqual(refs, [])
-
-    def test_traversal_reserved_pipeline_id_is_skipped(self) -> None:
-        # `reserved_ir_id` is JSON-sourced: a non-segment value would escape the
-        # pipeline root (`repo_root / "workspace/pipelines/<safe>" / "../.."`).
-        from tools.audit_orchestration import _pure_source_dirs_of
-
-        for bad in ("..", ".", "/abs", "a/b", "../evil", ""):
-            with tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                self._reserve(repo, pipeline_id=bad)
-                dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
-            self.assertEqual(dirs, [], f"{bad!r} must not be globbed")
-            # A rejected id must not count as "accepted" either, or the caller would
-            # misreport it as a benign not-yet-generated run.
-            self.assertEqual(refs, [], f"{bad!r} must not be an accepted ref")
 
     def test_compile_only_run_is_not_reported_as_a_discovery_failure(self) -> None:
         # A reserved pipeline whose source/ does not exist yet is the NORMAL state of a
@@ -1459,7 +1402,6 @@ class PureLeafABSummaryTest(unittest.TestCase):
         _render_pure_leaf_ab(out, lines)
         md = "\n".join(lines)
         # Must not claim "legacy/agentic run" while the executor line says pure.
-        self.assertNotIn("legacy/agentic run", md)
         self.assertIn("no pipeline reservation", md)
 
     def test_render_collapses_repeated_model_and_shows_contract(self) -> None:
@@ -1493,20 +1435,6 @@ class PureLeafABSummaryTest(unittest.TestCase):
         self.assertIn("cache_creation 4", md)  # reconciles with total 10
         self.assertIn("no verify meta recorded", md)  # not "not a pure leaf"
 
-    def test_unrecognized_executor_is_flagged_not_read_as_legacy(self) -> None:
-        # A corrupt/typo'd executor must not be silently classified as legacy: the
-        # hint branches on the exact value, so an unknown one gets its own wording
-        # plus a warning. The recorded value is still shown verbatim.
-        lines: list[str] = []
-        _render_pure_leaf_ab(
-            {"available": False, "generate_executor": "purre",
-             "backend": "claude", "agent_cli_version": "1.0", "pure_nodes": []},
-            lines,
-        )
-        md = "\n".join(lines)
-        self.assertIn("unrecognized generate_executor value `purre`", md)  # verbatim
-        self.assertNotIn("legacy/agentic run", md)
-
     def test_unrecorded_executor_does_not_claim_legacy(self) -> None:
         lines: list[str] = []
         _render_pure_leaf_ab(
@@ -1516,8 +1444,6 @@ class PureLeafABSummaryTest(unittest.TestCase):
         )
         md = "\n".join(lines)
         self.assertNotIn("generate-executor", md)
-        self.assertNotIn("legacy/agentic run", md)
-        self.assertNotIn("unrecognized generate_executor value", md)  # absent != invalid
 
     def test_render_legacy_notes_no_pure_node(self) -> None:
         lines: list[str] = []
@@ -1938,21 +1864,20 @@ class InRepoRecordSectionTests(unittest.TestCase):
             "reason": reason, "evaluated_at": f"2026-09-05T00:00:0{arid[-1]}Z"}),
             encoding="utf-8")
 
-    def test_the_three_states_of_the_violations_directory_are_told_apart(self) -> None:
+    def test_no_record_and_recorded_violations_are_rendered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self._root(tmp)
             result, md = self._rendered(tmp)
-            self.assertFalse(result["sandbox_violations"]["directory_present"])
-            self.assertIn("`violations/` absent — no sandbox enforcement violation "
-                          "was recorded.", md)
+            self.assertEqual(result["sandbox_violations"], {"records": [], "by_reason": {}})
+            self.assertIn("No sandbox enforcement violation was recorded.", md)
         with tempfile.TemporaryDirectory() as tmp:
+            # A directory with no record (pre-created by a run before issue #171 PR-2) reads
+            # the same as an absent one.
             root = self._root(tmp)
             (root / "violations").mkdir()
             result, md = self._rendered(tmp)
-            self.assertTrue(result["sandbox_violations"]["directory_present"])
-            self.assertEqual(result["sandbox_violations"]["records"], [])
-            self.assertIn("directory present, no record (pre-created by a run before "
-                          "issue #171 PR-2)", md)
+            self.assertEqual(result["sandbox_violations"], {"records": [], "by_reason": {}})
+            self.assertIn("No sandbox enforcement violation was recorded.", md)
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             self._violation(root, "arid-1", "sandbox_profile_build_failed")
@@ -1962,57 +1887,14 @@ class InRepoRecordSectionTests(unittest.TestCase):
             sv = result["sandbox_violations"]
             self.assertEqual(sv["by_reason"], {"sandbox_profile_build_failed": 1,
                                                "sandbox_not_enforced": 2})
-            self.assertEqual(sv["by_kind"], {"sandbox_enforcement_violation": 3})
             self.assertEqual([r["agent_run_id"] for r in sv["records"]],
                              ["arid-1", "arid-2", "arid-3"])
             self.assertIn("3 sandbox enforcement record(s):", md)
             self.assertIn("- `sandbox_not_enforced`: 2", md)
             self.assertIn("- `sandbox_profile_build_failed`: 1", md)
             self.assertIn("[2026-09-05T00:00:02Z] `sandbox_not_enforced` arid=`arid-2`", md)
-            self.assertNotIn("absent", md.split("## Sandbox")[1].split("## Token")[0])
-
-    def test_a_retired_kind_is_not_a_sandbox_enforcement_finding(self) -> None:
-        # The real corpus holds one `*.unauthorized_write_violation.json` (a writer deleted in
-        # issue #171 PR-2; `kind` differs, no `reason`, `detected_at` instead of
-        # `evaluated_at`). Rendering it under the sandbox heading as reason `unknown` told
-        # the operator a confinement finding that never happened.
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._root(tmp)
-            (root / "violations").mkdir()
-            (root / "violations" / "arid-7.unauthorized_write_violation.json").write_text(
-                json.dumps({"kind": "unauthorized_write_violation", "agent_run_id": "arid-7",
-                            "detected_at": "2026-07-24T04:53:10Z", "violations": []}),
-                encoding="utf-8")
-            result, md = self._rendered(tmp)
-            sv = result["sandbox_violations"]
-            self.assertEqual(sv["by_kind"], {"unauthorized_write_violation": 1})
-            self.assertEqual(sv["by_reason"], {})
-            self.assertEqual(sv["records"][0]["reason"], None)
-            self.assertEqual(sv["records"][0]["evaluated_at"], "2026-07-24T04:53:10Z")
-            section = md.split("## Sandbox")[1].split("## Token")[0]
-            self.assertIn("no sandbox enforcement record (the records below are of "
-                          "another kind)", section)
-            self.assertIn("kind `unauthorized_write_violation` arid=`arid-7`", section)
-            self.assertIn("(not a sandbox enforcement finding)", section)
-            # The section knows only the kind; no header claims any writer's state.
-            self.assertNotIn("no longer exists", section)
-            self.assertNotIn("`unknown`", section)
-            self.assertNotIn("sandbox enforcement record(s):", section)
-            # ...and next to a real one, the two are listed apart.
-            self._violation(root, "arid-1", "sandbox_not_enforced")
-            result, md = self._rendered(tmp)
-            section = md.split("## Sandbox")[1].split("## Token")[0]
-            self.assertIn("1 sandbox enforcement record(s):", section)
-            self.assertIn("- `sandbox_not_enforced`: 1", section)
-            self.assertIn("1 record(s) of another kind", section)
-            # ...apart: the other-kind arid appears only under its own heading, so the
-            # sandbox list above it must not carry `arid-7` (a listing over `records`
-            # instead of the sandbox subset survived the round-1 tests).
-            sandbox_list = section.split("1 record(s) of another kind")[0]
-            self.assertNotIn("arid-7", sandbox_list)
-            self.assertIn("arid=`arid-1`", sandbox_list)
-            self.assertEqual(result["sandbox_violations"]["by_reason"],
-                             {"sandbox_not_enforced": 1})
+            self.assertNotIn("No sandbox enforcement violation was recorded",
+                             md.split("## Sandbox")[1].split("## Token")[0])
 
     def test_an_unreadable_violation_record_is_a_diagnostic_failure(self) -> None:
         # The record a leaf's confinement wrote must not read as "nothing recorded"

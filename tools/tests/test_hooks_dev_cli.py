@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The DEV entrypoint (`tools/hooks/dev_cli.py`), issue #102.
 
-Two properties, and they pull in opposite directions on purpose: it must refuse the two
-operator-safety commands, and it must refuse NOTHING else — including when its input is
+Two properties, and they pull in opposite directions on purpose: it must refuse what its two
+rule modules refuse (the validator's verify-bypass flags, a sleep-based wait), and it must
+refuse NOTHING else — including when its input is
 malformed, because the session it guards is the one an operator edits these hooks from.
 """
 
@@ -24,6 +25,13 @@ from tools.hooks import dev_cli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: A command the DEV hook refuses for good: a sleep-based wait (`dev_session_hygiene`). The
+#: plumbing rows (payload shapes, the committed wrappers, the import boundary) need SOME refused
+#: stimulus; this rule is DEV-only by decision and is not slated for removal. Split so this FILE
+#: never carries a refusable command literal (the rule matches raw text).
+_REFUSED = "sl" + "eep" + " 60"
+_REFUSED_REASON = "a sleep-based wait is refused"
+
 
 def _run(backend: str, event: str, command, extra_env=None) -> tuple[int, str, str]:
     payload = {"tool_name": "Bash", "tool_input": {"command": command}}
@@ -38,13 +46,7 @@ def _run(backend: str, event: str, command, extra_env=None) -> tuple[int, str, s
     return code, out.getvalue(), err.getvalue()
 
 
-class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
-    def test_git_reset_hard_is_refused(self) -> None:
-        code, out, err = _run("claude", "PreToolUse", "git reset --hard HEAD~1")
-        self.assertEqual(code, 2)
-        self.assertEqual(json.loads(out)["decision"], "block")
-        self.assertIn("git reset --hard is forbidden", err)
-
+class DevCliRefusesTheVerifyBypassFlags(unittest.TestCase):
     def test_each_verify_bypass_flag_on_the_validator_is_refused(self) -> None:
         """One row per flag, so a flag dropped from the tuple fails by name. The exported
         `SPEC2SCIENCE_WORKFLOW_EXEC_MODE` that used to exempt a command is set here and changes
@@ -243,7 +245,7 @@ class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
     `_extract_command`'s top-level `"command"` key unwitnessed: every dev-cli test used
     the flat claude shape. The nested one is the codex shape that `cli.py::_inner_payload`
     exists for, and `.codex/hooks.json` registers this entrypoint — so a wrong fallback
-    would mean the two operator-safety policies silently never fire for a codex operator,
+    would mean the dev policies silently never fire for a codex operator,
     which is exactly the failure that looks like nothing at all.
     """
 
@@ -255,10 +257,10 @@ class DevCliReadsTheCodexPayloadShape(unittest.TestCase):
 
     def test_the_command_is_found_in_each_shape_the_backends_send(self) -> None:
         for label, payload in (
-            ("flat tool_input", {"tool_input": {"command": 'git reset --hard HEAD~1'}}),
-            ("nested tool_input", {"payload": {"tool_input": {"command": 'git reset --hard HEAD~1'}}}),
-            ("flat command", {"command": 'git reset --hard HEAD~1'}),
-            ("nested command", {"payload": {"command": 'git reset --hard HEAD~1'}}),
+            ("flat tool_input", {"tool_input": {"command": _REFUSED}}),
+            ("nested tool_input", {"payload": {"tool_input": {"command": _REFUSED}}}),
+            ("flat command", {"command": _REFUSED}),
+            ("nested command", {"payload": {"command": _REFUSED}}),
         ):
             with self.subTest(shape=label):
                 self.assertEqual(self._run(payload), 2)
@@ -287,9 +289,9 @@ class DevCliRefusesNothingElse(unittest.TestCase):
             ("claude", "PreToolUse", ""),
             ("claude", "PreToolUse", None),
             ("claude", "PreToolUse", {"nested": "shape"}),
-            ("claude", "Stop", "git reset --hard HEAD~1"),       # not a command event
-            ("claude", "UserPromptSubmit", "git reset --hard HEAD~1"),
-            ("codex", "session_start", "git reset --hard HEAD~1"),
+            ("claude", "Stop", _REFUSED),                        # not a command event
+            ("claude", "UserPromptSubmit", _REFUSED),
+            ("codex", "session_start", _REFUSED),
         ]
         for backend, event, command in cases:
             with self.subTest(backend=backend, event=event, command=command):
@@ -322,7 +324,7 @@ class DevCliBlockEncodingIsTheWireShape(unittest.TestCase):
     the `2` is what makes the refusal binding.
     """
 
-    REASON = 'blocked by common hook policy: git reset --hard is forbidden'
+    REASON = 'blocked by dev session hygiene: a sleep-based wait is refused in an agent session.'
 
     def test_claude_pre_tool_use_block(self) -> None:
         code, body = dev_cli._encode_block("claude", "pretooluse", self.REASON)
@@ -401,7 +403,7 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
             if "PreToolUse" not in event and "PermissionRequest" not in event:
                 continue
             with self.subTest(source=rel, event=event):
-                payload = {"tool_name": "Bash", "tool_input": {"command": 'git reset --hard HEAD~1'}}
+                payload = {"tool_name": "Bash", "tool_input": {"command": _REFUSED}}
                 # PYTHONPATH is STRIPPED: the wrapper sets it itself, and inheriting
                 # the runner's copy is what made a mutation deleting the wrapper's
                 # assignment survive — the module resolved through the ambient value
@@ -564,14 +566,14 @@ class DevCliImportBoundary(unittest.TestCase):
             (fake / "tools" / "hooks" / "common.py").write_text(
                 "raise RuntimeError('half-applied edit')\n", encoding="utf-8")
             payload = json.dumps(
-                {"tool_name": "Bash", "tool_input": {"command": "git reset --hard HEAD~1"}})
+                {"tool_name": "Bash", "tool_input": {"command": _REFUSED}})
             proc = subprocess.run(
                 [sys.executable, "-m", "tools.hooks.dev_cli", "--backend", "claude",
                  "--event", "PreToolUse", "--input-json", payload],
                 capture_output=True, text=True, cwd=str(fake),
                 env={"PATH": "/usr/bin:/bin", "HOME": tmp, "PYTHONPATH": str(fake)})
             self.assertEqual(proc.returncode, 2, msg=proc.stderr)
-            self.assertIn("git reset --hard is forbidden", proc.stderr)
+            self.assertIn(_REFUSED_REASON, proc.stderr)
 
 
 if __name__ == "__main__":
@@ -585,7 +587,7 @@ class DevMatcherActuallyMatchesTheToolThatCarriesACommand(unittest.TestCase):
     `docs/HOOKS.md` says the dev layer's entries are "pinned by test rather than read by eye",
     and nothing read a matcher. The reviewer set `.claude/settings.json`'s only matcher to
     `ZzNeverMatches` and all three test files that even open that file stayed green — which
-    makes both operator rules (the hard-reset refusal and the sleep-based-wait refusal)
+    makes both dev rules (the verify-bypass refusal and the sleep-based-wait refusal)
     silently inert, the one failure mode a matcher has.
 
     WHY A FULL MATCH. `docs/HOOKS.md` records the measurement: a Claude `matcher` is a regular

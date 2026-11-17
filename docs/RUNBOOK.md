@@ -1062,7 +1062,6 @@ An OPERATOR's own session still has two hook modules, and their blocks are not i
 
 | policy | example of the blocked operation | the one next action to take |
 |---|---|---|
-| `forbid_git_reset_hard` | a command whose TEXT contains the hard-reset spelling — including one that merely quotes it, which is a known over-refusal (`tools/hooks/operator_safety.py`) | return individual files with `git checkout -- <path>`, or rephrase so the text does not appear |
 | `forbid_verify_bypass_flags` | a command whose TEXT names `validate_pipeline_semantics` AND contains one of the two verify-bypass flags `tools/hooks/operator_safety.py::VERIFY_BYPASS_TOKENS` names (`--allow-missing-orchestration`, `--allow-missing-llm-review`) — including one that only mentions both, such as a grep of the validator's source for a flag, which is a known over-refusal | do not bypass the gate; fix what it is reporting — or, for a command that only mentions them, rephrase so the two do not appear together |
 | a sleep-based wait | a shell command that waits by sleeping, in an agent session (`tools/hooks/dev_session_hygiene.py`) | do not poll: wait on the condition itself, or let the harness report the background job |
 

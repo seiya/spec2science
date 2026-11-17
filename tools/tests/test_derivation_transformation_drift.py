@@ -339,10 +339,6 @@ def build_tuple() -> dict[str, str]:
         "build_runtime.default_build_jobs": _source_digest(server.default_build_jobs),
         "build_runtime.COMPILE_PROJECT_TIMEOUT_SEC":
             str(server.COMPILE_PROJECT_TIMEOUT_SEC),
-        # Which build systems a compiled language may build through (issue #469 moved the set
-        # out of `tool_compile_project`'s body, which this tuple hashes, into a constant).
-        "build_runtime.COMPILED_LANGUAGE_BUILD_SYSTEMS":
-            ",".join(sorted(server.COMPILED_LANGUAGE_BUILD_SYSTEMS)),
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
         # Where it builds (issue #333): the remote executor a build at a site runs through, the
         # launch seam its site refusal and the local platform record come from, the site
@@ -1438,7 +1434,15 @@ PINNED_RENDER: dict[str, str] = {
     # of the workspace's IRs over the json and MPI harnesses at 66d77304 and 58b6963a: equal). The digest
     # `render-22` shipped with at 66d77304:
     "render-22@66d77304": "8e9be2c2d7695586278f02ff0a1c01d8c443f7057182cf70cfa03da292b67522",
-    "render-22": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
+    # render-22 re-pinned in place by issue #643 PR-1, behaviour-preserving: `_write_makefile`
+    # loses an early return reached only for a toolchain without `control_file`, which the launch
+    # gate (`target_profile.toolchain_servable_reasons`) refuses before any phase, and
+    # `_control_file_module` / `_control_file_rules` stop renaming the registry's own exception;
+    # a servable node's rendered control file and runner do not move. (Measured by diffing
+    # `render_tuple()` against main 31dfcbf1's: those three rows and no other.) The digest
+    # `render-22` shipped with at 31dfcbf1:
+    "render-22@31dfcbf1": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
+    "render-22": "7c76b1358831f7f2aad7b8b2d60b4e023024c944c9519aaff7a199f3c97e1797",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1681,7 +1685,18 @@ PINNED_BUILD: dict[str, str] = {
     "build-5@1812c09e": "7854bf7dac3a0e053471b12e76ae632abe468b20ba98d5d14c1d675364063b10",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
-    "build-5": "e6d209160c8cc5dfba1b79cc523f60537ba8439e2742ee576da8adb33d84fb05",
+    # build-5 re-pinned in place by issue #643 PR-1, behaviour-preserving: `tool_compile_project`
+    # and `_run_command` lose argument refusals no caller reaches (types and minimums of host-composed
+    # values, an empty argv, a missing project directory the caller created on the line before)
+    # and the build-system domain and compiled-language refusals, whose values the launch gate
+    # refuses first; the tuple loses the `COMPILED_LANGUAGE_BUILD_SYSTEMS` row with the constant;
+    # `_require_build_execute` loses its pre-check (the registry's own refusal, still wrapped,
+    # answers the same toolchain) and the control-file lookups their rename. The command and the
+    # record of every build the conductor runs do not move. (Measured by diffing `build_tuple()`
+    # against main 31dfcbf1's: those six rows and no other.) The digest `build-5` shipped with at
+    # 31dfcbf1:
+    "build-5@31dfcbf1": "e6d209160c8cc5dfba1b79cc523f60537ba8439e2742ee576da8adb33d84fb05",
+    "build-5": "82bf3c2141369181ddb0a5731c2690e569b63f33ee567c2addc3eb2aac818da3",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2066,7 +2081,16 @@ PINNED_EXECUTE: dict[str, str] = {
     # failed attempt's text moves, and no key (keys hold the version label, not this digest).
     # The digest `execute-22` shipped with at 2b60b8c4:
     "execute-22@2b60b8c4": "7e164fc524b7025f839e59af008497e22810ae11700251683070e0bb97f090ad",
-    "execute-22": "786b9f363017168893cc886ecbee5a155154500da3ec50d004cce0984b0ed57c",
+    # execute-22 re-pinned in place by issue #643 PR-1, behaviour-preserving: `tool_run_program`,
+    # `tool_run_quality_checks` and `_run_command` lose argument refusals no caller reaches (the
+    # conductor and the wrapper compose every argument), `_require_build_execute` its pre-check,
+    # and `tools/primary_evidence.py` the case-file writer's case-id token refusal, which the
+    # Compile gate (`_validate_case_ids`) applies to every IR that reaches Validate. A run's argv,
+    # its case files and its record do not move. (Measured by diffing `execute_tuple()` against
+    # main 31dfcbf1's: those five rows and no other.) The digest `execute-22` shipped with at
+    # 31dfcbf1:
+    "execute-22@31dfcbf1": "786b9f363017168893cc886ecbee5a155154500da3ec50d004cce0984b0ed57c",
+    "execute-22": "6d20cc23b0d34ec282ce284b893fb0e18a9f5bc6dca345d7691d0f3b722680f8",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2302,7 +2326,13 @@ PINNED_VERDICT: dict[str, str] = {
     # (66d77304's selection, 2026-11-16).
     # The digest `verdict-20` shipped with at 66d77304:
     "verdict-20@66d77304": "e6af2b212c11122f0ded2ed18dbefaf47671484f01b2a73081f8722180a24013",
-    "verdict-20": "ec33f052a7217312b3eee4a04774a00a06ebc211933d146a75e2fa8c561a6def",
+    # verdict-20 re-pinned in place by issue #643 PR-1, behaviour-preserving: the member
+    # `tools/primary_evidence.py` loses the case-file writer's case-id token refusal (the Compile
+    # gate applies the same rule to every IR that reaches Validate); no verdict moves. (Measured
+    # by diffing `verdict_tuple()` against main 31dfcbf1's: that row and no other.) The digest
+    # `verdict-20` shipped with at 31dfcbf1:
+    "verdict-20@31dfcbf1": "ec33f052a7217312b3eee4a04774a00a06ebc211933d146a75e2fa8c561a6def",
+    "verdict-20": "6a8e679f3d71687194e6e84e27f4a10895c6db3def95cc1c762d2972e84ca00e",
 }
 
 

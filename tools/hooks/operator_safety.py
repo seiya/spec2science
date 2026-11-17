@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""The two hook policies that are not about a leaf.
+"""The hook policy that refuses turning a verify gate off, whoever issued it.
 
-They refuse a command that destroys the operator's own checkout, or that turns a verify
-gate off, whoever issued it. Until Z4 (issue #171) they were the only policies in
-`tools/hooks/` with that audience — everything else there decided what a WORKFLOW LEAF
-may do and was gated on the environment a leaf runs under. Those went with the agentic
-leaf; these two did not, because their subject is the operator's machine.
+Until Z4 (issue #171) it was, with a hard-reset rule that issue #643 removed, the only
+policy in `tools/hooks/` whose audience was not a leaf — everything else there decided what
+a WORKFLOW LEAF may do and was gated on the environment a leaf runs under. Those went with
+the agentic leaf; this one did not, because its subject is the operator's machine.
 
 They live in a module of their own so the DEV entrypoint (`tools/hooks/dev_cli.py`) can
 apply them without importing anything heavier (issue #102). That import boundary is the
@@ -16,16 +15,11 @@ the operator out of the very session they are editing in. It has happened once
 
 The rule text is defined ONCE, here; `dev_cli` encodes the decision itself.
 
-**Both rules match raw text, with no shell parsing.** The hard-reset rule matches a
-substring of the whole command, so a command that merely CONTAINS the text is refused too —
-a commit message that quotes the rule, a heredoc that writes documentation about it, a grep
-for it. Measured 2026-08-26: the commit that introduced this module was refused by it. It
-stands because the failure direction is refusal rather than a missed one and the operator
-can rephrase. The verify-bypass rule is narrower since issue #445: it refuses only a command
-whose text names the validator that defines the flags AND carries one of them. A grep for a
-flag over `docs/`, an echo of a document quoting one, and a flag given to another program
-pass; a grep for a flag IN the validator's own source names both and is refused — the same
-over-refusal as the hard-reset rule, with the same answer (rephrase).
+**The rule matches raw text, with no shell parsing.** Since issue #445 it refuses only a
+command whose text names the validator that defines the flags AND carries one of them. A
+grep for a flag over `docs/`, an echo of a document quoting one, and a flag given to another
+program pass; a grep for a flag IN the validator's own source names both and is refused — a
+known over-refusal, whose answer is to rephrase.
 
 **What the verify-bypass rule does not see, and why that is accepted.** It reads text, so a
 command that never spells both halves passes: the script name held in a shell variable, a
@@ -60,12 +54,6 @@ def operator_safety_violation(command: str) -> tuple[str, dict[str, Any]] | None
     if not command:
         return None
     lowered = command.lower()
-
-    if "git reset --hard" in lowered:
-        return (
-            "blocked by common hook policy: git reset --hard is forbidden",
-            {"policy": "forbid_git_reset_hard", "command": command},
-        )
 
     if VERIFY_BYPASS_SCRIPT in lowered:
         matched = [token for token in VERIFY_BYPASS_TOKENS if token in lowered]

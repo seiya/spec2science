@@ -46,24 +46,9 @@ from typing import Any
 _STAGE_STATUSES = frozenset({"pass", "fail", "skipped"})
 
 
-def _safe_component(value: str, label: str) -> str:
-    """Reject anything that is not a bare, traversal-free path component so a
-    malformed/hostile id cannot redirect the evidence read/write outside the
-    pipeline's `syntax_evidence/` dir."""
-    if (
-        not value
-        or value in {".", ".."}
-        or "/" in value
-        or "\\" in value
-        or "\x00" in value
-    ):
-        raise ValueError(f"unsafe {label} for syntax evidence path: {value!r}")
-    return value
-
-
 def syntax_evidence_path(*, pipeline_root: Path, source_id: str) -> Path:
-    sid = _safe_component(source_id, "source_id")
-    return pipeline_root / "syntax_evidence" / f"{sid}.json"
+    # `source_id` is host-allocated on the writer side and a directory name on the reader side.
+    return pipeline_root / "syntax_evidence" / f"{source_id}.json"
 
 
 def read_syntax_evidence(

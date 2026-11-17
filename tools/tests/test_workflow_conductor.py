@@ -158,8 +158,10 @@ _NON_BUILDER_KEYS = {
     "child_launch_request_ref",
     "child_launch_prompt_ref",
     "sandbox_profile_ref",
-    "_resolved_build_system",
+    # record-launch stopped stamping this with `control_file_host_authored` (issue #643: no
+    # code read it); the captured requests predate that and still carry it.
     "_resolved_makefile_host_authored",
+    "_resolved_build_system",
     # record-launch stamps the transport on every HTTP-provider and deterministic launch
     # (`orchestration_runtime.record_launch`).
     "leaf_transport",
@@ -5357,14 +5359,12 @@ class TransportFailureTest(unittest.TestCase):
                 json.dumps({}), encoding="utf-8")
             self.assertEqual(c._judge_semantic_decision(refs), "")  # missing field
 
-    def test_read_case_ids_drops_path_traversal_tokens(self) -> None:
-        # Runtime defense-in-depth: read_case_ids builds the runner argv (--cases ...), from
-        # which the snapshot path raw/state_snapshots/<case_id>.json is formed. A `/` or `..`
-        # must never reach the argv — even from a hand-crafted IR that bypassed the Compile gate
-        # — or the honest runner writes outside its directory. The same list is the quality
-        # check's `CASES`, which the build control file interpolates unquoted into a recipe line,
-        # and since issue #457 nothing downstream refuses a shell-active character in it; so an
-        # id carrying one is dropped here too. Safe ids survive; unsafe are dropped.
+    def test_read_case_ids_drops_non_string_and_blank_ids(self) -> None:
+        # read_case_ids builds the runner argv (--cases ...) and the expected per-case capture
+        # deliverables: a non-string or blank id is dropped (the Compile gate
+        # `_validate_case_ids` skips it too), and the rest are stripped and sorted. A token that
+        # could leave the run's capture directory is the Compile gate's refusal, not this
+        # reader's (issue #643).
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -5373,10 +5373,9 @@ class TransportFailureTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(json.dumps({"case": {"test_case_set": [
-                {"case_id": "c_ok"}, {"case_id": "l0.v1-2"},
-                {"case_id": "../../evil"}, {"case_id": "a/b"}, {"case_id": ".."},
-                {"case_id": "a;id"}, {"case_id": "$(id)"}, {"case_id": "a|b"},
-                {"case_id": "`id`"},
+                {"case_id": "c_ok"}, {"case_id": " l0.v1-2 "},
+                {"case_id": ""}, {"case_id": "   "}, {"case_id": 3}, {"case_id": None},
+                {}, "not_a_dict",
             ]}}), encoding="utf-8")
             self.assertEqual(c.read_case_ids(refs), ("c_ok", "l0.v1-2"))
 
@@ -15263,19 +15262,6 @@ class WriteMakefileTest(unittest.TestCase):
                                             "language": "fortran"}), wrapper.COMPILER_WRAPPER)
         self.assertIsNone(wc.compiler_wrapper("openmp"))
 
-    def test_skips_non_fortran_and_non_make(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            # language=c -> out of scope (keep LLM authoring)
-            self._write_ir(repo, refs, language="c")
-            self._conductor(repo)._write_makefile(refs)
-            self.assertFalse((repo / refs.source_dir() / "src" / "Makefile").exists())
-            # build_system=cmake -> out of scope
-            self._write_ir(repo, refs, build_system="cmake")
-            self._conductor(repo)._write_makefile(refs)
-            self.assertFalse((repo / refs.source_dir() / "src" / "Makefile").exists())
-
     def test_conductor_authors_makefile_requires_make_fortran(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -15457,38 +15443,15 @@ class WriteMakefileTest(unittest.TestCase):
                             vps._m3c_language(ir, tc["build_system"], tc["language"]) is not None,
                             (record, language))
 
-    def test_the_runtime_predicate_refuses_padding_like_the_conductor_does(self) -> None:
-        """Driven DIRECTLY, because no indirect path can reach it.
+    def test_makefile_authorship_follows_a_registry_declaration(self) -> None:
+        """The conductor's authorship answer, driven by the REGISTRY lever.
 
-        `record_launch`'s readers strip before calling `control_file_host_authored`, so a padded
-        value never arrives through the live path or through this file's reader mirror. Its
-        docstring nonetheless claimed the function deliberately did not normalize — while
-        `registry.provides` strips internally, so it accepted a padded language where the
-        conductor's twin declined, and the two are documented as exact counterparts. The guard
-        makes that claim true; only a direct call observes it.
-        """
-        from tools.orchestration_runtime import control_file_host_authored
-        self.assertTrue(control_file_host_authored("make", "fortran"))
-        # An ABSENT token is not host-authored (fail-closed, issue #424 PR-2): it defaulted to
-        # one build system and one language until then, which the neutral core may not know.
-        for build_system, language in ((None, None), (None, "fortran"), ("make", None),
-                                       ("", "fortran"), ("make", "")):
-            self.assertFalse(control_file_host_authored(build_system, language),
-                             (build_system, language))
-        for build_system, language in ((" make", "fortran"), ("make ", "fortran"),
-                                       ("make", " fortran"), ("make", "fortran ")):
-            self.assertFalse(control_file_host_authored(build_system, language),
-                             (build_system, language))
-
-    def test_conductor_and_runtime_agree_when_the_registry_moves(self) -> None:
-        """The agreement pair, driven by the lever that can now break it.
-
-        `test_conductor_runtime_makefile_authorship_agree` enumerates literal toolchain
-        fixtures, so it is structurally unable to see a divergence introduced by a REGISTRY
-        declaration — and that is the lever `docs/BACKEND_BOUNDARY.md` now names as how a new
-        backend's host-side work is admitted. Measured before the fix: declaring `control_file`
-        for a second build system made the conductor author `src/Makefile` while `record_launch`
-        kept the leaf's write-pin, so the file was double-owned.
+        `test_conductor_makefile_authorship_follows_the_target_toolchain` enumerates literal
+        toolchain fixtures, so it cannot see an answer moved by a registry declaration — the
+        lever `docs/BACKEND_BOUNDARY.md` names as how a new backend's host-side work is
+        admitted. The host authors iff both axes declare `control_file`. (Until issue #643 this
+        row compared the conductor against `record_launch`'s counterpart predicate, which
+        stamped a flag no code read and was deleted.)
         """
         from unittest import mock
 
@@ -15498,21 +15461,21 @@ class WriteMakefileTest(unittest.TestCase):
              {("build_system", "zz_bs"): backend_registry.Backend(
                  "build_system", "zz_bs", None,
                  core_provides=frozenset({"control_file", "build_execute"}))},
-             {"build_system": "zz_bs"}),
+             {"build_system": "zz_bs"}, True),
             ("second language declared",
              {("language", "zz_lang"): backend_registry.Backend(
                  "language", "zz_lang", None,
                  core_provides=frozenset({"control_file", "runner_render"}))},
-             {"language": "zz_lang"}),
+             {"language": "zz_lang"}, True),
             ("registered with no capability",
              {("build_system", "zz_bare"): backend_registry.Backend(
                  "build_system", "zz_bare", None)},
-             {"build_system": "zz_bare"}),
+             {"build_system": "zz_bare"}, False),
         ]
         # The toolchain is the TARGET's (issue #284): each case declares its profile in the
-        # fixture repository, where the conductor's fake and `record_launch`'s reader both find it.
+        # fixture repository, where the conductor's fake finds it.
         from tools.tests.target_fixtures import install_target_profile, profile_with
-        for label, records, toolchain in cases:
+        for label, records, toolchain, expected in cases:
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = self._refs()
@@ -15522,10 +15485,7 @@ class WriteMakefileTest(unittest.TestCase):
                 ir_path.write_text("dependency:\n  direct_deps: []\n", encoding="utf-8")
                 c = self._conductor(repo)
                 with mock.patch.dict(backend_registry._BACKENDS, records):
-                    self.assertEqual(
-                        c._conductor_authors_makefile(refs),
-                        _runtime_makefile_host_authored(repo, refs.pipeline_ref),
-                        f"conductor/runtime disagree for {label!r}")
+                    self.assertEqual(c._conductor_authors_makefile(refs), expected, label)
 
     def test_the_runner_render_capability_is_required_beyond_control_file(self) -> None:
         """A language the neutral core can compile but not render must not get a host runner.
@@ -15575,47 +15535,24 @@ class WriteMakefileTest(unittest.TestCase):
                     backend_registry.provides("language", "zz_render_only", "runner_render"))
                 self.assertFalse(c._conductor_authors_runner(refs))
 
-    def test_an_untrimmed_toolchain_value_still_flips_authorship_off(self) -> None:
-        # The conductor's predicate refuses a padded value, while the registry normalizes with
-        # `.strip().lower()` — handing a padded value straight to the registry would newly answer
-        # True. Since issue #284 the values are the target profile's, whose LOADER refuses a
-        # padded token; this drives a profile built past the loader, so what is pinned is the
-        # predicate's own guard, which `record_launch`'s counterpart shares.
-        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
-        for toolchain in ({"language": " " + FORTRAN_CPU.toolchain["language"]},
-                          {"build_system": FORTRAN_CPU.toolchain["build_system"] + " "}):
-            with tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                refs = self._refs()
-                ir_path = repo / refs.ir_ref / "spec.ir.yaml"
-                ir_path.parent.mkdir(parents=True, exist_ok=True)
-                ir_path.write_text("dependency:\n  direct_deps: []\n", encoding="utf-8")
-                c = self._conductor(repo)
-                c.target_profile = profile_with(toolchain=toolchain)
-                self.assertFalse(c._conductor_authors_makefile(refs), toolchain)
-                self.assertFalse(c._conductor_authors_runner(refs), toolchain)
-
-    def test_conductor_runtime_makefile_authorship_agree(self) -> None:
-        # The conductor (_conductor_authors_makefile) and the runtime
-        # (_resolved_makefile_host_authored, computed in record_launch) must agree on whether
-        # the Makefile is host-authored, else a launch is double-owned (pinned + dropped) or
-        # orphaned (neither authors). Authorship keys off the TARGET's toolchain (issue #284)
-        # for BOTH leaf and dependency nodes (Model B): both sides read the same profile — the
-        # conductor its own, the runtime the one the request's `pipeline_ref` names — so the
-        # cases vary the profile, and the IR's dependency shape rides along to show it does
-        # not enter the answer.
+    def test_conductor_makefile_authorship_follows_the_target_toolchain(self) -> None:
+        # Authorship keys off the TARGET's toolchain (issue #284) for BOTH leaf and dependency
+        # nodes (Model B), so the cases vary the profile, and the IR's dependency shape rides
+        # along to show it does not enter the answer. (Until issue #643 this row compared the
+        # conductor against `record_launch`'s `_resolved_makefile_host_authored`, a flag no
+        # code read, deleted with its predicate.)
         cases = [
-            # (label, toolchain overrides, spec.ir.yaml dependency text)
+            # (label, toolchain overrides, spec.ir.yaml dependency text, host authors)
             ("leaf+make+fortran", {"language": "fortran", "build_system": "make"},
-             "dependency:\n  direct_deps: []\n"),
+             "dependency:\n  direct_deps: []\n", True),
             ("leaf+c", {"language": "c", "build_system": "make"},
-             "dependency:\n  direct_deps: []\n"),
+             "dependency:\n  direct_deps: []\n", False),
             ("leaf+cmake", {"language": "fortran", "build_system": "cmake"},
-             "dependency:\n  direct_deps: []\n"),
+             "dependency:\n  direct_deps: []\n", False),
             ("dependency", {"language": "fortran", "build_system": "make"},
-             "dependency:\n  direct_deps:\n    - node_key: component/dep@0.1.0\n"),
+             "dependency:\n  direct_deps:\n    - node_key: component/dep@0.1.0\n", True),
             ("direct_deps absent", {"language": "fortran", "build_system": "make"},
-             "dependency:\n  node_key: component/x@0.1.0\n"),
+             "dependency:\n  node_key: component/x@0.1.0\n", True),
         ]
         from tools.tests.target_fixtures import install_target_profile, profile_with
         with tempfile.TemporaryDirectory() as tmp:
@@ -15624,13 +15561,10 @@ class WriteMakefileTest(unittest.TestCase):
             ir_path = repo / refs.ir_ref / "spec.ir.yaml"
             ir_path.parent.mkdir(parents=True, exist_ok=True)
             c = self._conductor(repo)
-            for label, toolchain, ir_text in cases:
+            for label, toolchain, ir_text, expected in cases:
                 install_target_profile(repo, profile_with(toolchain=toolchain))
                 ir_path.write_text(ir_text, encoding="utf-8")
-                conductor_authors = c._conductor_authors_makefile(refs)
-                runtime_host_authored = _runtime_makefile_host_authored(repo, refs.pipeline_ref)
-                self.assertEqual(conductor_authors, runtime_host_authored,
-                                 f"conductor/runtime disagree for {label!r}")
+                self.assertEqual(c._conductor_authors_makefile(refs), expected, label)
 
     def _write_dep_graph_sidecar(self, repo: Path, refs: wc.NodeRefs, *,
                                  all_nodes: list, transitive_deps: list) -> None:
@@ -16163,25 +16097,6 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_ir(repo, refs, language="c", direct_deps="[component/dep@0.1.0]")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir, phase="build"), [])
-
-
-def _runtime_makefile_host_authored(repo: Path, pipeline_ref: str) -> bool:
-    """`record_launch`'s `_resolved_makefile_host_authored`, via the REAL predicate and the
-    REAL reader.
-
-    This used to reconstruct the inline expression verbatim, and a reconstruction is only as
-    good as its last update: it was wrong once (it omitted the build_system normalization, so
-    the test agreed with itself exactly where the live pair diverges), and when the conductor
-    moved to the registry it went on comparing against `(make, fortran)` — so a registry
-    declaration that made the live pair disagree could not be seen by the test whose whole
-    purpose is to see it. `control_file_host_authored` is now named in `orchestration_runtime` and
-    called by `record_launch`, so what is compared here is the shipped predicate; since issue
-    #284 its values come from the target profile the request's `pipeline_ref` names
-    (`_pipeline_target_toolchain`), which is called here as record_launch calls it."""
-    from tools.orchestration_runtime import (
-        _pipeline_target_toolchain, control_file_host_authored)
-    tc = _pipeline_target_toolchain(repo, pipeline_ref)
-    return control_file_host_authored(str(tc["build_system"]), str(tc["language"]))
 
 
 class WriteRunnerTest(unittest.TestCase):
@@ -16820,7 +16735,8 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         # (the conductor its profile, the validator the one the pipeline names), so the family
         # varies the profile and hands both the same value; the case and padding variants are
         # values a profile loader refuses, kept because the two readers must still agree on
-        # them for any caller.
+        # them for any caller (since issue #643 neither reader refuses padding itself; both
+        # hand the value to the registry).
         kinds = [(self._refs(), "component"), (self._refs(), "infrastructure"),
                  (self._infra_refs(), "infrastructure"), (self._infra_refs(), "component")]
         languages = [None, "fortran", "Fortran", "FORTRAN", " fortran", "zz_lang", ""]
@@ -18513,17 +18429,21 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_require_build_execute_rejects_a_build_system_it_does_not_drive(self) -> None:
         # Asked of the registry's `build_execute` (issue #289, R4-b PR-3) rather than compared
-        # against one spelling: `make` declares it, and the refusal carries the registry's reason.
+        # against one spelling: `make` declares it, and the refusal wraps the registry's own
+        # exception (its `missing_capability_reason` pre-check went in issue #643).
         from tools.backends import registry as backend_registry
         c = _TargetedConductor(repo_root=Path("/tmp/r"), orchestration_id="o",
                          orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
         c._require_build_execute("make", "build")  # no raise
         for bs in ("cmake", "meson", "ninja"):
+            with self.assertRaises((backend_registry.UnsupportedBackend,
+                                    backend_registry.BackendNotExtracted)) as registry_refusal:
+                backend_registry.capability_module("build_system", bs, "build_execute")
             with self.assertRaises(RuntimeError) as caught:
                 c._require_build_execute(bs, "build")
             self.assertIn(f"does not drive build_system {bs!r}", str(caught.exception))
-            self.assertIn(str(backend_registry.missing_capability_reason(
-                "build_system", bs, "build_execute")), str(caught.exception))
+            self.assertIn(str(registry_refusal.exception), str(caught.exception))
+            self.assertIs(type(caught.exception.__cause__), type(registry_refusal.exception))
 
     def test_execute_failure_routes_to_generate(self) -> None:
         # An execute-substep failure (no verdict.json, judge never ran) is a runner code
@@ -20505,21 +20425,13 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertEqual([e["preset"] for e in ev["run_linter"]], ["cppcheck", "fortitude"])
             self.assertEqual([e["command_id"] for e in ev["run_linter"]], ["c1", "f1"])
 
-    def test_gate_lint_check_unknown_language_raises(self) -> None:
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            self._seed(repo, refs, language="brainfuck")
-            c = self._conductor(repo)
-            with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
-                c._gate_lint_check(refs, "child-1")
-
     def test_gate_lint_check_imports_the_library_from_the_code_not_the_repo_root(self) -> None:
         """Issue #422: the gate body resolves the build-runtime library from the checkout's code
         location, never from `self.repo_root`. With the module out of `sys.modules` (restored on
         exit), a conductor over a seeded repository that holds no `tools/build_runtime.py` still
-        reaches the unknown-language refusal, which sits after the gate's library import.
+        reaches its toolchain read, which sits after the gate's library import (made to raise a
+        sentinel here; the unknown-language refusal this row first used as its landmark went in
+        issue #643).
         Since issue #444 the import is the package import `from tools.build_runtime import`, so
         a `repo_root`-relative spelling would have to be written on purpose; this row is the
         behavioural witness that it was not."""
@@ -20527,9 +20439,12 @@ class DeterministicLintTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
-            self._seed(repo, refs, language="brainfuck")
+            self._seed(repo, refs)
             self.assertFalse((repo / "tools" / "build_runtime.py").exists())
             c = self._conductor(repo)
+
+            class _ReachedPastTheImport(Exception):
+                pass
             # The re-import binds a NEW module object as the `tools` package's attribute, which
             # `mock.patch.dict(sys.modules)` does not restore; without the attribute patch every
             # later `from tools import build_runtime` reads a different object than the modules
@@ -20537,10 +20452,16 @@ class DeterministicLintTest(unittest.TestCase):
             import tools
             from tools import build_runtime  # bound as the attribute before it is patched
             with mock.patch.dict(sys.modules), \
-                    mock.patch.object(tools, "build_runtime", build_runtime):
+                    mock.patch.object(tools, "build_runtime", build_runtime), \
+                    mock.patch.object(c, "_read_toolchain",
+                                      side_effect=_ReachedPastTheImport):
                 sys.modules.pop("tools.build_runtime", None)
-                with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
+                with self.assertRaises(_ReachedPastTheImport):
                     c._gate_lint_check(refs, "child-1")
+                # The import really ran again: the popped module came back from the code
+                # location, not from the cache this row emptied.
+                self.assertIn("tools.build_runtime", sys.modules)
+                self.assertIsNot(sys.modules["tools.build_runtime"], build_runtime)
 
     def test_every_conductor_library_import_is_the_package_import(self) -> None:
         """Issue #422, restated for issue #444: in `tools/workflow_conductor.py` every import of
@@ -21167,30 +21088,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 c._gate_syntax_check(refs, "child-1")
         self.assertGreaterEqual(len(seen), 2)
         self.assertEqual(set(seen), {None})
-
-    def test_gate_syntax_check_refuses_a_language_with_no_syntax_stage(self) -> None:
-        """A language that declares no `syntax_promotions` has no stage to run, and the gate
-        fails CLOSED on it (issue #289, R4-b PR-2). Until then every language but Fortran
-        passed this checker with `skipped_reason` and no evidence — a node of a second
-        language would have reached Build having had its syntax checked by nothing."""
-        import tempfile
-        from tools.hooks.syntax_evidence import syntax_evidence_path
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            self._seed(repo, refs, language="cpp", sources={"m.cpp": "int main(){}\n"})
-            c = self._conductor(repo)
-
-            def fake(args):  # must never be called for a language with no syntax stage
-                raise AssertionError("run_syntax_check must not run for language=cpp")
-
-            with self._patch_syntax(fake), self.assertRaises(RuntimeError) as ctx:
-                c._gate_syntax_check(refs, "child-1")
-            self.assertIn("toolchain.language='cpp' has no syntax stage", str(ctx.exception))
-            self.assertIn("syntax_promotions", str(ctx.exception))
-            self.assertFalse(
-                syntax_evidence_path(pipeline_root=repo / refs.pipeline_ref,
-                                     source_id="src_1").exists())
 
     def test_gate_syntax_check_no_sources_is_content_fail(self) -> None:
         import tempfile

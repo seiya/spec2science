@@ -88,7 +88,7 @@ def _orch_root(repo_root: Path, orchestration_id: str) -> Path:
 def _load_json_if_dict(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -127,12 +127,10 @@ def _latest_fail_closed_at(phase_log: list[dict[str, Any]]) -> str | None:
     fail_entries: list[tuple[datetime, str]] = []
     for entry in phase_log:
         new_state = entry.get("to") or entry.get("new_state", "")
-        if new_state == "fail_closed" or (
-            entry.get("event") == "set_status" and new_state == "fail_closed"
-        ):
+        if new_state == "fail_closed":
             raw_ts = entry.get("ts") or entry.get("timestamp")
             parsed = _parse_ts(raw_ts)
-            if parsed is not None and isinstance(raw_ts, str):
+            if parsed is not None:
                 fail_entries.append((parsed, raw_ts))
     if not fail_entries:
         return None
@@ -144,12 +142,8 @@ def _launch_part(root: Path | None, agent_run_id: Any) -> str | None:
     """The `pure_part` of a launch request, or None (no root, no request, none stamped)."""
     if root is None or not isinstance(agent_run_id, str) or not agent_run_id:
         return None
-    try:
-        request = json.loads((root / "launches" / f"{agent_run_id}.request.json")
-                             .read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    part = request.get("pure_part") if isinstance(request, dict) else None
+    request = _load_json_if_dict(root / "launches" / f"{agent_run_id}.request.json")
+    part = request.get("pure_part") if request is not None else None
     return part if isinstance(part, str) and part else None
 
 
@@ -242,8 +236,6 @@ def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[s
     """
     out: list[dict[str, Any]] = []
     for entry in phase_log:
-        if not isinstance(entry, dict):
-            continue
         new_state = entry.get("to") or entry.get("new_state")
         if new_state not in ("fail", "fail_closed"):
             continue
@@ -257,57 +249,33 @@ def collect_phase_state_failures(phase_log: list[dict[str, Any]]) -> list[dict[s
     return out
 
 
-# The `kind` the live `violations/` writer stamps (`_write_sandbox_enforcement_violation`).
-SANDBOX_VIOLATION_KIND = "sandbox_enforcement_violation"
-
-
 def collect_sandbox_violations(root: Path) -> dict[str, Any]:
     """Read `violations/*.json` — the sandbox enforcement record.
 
-    One live writer, `_write_sandbox_enforcement_violation`, six reasons; the reason
-    vocabulary is NOT restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it),
-    the file's value is reported as written. Three states are told apart, because they
-    mean three things: `directory_present=False` — no violation was recorded (since issue
-    #171 PR-2 the directory is created only when one occurs); present and `records=[]` — a
-    run from before that change pre-created it, and recorded nothing; present with records
-    — the enforcement fired, and the reasons say what it saw.
-
-    A record is a sandbox enforcement violation only when its `kind` says so. The
-    directory also holds records of other kinds (`unauthorized_write_violation`, whose
-    writer was deleted in issue #171 PR-2, is on disk in the corpus); those carry no
-    `reason`, and reporting one under the sandbox heading with reason `unknown` would be
-    a false finding about the leaf's confinement. They are kept in `records` with their
-    `kind` and listed apart by the renderer.
+    One live writer, `_write_sandbox_enforcement_violation`; the reason vocabulary is NOT
+    restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it), the file's value is
+    reported as written. Since issue #171 PR-2 the directory exists only when a violation was
+    recorded. An orchestration older than that is read from its files.
 
     Raises on an unreadable or non-JSON file rather than dropping it: a violation record
     that cannot be read is exactly the one this section must not report as absent.
     """
-    vdir = root / "violations"
-    if not vdir.is_dir():
-        return {"directory_present": False, "records": [],
-                "by_reason": {}, "by_kind": {}}
     records: list[dict[str, Any]] = []
     by_reason: Counter = Counter()
-    by_kind: Counter = Counter()
-    for path in sorted(vdir.glob("*.json")):
+    vdir = root / "violations"
+    for path in sorted(vdir.glob("*.json")) if vdir.is_dir() else []:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError(f"{path.name}: violation record is not a JSON object")
-        kind = str(payload.get("kind") or "unknown")
         reason = payload.get("reason")
-        by_kind[kind] += 1
-        if kind == SANDBOX_VIOLATION_KIND:
-            by_reason[str(reason or "unknown")] += 1
+        by_reason[str(reason)] += 1
         records.append({
             "file": path.name,
-            "kind": kind,
-            "reason": reason if isinstance(reason, str) else None,
+            "reason": reason,
             "agent_run_id": payload.get("agent_run_id"),
-            # The live writer stamps `evaluated_at`; the retired one stamped `detected_at`.
-            "evaluated_at": payload.get("evaluated_at") or payload.get("detected_at"),
+            "evaluated_at": payload.get("evaluated_at"),
         })
-    return {"directory_present": True, "records": records,
-            "by_reason": dict(by_reason), "by_kind": dict(by_kind)}
+    return {"records": records, "by_reason": dict(by_reason)}
 
 
 def _summarize_failure_analysis_doc(doc: dict[str, Any]) -> dict[str, Any]:
@@ -489,35 +457,11 @@ def collect_token_cost_summary(
     }
 
 
-# The `generate-executor` vocabulary as HISTORICALLY RECORDED on `invocation.generate_executor`.
-# Since M-F, run_workflow no longer validates this value on cold init (legacy execution was removed
-# and the executor is not selectable — cold runs always record `pure`), but past orchestrations on
-# disk still carry `legacy`, so the audit keeps both to stay a faithful reader of historical
-# records. Duplicated as a literal rather than imported so the read-only audit does not pull in the
-# workflow launcher; the render only uses it to flag an out-of-vocabulary value, never to reject one.
-_KNOWN_GENERATE_EXECUTORS: tuple[str, ...] = ("legacy", "pure")
-
-
 # The `llm_leaf_map` keys whose provider this section attributes: every LLM leaf, all of which
 # are pure since Z4 (issue #171). Read from `llm_config` rather than restated, so adding one
 # cannot silently leave it out.
 _PURE_LEAF_MAP_KEYS: frozenset[str] = frozenset(
     f"{phase}.{substep}" for phase, substep in _LLM_LEAF_SUBSTEPS)
-
-
-def _clean_str(value: Any) -> str | None:
-    """Return a stripped non-empty string, else None.
-
-    A missing / null / wrong-typed provenance field (`generate_executor`,
-    `agent_version`) is reported as absent rather than rendered as a spurious
-    recorded value. The value is stripped, not just validated: these render inline
-    into markdown, so surrounding whitespace from a hand-edited or foreign
-    artifact would otherwise break the line. (The live writers already strip —
-    `_probe_claude_backend` stores `claude --version` as `stdout.strip()` — so
-    this is defence in depth, not a live defect.)"""
-    if not isinstance(value, str):
-        return None
-    return value.strip() or None
 
 
 def _pure_source_dirs_of(
@@ -531,9 +475,8 @@ def _pure_source_dirs_of(
     per attempt, never rewritten, so a terminally-failed generate and every rotated source
     directory are measured and nothing else is. A glob of `<pipeline_ref>/source/*` cannot say
     that, because a node's pipeline id is reused ACROSS orchestrations, and it listed a sibling
-    run's attempts as this one's. `pipeline_ref` and `source_id` are JSON-sourced, so the first
-    is required to be a `workspace/pipelines/...` path of the shape `_pure_run_node_dirs_of`
-    reads and the second a single clean segment. Only the leaf substeps name a directory: a
+    run's attempts as this one's. Both fields are the host's (the runtime writes the request).
+    Only the leaf substeps name a directory: a
     `gate` row is the conductor's, and a directory is this run's because a leaf was launched into
     it. An agentic leaf's row (no `leaf_mode`) does name one; it carries no pure meta, so the caller's
     `found` filter drops it and the diagnosis stays "no pure-leaf meta located".
@@ -547,30 +490,21 @@ def _pure_source_dirs_of(
     stops at Compile: `dep_until_phase` follows the target, so a `generate`/`validate` target
     drives its deps all the way to Validate and those do launch). Those two states must not share
     a diagnosis. A reservation that names no target was written before R4-a PR-2, whose pipelines
-    sat directly under `workspace/pipelines/<node_key_safe>/`; a reservation naming a `target_id`
-    that is not a target id, or a `reserved_ir_id` that is not a single clean path segment, is
-    skipped.
+    sat directly under `workspace/pipelines/<node_key_safe>/`. A node directory with no
+    `generate.json` reserved no pipeline.
     """
     dirs: list[str] = []
     launches = _orch_root(repo_root, orchestration_id) / "launches"
     if launches.is_dir():
         for path in sorted(launches.glob("*.request.json")):
             row = _load_json_if_dict(path) or {}
-            if _clean_str(row.get("step")) != "generate":
+            if row.get("step") != "generate":
                 continue
-            if _clean_str(row.get("substep")) not in ("generate", "verify"):
+            if row.get("substep") not in ("generate", "verify"):
                 continue
-            pipeline_ref = _clean_str(row.get("pipeline_ref"))
-            source_id = _clean_str(row.get("source_id"))
+            pipeline_ref = row.get("pipeline_ref")
+            source_id = row.get("source_id")
             if not (pipeline_ref and source_id):
-                continue
-            parts = PurePosixPath(pipeline_ref).parts
-            if parts[:2] != ("workspace", "pipelines") or not (
-                    len(parts) == 4 or (len(parts) == 5 and is_target_id(parts[3]))):
-                continue
-            if any(p in {".", ".."} for p in parts):
-                continue
-            if source_id in {".", ".."} or PurePosixPath(source_id).parts != (source_id,):
                 continue
             rel = f"{pipeline_ref}/source/{source_id}"
             if rel not in dirs:
@@ -585,13 +519,7 @@ def _pure_source_dirs_of(
         reservation = _load_json_if_dict(node_dir / "generate.json") or {}
         reserved = reservation.get("reserved_ir_id")
         target_id = reservation.get("target_id")
-        if not (isinstance(reserved, str) and reserved):
-            continue
-        if target_id is not None and not is_target_id(target_id):
-            continue
-        # The reserved id is JSON-sourced: require a single clean segment so it can
-        # never traverse out of `workspace/pipelines/<node_key_safe>/[<target_id>/]`.
-        if reserved in {".", ".."} or PurePosixPath(reserved).parts != (reserved,):
+        if reserved is None:
             continue
         pref = (pipeline_ref_for(node_dir.name, str(target_id), reserved)
                 if target_id is not None
@@ -618,8 +546,7 @@ def _pure_ir_dirs_of(
 
     A launch request is written before the leaf runs and is never rewritten, so one row exists
     per attempt and the set of `ir_ref`s is exactly the directories this orchestration wrote an
-    IR into. `ir_ref` is JSON-sourced, so it is required to be a repo-relative `workspace/ir/...`
-    path with no traversal segment.
+    IR into.
     """
     dirs: list[str] = []
     launches = _orch_root(repo_root, orchestration_id) / "launches"
@@ -627,15 +554,12 @@ def _pure_ir_dirs_of(
         return dirs
     for path in sorted(launches.glob("*.request.json")):
         row = _load_json_if_dict(path) or {}
-        if _clean_str(row.get("step")) != "compile":
+        if row.get("step") != "compile":
             continue
-        if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
+        if row.get("leaf_mode") not in ("pure", "workshop"):
             continue
-        ref = _clean_str(row.get("ir_ref"))
+        ref = row.get("ir_ref")
         if not ref:
-            continue
-        parts = PurePosixPath(ref).parts
-        if not parts or parts[0] != "workspace" or any(p in {".", ".."} for p in parts):
             continue
         if ref not in dirs:
             dirs.append(ref)
@@ -662,14 +586,14 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
         return dirs
     for path in sorted(launches.glob("*.request.json")):
         row = _load_json_if_dict(path) or {}
-        if _clean_str(row.get("step")) != "validate":
+        if row.get("step") != "validate":
             continue
         # A workshop `validate.judge` (issue #534 step 3) writes the same `judge_meta.json`
         # into the same run node, and a judge it drops would vanish from the A/B section.
-        if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
+        if row.get("leaf_mode") not in ("pure", "workshop"):
             continue
-        pipeline_ref = _clean_str(row.get("pipeline_ref"))
-        run_id = _clean_str(row.get("run_id"))
+        pipeline_ref = row.get("pipeline_ref")
+        run_id = row.get("run_id")
         if not (pipeline_ref and run_id):
             continue
         parts = PurePosixPath(pipeline_ref).parts
@@ -678,11 +602,7 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
         if parts[:2] != ("workspace", "pipelines") or not (
                 len(parts) == 4 or (len(parts) == 5 and is_target_id(parts[3]))):
             continue
-        if any(p in {".", ".."} for p in parts):
-            continue
         safe = parts[2]
-        if "/" in run_id or run_id in {".", ".."}:
-            continue
         ref = f"{pipeline_ref}/runs/{run_id}/{safe}"
         if ref not in dirs:
             dirs.append(ref)
@@ -713,10 +633,10 @@ def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozense
         # A `workshop leaf` (issue #534) ran on its entry's provider just as a pure one did,
         # and it is the leaf an A/B of the two models attributes. (Both discoveries above
         # admit it too: compile since step 2, validate since step 3.)
-        if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
+        if row.get("leaf_mode") not in ("pure", "workshop"):
             continue
-        step = _clean_str(row.get("step"))
-        substep = _clean_str(row.get("substep"))
+        step = row.get("step")
+        substep = row.get("substep")
         if step and substep:
             keys.add(f"{step}.{substep}")
     return frozenset(keys & _PURE_LEAF_MAP_KEYS)
@@ -751,7 +671,7 @@ def collect_pure_leaf_ab_summary(
     meta = meta or {}
     invocation = meta.get("invocation")
     invocation = invocation if isinstance(invocation, dict) else {}
-    generate_executor = _clean_str(invocation.get("generate_executor"))
+    generate_executor = invocation.get("generate_executor")
 
     root = _orch_root(repo_root, orchestration_id)
     preflight = _load_json_if_dict(root / "preflight.json") or {}
@@ -761,8 +681,8 @@ def collect_pure_leaf_ab_summary(
     # can label it truthfully; naming it "claude" unconditionally would report false
     # provenance for every codex orchestration (which this section still renders,
     # whose leaves are pure too — `codex_cli` holds the `pure` capability).
-    backend = _clean_str(preflight.get("backend"))
-    agent_cli_version = _clean_str(preflight.get("agent_version"))
+    backend = preflight.get("backend")
+    agent_cli_version = preflight.get("agent_version")
     # Since issue #28 the leaf LLM is per-`(phase, substep)`, so `preflight.json#backend` and
     # `#agent_version` describe `defaults` ONLY — and this section exists to attribute PURE-LEAF
     # A/B metrics, whose leaves are exactly the ones an operator is most likely to have moved
@@ -775,7 +695,7 @@ def collect_pure_leaf_ab_summary(
     # different EXECUTABLES (`defaults` on `claude`, a substep on a wrapper), and
     # `preflight.json#agent_version` describes only the command it probed. A version attributed
     # across that difference names an executable that did not produce the metrics.
-    default_command = _clean_str(preflight.get("probe_command")) or ""
+    default_command = preflight.get("probe_command") or ""
     def _surface(token: str, command: str) -> tuple[str, str]:
         """`(backend, command)` with the bare-binary spellings folded together.
 
@@ -790,10 +710,10 @@ def collect_pure_leaf_ab_summary(
     # no pure launch at all, where the older behaviour is the honest one.
     attributed_keys = _pure_leaf_keys_that_ran(repo_root, orchestration_id) or _PURE_LEAF_MAP_KEYS
     pure_leaf_surfaces = sorted({
-        _surface(_clean_str(row.get("backend")) or "", _clean_str(row.get("command")) or "")
+        _surface(row.get("backend") or "", row.get("command") or "")
         for key, row in leaf_map.items()
         if key in attributed_keys and isinstance(row, dict)
-        and _clean_str(row.get("backend"))
+        and row.get("backend")
     })
     pure_leaf_providers = sorted({surface[0] for surface in pure_leaf_surfaces})
     default_surface = _surface(backend or "", default_command)
@@ -1231,28 +1151,18 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     lines.append("## Pure-leaf A/B metrics")
     lines.append("")
     summary = summary if isinstance(summary, dict) else {}
-    recorded_executor = summary.get("generate_executor")
-    executor = recorded_executor or "unknown"
     # `raw_version` before the placeholder: `or "unrecorded"` makes the value unconditionally
     # truthy, so testing the placeholder would take the version branch even when the collector
     # deliberately blanked it to say "the pure leaves did not run on the CLI this version
     # describes".
-    version = _clean_str(summary.get("agent_cli_version")) or "unrecorded"
+    version = summary.get("agent_cli_version") or "unrecorded"
     backend = summary.get("backend")
     # An EXPLICIT flag from the collector, not "the version is blank": a uniform run whose
     # preflight recorded no version still reports `unrecorded` against its own backend.
     provider_differs = bool(summary.get("pure_leaf_provider_differs"))
     # No `generate-executor:` header line (issue #534 step 3): the recorded value is the
     # literal `pure` on every run since M-F whatever leaf model ran — a workshop run printed
-    # `pure` above workshop rows — and the per-substep rows below say which model ran. The
-    # value still selects the hint of a run with no pure node, so an out-of-vocabulary one is
-    # flagged, verbatim (diagnostics say what IS recorded): the branches below key on the
-    # exact value, so an unrecognized executor must not be silently read as legacy.
-    if recorded_executor and recorded_executor not in _KNOWN_GENERATE_EXECUTORS:
-        lines.append(
-            f"- ⚠ unrecognized generate_executor value `{recorded_executor}` (expected one of "
-            f"{', '.join(f'`{e}`' for e in _KNOWN_GENERATE_EXECUTORS)})"
-        )
+    # `pure` above workshop rows — and the per-substep rows below say which model ran.
     # Label the version by the backend that was actually probed. `agent_version` is
     # whichever CLI ran, so a fixed "claude --version" label would misreport every
     # codex orchestration's version as Claude's.
@@ -1270,17 +1180,8 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     compile_nodes = summary.get("pure_compile_nodes") or []
     validate_nodes = summary.get("pure_validate_nodes") or []
     if not summary.get("available") or not (nodes or compile_nodes or validate_nodes):
-        # Say which case this is. Under executor=pure, "legacy/agentic run" would
-        # contradict the recorded executor; under an unknown or
-        # unrecognized executor we cannot claim either arm.
         reason = summary.get("reason")
-        if executor == "pure":
-            hint = reason or "pure run with no `bundle_meta.json` / `verdict_meta.json` written"
-        elif executor == "legacy":
-            hint = "legacy/agentic run"
-            hint += f", or {reason}" if reason else ", or the pure metas are absent"
-        else:
-            hint = reason or "executor not recorded or unrecognized; no pure metas on disk"
+        hint = reason or "no `bundle_meta.json` / `verdict_meta.json` written"
         lines.append(f"- no pure-leaf node located ({hint})")
         lines.append("")
         return
@@ -1383,8 +1284,7 @@ def _render_failure_analysis(result: dict[str, Any], lines: list[str], *,
 
 def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str], *,
                                failure: dict[str, Any] | None = None) -> None:
-    """Render `violations/` with its three states kept apart: absent (nothing recorded),
-    present-and-empty (pre-created by an older run), and populated."""
+    """Render `violations/`: nothing recorded, or each record."""
     lines.append("## Sandbox enforcement violations")
     lines.append("")
     if failure is not None:
@@ -1394,42 +1294,18 @@ def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str],
         )
         lines.append("")
         return
-    summary = summary or {}
-    records = summary.get("records") or []
-    sandbox = [r for r in records if r.get("kind") == SANDBOX_VIOLATION_KIND]
-    other = [r for r in records if r.get("kind") != SANDBOX_VIOLATION_KIND]
-    if not summary.get("directory_present"):
-        lines.append("`violations/` absent — no sandbox enforcement violation was recorded.")
-    elif not records:
-        lines.append(
-            "`violations/` directory present, no record (pre-created by a run before "
-            "issue #171 PR-2)."
-        )
-    elif not sandbox:
-        lines.append(
-            "`violations/` directory present, no sandbox enforcement record (the records "
-            "below are of another kind)."
-        )
+    records = (summary or {}).get("records") or []
+    if not records:
+        lines.append("No sandbox enforcement violation was recorded.")
     else:
-        lines.append(f"{len(sandbox)} sandbox enforcement record(s):")
-        for reason, cnt in sorted((summary.get("by_reason") or {}).items()):
+        lines.append(f"{len(records)} sandbox enforcement record(s):")
+        for reason, cnt in sorted(((summary or {}).get("by_reason") or {}).items()):
             lines.append(f"- `{reason}`: {cnt}")
         lines.append("")
-        for r in sandbox:
+        for r in records:
             lines.append(
                 f"- [{r.get('evaluated_at')}] `{r.get('reason')}` arid=`{r.get('agent_run_id')}` "
                 f"(`{r.get('file')}`)"
-            )
-    if other:
-        # Another kind's record: named by its kind so it is not read as enforcement.
-        lines.append("")
-        lines.append(
-            f"{len(other)} record(s) of another kind (not a sandbox enforcement finding):"
-        )
-        for r in other:
-            lines.append(
-                f"- [{r.get('evaluated_at')}] kind `{r.get('kind')}` "
-                f"arid=`{r.get('agent_run_id')}` (`{r.get('file')}`)"
             )
     lines.append("")
 

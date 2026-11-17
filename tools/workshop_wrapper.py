@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import threading
 import time
@@ -68,14 +67,10 @@ CATEGORY_LINEAGE_ENDED = "lineage_ended"
 CATEGORY_BAD_ARGUMENTS = "wrapper_arguments_invalid"
 CATEGORY_WRAPPER_ERROR = "wrapper_error"
 CATEGORY_RUN_UNAVAILABLE = "run_unavailable"
-CATEGORY_STAGED_CLOSURE = "staged_closure_incomplete"
-CATEGORY_BUILD_GRAPH = "build_graph_failed"
 CATEGORY_IR_STATIC = "compile_static_violation"
 
 #: The text a leaf is shown of a command's output, per stream.
 DEFAULT_CAPTURE_LIMIT = 20000
-
-_BINARY_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 
 #: One lock per lineage home: the operations share the lineage's view, stage, object and
 #: binary directories, which each call empties and refills, so two calls of one lineage (a
@@ -292,20 +287,10 @@ def _ended(ctx: WrapperContext, ended_by: str) -> dict[str, Any]:
                    findings=f"the lineage has ended ({ended_by})")
 
 
-def _no_arguments(op: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
-    if args:
-        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings=f"{op} takes no arguments (got {sorted(args)})")
-    return None
-
-
 def _op_derive(ctx: WrapperContext, args: Mapping[str, Any],
                on_spawn: Any) -> dict[str, Any]:
     """Assemble the tree's manifest into a bundle document, judge it by the producer's
     contract, derive its build graph and write the control file into the tree."""
-    refused = _no_arguments("derive", args)
-    if refused is not None:
-        return refused
     started = _utc_now_iso()
     outcome = _derive(ctx)
     workshop_tree.append_jsonl(ctx.paths.command_log, {
@@ -336,9 +321,6 @@ def _derivation(ctx: WrapperContext) -> tuple[dict[str, Any], str] | dict[str, A
     """`(document, control file text)` for the tree as it stands — the host's Generate-time
     derivation: assembly, the producer's contract, the build graph, the control file — or the
     failure as feedback."""
-    if ctx.violations is None or ctx.build_graph is None or ctx.render_control_file is None:
-        return _result(False, category=CATEGORY_WRAPPER_ERROR,
-                       findings="this lineage serves no bundle operation (a host fault)")
     doc = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
     if isinstance(doc, AssemblyFailure):
         return _result(False, category=doc.category, findings=doc.findings)
@@ -346,16 +328,9 @@ def _derivation(ctx: WrapperContext) -> tuple[dict[str, Any], str] | dict[str, A
     if violation is not None:
         category, findings = violation
         return _result(False, category=category, findings=findings)
-    try:
-        graph = ctx.build_graph(doc)
-    except RuntimeError as exc:
-        return _result(False, category=CATEGORY_BUILD_GRAPH, findings=str(exc))
-    missing = [n for n in ctx.closure_file_names
-               if not (ctx.paths.staged_closure / n).is_file()]
-    if missing:
-        return _result(False, category=CATEGORY_STAGED_CLOSURE,
-                       findings=f"the staged dependency closure lacks {missing} (a host fault)")
-    return doc, ctx.render_control_file(graph=graph)
+    # `ctx.violations` has already derived the build graph and answered a failure as its
+    # own finding, and the closure was staged before the lineage started.
+    return doc, ctx.render_control_file(graph=ctx.build_graph(doc))
 
 
 def _derive_outcome(ctx: WrapperContext) -> dict[str, Any]:
@@ -388,9 +363,6 @@ def _op_compile(ctx: WrapperContext, args: Mapping[str, Any],
     `workspace/tmp/<arid>/build` every time)."""
     from tools.build_runtime import tool_compile_project
 
-    refused = _no_arguments("compile", args)
-    if refused is not None:
-        return refused
     derived = _derivation(ctx)
     if isinstance(derived, dict):
         return derived
@@ -439,14 +411,11 @@ def _source_view(ctx: WrapperContext, name: str,
         doc = assembled
     view = _fresh_dir(ctx.paths.syntax / name)
     for entry in doc.get("files") or []:
-        if not isinstance(entry, dict):
-            continue
-        logical, content = entry.get("logical_path"), entry.get("content")
-        rel = workshop_tree.plain_relative_path(logical) if isinstance(logical, str) else None
-        if rel is None or not isinstance(content, str):
-            continue
+        # A malformed entry raises here (a `wrapper_error` answer); `plain_relative_path` keeps
+        # every write inside the view.
+        rel = workshop_tree.plain_relative_path(entry["logical_path"])
         (view / rel).parent.mkdir(parents=True, exist_ok=True)
-        (view / rel).write_text(content, encoding="utf-8")
+        (view / rel).write_text(entry["content"], encoding="utf-8")
     workshop_tree._copy_files(
         ctx.paths.tree, view,
         [PurePosixPath(n) for n in ctx.seed_names if workshop_tree.plain_relative_path(n)])
@@ -456,9 +425,6 @@ def _source_view(ctx: WrapperContext, name: str,
 def _op_lint(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
     from tools.build_runtime import tool_run_linter
 
-    refused = _no_arguments("lint", args)
-    if refused is not None:
-        return refused
     view = _source_view(ctx, "_lint")
     if isinstance(view, dict):
         return view
@@ -510,11 +476,6 @@ def _op_syntax_check(ctx: WrapperContext, args: Mapping[str, Any],
     file and the node's interface header. The view is staged as
     `workflow_conductor.stage_syntax_inputs` stages `src/` (every file of a staged suffix, at
     its own relative path)."""
-    from tools.build_runtime import SyntaxSourceNameError
-
-    refused = _no_arguments("syntax_check", args)
-    if refused is not None:
-        return refused
     view = _source_view(ctx, "_src")
     if isinstance(view, dict):
         return view
@@ -525,10 +486,7 @@ def _op_syntax_check(ctx: WrapperContext, args: Mapping[str, Any],
         [rel for rel in files if rel.suffix.lower() in ctx.syntax_staged_suffixes])
     for name in ctx.closure_file_names:
         shutil.copy2(ctx.paths.staged_closure / name, stage_dir / name)
-    try:
-        result = _syntax_run(ctx, stage_dir, on_spawn)
-    except SyntaxSourceNameError as exc:
-        return _result(False, category="syntax_error", findings=str(exc))
+    result = _syntax_run(ctx, stage_dir, on_spawn)
     if result.get("skipped"):
         return _result(True, skipped=True, reason=result.get("reason"),
                        compiler=ctx.syntax_compiler)
@@ -559,105 +517,64 @@ def _op_syntax_check(ctx: WrapperContext, args: Mapping[str, Any],
                    stdout=out.get("stdout"), stderr=out.get("stderr"), model_alone=alone)
 
 
-def _tree_file(ctx: WrapperContext, name: Any) -> tuple[Path | None, str | None]:
-    rel = workshop_tree.plain_relative_path(name) if isinstance(name, str) else None
-    if rel is None:
-        return None, f"cases_file {name!r} must be a tree-relative path with no '..' segment"
-    data, why = workshop_tree.read_regular_file_under(ctx.paths.tree, PurePosixPath(rel))
-    if data is None:
-        return None, f"cases_file {name} {why}"
-    return ctx.paths.tree / rel, None
-
-
-def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | None]:
-    """Every case id of the tree-relative case file `name`, or `([], why)`. Read by the
-    runner renderer's own reader (`runner_ir.case_ids`: `case.test_case_set[].case_id`, in
-    declaration order, refused when empty, unsafe, duplicated or longer than the harness's
-    `case_id_len`), so the default is the set
-    the host-rendered runner selects from."""
+def _every_case_id(ctx: WrapperContext, name: str) -> list[str]:
+    """Every case id of the tree-relative case file `name`, or `[]` when it holds none it can
+    give. Read by the runner renderer's own reader (`runner_ir.case_ids`:
+    `case.test_case_set[].case_id`, in declaration order, refused when empty, unsafe,
+    duplicated or longer than the harness's `case_id_len`), so the default is the set the
+    host-rendered runner selects from. With no id the runner itself refuses the run."""
     from tools.runner_ir import RenderError, case_ids
 
     _present, document, why = workshop_tree._read_tree_document(
         ctx.paths.tree, name, yaml.safe_load)
-    if why is not None:
-        return [], f"cases_file {why}"
-    if not isinstance(document, dict):
-        return [], f"the case file {name} is not a mapping holding `case.test_case_set`"
+    if why is not None or not isinstance(document, dict):
+        return []
     try:
-        return case_ids(document), None
-    except RenderError as exc:
-        return [], f"the case file {name}: {exc}"
+        return case_ids(document)
+    except RenderError:
+        return []
 
 
 def _seeded_continuations(ctx: WrapperContext) -> frozenset[str]:
     """The continuation cases of the IR the host SEEDED (issue #632): a case carrying a
     `restart` key. Each runs only in `Validate.execute`'s second pass, from a restart point of
     its base in a process of its own, so this operation runs none of them and the host writes no
-    case file for one. Empty when the seed is absent or unreadable (`_write_case_files` reports
-    that)."""
+    case file for one. The seed is the Compile-certified IR, which a `run` lineage is always
+    seeded."""
     from tools.primary_evidence import _cases_by_id, is_continuation
 
-    seeded = dict(ctx.seed_texts).get(SEEDED_IR_NAME)
-    try:
-        document = yaml.safe_load(seeded) if seeded is not None else None
-    except yaml.YAMLError:
-        return frozenset()
-    if not isinstance(document, dict):
-        return frozenset()
+    document = yaml.safe_load(dict(ctx.seed_texts)[SEEDED_IR_NAME])
     return frozenset(cid for cid, case in _cases_by_id(document).items()
                      if is_continuation(case))
 
 
-def _write_case_files(ctx: WrapperContext) -> str | None:
+def _write_case_files(ctx: WrapperContext) -> None:
     """Write `case_inputs/` beside the tree's IR, as `Validate.execute` writes it beside the
     certified one (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), from the IR the host SEEDED: a
-    `cases_file` the leaf names selects cases, never what a case holds. None, or why it could
-    not be written: the IR came through `Compile.static`, which evaluated every case, so that is
-    the host's inconsistency and no repair of the bundle would answer it."""
-    from tools.primary_evidence import PrimaryEvidenceError, write_case_inputs
+    `cases_file` the leaf names selects cases, never what a case holds. The IR came through
+    `Compile.static`, which evaluated every case."""
+    from tools.primary_evidence import write_case_inputs
 
-    seeded = dict(ctx.seed_texts).get(SEEDED_IR_NAME)
-    if seeded is None:
-        return f"the lineage was seeded no {SEEDED_IR_NAME}, so no case file can be written"
-    try:
-        document = yaml.safe_load(seeded)
-        write_case_inputs(document, ctx.paths.tree)
-    except (yaml.YAMLError, OSError, PrimaryEvidenceError) as exc:
-        return f"the case files could not be written from the seeded IR: {exc}"
-    return None
+    write_case_inputs(yaml.safe_load(dict(ctx.seed_texts)[SEEDED_IR_NAME]), ctx.paths.tree)
 
 
 def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
     """Run a binary the leaf's `compile` built, on a case file of its tree."""
     from tools.build_runtime import tool_run_program
-    from tools.primary_evidence import CASE_INPUTS_DIRNAME
-    from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
     if ctx.run_unavailable is not None or ctx.launch_argv_prefix is None:
         return _result(False, category=CATEGORY_RUN_UNAVAILABLE,
                        findings=str(ctx.run_unavailable or "no launch shape"))
-    unknown = sorted(set(args) - {"binary", "cases_file", "case_ids"})
-    if unknown:
-        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings=f"run takes binary, cases_file, case_ids (got {unknown})")
-    binary = args.get("binary")
-    if not (isinstance(binary, str) and _BINARY_NAME_RE.fullmatch(binary)):
-        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings=f"binary must be the basename of a built binary (got {binary!r})")
-    binary_path = ctx.paths.staged_bin / binary
-    if binary_path.is_symlink() or not binary_path.is_file():
-        built = sorted(p.name for p in ctx.paths.staged_bin.iterdir() if p.is_file())
-        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings=f"no built binary {binary!r}; compile built {built}")
+    # The binary runs inside the sandbox; a name that is not a built binary is the launch's
+    # own failure, answered as the run's result.
+    binary_path = ctx.paths.staged_bin / args["binary"]
     cases_name = args.get("cases_file", "spec.ir.yaml")
-    cases_path, why = _tree_file(ctx, cases_name)
-    if cases_path is None:
-        return _result(False, category=CATEGORY_BAD_ARGUMENTS, findings=why)
-    case_ids = args.get("case_ids", [])
-    if not (isinstance(case_ids, list)
-            and all(isinstance(c, str) and CASE_ID_TOKEN_RE.fullmatch(c) for c in case_ids)):
+    # The conductor's own (unsandboxed) process opens this path, so it stays inside the tree.
+    if not (isinstance(cases_name, str) and workshop_tree.plain_relative_path(cases_name)):
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings="case_ids must be a list of case ids")
+                       findings=f"cases_file {cases_name!r} must be a tree-relative path with "
+                                f"no '..' segment")
+    case_ids = args.get("case_ids", [])
     continuations = _seeded_continuations(ctx)
     named = sorted(set(case_ids) & continuations)
     if named:
@@ -670,11 +587,7 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         # (issue #534 PR-J3-a: the runner refuses a run naming no case, and a leaf-chosen subset
         # is refused too when it leaves out a case a metrics basis targets — so "every case" is
         # the useful default; issue #632: a continuation is the second pass's).
-        case_ids, why = _every_case_id(ctx, cases_name)
-        case_ids = [c for c in case_ids if c not in continuations]
-        if not case_ids:
-            return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                           findings=why or "the case file holds no case that is no continuation")
+        case_ids = [c for c in _every_case_id(ctx, cases_name) if c not in continuations]
     for raw_dir in ctx.run_raw_dirs:
         current = ctx.paths.tree
         for part in raw_dir:
@@ -685,20 +598,11 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
                                         f"directory of the tree (the run writes its captures "
                                         f"there)")
         ctx.paths.tree.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
-    why = _write_case_files(ctx)
-    if why is not None:
-        return _result(False, category=CATEGORY_RUN_UNAVAILABLE, findings=why)
+    _write_case_files(ctx)
     # A named `cases_file` selects case ids. What a case holds is the host's: the program reads
-    # `case_inputs/` beside the spec path it is given, so it is given the seeded IR's path, and a
-    # case the seeded IR does not declare has no file and is refused before anything starts.
+    # `case_inputs/` beside the spec path it is given, so it is given the seeded IR's path, and
+    # the runner refuses a case the seeded IR does not declare (it has no file).
     seeded_path = ctx.paths.tree / SEEDED_IR_NAME
-    unknown_cases = sorted(
-        c for c in case_ids
-        if not (ctx.paths.tree / CASE_INPUTS_DIRNAME / f"{c}.json").is_file())
-    if unknown_cases:
-        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings=f"the IR declares no case {unknown_cases}, so the host wrote no "
-                                f"case file for it; name cases of {SEEDED_IR_NAME}")
     env, declared = run_env(ctx)
     command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(seeded_path), *case_ids]
     result = tool_run_program({
@@ -740,13 +644,6 @@ def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],
     `meta.source_refs`, which the document contract has already pinned to the node's own spec
     documents (step (2) below), so they read the host's copies under `repo_root` — never a seed
     the leaf edited, nor a copy it wrote into its tree."""
-    refused = _no_arguments("check_ir", args)
-    if refused is not None:
-        return refused
-    if (ctx.assemble is None or ctx.violations is None or ctx.declared_fail is None
-            or ctx.ir_yaml is None or ctx.validate_ir_dir is None):
-        return _result(False, category=CATEGORY_WRAPPER_ERROR,
-                       findings="check_ir is not served by this lineage (a host fault)")
     started = _utc_now_iso()
     outcome = _check_ir(ctx)
     workshop_tree.append_jsonl(ctx.paths.command_log, {
@@ -763,9 +660,6 @@ def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],
 
 
 def _check_ir(ctx: WrapperContext) -> dict[str, Any]:
-    assert (ctx.assemble is not None and ctx.violations is not None
-            and ctx.declared_fail is not None and ctx.ir_yaml is not None
-            and ctx.validate_ir_dir is not None)
     doc = ctx.assemble(ctx.paths.tree, ctx.reserved_names)
     if isinstance(doc, AssemblyFailure):
         return _result(False, category=doc.category, findings=doc.findings)

@@ -211,12 +211,12 @@ class ProtocolTests(_Fixture):
 
     def test_a_failed_operation_is_an_error_result_not_a_protocol_error(self) -> None:
         server = self._server(run_op=lambda ctx, op, args, *, on_spawn=None: {
-            "ok": False, "category": "build_graph_failed", "findings": "x"})
+            "ok": False, "category": "workshop_tree_empty", "findings": "x"})
         result = _post(server.url, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
                                     "params": {"name": "derive", "arguments": {}}})[1]["result"]
         self.assertIs(result["isError"], True)
         self.assertEqual(json.loads(result["content"][0]["text"])["category"],
-                         "build_graph_failed")
+                         "workshop_tree_empty")
 
     def test_an_unknown_tool_or_malformed_call_is_refused_before_any_operation(self) -> None:
         server = self._server()

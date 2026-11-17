@@ -35,9 +35,6 @@
     "docs/BWRAP_ENABLEMENT.md": {
       "fortran": 1
     },
-    "docs/CLI_REFERENCE.md": {
-      "make-control-file": 1
-    },
     "docs/CONTROLLED_SPEC.md": {
       "fortran": 6,
       "fortran-kind": 2
@@ -72,9 +69,6 @@
       "fortran-kind": 1,
       "fortran-suffix": 2,
       "make-control-file": 5
-    },
-    "docs/workflow/COMMAND_LOG_PLACEMENT.md": {
-      "make-control-file": 1
     },
     "docs/workflow/WORKFLOW_CORE.md": {
       "fortran": 2
@@ -126,10 +120,10 @@
       "make-control-file": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 8,
+      "fortran": 7,
       "fortran-subroutine": 2,
       "fortran-suffix": 5,
-      "make-control-file": 6
+      "make-control-file": 4
     },
     "tools/structured_signatures.py": {
       "fortran-subroutine": 6
@@ -148,7 +142,7 @@
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-suffix": 12,
-      "make-control-file": 55,
+      "make-control-file": 54,
       "make-variable": 9
     }
   }
