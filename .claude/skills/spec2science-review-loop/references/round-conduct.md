@@ -352,6 +352,20 @@ mention as OPEN. Two practical notes:
   worth the reproduction; the harness's accounting and the agent's report are different
   artifacts.
 
+## Worktree agents leave their worktree in the checkout (issue #643 PR-2, PR #666, 2026-11-18)
+
+PR-2 was implemented by three parallel implementing agents, each launched with
+`isolation: "worktree"` and each holding one group of removal units. Their commits were then
+cherry-picked onto the PR branch. The harness keeps an agent's worktree when the agent committed in it, and
+it places that worktree at `.claude/worktrees/agent-<id>/`, inside the primary checkout. The
+first full-suite run after the cherry-picks had one failure:
+`test_backend_boundary.py::RegistryConsistencyTests::test_the_canonical_document_lists_exactly_the_declared_axes`.
+It was failing on paths under `.claude/worktrees/agent-…`, i.e. on the agents' copies of the
+tree, not on anything the branch changed. `git worktree remove` on the three paths made the
+row green, with no other change. The paths were found by running the failing row serially and
+reading its assertion. The rule in SKILL.md therefore puts the removal between taking the
+commits and the next suite run. Nothing in the diff points at the cause.
+
 ## A billed run during the loop (issue #316 PR-4, PR #322, 2026-09-28)
 
 The adoption run (`advdiff1d_linear validate --with-deps` on `fortran_cpu_mpi`) was launched

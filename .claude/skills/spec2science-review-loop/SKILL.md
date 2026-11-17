@@ -719,7 +719,13 @@ nor resets the two-consecutive-clean-security-rounds condition.**
     wait, not findings. Issue #582 lost about 80 minutes here; `references/round-conduct.md`
   - **Check the checkout itself at the end of a round**, not only processes: `git status
     --porcelain` and `git worktree list`. A reviewer's stray worktree inside the repository
-    contaminated another reviewer's suite run on this skill's own review
+    contaminated another reviewer's suite run on this skill's own review. **An `Agent` launched
+    with `isolation: "worktree"` leaves one there by design**: the harness keeps a worktree
+    that holds commits, under `.claude/worktrees/` INSIDE the checkout. After taking its
+    commits, `git worktree remove` it before the next suite run. Otherwise
+    `test_backend_boundary`'s canonical-document row goes red on the copies, and the cause is
+    not in the diff (`references/round-conduct.md` §"Worktree agents leave their worktree in
+    the checkout")
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
   the user or another session can commit to the same branch. That is concurrency, not staleness:
   read it and **judge whether it collides with your scope**
