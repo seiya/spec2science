@@ -16316,12 +16316,11 @@ class RecordTimeoutTests(unittest.TestCase):
     def test_finalize_after_a_manual_deactivate_names_the_remedy_that_converges(self) -> None:
         """An operator who ran `deactivate-child` by hand and then reaches for
         `finalize-child` is refused: the marker is gone. The refusal must name that state and
-        the remedy, and the remedy must work as printed: `set-status` terminalizes the
-        orchestration and `--resume` (`resume_orchestration`) prunes the unfinalized child's
-        graph edge, so the resumed run is not held by it."""
+        the remedy, and the remedy must work as printed: `--resume` (`resume_orchestration`),
+        with no manual terminalization first, prunes the unfinalized child's graph edge and its
+        `child_running` state, so the resumed run is not held by it."""
         from tools.orchestration_runtime import (
             deactivate_child_agent, finalize_child, resume_orchestration,
-            update_orchestration_status,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -16335,10 +16334,8 @@ class RecordTimeoutTests(unittest.TestCase):
                     agent_run_payload={"agent_run_id": arid, "status": "fail"})
             message = str(cm.exception)
             self.assertIn("deactivate-child", message)
-            self.assertIn("set-status", message)
             self.assertIn("--resume", message)
-            update_orchestration_status(
-                repo_root=repo_root, orchestration_id="orch_to_001", status="fail")
+            self.assertNotIn("set-status", message)
             graph_path = (repo_root / "workspace" / "orchestrations" / "orch_to_001"
                           / "agent_graph.json")
 

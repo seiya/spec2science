@@ -4456,7 +4456,8 @@ def _compute_initial_dependency_readiness(
     Under a `target` (the orchestration's, issue #284) a node that is not itself
     `infrastructure` has the target's harness as a direct dependency even with an empty
     `deps.yaml` (`target_harness_entries`), so it is not a trivial leaf. Asking that reads the
-    catalog, whose failure propagates (`write_preflight` handles it).
+    catalog, whose failure propagates (out of `write_preflight` too, which ends the run's
+    preflight; issue #643 removed its degraded mode).
     """
     if _target_harness_entries_for_spec_ref(repo_root, spec_ref, target):
         return {
@@ -15356,8 +15357,7 @@ def finalize_child(
             f"finalize-child: no active_children/{arid}.txt marker — the run was never "
             f"launched, is already finalized, or was released by a manual "
             f"`deactivate-child`. Nothing was written. A run released by hand and not yet "
-            f"finalized is closed by terminalizing the orchestration with `set-status` and "
-            f"recovering it with `--resume`, which prunes the unfinalized child."
+            f"finalized is recovered with `--resume`, which prunes the unfinalized child."
         )
     deactivation = deactivate_child_agent(
         repo_root,
@@ -16899,8 +16899,9 @@ def main(argv: list[str] | None = None) -> int:
     reserve_root_parser.add_argument(
         "--target", default=None,
         help=("Target id the reserved pipeline is built for (spec/targets/<id>.yaml). "
-              "Required with --step generate, refused with --step compile: the pipeline "
-              "lives at workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>."))
+              "The conductor passes it with --step generate, where the pipeline lives at "
+              "workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>; it is not "
+              "checked against --step (an omitted one records an empty target_id)."))
 
     check_phase_certified_parser = subparsers.add_parser(
         "check-phase-certified",
