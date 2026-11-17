@@ -10416,12 +10416,13 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
     """Validate the leaf-specific shape of a host-rendered launch request.
 
     Enforced (fail-closed): the pair is one a workshop leaf serves (`WORKSHOP_LAUNCH_PAIRS`);
-    the request names its lineage; a declared `pure_language` / `pure_parallel` is a non-empty
+    a declared `pure_language` / `pure_parallel` is a non-empty
     string; and the required `pure_context` keys are present on a cold launch. A warm-resume
     repair (`warm_resume` + `repair_findings`) may omit `pure_context` — the resumed lineage
     already holds it — but a cold repair still requires it.
 
-    The rest of the request (`leaf_mode`, `deterministic`, `workshop_provider`, `pure_shape`,
+    The rest of the request (`leaf_mode`, `deterministic`, `workshop_provider`,
+    `workshop_lineage_id` (`record_launch` checks its token shape first), `pure_shape`,
     `prompt_contract_version`, `allowed_output_paths`, the skill fields) is written by the
     conductor's `build_launch_request` from its own phase logic, and a leaf authors no launch
     request; the refusals that re-checked those fields went in issue #643. An unknown
@@ -10429,20 +10430,11 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     key = (step, substep)
-    lineage = request_payload.get("workshop_lineage_id")
     if key not in WORKSHOP_LAUNCH_PAIRS:
         admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(WORKSHOP_LAUNCH_PAIRS))
         raise ValueError(
             f"leaf_mode=workshop is only valid for {admissible}; "
             f"got (step={step!r}, substep={substep!r})")
-    # Not observed by any test: `record_launch`, the one caller, checks the same field
-    # with the same pattern before it gets here. Kept so the validator states the whole
-    # shape on its own.
-    if not (isinstance(lineage, str) and _AGENT_RUN_ID_RE.match(lineage.strip())):
-        raise ValueError(
-            "workshop launch request must name its lineage in workshop_lineage_id (a plain "
-            f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
-            f"{lineage!r}")
     # A declared bundle SHAPE selects a different required-key set.
     shape = request_payload.get("pure_shape")
     shape_key: tuple[str, str, str] | None = (
@@ -13320,32 +13312,16 @@ def _launch_network_block(repo_root: Path, socket_dir: str | None, family: str,
     """The `network` block of one CLI launch's profile (issue #534 step 4), from the socket
     directory the conductor serves for it (`--netns-socket-dir`) and the wrapper endpoint the
     launch's own setting surface records (`<family>_mcp_config`; a reading launch records
-    none). The directory must be the conductor's: an existing directory, not a link, owned by
-    this user and private to it (0700, `leaf_netns.make_socket_dir`); the block's own refusals
-    (outside the checkout, short enough for a socket path) are `network_block_violations`'."""
-    if not (isinstance(socket_dir, str) and socket_dir.strip()):
-        raise ValueError("a CLI launch needs its network namespace's socket directory "
-                         "(--netns-socket-dir; issue #534 step 4)")
+    none). Both are the conductor's: the directory is the private one `leaf_netns.make_socket_dir`
+    made for this launch, the URL its own wrapper's loopback endpoint. The block's own refusals
+    (outside the checkout, short enough for a socket path) are `network_block_violations`'. A
+    malformed value raises here, inside `record_launch`'s fail-closed sandbox catch."""
     path = socket_dir.strip()
-    try:
-        st = os.lstat(path)
-    except OSError as exc:
-        raise ValueError(f"--netns-socket-dir {path!r} does not exist: {exc}") from exc
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        raise ValueError(f"--netns-socket-dir {path!r} must be a directory (not a link) owned "
-                         "by this user with mode 0700")
     servers = response_payload.get(f"{family}_mcp_config")
     wrapper_port: int | None = None
     if servers is not None:
-        urls = [str(item.get("url") or "") for item in servers if isinstance(item, dict)] \
-            if isinstance(servers, list) else []
-        if len(urls) != 1 or not urls[0].startswith("http://127.0.0.1:"):
-            raise ValueError(f"{family}_mcp_config must name one loopback wrapper URL "
-                             f"(got {servers!r})")
-        port = urls[0][len("http://127.0.0.1:"):].split("/", 1)[0]
-        if not port.isdigit():
-            raise ValueError(f"the wrapper URL names no port (got {urls[0]!r})")
-        wrapper_port = int(port)
+        url = str(servers[0].get("url") or "")
+        wrapper_port = int(url[len("http://127.0.0.1:"):].split("/", 1)[0])
     block = leaf_netns.network_block(path, WORKSHOP_CLI_ENDPOINTS[family], wrapper_port)
     problems = leaf_netns.network_block_violations(
         block, endpoints=WORKSHOP_CLI_ENDPOINTS[family], repo_root=str(repo_root))
@@ -13367,22 +13343,9 @@ def record_launch(
     workshop_lineage_id: str | None = None,
     netns_socket_dir: str | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
-        raise ValueError("record-launch requires non-empty parent_agent_run_id")
+    # Both ids are the conductor's (the orchestration's arid; a fresh uuid per child).
     parent_agent_run_id = parent_agent_run_id.strip()
-    if not _AGENT_RUN_ID_RE.match(parent_agent_run_id):
-        raise ValueError(
-            f"record-launch: parent_agent_run_id contains invalid characters "
-            f"(got {parent_agent_run_id!r}); only alphanumerics, hyphens, and underscores are allowed"
-        )
-    if not isinstance(child_agent_run_id, str) or not child_agent_run_id.strip():
-        raise ValueError("record-launch requires non-empty child_agent_run_id")
     child_agent_run_id = child_agent_run_id.strip()
-    if not _AGENT_RUN_ID_RE.match(child_agent_run_id):
-        raise ValueError(
-            f"record-launch: child_agent_run_id contains invalid characters "
-            f"(got {child_agent_run_id!r}); only alphanumerics, hyphens, and underscores are allowed"
-        )
     preflight_payload: dict[str, Any] | None = None
     try:
         preflight_payload = _require_preflight_launchable(
@@ -13417,12 +13380,8 @@ def record_launch(
                        if isinstance(_launch_backend, str) and _launch_backend.strip() else "")
     _probed = preflight_payload.get("providers") if isinstance(preflight_payload, dict) else None
     if _launch_backend and isinstance(_probed, dict) and _probed:
-        entry = _probed.get(_launch_backend)
-        if not (isinstance(entry, dict) and entry.get("launchable") is True):
-            raise RuntimeError(
-                f"record-launch: backend_not_probed — this launch names provider "
-                f"{_launch_backend!r}, which preflight did not probe as launchable"
-            )
+        # Whether preflight probed this provider as launchable is the launch check's question
+        # (`pre_phase_launch` -> `workflow_launch_check`, `backend_not_probed`), asked below.
         backend_token = _launch_backend
     elif _launch_backend in SUPPORTED_BACKENDS:
         # No `providers` map: a pre-#28 preflight, where the run has one backend and the
@@ -13472,53 +13431,20 @@ def record_launch(
     #: keyed by provider): the CLI's own token on a CLI launch, `http` for both HTTP providers,
     #: whose `backend_token` is the provider token (issue #534 PR-J3-b).
     lineage_backend: str | None = None
-    if workshop_lineage_id is not None or is_workshop:
-        if not is_workshop:
-            raise ValueError("workshop_lineage_id is valid only for a workshop launch request")
-        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+    if is_workshop:
+        # The request's provider, lineage id and the warm `--workshop-lineage-id` are all
+        # written by the conductor from one leaf entry and one lineage (issue #643 removed the
+        # refusals that re-checked them against each other). The lineage id becomes the home's
+        # path segment, so its token shape is checked (OR4-52).
         from tools.leaf_contract import WORKSHOP_LINEAGE_BACKENDS
         named = request_payload.get("workshop_provider")
-        named = named if isinstance(named, str) else ""
-        lineage_backend = WORKSHOP_LINEAGE_BACKENDS.get(named)
-        if (lineage_backend not in WORKSHOP_HOME_PREPARERS
-                or (_launch_backend and _launch_backend != backend_token)):
-            raise ValueError(
-                f"record-launch: a workshop launch runs in a lineage home of "
-                f"{', '.join(sorted(WORKSHOP_HOME_PREPARERS))} (providers "
-                f"{', '.join(sorted(WORKSHOP_LINEAGE_BACKENDS))}); this launch names "
-                f"workshop_provider {named!r} on {_launch_backend or backend_token!r}")
-        # The provider the prompt's `<tool_surface>` was rendered for is THIS launch's: a
-        # prompt stating another transport's tools would describe a surface the leaf lacks.
-        if PROVIDER_BACKEND_TOKENS.get(named) != backend_token:
-            raise ValueError(
-                f"record-launch: the workshop request's workshop_provider {named!r} is not this "
-                f"launch's provider (backend {backend_token!r})")
+        lineage_backend = WORKSHOP_LINEAGE_BACKENDS.get(named if isinstance(named, str) else "")
         requested = request_payload.get("workshop_lineage_id")
         if not (isinstance(requested, str) and _AGENT_RUN_ID_RE.match(requested.strip())):
             raise ValueError(
                 "record-launch: a workshop launch request must name its lineage as a plain "
                 f"token in workshop_lineage_id (got {requested!r})")
         requested = requested.strip()
-        if workshop_lineage_id is None:
-            if requested != child_agent_run_id:
-                raise ValueError(
-                    f"record-launch: a cold workshop launch starts its own lineage, so "
-                    f"workshop_lineage_id must be the child's id {child_agent_run_id!r} (got "
-                    f"{requested!r}); a warm one passes --workshop-lineage-id")
-        else:
-            if (not isinstance(workshop_lineage_id, str)
-                    or not _AGENT_RUN_ID_RE.match(workshop_lineage_id.strip())):
-                raise ValueError(
-                    f"record-launch: workshop_lineage_id contains invalid characters (got "
-                    f"{workshop_lineage_id!r}); only alphanumerics, hyphens, and underscores "
-                    "are allowed")
-            workshop_lineage_id = workshop_lineage_id.strip()
-            if requested != workshop_lineage_id or requested == child_agent_run_id:
-                raise ValueError(
-                    f"record-launch: a warm workshop launch resumes lineage "
-                    f"{workshop_lineage_id!r}, so the request's workshop_lineage_id must name "
-                    f"it and the child must be a new run (got request {requested!r}, child "
-                    f"{child_agent_run_id!r})")
         workshop_isolation = WORKSHOP_HOME_PREPARERS[lineage_backend](
             repo_root, orchestration_id, requested, resume=True)
         if workshop_isolation is None:
@@ -13651,10 +13577,6 @@ def record_launch(
 
     prompt_text = _extract_launch_prompt_text(request_payload)
     reply_text = _extract_launch_reply_text(response_payload)
-    if not prompt_text.strip():
-        raise ValueError("launch prompt text must be non-empty")
-    if not reply_text.strip():
-        raise ValueError("launch reply text must be non-empty")
 
     request_ref, response_ref = _launch_refs(orchestration_id, child_agent_run_id)
     prompt_ref, reply_ref = _launch_dialog_refs(orchestration_id, child_agent_run_id)
@@ -13686,8 +13608,6 @@ def record_launch(
         # Retained in terse output.
         "launch_prompt_text": prompt_text,
     }
-    if not (isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip()):
-        raise ValueError("record-launch requires non-empty node_key and step for sandbox-enforced launch")
     if isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip():
         # NO ACCESS POLICY, READ MANIFEST, CAPABILITY OR OUTPUT MANIFEST. Four documents used
         # to be written here, one per question about what the child was allowed to do: which
@@ -13925,36 +13845,9 @@ def record_launch(
         else:
             try:
                 _resp_backend = response_payload.get("backend")
-                # THE SAME resolver the profile builder uses on the next lines, not
-                # a second reading of the raw field: `build_*_bwrap_profile` resolves
-                # the family with `_resolve_backend_type(backend_type, backend_command)`,
-                # which falls back to the COMMAND when the response omits `backend`.
-                # Reading the raw field here meant such a payload built a claude-shaped
-                # profile — `~/.claude` rw-bound, no CLAUDE_CONFIG_DIR — with no
-                # private home, i.e. a leaf on the operator's home, while the record
-                # described one it never read. Keying both off one function is what
-                # makes "the profile is claude-shaped" and "the claude isolation was
-                # prepared" the same question.
-                _backend_family = _resolve_backend_type(
-                    _resp_backend if isinstance(_resp_backend, str) else "",
-                    backend_command)
-                # Every CLI leaf is a WORKSHOP leaf (issue #534; the pure leaf, whose read-only
-                # profile and codex thread lineage this branch also built, went in PR-J4-b). A
-                # request that is not one cannot have reached here — the renderer refuses it —
-                # and is refused again rather than given a profile.
-                if not is_workshop:
-                    raise ValueError(
-                        "a CLI launch is a workshop launch; this request is not one "
-                        f"(leaf_mode={request_payload.get('leaf_mode')!r})")
-                # The family the profile is built for is the one whose home was prepared
-                # above: the same resolver answers both, or the record would describe one
-                # CLI's home under another's profile.
-                if _backend_family != backend_token or lineage_backend != backend_token:
-                    raise ValueError(
-                        f"a workshop launch's profile is its backend's ({backend_token!r}); "
-                        f"the command resolves to {_backend_family!r} and the lineage home "
-                        f"is {lineage_backend!r}")
-                # Its lineage home was found above, cold and warm alike, and stamped.
+                # Every CLI leaf is a WORKSHOP leaf (issue #534; the pure leaf went in
+                # PR-J4-b): the renderer refuses any other LLM request. Its lineage home was
+                # found above, cold and warm alike, and stamped.
                 assert workshop_isolation is not None
                 profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
                 network = _launch_network_block(repo_root, netns_socket_dir, backend_token,
@@ -15318,27 +15211,18 @@ def update_orchestration_status(
             and status == current_status_pre
         )
         # Codex round 15 F1: status-specific preconditions (pass needs
-        # preflight launchability + completion validation; fail_closed needs
-        # reason_code) MUST run only for FORWARD transitions. A same-terminal
+        # preflight launchability + completion validation) MUST run only for FORWARD
+        # transitions. A same-terminal
         # replay reflects a defensive retry after the first call already
         # committed — re-running pass validation can fail on expired preflight
         # or drifted workspace even though the orchestration is already done.
-        if not is_same_terminal_replay:
-            if status == "pass":
-                _require_preflight_launchable(
-                    repo_root,
-                    orchestration_id,
-                    enforce_live_probe=False,
-                )
-                _validate_orchestration_completion_for_pass(repo_root, orchestration_id)
-            if status == "fail_closed":
-                if not isinstance(reason_code, str) or not reason_code.strip():
-                    raise ValueError("set-status fail_closed requires non-empty reason_code")
-                if reason_code.strip() not in FAIL_CLOSED_REASON_CODES:
-                    raise ValueError(
-                        "set-status fail_closed reason_code must be one of "
-                        f"{sorted(FAIL_CLOSED_REASON_CODES)}"
-                    )
+        if not is_same_terminal_replay and status == "pass":
+            _require_preflight_launchable(
+                repo_root,
+                orchestration_id,
+                enforce_live_probe=False,
+            )
+            _validate_orchestration_completion_for_pass(repo_root, orchestration_id)
         current_status = meta.get("status")
         orch_arid_obj = meta.get("orchestration_agent_run_id")
         orch_arid = (
@@ -15735,26 +15619,6 @@ def _json_file_arg(raw: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise argparse.ArgumentTypeError("json payload must be object")
     return value
-
-
-def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
-    """Validate the required fields of record-launch --response-json at CLI dispatch time."""
-    label = "record-launch --response-json"
-    for key in ("agent_run_id", "agent_session_id", "started_at", "backend"):
-        value = payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"{label}: required field {key!r} is missing or empty. "
-                f"For Claude Code use: {{\"agent_run_id\": \"<uuid>\", "
-                f"\"agent_session_id\": \"<same uuid>\", "
-                f"\"started_at\": \"<ISO8601>\", \"backend\": \"claude\"}}"
-            )
-    backend = payload["backend"].strip()
-    if backend not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"{label}: 'backend' must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
-            f"got {backend!r}"
-        )
 
 
 def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None = None) -> None:
@@ -16493,7 +16357,6 @@ def main(argv: list[str] | None = None) -> int:
             if getattr(args, "child_env_from_stdin", False):
                 # The conductor's `_child_env`, serialized by the conductor.
                 child_env_payload = json.loads(sys.stdin.read())
-            _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,

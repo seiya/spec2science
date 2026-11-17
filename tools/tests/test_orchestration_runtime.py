@@ -1029,49 +1029,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertFalse((repo_root / "workspace" / "orchestrations" /
                               "orch_lineage_race" / "session_run_index.json").exists())
 
-    def test_record_launch_refuses_a_lineage_id_off_workshop_or_malformed(self) -> None:
-        """`--workshop-lineage-id` becomes a path segment outside the repository.
-
-        Refused for a launch that is not a workshop one (it names a lineage home that launch
-        has none of) and for anything but a plain token, BEFORE any lineage home is reached —
-        the preparer's own check is the second wall, and a call here would be a path join on
-        the value. (The `--codex-lineage-id` this row first pinned went with the pure codex
-        lineage, issue #534 PR-J4-b; the walls stand on the workshop id.)
-        """
-        from tools.orchestration_runtime import record_launch
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Only the metadata the lineage-home preparer reads: `init_orchestration` would
-            # create `launches/`, whose absence is part of what this row observes.
-            meta = repo_root / "workspace" / "orchestrations" / "orch_lineage_refuse" / "orchestration_meta.json"
-            meta.parent.mkdir(parents=True)
-            meta.write_text(json.dumps({"orchestration_id": "orch_lineage_refuse"}), encoding="utf-8")
-            prepare = mock.Mock(side_effect=AssertionError("preparer reached"))
-            with patch.dict(ort.WORKSHOP_HOME_PREPARERS, {"codex": prepare}):
-                with patch("tools.orchestration_runtime._require_preflight_launchable",
-                           return_value={"backend": "codex"}), \
-                        self.assertRaisesRegex(ValueError,
-                                               "valid only for a workshop launch request"):
-                    record_launch(
-                        repo_root, "orch_lineage_refuse",
-                        parent_agent_run_id="parent", child_agent_run_id="child",
-                        request_payload={}, response_payload={"backend": "codex"},
-                        workshop_lineage_id="lineage-1", netns_socket_dir=netns_socket_dir())
-                for bad in ("../x", "a/b", "", "x y"):
-                    with self.subTest(lineage=bad), \
-                            patch("tools.orchestration_runtime._require_preflight_launchable",
-                                  return_value={"backend": "codex"}), \
-                            self.assertRaisesRegex(ValueError,
-                                                   "workshop_lineage_id contains"):
-                        record_launch(
-                            repo_root, "orch_lineage_refuse",
-                            parent_agent_run_id="parent", child_agent_run_id="child",
-                            request_payload=self._codex_workshop_request("child", "lineage-1"),
-                            response_payload={"backend": "codex"},
-                            workshop_lineage_id=bad, netns_socket_dir=netns_socket_dir())
-            prepare.assert_not_called()
-
     def test_record_launch_takes_no_codex_lineage_id(self) -> None:
         """The pure codex lineage's `codex_lineage_id` parameter and `--codex-lineage-id`
         flag went with it (issue #534 PR-J4-b): a caller still passing one is refused by the
@@ -7706,40 +7663,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         if "launch_prompt_full" not in base:
             base["launch_prompt_full"] = render_launch_prompt_text(base)
         return base
-
-    def test_record_launch_rejects_traversal_in_child_agent_run_id(self) -> None:
-        """child_agent_run_id containing path separators must be rejected before path construction."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            for bad_id in ["../secret", "../../etc/passwd", "foo/bar", "foo\\bar", "foo.bar"]:
-                with self.subTest(bad_id=bad_id):
-                    with self.assertRaisesRegex(ValueError, "child_agent_run_id contains invalid characters"):
-                        record_launch(
-                            repo_root=repo_root,
-                            orchestration_id="orch_001",
-                            parent_agent_run_id="orch_run_001",
-                            child_agent_run_id=bad_id,
-                            request_payload=self._minimal_request_payload(),
-                            response_payload=_spawn_response_payload("sess_001"),
-                         netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_rejects_traversal_in_parent_agent_run_id(self) -> None:
-        """parent_agent_run_id containing path separators must be rejected."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            for bad_id in ["../orch", "orch/evil", "orch\\evil"]:
-                with self.subTest(bad_id=bad_id):
-                    with self.assertRaisesRegex(ValueError, "parent_agent_run_id contains invalid characters"):
-                        record_launch(
-                            repo_root=repo_root,
-                            orchestration_id="orch_001",
-                            parent_agent_run_id=bad_id,
-                            child_agent_run_id="step_run_001",
-                            request_payload=self._minimal_request_payload(),
-                            response_payload=_spawn_response_payload("sess_001"),
-                         netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_accepts_none_strategy_without_repair_fields(self) -> None:
         """With repair_strategy=none, it succeeds even if repair_target and repair_reason are "none"."""
@@ -22728,9 +22651,16 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self._mixed_preflight(repo_root)
             with self.assertRaises(RuntimeError) as ctx:
                 self._launch(repo_root, "anthropic_api", "substep_run_bad_001")
-            # `record-launch:` prefix, not the bare reason code: `pre_phase_launch` reports the
-            # SAME code, so a substring test on it passes even with this guard deleted.
-            self.assertIn("record-launch: backend_not_probed", str(ctx.exception))
+            # The launch check (`pre_phase_launch` -> `workflow_launch_check`) refuses the
+            # provider, and record_launch persists its own reason: the run is terminalized
+            # `fail_closed` / `backend_not_probed` (issue #643: the write used to be refused by
+            # the reason-code allowlist and the refusal swallowed).
+            self.assertIn("reason_code=backend_not_probed", str(ctx.exception))
+            root = repo_root / "workspace/orchestrations/orch_001"
+            meta = json.loads((root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.assertEqual((meta.get("status"), meta.get("reason_code")),
+                             ("fail_closed", "backend_not_probed"))
+            self.assertFalse((root / "launches" / "substep_run_bad_001.request.json").exists())
 
     def test_an_http_launch_skips_the_sandbox_profile_and_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

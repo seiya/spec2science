@@ -390,47 +390,19 @@ class WorkshopRecordLaunchTests(_Env):
     def test_refusals(self) -> None:
         cases = {
             "no lineage id": (_workshop_request("ar_x", workshop_lineage_id=None), {}),
-            "a cold launch naming another lineage": (
-                _workshop_request("ar_x", "ar_other"), {}),
-            "a warm launch whose request names another lineage": (
-                _workshop_request("ar_x", "ar_a"), {"workshop_lineage_id": "ar_b"}),
-            "a warm launch resuming itself": (
-                _workshop_request("ar_x", "ar_x"), {"workshop_lineage_id": "ar_x"}),
             # The two pure-request rows are refused for their leaf_mode since issue #534
             # PR-J4-b, before the lineage is read: no request but a workshop one is recorded.
             "a lineage id on a pure request": (
                 _pure_request("generate", agent_run_id="ar_x"), {"workshop_lineage_id": "ar_a"}),
             "a lineage field on a pure request": (
                 _pure_request("generate", agent_run_id="ar_x", workshop_lineage_id="ar_x"), {}),
-            "an HTTP provider named by the response": (
-                _workshop_request("ar_x"),
-                {"response": {**_spawn_response("ar_x"), "backend": "anthropic_api"}}),
-            "a codex backend named by the response": (
-                _workshop_request("ar_x"),
-                {"response": {**_spawn_response("ar_x"), "backend": "codex"}}),
         }
         self._prepare("ar_x", resume=False)
-        # A lineage that EXISTS, so the cold "starts its own lineage" check is the one that
-        # refuses the row naming it, not the absence of its home (round 2: the row was masked).
-        self._prepare("ar_other", resume=False)
         for label, (req, kw) in cases.items():
             with self.subTest(case=label):
                 with self.assertRaises((ValueError, RuntimeError)):
                     self._launch("ar_x", req, **kw)
                 self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
-
-    def test_the_request_names_this_launch_s_provider(self) -> None:
-        """Issue #534 step 2: the `<tool_surface>` a prompt states is its request's
-        `workshop_provider`'s, so a request naming a provider other than this launch's is
-        refused by `record_launch` before anything is recorded — reached here by giving a second
-        provider a surface row, as PR-2 will."""
-        self._prepare("ar_x", resume=False)
-        with mock.patch.dict(leaf_contract.WORKSHOP_TOOL_SURFACE_TEXT,
-                             {"codex_cli": "Your shell reaches your tree."}):
-            with self.assertRaises(ValueError) as ctx:
-                self._launch("ar_x", _workshop_request("ar_x", workshop_provider="codex_cli"))
-        self.assertIn("is not this launch's provider", str(ctx.exception))
-        self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
 
     def test_the_renderer_holds_workshop_provider_to_the_workshop_request(self) -> None:
         """The renderer (which `prepare_launch_request_payload` runs) refuses a workshop request
@@ -928,14 +900,6 @@ class HttpWorkshopRecordLaunchTests(_Env):
                          prepare=False)
         self.assertIn("the host prepares it before recording the launch", str(ctx.exception))
 
-    def test_a_request_naming_another_provider_is_refused(self) -> None:
-        ort._prepare_claude_workshop_home(self.repo, _ORCH, "ar_x", resume=False)
-        with self.assertRaises(ValueError) as ctx:
-            self._launch("ar_x", _workshop_request("ar_x", workshop_provider="claude_cli"),
-                         prepare=False)
-        self.assertIn("is not this launch's provider", str(ctx.exception))
-        self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
-
     def test_a_neither_pure_nor_workshop_http_launch_is_refused(self) -> None:
         req = _pure_request("generate", agent_run_id="ar_y")
         req.pop("leaf_mode")
@@ -1215,22 +1179,14 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
                 with self.assertRaisesRegex(ValueError, needle):
                     render_bwrap_command(profile=profile, command_argv=["claude"])
 
-    def test_record_launch_requires_the_socket_dir_to_be_the_conductors_own(self) -> None:
-        import tempfile as _tempfile
-        from tools import leaf_netns
-        loose = leaf_netns.make_socket_dir()
-        self.addCleanup(os.rmdir, loose)
-        os.chmod(loose, 0o755)
-        link = Path(_tempfile.mkdtemp(dir="/tmp")) / "l"
-        os.symlink(netns_socket_dir(), link)
+    def test_record_launch_refuses_a_socket_dir_inside_the_checkout(self) -> None:
+        """`network_block_violations` refuses a socket directory inside the checkout. (The
+        refusals of an absent, missing, non-private or linked directory went in issue #643:
+        the conductor passes the private directory `leaf_netns.make_socket_dir` made.)"""
         inside = self.repo / "net"
         inside.mkdir(mode=0o700)
         for label, value, needle in (
-                ("absent", None, "needs its network namespace's socket directory"),
-                ("missing", "/tmp/spec2science-net-does-not-exist", "does not exist"),
-                ("not private", loose, "mode 0700"),
-                ("a link", str(link), "not a link"),
-                ("inside the checkout", str(inside), "outside the checkout")):
+                ("inside the checkout", str(inside), "outside the checkout"),):
             with self.subTest(label), self.assertRaisesRegex(RuntimeError, needle):
                 self._launch(f"ar_{label.replace(' ', '_')}",
                              _workshop_request(f"ar_{label.replace(' ', '_')}"),

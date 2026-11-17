@@ -329,12 +329,6 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
             self._launch("ar_cx_cold", self._request("ar_cx_cold"), prepare=False)
         self.assertFalse((self._base() / "launches/ar_cx_cold.request.json").exists())
 
-    def test_the_request_names_this_launch_s_provider(self) -> None:
-        with self.assertRaises(ValueError):
-            self._launch("ar_cx_cold", _workshop_request("ar_cx_cold", agent_model="gpt-x"))
-        self.assertFalse((self._base() / "launches/ar_cx_cold.request.json").exists())
-
-
 class CodexPreflightTests(unittest.TestCase):
     def test_the_resume_probe_s_options_are_the_warm_argv_s(self) -> None:
         """Every option the warm argv spells is certified by `codex_exec_resume` (the
