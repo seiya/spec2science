@@ -1439,10 +1439,11 @@ PINNED_RENDER: dict[str, str] = {
     # gate (`target_profile.toolchain_servable_reasons`) refuses before any phase, and
     # `_control_file_module` / `_control_file_rules` stop renaming the registry's own exception;
     # a servable node's rendered control file and runner do not move. (Measured by diffing
-    # `render_tuple()` against main 31dfcbf1's: those three rows and no other.) The digest
+    # `render_tuple()` against main 31dfcbf1's: those three rows and no other; review round 1
+    # then corrected `_write_makefile`'s docstring.) The digest
     # `render-22` shipped with at 31dfcbf1:
     "render-22@31dfcbf1": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
-    "render-22": "7c76b1358831f7f2aad7b8b2d60b4e023024c944c9519aaff7a199f3c97e1797",
+    "render-22": "236b509a2daebe2739503937fa243c2c26713089c8171e84c05b826d06db43a6",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1693,10 +1694,11 @@ PINNED_BUILD: dict[str, str] = {
     # `_require_build_execute` loses its pre-check (the registry's own refusal, still wrapped,
     # answers the same toolchain) and the control-file lookups their rename. The command and the
     # record of every build the conductor runs do not move. (Measured by diffing `build_tuple()`
-    # against main 31dfcbf1's: those six rows and no other.) The digest `build-5` shipped with at
+    # against main 31dfcbf1's: those six rows and no other; review round 1 then corrected two
+    # docstrings of `tools/remote_execution.py`.) The digest `build-5` shipped with at
     # 31dfcbf1:
     "build-5@31dfcbf1": "e6d209160c8cc5dfba1b79cc523f60537ba8439e2742ee576da8adb33d84fb05",
-    "build-5": "82bf3c2141369181ddb0a5731c2690e569b63f33ee567c2addc3eb2aac818da3",
+    "build-5": "db34c0c66ebfd344f5ed12276ecfcb3ecdbfca7f29495c842aba382461cd2931",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2087,10 +2089,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # and `tools/primary_evidence.py` the case-file writer's case-id token refusal, which the
     # Compile gate (`_validate_case_ids`) applies to every IR that reaches Validate. A run's argv,
     # its case files and its record do not move. (Measured by diffing `execute_tuple()` against
-    # main 31dfcbf1's: those five rows and no other.) The digest `execute-22` shipped with at
+    # main 31dfcbf1's: those five rows and no other; review round 1 then corrected two
+    # docstrings of `tools/remote_execution.py`.) The digest `execute-22` shipped with at
     # 31dfcbf1:
     "execute-22@31dfcbf1": "786b9f363017168893cc886ecbee5a155154500da3ec50d004cce0984b0ed57c",
-    "execute-22": "6d20cc23b0d34ec282ce284b893fb0e18a9f5bc6dca345d7691d0f3b722680f8",
+    "execute-22": "66ccc17eaea8853193d785e871de1a0d0680135518f123bd5ff0c634d1242e89",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

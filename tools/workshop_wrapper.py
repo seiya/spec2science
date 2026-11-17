@@ -13,8 +13,9 @@ only the frozen node refs and class constants.
 
 What the leaf chooses is the CONTENT of its tree and, for `run`, a binary basename, a
 tree-relative case file and case ids. Every path and every build-runtime argument is composed
-here, under the lineage's own directories, so the build-runtime library keeps its type-only
-validation (`docs/BUILD_RUNTIME.md` §Operations rules, issue #457). Every build-runtime call runs
+here, under the lineage's own directories; the build-runtime library checks none of them
+(`docs/BUILD_RUNTIME.md` §Operations rules, issues #457 and #643). Of the leaf's choices only
+the case file is opened by this (unsandboxed) process, so only its path is held to the tree. Every build-runtime call runs
 under the wrapper's sandbox (`orchestration_runtime.render_wrapper_sandbox_prefix`), because the
 toolchain, the lint tool and above all the built binary act on leaf-authored content.
 

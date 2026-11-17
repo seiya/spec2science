@@ -6286,7 +6286,8 @@ class Conductor:
         class of generate regenerate-loops (Makefile-shape failures) and the long Makefile
         contract the generate leaf would otherwise internalize, and makes the build
         reproducible. Mirrors `_write_lineage` (runtime-owned artifact). Scoped to
-        build_system=make + language=fortran; c/cpp/mixed fall back to LLM authoring. The
+        build_system=make + language=fortran; the caller (`_conductor_authors_makefile`) and the
+        launch gate decide that a node's toolchain has a control-file writer. The
         post_generate validators still run against this file as a safety net.
 
         Imposes `BIN ?= <spec_id>_runner` (overridable so Build/Validate.execute can pin the
@@ -15816,7 +15817,8 @@ class Conductor:
         # must not author it, and generate.gate's static (post_generate) checker inspects it. The
         # template encodes the fixed runner->model use-graph and, for a dependency node, the
         # closure object rules (Model B); the dep sources are staged at build (see
-        # _stage_dependency_sources). c/cpp/mixed keep LLM authoring (see _write_makefile).
+        # _stage_dependency_sources). A toolchain with no control-file writer never reaches
+        # this line: the launch gate requires `control_file` of both axes.
         # A pure producer authors the bundle-DERIVED Makefile after the producer returns
         # (`_write_leaf_bundle_artifacts`), so it compiles exactly the bundle's file set — skip
         # the IR-shaped pre-authoring here for a pure node (the runner glue below is still

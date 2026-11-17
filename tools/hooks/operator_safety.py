@@ -6,8 +6,8 @@ policy in `tools/hooks/` whose audience was not a leaf — everything else there
 a WORKFLOW LEAF may do and was gated on the environment a leaf runs under. Those went with
 the agentic leaf; this one did not, because its subject is the operator's machine.
 
-They live in a module of their own so the DEV entrypoint (`tools/hooks/dev_cli.py`) can
-apply them without importing anything heavier (issue #102). That import boundary is the
+It lives in a module of its own so the DEV entrypoint (`tools/hooks/dev_cli.py`) can
+apply it without importing anything heavier (issue #102). That import boundary is the
 point of this module, not tidiness: the operator's interactive session runs the
 working-tree copy of its hook, so a defect in a module it imports would otherwise refuse
 the operator out of the very session they are editing in. It has happened once
