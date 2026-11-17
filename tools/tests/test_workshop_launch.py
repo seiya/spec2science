@@ -402,11 +402,6 @@ class WorkshopRecordLaunchTests(_Env):
                 _pure_request("generate", agent_run_id="ar_x"), {"workshop_lineage_id": "ar_a"}),
             "a lineage field on a pure request": (
                 _pure_request("generate", agent_run_id="ar_x", workshop_lineage_id="ar_x"), {}),
-            # The retired workshop counter (issue #534 PR-J4-b: one constant, `pure-84`, stamps
-            # every request; a request carrying the counter's last value is not this contract).
-            "the retired workshop contract version": (
-                _workshop_request("ar_x", prompt_contract_version="workshop-9"), {}),
-            "a write path": (_workshop_request("ar_x", allowed_output_paths=["x"]), {}),
             "an HTTP provider named by the response": (
                 _workshop_request("ar_x"),
                 {"response": {**_spawn_response("ar_x"), "backend": "anthropic_api"}}),
@@ -437,25 +432,20 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertIn("is not this launch's provider", str(ctx.exception))
         self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
 
-    def test_the_validator_holds_workshop_provider_to_the_workshop_request(self) -> None:
+    def test_the_renderer_holds_workshop_provider_to_the_workshop_request(self) -> None:
+        """The renderer (which `prepare_launch_request_payload` runs) refuses a workshop request
+        whose provider has no tool-surface row. (The validator's twin of this refusal went in
+        issue #643.)"""
         for label, req, needle in (
                 ("absent", _workshop_request("ar_x", workshop_provider=None),
                  "must name its provider in workshop_provider"),
                 ("a provider with no surface row",
                  _workshop_request("ar_x", workshop_provider="made_up_provider"),
-                 "must name its provider in workshop_provider"),
-                # Since issue #534 PR-J4-b no request but a workshop one is a leaf request, so a
-                # pure one carrying the field is refused for its leaf_mode before the field.
-                ("on a pure request", _pure_request("generate", workshop_provider="claude_cli"),
-                 "the pure leaf went in issue #534 PR-J4-b")):
+                 "must name its provider in workshop_provider")):
             with self.subTest(case=label):
-                with self.assertRaises(ValueError) as ctx:
-                    ort._validate_leaf_launch_request_payload(req)
-                self.assertIn(needle, str(ctx.exception))
-                if label != "on a pure request":
-                    with self.assertRaises(ValueError) as rendered:
-                        ort.prepare_launch_request_payload(dict(req))
-                    self.assertIn(needle, str(rendered.exception))
+                with self.assertRaises(ValueError) as rendered:
+                    ort.prepare_launch_request_payload(dict(req))
+                self.assertIn(needle, str(rendered.exception))
         ort._validate_leaf_launch_request_payload(_workshop_request("ar_x"))
 
     def test_a_workshop_request_on_another_pair_is_refused(self) -> None:

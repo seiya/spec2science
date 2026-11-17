@@ -10480,53 +10480,6 @@ class LeafSpawnTest(unittest.TestCase):
             self.assertEqual(launch_response["session_id"], "thread-1")
             self.assertEqual(session_index["entries"][0]["agent_session_id"], "thread-1")
 
-    def test_codex_thread_registration_refuses_to_guess_a_missing_or_unknown_role(self) -> None:
-        """`_register_codex_thread` was the last reader of `agent_role` that answered from
-        its own default (`or "substep"`), and it writes through to the session run index,
-        whose upsert applies no vocabulary test. record-launch validates and persists the
-        role before this ever runs, so an absent or out-of-vocabulary value means the
-        request file is missing or corrupt — surfaced, not guessed.
-
-        PINNED: that each of the three shapes raises, and that the session run index is not
-        written. SAMPLED: the particular junk role.
-
-        THE FIXTURE MUST BE FULLY BUILT — both response mirrors included, exactly like
-        `test_codex_thread_registration_updates_both_response_mirrors` above. An earlier
-        version of this test omitted them, and review measured the consequence: with the
-        production guard reverted, `_write_json_transaction` died on the missing
-        `A.response.json` BEFORE reaching the session index, so `assertFalse(...exists())`
-        was true no matter what the code under test did, and the mutant was killed only
-        because `FileNotFoundError` does not match `assertRaisesRegex(RuntimeError, ...)`.
-        Passing for the wrong reason. With the mirrors present the reverted code really
-        does durably record `agent_role: "bogus"`, which is the fail-open this pins."""
-        provisional_response = {
-            "agent_session_id": "A", "session_id": "A", "backend": "codex",
-        }
-        for label, request in (
-            ("absent", {"context_id": "ctx"}),
-            ("empty", {"agent_role": "", "context_id": "ctx"}),
-            ("out-of-vocabulary", {"agent_role": "bogus", "context_id": "ctx"}),
-        ):
-            with self.subTest(role=label), tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                orchestration_dir = repo / "workspace" / "orchestrations" / "o"
-                launch_dir = orchestration_dir / "launches"
-                dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
-                launch_dir.mkdir(parents=True)
-                dialogs_dir.mkdir(parents=True)
-                (launch_dir / "A.request.json").write_text(
-                    json.dumps(request), encoding="utf-8")
-                (launch_dir / "A.response.json").write_text(
-                    json.dumps(provisional_response), encoding="utf-8")
-                c = self._c(
-                    repo_root=repo, orchestration_id="o", backend="codex",
-                    agent_model="gpt-5.6-sol")
-                with self.assertRaisesRegex(RuntimeError, "refusing to guess it"):
-                    c._register_codex_thread("A", "thread-1")
-                # Now load-bearing: this fixture CAN reach the session index, so its
-                # absence is the guard's doing rather than the fixture's.
-                self.assertFalse((orchestration_dir / "session_run_index.json").exists())
-
     def test_concurrent_codex_registrations_preserve_both_session_index_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

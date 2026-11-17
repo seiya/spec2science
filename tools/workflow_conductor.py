@@ -260,11 +260,8 @@ def child_agent_role(step: str) -> str:
     """The agent_role of the leaf child for a phase: build => step, else substep.
 
     Read from `STEP_REQUIRED_CHILD_AGENT`, the runtime's table, rather than restated as
-    `"step" if step == "build" else "substep"`. Those were two definitions of one fact,
-    and record-launch now REJECTS a request whose role disagrees with the table
-    (`_require_child_agent_role_for_step`), so a conductor that answered from its own copy
-    would fail its own launches the moment the two drifted. An unsupported step raises
-    there, as it already does everywhere else the table is consulted.
+    `"step" if step == "build" else "substep"`: those would be two definitions of one fact.
+    An unsupported step raises there, as it does everywhere else the table is consulted.
     """
     from tools.orchestration_runtime import _required_child_agent_kind
 
@@ -1916,18 +1913,8 @@ def build_launch_request(
     # the three skill fields are declared empty (no SKILL exists to read). Applied LAST so it
     # overrides the generate branch's leaf-authored output set. On a warm-resume repair the
     # lineage already holds the context, so pure_context is omitted (the validator exempts it
-    # for a warm+reuse+findings request); a cold launch carries it. A host-rendered request
-    # without a lineage was the pure leaf's, and is refused here: no launch shape serves it.
-    if workshop_lineage_id is not None and not pure_leaf:
-        raise ValueError("build_launch_request: a workshop lineage belongs to a host-rendered "
-                         "(pure_leaf=True) request")
-    if (workshop_lineage_id is None) != (workshop_provider is None):
-        raise ValueError("build_launch_request: a workshop request names its lineage and its "
-                         "provider together (workshop_lineage_id, workshop_provider)")
-    if pure_leaf and workshop_lineage_id is None:
-        raise ValueError("build_launch_request: a host-rendered LLM request is a workshop "
-                         "request and names its lineage (workshop_lineage_id); the pure leaf "
-                         "it would otherwise describe went in issue #534 PR-J4-b")
+    # for a warm+reuse+findings request); a cold launch carries it. Every caller that passes
+    # `pure_leaf=True` passes a lineage and its entry's provider too.
     if pure_leaf:
         from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
         req["leaf_mode"] = WORKSHOP_LEAF_MODE
@@ -4737,7 +4724,6 @@ class Conductor:
     def _register_codex_thread(self, child_arid: str, thread_id: str) -> None:
         """Transactionally replace the provisional Codex identity in all host records."""
         from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
             _normalized_agent_role,
             _read_json,
             _write_json_transaction,
@@ -4747,22 +4733,10 @@ class Conductor:
         )
         launch_dir = orchestration_dir / "launches"
         request = _read_json(launch_dir / f"{child_arid}.request.json") or {}
-        # Read the role that record-launch already validated and persisted; do NOT default
-        # it. This was the last reader answering the question from its own fallback
-        # (`or "substep"`), and it writes straight through to the session run index, whose
-        # upsert applies no vocabulary test of its own. The request file is host-written by
-        # record-launch AFTER `_validate_launch_request_payload`, so a role that is absent
-        # or outside the vocabulary means the file's CONTENT is wrong — a transport fault
-        # to surface, not a value to guess. (An absent FILE does not arrive here at all:
-        # `_read_json` raises `FileNotFoundError` first, and the `or {}` above covers only
-        # a JSON null / empty body.)
+        # The role the launch request carries, as record-launch persisted it; no default.
+        # The request is host-written, its role `child_agent_role(step)` (issue #643 removed
+        # the vocabulary refusal that re-checked it here).
         role = _normalized_agent_role(request.get("agent_role"))
-        if role not in AGENT_RUN_ROLES:
-            raise RuntimeError(
-                f"codex thread registration: launch request for {child_arid} carries "
-                f"agent_role={request.get('agent_role')!r}, which record-launch would not "
-                f"have accepted; refusing to guess it"
-            )
         context = request.get("context_id")
         _write_json_transaction(
             transaction_dir=orchestration_dir,
@@ -10172,12 +10146,11 @@ class Conductor:
         ])
         return out if isinstance(out, dict) else {"certified": False}
 
-    def workflow_launch_check(self, node_key: str, step: str, require_child_agent: str,
+    def workflow_launch_check(self, node_key: str, step: str,
                               entry: ResolvedLeafEntry | None = None) -> dict[str, Any]:
         out = self.runtime([
             "workflow-launch-check", *self._oid_args(),
             "--node-key", node_key, "--step", step,
-            "--require-child-agent", require_child_agent,
             "--backend", (entry or self.entry_for(None, None)).backend_token,
         ])
         if out.get("status") != "pass":
@@ -15775,8 +15748,7 @@ class Conductor:
         # (`entry_for(phase, None)` resolves to the same thing while reading as per-phase).
         # Each leaf's own provider is authorized per launch, by `record_launch` against
         # `preflight.json#providers`.
-        self.workflow_launch_check(node_key, phase, child_agent_role(phase),
-                                   self.entry_for(None, None))
+        self.workflow_launch_check(node_key, phase, self.entry_for(None, None))
         self._ensure_fresh_producer_id(refs, phase)
         # Author/refresh the pipeline lineage.json host-side BEFORE the substeps run:
         # generate.gate's static (post_generate) checker requires it, and the sandboxed leaf cannot

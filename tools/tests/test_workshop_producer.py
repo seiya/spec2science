@@ -1977,24 +1977,18 @@ class WorkshopSpecTests(_Base):
                 self.assertIsNotNone(getattr(default, name))
         self.assertTrue(default.workshop_seeds_host_sources and default.workshop_control_file)
 
-    def test_a_workshop_request_names_its_lineage_and_provider_together(self) -> None:
+    def test_a_workshop_request_carries_its_lineage_and_provider(self) -> None:
+        """The builder writes the lineage and the provider it is given. (Its refusals of a
+        lineage without a provider and of a host-rendered request without a lineage went in
+        issue #643: every caller passes both, from one leaf entry.)"""
         base = dict(step="generate", substep="generate", orchestration_id="o",
                     orchestration_agent_run_id="orch", child_agent_run_id="c",
                     agent_model="opus", workflow_mode="dev", pure_leaf=True,
                     pure_context=self.c._build_leaf_context(self.refs))
-        for kw in ({"workshop_lineage_id": "c"}, {"workshop_provider": "claude_cli"}):
-            with self.subTest(given=kw):
-                with self.assertRaises(ValueError) as ctx:
-                    wc.build_launch_request(self.refs, **base, **kw)
-                self.assertIn("names its lineage and its provider together", str(ctx.exception))
         req = wc.build_launch_request(self.refs, **base, workshop_lineage_id="c",
                                       workshop_provider="claude_cli")
         self.assertEqual(req["workshop_provider"], "claude_cli")
-        # Neither named: since issue #534 PR-J4-b no launch shape serves a host-rendered
-        # request without a lineage (the pure leaf's), so the builder refuses it.
-        with self.assertRaises(ValueError) as ctx:
-            wc.build_launch_request(self.refs, **base)
-        self.assertIn("names its lineage (workshop_lineage_id)", str(ctx.exception))
+        self.assertEqual(req["workshop_lineage_id"], "c")
 
 
 # --- issue #616: the stale-credential re-launch ------------------------------------------

@@ -57,7 +57,7 @@ The 10 subcommands whose details are covered in this file.
 | `mark-dependency-readiness` | update the dependency_readiness detail flags and derive the top-level | [mark-dependency-readiness](#mark-dependency-readiness) |
 | `write-step-result` | generate and verify step_result.json | [write-step-result](#write-step-result) |
 | `reserve-phase-root` | reserve ir_id / pipeline_id (does not materialize the path) | [reserve-phase-root](#reserve-phase-root) |
-| `workflow-launch-check` | the pre-phase gate (dependency readiness, agent type) | [workflow-launch-check](#workflow-launch-check) |
+| `workflow-launch-check` | the pre-phase gate (dependency readiness, provider) | [workflow-launch-check](#workflow-launch-check) |
 
 ## Tier-B rare subcommand list (overview only)
 
@@ -97,19 +97,19 @@ Call it **before launching the leaf**: it runs the live preflight and builds the
 
 | field | required | content |
 |---|---|---|
-| `agent_role` | yes | `step` or `substep`, and it must be **exactly the one the `step` demands** — `build` => `step`, every other core phase => `substep`. A disagreement is rejected (`agent_role does not satisfy required child agent kind`), as is an absent or empty value; record-launch no longer infers the role from the presence of `substep` |
+| `agent_role` | yes | `step` or `substep`: the one the `step` demands — `build` => `step`, every other core phase => `substep`. The conductor writes it from the runtime's table (`workflow_conductor.child_agent_role`); record-launch does not re-check it ([issue #643](https://github.com/seiya/spec2science/issues/643)) |
 | `node_key` | yes | `<spec_kind>/<spec_id>@<spec_version>` |
 | `step` | yes | `compile` / `generate` / `build` / `validate` (core 5-phase). Tune / Promote are optional flows with a separate entrypoint |
 | `substep` | yes for a substep agent | Compile: `generate` / `static` / `verify` (`static` is conductor-run deterministic). Generate: `generate` / `gate` / `verify` (`gate` is conductor-run deterministic — it unions the lint / syntax / static checks). Validate: `pre_judge` / `execute` / `judge` / `post_judge` (`pre_judge`, `execute` and `post_judge` are conductor-run deterministic). |
 | `orchestration_id` | yes | |
 | `agent_run_id` | yes | matches child_agent_run_id |
 | `parent_agent_run_id` | yes | |
-| `agent_model` | yes | the model that runs the child agent. At launch only the **unpinned alias** is known (e.g. `opus`) — never a pinned version, which would go stale — so the launch request carries the alias and it is required (fail-fasts with `ValueError: launch request must include non-empty agent_model` when missing). The **exact version** that actually ran (e.g. `claude-opus-5[1m]`) is resolved post-run by the conductor from the leaf's own `--output-format json` CLI result envelope — never from the `~/.claude` transcript, which is outside the workflow's access boundary — and recorded onto its `agent_runs.jsonl` row; `record-agent-run` only `setdefault`s the launch-request alias, so the resolved version wins when present (see below). |
+| `agent_model` | yes | the model that runs the child agent. At launch only the **unpinned alias** is known (e.g. `opus`) — never a pinned version, which would go stale — so the launch request carries the alias. The **exact version** that actually ran (e.g. `claude-opus-5[1m]`) is resolved post-run by the conductor from the leaf's own `--output-format json` CLI result envelope — never from the `~/.claude` transcript, which is outside the workflow's access boundary — and recorded onto its `agent_runs.jsonl` row; `record-agent-run` only `setdefault`s the launch-request alias, so the resolved version wins when present (see below). |
 | `workflow_mode` | yes | `dev` / `prod` |
 | `ir_ref` | yes | `workspace/ir/<node_key_safe>/<ir_id>` (required in all phases including the Compile phase) |
 | `pipeline_ref` | yes | `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>` (required even in the Compile phase. If not yet generated, reserve it first with `reserve-phase-root --step generate`) |
 | `dependency_ref` | yes | Compile: `spec/.../deps.yaml`, from Generate onward: the phase root in workspace |
-| `skill_name` | no — must be EMPTY | no leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)); a non-empty value is refused on a leaf launch. The `skills/workflow-<step>[-<substep>]/` directories a CORE phase would name are gone; what remains under `skills/` is the operator flows — the two audits, the spec input check, the timing audit, and the reserved `promote` / `tune` procedures, which an operator reads and no leaf is handed |
+| `skill_name` | no — must be EMPTY | no leaf reads a `SKILL` since Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)); record-launch blanks it on a leaf launch. The `skills/workflow-<step>[-<substep>]/` directories a CORE phase would name are gone; what remains under `skills/` is the operator flows — the two audits, the spec input check, the timing audit, and the reserved `promote` / `tune` procedures, which an operator reads and no leaf is handed |
 | `skill_ref` | no — must be EMPTY | same |
 | `allowed_output_paths` or `required_outputs` or `output_refs` | one required for step/substep | the list of write-permitted paths |
 | `allowed_file_tool_paths` | accepted and IGNORED | it named the paths a leaf's `Edit` / `Write` grant covered over the checkout; a `workshop leaf`'s file tools write its own work tree only, and nothing reads the field since [issue #171](https://github.com/seiya/spec2science/issues/171) PR-2 |
@@ -298,7 +298,7 @@ Reserve an `ir_id` or `pipeline_id`. It does not create the actual directory (th
 
 ## workflow-launch-check
 
-The pre-phase gate. Checks execution-platform availability, dependency readiness, and the required child-agent type. Run once before the first phase. When it returns `status=fail_closed`, stop with `set-status`.
+The pre-phase gate. Checks execution-platform availability and dependency readiness; an unsupported `--step` is refused. Run once before the first phase. When it returns `status=fail_closed`, stop with `set-status`.
 
 | arg | required | description |
 |---|---|---|
@@ -307,7 +307,6 @@ The pre-phase gate. Checks execution-platform availability, dependency readiness
 | `--node-key` | yes | |
 | `--step` | yes | `compile` / `generate` / `build` / `validate` (core 5-phase) |
 | `--backend` | no | default `claude` |
-| `--require-child-agent` | yes | `step` or `substep`. Compile / Generate / Validate are `substep`, Build is `step` |
 | `--launch-request-json` | no | the launch request payload for the downstream artifact check |
 
 Return value: `{"status": "pass"|"fail_closed", "next_action": "...", ...}`.

@@ -1836,43 +1836,6 @@ end program shallow_water2d_runner
                 violations,
             )
 
-    def test_rejects_lineage_node_key_mismatched_with_pipeline_parent(self) -> None:
-        """lineage.json.node_key must resolve to the pipeline's node_key_safe
-        parent directory. A bumped @version in node_key (while the parent dir and
-        run dir agree) must be rejected, otherwise the tree would validate against
-        another node's IR since downstream node matching strips @version."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            lineage_path = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "lineage.json"
-            )
-            lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
-            lineage["node_key"] = "problem/shallow_water2d@9.9.9"
-            _write_json(lineage_path, lineage)
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "must match pipeline node_key_safe directory" in v
-                    and "problem/shallow_water2d@9.9.9" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
     def test_detects_dependency_dummy_and_runner_output_and_missing_case_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -9491,43 +9454,6 @@ end program shallow_water2d_runner
             )
             self.assertTrue(any("missing step_result.json" in v and "problem__shallow_water2d__0.3.0/compile" in v for v in violations))
 
-    def test_detects_missing_pipeline_lineage_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "lineage.json"
-            ).unlink()
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(any("lineage.json: missing" in v for v in violations))
-
     def test_detects_missing_graph_child_run_when_orchestration_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -11745,67 +11671,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 source_id="src_20260415_001",
             )
             self.assertEqual(violations, [])
-
-    def test_validate_post_generate_stage_rejects_bad_top_level_pipeline_id(self) -> None:
-        """post_generate must enforce the lineage top-level pipeline_id schema (the
-        same check post_execute runs), so a malformed pipeline_id surfaces at Generate
-        rather than far downstream at Validate (audit: orch_20260615T095217Z_74450292)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            dep_model_text = (
-                "module dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
-                "implicit none\ncontains\n"
-                "subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
-                "  logical, intent(out) :: flag\n  flag = .true.\n"
-                "end subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux\n"
-                "end module dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
-            )
-            model_text = (
-                "module shallow_water2d_model\n"
-                "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
-                "implicit none\ncontains\n"
-                "subroutine solve(flag)\n  logical, intent(out) :: flag\n"
-                "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
-                "end subroutine solve\nend module shallow_water2d_model\n"
-            )
-            runner_text = (
-                "program shallow_water2d_runner\nimplicit none\n"
-                "write(*,*) 'ok'\nend program shallow_water2d_runner\n"
-            )
-            makefile_text = (
-                "FC ?= gfortran\nOBJS = dynamics_shallow_water_flux_2d_rusanov_p0_model.o "
-                "shallow_water2d_model.o shallow_water2d_runner.o\n\n"
-                "simulate: $(OBJS)\n\t$(FC) -o $@ $(OBJS)\n"
-            )
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["x", "y"],
-                extra_sources={
-                    "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text
-                },
-                makefile_text=makefile_text,
-            )
-            pipeline_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001"
-            )
-            # Corrupt the top-level pipeline_id so it no longer matches the directory.
-            lineage_path = repo_root / pipeline_ref / "lineage.json"
-            lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
-            lineage["pipeline_id"] = "not-the-pipeline-id"
-            lineage_path.write_text(json.dumps(lineage), encoding="utf-8")
-
-            violations = validate_post_generate_stage(
-                repo_root, "workspace", pipeline_ref, source_id="src_20260415_001"
-            )
-            self.assertTrue(
-                any("pipeline_id" in v for v in violations),
-                f"expected a pipeline_id violation, got: {violations}",
-            )
 
     def test_validate_post_generate_stage_leaf_node_directory_dependency_ref(self) -> None:
         """Regression: a leaf node (direct_deps=[]) with dependency_ref pointing at the
@@ -15618,26 +15483,13 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
         for key in ("skill_name", "skill_ref", "skill_must_read_refs"):
             self.assertEqual(prepared_judge.get(key), "", key)
 
-    def test_validate_rejects_forged_deterministic_on_leaf_step(self) -> None:
-        # Defense-in-depth: deterministic=True is only valid for build / validate.execute.
-        from tools.orchestration_runtime import _validate_launch_request_payload
-        forged = {"node_key": "component/x@0.1.0", "step": "validate", "substep": "judge",
-                  "agent_model": "opus", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-        forged_gen = {"node_key": "component/x@0.1.0", "step": "generate",
-                      "substep": "generate", "agent_model": "opus", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged_gen)
-
     # `test_forged_deterministic_on_leaf_step_still_renders_full_prompt` stood here until Z4
     # (issue #171). It pinned that a forged `deterministic: True` on a leaf step still required
     # the FULL leaf prompt's security-constraint lines — `_required_launch_prompt_constraint_lines`,
     # which returned `[]` for every shape that survives Z4 and was deleted with the agentic
-    # prompt. What it defended is now stronger and lives one layer up:
-    # `test_validate_rejects_forged_deterministic_on_leaf_step` above refuses the payload
-    # outright at `_validate_launch_request_payload`, and `_render_launch_prompt_template`
-    # refuses to render anything that is neither deterministic nor workshop.
+    # prompt. `_render_launch_prompt_template` refuses to render anything that is neither
+    # deterministic nor workshop. (The request validator's own refusal of a forged
+    # `deterministic` flag, and its test, went in issue #643: the conductor sets the flag.)
 
     def test_deterministic_prompt_satisfies_reduced_markers(self) -> None:
         import tools.workflow_conductor as wc

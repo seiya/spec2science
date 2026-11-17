@@ -61,12 +61,10 @@ try:
     from tools.leaf_contract import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
-        PURE_LEAF_MODE,
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
-        WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
@@ -112,12 +110,10 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.leaf_contract import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
-        PURE_LEAF_MODE,
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
-        WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
@@ -4509,13 +4505,7 @@ def _compute_initial_dependency_readiness(
 JUDGE_SEMANTIC_REVIEW_SKIPPED_STATUSES = frozenset({"timeout", "cancel"})
 SUPPORTED_BACKENDS = {"codex", "claude"}
 PREFLIGHT_TTL_DEFAULT_SECONDS: int = 1800
-VALID_REPAIR_STRATEGIES = frozenset({"none", "reuse", "restart"})
-VALID_ISSUE_SEVERITIES = frozenset({"none", "minor", "major", "critical"})
 
-# Must match tools/validate_workspace_root.py (canonical pipeline/plan id directory naming).
-_NODE_KEY_SAFE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
-)
 # Strict per-component validators for node_key in the canonical
 # `<spec_kind>/<spec_id>@<spec_version>` form. Used to reject malicious or
 # malformed values before they flow into capability write_roots / path prefixes
@@ -4544,13 +4534,6 @@ _SLUG_DATE_SEQ3_PATTERN = re.compile(
 # of a silent downstream no-match. IMPORTANT: keep this in lock-step with the
 # canonical run dir grammar that `post_execute` discovery relies on.
 _RUN_ID_RE = re.compile(r"^run_[0-9]{8}_[0-9]{3}$")
-# Canonical source_id format for the Generate step: `src_<YYYYMMDD>_<seq3>`.
-# This is the ONLY accepted prefix — unlike ir_id / pipeline_id which use an
-# arbitrary slug, source_id always starts with the literal `src_` prefix.
-# Validated at record-launch time so a malformed source_id (e.g. inheriting
-# the ir_id slug format) fails fast before the generate agent wastes a full
-# substep run that would only be caught by generate.verify.
-_SOURCE_ID_RE = re.compile(r"^src_[0-9]{8}_[0-9]{3}$")
 
 
 def _parse_node_key_strict(node_key: Any) -> tuple[str, str, str]:
@@ -5573,7 +5556,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
 
 FAIL_CLOSED_REASON_CODES = {
     "child_agent_unavailable_on_execution_platform",
-    "required_child_agent_kind_mismatch",
     "phase_body_started_before_launch",
     "dependency_not_ready",
     "downstream_artifact_not_ready",
@@ -5936,8 +5918,6 @@ def _transition_node_step_phase_state(
     """
     node_safe = _node_key_to_safe(node_key.strip())
     step_key = step.strip().lower()
-    if step_key not in STEP_KEYS_FOR_NODE_STATE:
-        raise ValueError(f"unsupported workflow step for phase_state: {step_key!r}")
 
     doc = _load_phase_state(repo_root, orchestration_id)
     if doc is None:
@@ -6058,35 +6038,6 @@ def _normalized_agent_role(value: Any) -> str:
     return value.strip().lower() if isinstance(value, str) and value.strip() else ""
 
 
-def _require_child_agent_role_for_step(
-    role_value: Any,
-    step_key: str,
-    *,
-    label: str,
-    error_type: type[Exception],
-) -> str:
-    """Require `role_value` to be exactly the child agent kind that `step_key` demands.
-
-ONE caller since issue #171 PR-2: the record-launch request validator, which reads the
-    LAUNCH REQUEST's role. Two more read a CAPABILITY document's role — the MCP build-tool
-    phase gate and the run-gate phase gate — and both went with the capability itself. The
-    launch-side call was always the upstream one: without it an unrecognized role was inferred
-    downstream and skipped by every reader.
-
-    `_required_child_agent_kind` is called first, so an unsupported step (`tune` /
-    `promote`) fails on the step rather than on the role — the pre-existing behavior at
-    both capability call sites.
-    """
-    required_child = _required_child_agent_kind(step_key)
-    role = _normalized_agent_role(role_value)
-    if role != required_child:
-        raise error_type(
-            f"{label} agent_role does not satisfy required child agent kind "
-            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
-        )
-    return role
-
-
 def _dependency_ready(
     repo_root: Path, orchestration_id: str, *, step: str
 ) -> tuple[bool, str | None]:
@@ -6173,23 +6124,12 @@ def workflow_launch_check(
     node_key: str,
     step: str,
     backend: str,
-    require_child_agent: str,
 ) -> dict[str, Any]:
     required_by_step = _required_child_agent_kind(step)
-    required_flag = require_child_agent.strip().lower()
-    if required_flag not in {"step", "substep"}:
-        raise ValueError("--require-child-agent must be step or substep")
 
     blocking_scope = "default_allow"
     reason_code: str | None = None
     reason_detail: str | None = None
-
-    if required_by_step != required_flag:
-        reason_code = "required_child_agent_kind_mismatch"
-        reason_detail = (
-            f"step {step.strip().lower()!r} requires {required_by_step!r}, "
-            f"but flag is {required_flag!r}"
-        )
 
     try:
         preflight = _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
@@ -6199,7 +6139,6 @@ def workflow_launch_check(
             "orchestration_id": orchestration_id,
             "node_key": node_key,
             "step": step.strip().lower(),
-            "required_child_agent": required_flag,
             "required_child_agent_by_step": required_by_step,
             "execution_platform_launchable": False,
             "reason_code": "child_agent_unavailable_on_execution_platform",
@@ -6245,7 +6184,6 @@ def workflow_launch_check(
         "orchestration_id": orchestration_id,
         "node_key": node_key,
         "step": step.strip().lower(),
-        "required_child_agent": required_flag,
         "required_child_agent_by_step": required_by_step,
         "execution_platform_launchable": execution_platform_launchable,
         "reason_code": reason_code,
@@ -6361,7 +6299,6 @@ def pre_phase_launch(
     node_key: str,
     step: str,
     backend: str,
-    require_child_agent: str,
     launch_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A hook bundling `workflow_launch_check` and the downstream artifact start condition (when `pipeline_ref` exists on disk)."""
@@ -6371,7 +6308,6 @@ def pre_phase_launch(
         node_key=node_key,
         step=step,
         backend=backend,
-        require_child_agent=require_child_agent,
     )
     merged: dict[str, Any] = dict(base)
     merged["hook"] = "pre_phase_launch"
@@ -6477,7 +6413,7 @@ def pre_orchestration_start(
 
 # A per-substep write_root file pin interpolates `run_id` / `source_id` directly into a
 # repo-relative path, so the id is constrained to an explicit allowlist rather than a denylist:
-# only `[A-Za-z0-9_-]` (the superset of the canonical `_RUN_ID_RE` / `_SOURCE_ID_RE` forms).
+# only `[A-Za-z0-9_-]` (the superset of the canonical `run_` / `src_` id forms).
 # This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but every other
 # metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a fail-closed guard, not
 # a full format check (the canonical regexes above own the exact `<prefix>_<date>_<seq3>` shape).
@@ -8914,13 +8850,6 @@ def _coerce_nested_launch_text(payload: dict[str, Any], path: tuple[str, ...]) -
     return _coerce_launch_text(current)
 
 
-def _is_placeholder_ref(value: str) -> bool:
-    token = value.strip()
-    if not token:
-        return False
-    return "agent-determined" in token or ("<" in token and ">" in token)
-
-
 # The conductor-consumed launch-prompt templates: one plain-text file per template type
 # under tools/prompt_templates/. These are the ONLY machine-parsed launch-prompt material.
 # The human-facing reference lives in docs/workflow/LAUNCH_PROMPT_REFERENCE.md. The templates
@@ -9501,11 +9430,9 @@ def _substitute_leaf_placeholders(template: str, subs: dict[str, str]) -> str:
 
 def _leaf_launch_template_name(request_payload: dict[str, Any]) -> str:
     """The template key for a workshop launch: `workshop <step>.<substep>`, with the declared
-    `pure_shape` appended when the request carries one. The validator has already refused any
-    `pure_shape` outside `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, so a name built here always
-    resolves in `_PROMPT_TEMPLATE_FILES` (a KeyError would be the two tables disagreeing, which
-    `test_leaf_wiring` pins). The `pure <step>.<substep>` family went with the pure leaf
-    in issue #534 PR-J4-b."""
+    `pure_shape` appended when the request carries one. A name with no template (an unknown
+    shape, or a shape on a pair that has none) is refused by `_render_leaf_launch_prompt`. The
+    `pure <step>.<substep>` family went with the pure leaf in issue #534 PR-J4-b."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     shape = str(request_payload.get("pure_shape", "")).strip().lower()
@@ -9671,8 +9598,7 @@ def _render_leaf_launch_prompt(request_payload: dict[str, Any]) -> str:
     subs["prompt_contract_version"] = str(request_payload.get("prompt_contract_version", ""))
     # The one sentence of a workshop contract that differs by transport: what the leaf holds
     # besides the wrapper (issue #534 step 2). A NAMED refusal for a provider with no row, for
-    # the reason a missing template is one above: the render runs before
-    # `_validate_leaf_launch_request_payload`, which refuses the same request.
+    # the reason a missing template is one above.
     provider = request_payload.get("workshop_provider")
     surface = _workshop_tool_surface_table(request_payload)
     if not (isinstance(provider, str) and provider in surface):
@@ -10041,8 +9967,6 @@ def _validate_response_agent_session_id(response_payload: dict[str, Any]) -> str
     session_id = _extract_response_agent_session_id(response_payload)
     if session_id is None:
         raise ValueError("launch response must include the child agent identifier")
-    if _is_placeholder_ref(session_id):
-        raise ValueError("launch response child agent identifier must not contain placeholder tokens")
     return session_id
 
 
@@ -10639,44 +10563,6 @@ def default_agent_model_for_backend(backend: str) -> str:
     return ""
 
 
-def _validate_canonical_workspace_root_ref(
-    *,
-    ref: str,
-    node_safe: str,
-    kind: str,
-    label: str,
-) -> None:
-    """Require ref == workspace/{kind}/{node_safe}/{root_id} — for `kind="pipelines"`,
-    workspace/pipelines/{node_safe}/{target_id}/{root_id} (issue #284) — with no extra path
-    segments."""
-    token = ref.strip().strip("/")
-    parts = token.split("/")
-    shape = ("workspace/pipelines/<node_key_safe>/<target_id>/<id>" if kind == "pipelines"
-             else f"workspace/{kind}/<node_key_safe>/<id>")
-    if len(parts) != (5 if kind == "pipelines" else 4):
-        raise ValueError(
-            f"launch request {label} must be exactly {shape} (directory root only); "
-            f"got {ref!r}"
-        )
-    if parts[0] != "workspace" or parts[1] != kind:
-        raise ValueError(f"launch request {label} must be under workspace/{kind}/; got {ref!r}")
-    if kind == "pipelines" and not is_target_id(parts[3]):
-        raise ValueError(
-            f"launch request {label} has invalid target_id segment {parts[3]!r}; got {ref!r}")
-    seg_node = parts[2]
-    root_id = parts[-1]
-    if seg_node != node_safe:
-        raise ValueError(
-            f"launch request {label} node directory must be {node_safe!r}; got {ref!r}"
-        )
-    if not _NODE_KEY_SAFE_PATTERN.match(seg_node):
-        raise ValueError(f"launch request {label} has invalid node_key_safe segment: {ref!r}")
-    if not _SLUG_DATE_SEQ3_PATTERN.match(root_id):
-        raise ValueError(
-            f"launch request {label} root id must match <slug>_<YYYYMMDD>_<seq3>; got {ref!r}"
-        )
-
-
 def _workspace_path_is_under_ref(path: str, base: str) -> bool:
     p = path.strip().rstrip("/")
     b = base.strip().rstrip("/")
@@ -10740,28 +10626,17 @@ def _validate_pass_output_refs_against_launch(
 def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> None:
     """Validate the leaf-specific shape of a host-rendered launch request.
 
-    Enforced (fail-closed): the one accepted `leaf_mode` is `"workshop"` (issue #534; the
-    `"pure"` leaf went in PR-J4-b, and a NEW request naming it is refused here — a RECORD naming
-    it is still read by `is_host_rendered_request`'s readers); the pair is one a workshop leaf
-    serves (`WORKSHOP_LAUNCH_PAIRS`); it is mutually exclusive with `deterministic`; the request
-    names its lineage and the provider whose tool surface its prompt states;
-    `prompt_contract_version` matches the leaf contract EXACTLY; `allowed_output_paths` is empty
-    (the leaf has no write authority — the host writes after the child window closes); the
-    three skill fields are empty (no SKILL is read); and the required `pure_context` keys are
-    present on a cold launch. A warm-resume repair (`warm_resume` + `repair_findings`) may omit
-    `pure_context` — the resumed lineage already holds it — but a cold repair still requires
-    it."""
-    leaf_mode = str(request_payload.get("leaf_mode", "")).strip().lower()
-    if leaf_mode != WORKSHOP_LEAF_MODE:
-        raise ValueError(
-            f"launch request leaf_mode must be {WORKSHOP_LEAF_MODE!r} when present; got "
-            f"{request_payload.get('leaf_mode')!r}"
-            + (" (the pure leaf went in issue #534 PR-J4-b)" if leaf_mode == PURE_LEAF_MODE
-               else ""))
-    if request_payload.get("deterministic"):
-        raise ValueError(
-            f"launch request must not set both leaf_mode={leaf_mode} and deterministic=True"
-        )
+    Enforced (fail-closed): the pair is one a workshop leaf serves (`WORKSHOP_LAUNCH_PAIRS`);
+    the request names its lineage; a declared `pure_language` / `pure_parallel` is a non-empty
+    string; and the required `pure_context` keys are present on a cold launch. A warm-resume
+    repair (`warm_resume` + `repair_findings`) may omit `pure_context` — the resumed lineage
+    already holds it — but a cold repair still requires it.
+
+    The rest of the request (`leaf_mode`, `deterministic`, `workshop_provider`, `pure_shape`,
+    `prompt_contract_version`, `allowed_output_paths`, the skill fields) is written by the
+    conductor's `build_launch_request` from its own phase logic, and a leaf authors no launch
+    request; the refusals that re-checked those fields went in issue #643. An unknown
+    `pure_shape` has no template, so the renderer refuses it on a cold launch."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     key = (step, substep)
@@ -10779,44 +10654,14 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
             "workshop launch request must name its lineage in workshop_lineage_id (a plain "
             f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
             f"{lineage!r}")
-    # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row
-    # in the table of the request's KIND (a reading lineage's table names fewer providers).
-    provider = request_payload.get("workshop_provider")
-    surface = _workshop_tool_surface_table(request_payload)
-    if not (isinstance(provider, str) and provider in surface):
-        raise ValueError(
-            f"workshop launch request must name its provider in workshop_provider, one of "
-            f"{', '.join(sorted(surface))}; got {provider!r}")
-    # A declared bundle SHAPE selects a different template and a different required-key set, so
-    # it is validated before either is looked up: the vocabulary is closed, and the shape must be
-    # declared on a pair that HAS one. An unknown value never falls back to the default.
+    # A declared bundle SHAPE selects a different required-key set.
     shape = request_payload.get("pure_shape")
-    shape_key: tuple[str, str, str] | None = None
-    if isinstance(shape, str) and shape.strip():
-        shape_norm = shape.strip().lower()
-        if shape_norm not in PURE_LAUNCH_SHAPES:
-            raise ValueError(
-                f"pure launch request pure_shape must be one of "
-                f"{', '.join(sorted(PURE_LAUNCH_SHAPES))} when present; got {shape!r}")
-        shape_key = (step, substep, shape_norm)
-        if shape_key not in PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE:
-            admissible = ", ".join(
-                f"({st}, {ss}, {sh})"
-                for st, ss, sh in sorted(PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE))
-            raise ValueError(
-                f"pure launch request pure_shape is only valid for {admissible}; got "
-                f"(step={step!r}, substep={substep!r}, pure_shape={shape_norm!r})")
-    elif shape is not None:
-        # A non-string, or a blank one, is REFUSED rather than treated as absent: an absent
-        # `pure_shape` means the default shape, and silently defaulting a malformed one would
-        # render the default template for a node whose bundle is judged by another shape's rules.
-        raise ValueError(
-            f"pure launch request pure_shape must be a non-empty string when present; "
-            f"got {shape!r}")
-    # The target language the template is composed for (issue #289). Refused when malformed for
-    # the reason a malformed `pure_shape` is: an absent value means "this template carries no
-    # language fragment", and a blank one read as absent would render a prompt missing the rules
-    # the gates hold the leaf to. Whether a template NEEDS one is the composer's question.
+    shape_key: tuple[str, str, str] | None = (
+        (step, substep, shape.strip().lower())
+        if isinstance(shape, str) and shape.strip() else None)
+    # The target language the template is composed for (issue #289). Refused when malformed:
+    # an absent value means "this template carries no language fragment", and a blank one read
+    # as absent would render a prompt missing the rules the gates hold the leaf to. Whether a template NEEDS one is the composer's question.
     language = request_payload.get("pure_language")
     if language is not None and not (isinstance(language, str) and language.strip()):
         raise ValueError(
@@ -10829,42 +10674,6 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_parallel must be a non-empty string when present; "
             f"got {parallel!r}")
-    # The label of a `compile.generate` verification part (issue #526) went with the pure part
-    # split (issue #534 PR-J4-b); a new request carrying one is refused rather than recorded as
-    # a part no loop runs. Records that carry it keep their readers (the audit's repeated-
-    # substep table, the attempt-cost report).
-    part = request_payload.get("pure_part")
-    if part is not None:
-        raise ValueError(
-            f"launch request carries pure_part={part!r}: the compile.generate part split went "
-            "with the pure leaf in issue #534 PR-J4-b")
-    if key not in PURE_CONTEXT_REQUIRED_KEYS:
-        # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
-        # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.
-        admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(PURE_CONTEXT_REQUIRED_KEYS))
-        raise ValueError(
-            f"a host-rendered launch request is only valid for {admissible}; "
-            f"got (step={step!r}, substep={substep!r})"
-        )
-    version = request_payload.get("prompt_contract_version")
-    if version != LEAF_PROMPT_CONTRACT_VERSION:
-        raise ValueError(
-            f"{leaf_mode} launch request prompt_contract_version must be exactly "
-            f"{LEAF_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
-        )
-    aop = request_payload.get("allowed_output_paths")
-    if aop not in (None, []):
-        raise ValueError(
-            "launch request allowed_output_paths must be empty — a workshop leaf writes "
-            f"nothing in the checkout (the host writes after the child window closes); got "
-            f"{aop!r}"
-        )
-    for field in ("skill_name", "skill_ref", "skill_must_read_refs"):
-        value = request_payload.get(field)
-        if isinstance(value, str) and value.strip():
-            raise ValueError(
-                f"pure launch request must leave {field} empty (no SKILL is read); got {value!r}"
-            )
     # `pure_context` may be omitted ONLY on a genuine warm-resume REUSE repair — the resumed
     # producer session already holds the schema, the prior document, and the input context, so
     # re-inlining them is redundant. A `restart` (or any non-reuse) repair has no such session,
@@ -10897,234 +10706,24 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
 
 
 def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
+    """Validate a launch request before `record_launch` writes it.
+
+    The request is assembled by the conductor (`workflow_conductor.build_launch_request`),
+    never by a leaf: its refs come from the conductor's reservations, its role, model, repair
+    block and `deterministic` flag from the conductor's own phase logic and the operator's
+    configuration. The refusals that re-checked those host values went in issue #643. What
+    stays is what `record_launch` needs to place the launch (`node_key`, `step`) and the shape
+    of a workshop request (`_validate_leaf_launch_request_payload`)."""
     node_key = request_payload.get("node_key")
     step = request_payload.get("step")
-    substep = request_payload.get("substep")
     if not isinstance(node_key, str) or not node_key.strip():
         raise ValueError("launch request must include non-empty node_key")
     if not isinstance(step, str) or not step.strip():
         raise ValueError("launch request must include non-empty step")
-    # Defense-in-depth: `deterministic` (in-process, skill-/constraint-line-exempt) is
-    # only legitimate for the non-LLM substeps Build, Validate.pre_judge, Validate.execute,
-    # Validate.post_judge, Generate.gate and Compile.static. Reject the flag on any other step so
-    # a forged/buggy payload cannot claim the reduced launch-prompt guards while being a leaf
-    # step. (The flag is host-set by the conductor today; this makes the invariant explicit at
-    # the validation chokepoint.) The retired Generate substep names lint/syntax/static are
-    # deliberately NOT accepted here — a legacy resume that still emits them fails closed loudly.
-    if request_payload.get("deterministic"):
-        step_l = step.strip().lower()
-        substep_l = str(substep).strip().lower() if isinstance(substep, str) else ""
-        if not (step_l == "build"
-                or (step_l == "validate" and substep_l in ("pre_judge", "execute", "post_judge"))
-                or (step_l == "generate" and substep_l == "gate")
-                or (step_l == "compile" and substep_l == "static")):
-            raise ValueError(
-                "launch request: deterministic=True is only valid for step=build, "
-                "step=validate substep=pre_judge|execute|post_judge, "
-                "step=generate substep=gate, or "
-                f"step=compile substep=static (got step={step!r} substep={substep!r})"
-            )
-    # agent_model identifies the LLM that produced the child's artifacts. At launch
-    # only the unpinned spec-side ALIAS is known (e.g. "opus"); the exact version is
-    # resolved post-run from the leaf's own CLI result envelope and recorded by the
-    # conductor onto the agent_runs row (see `_agent_run_json`). record-launch
-    # persists the alias into the request; record_agent_run only backfills it onto
-    # the agent_runs entry when the conductor did not already supply the resolved
-    # version (setdefault), satisfying the pre_judge step/substep requirement either
-    # way. The launch request must still carry a non-empty alias here.
-    agent_model = request_payload.get("agent_model")
-    if not isinstance(agent_model, str) or not agent_model.strip():
-        raise ValueError("launch request must include non-empty agent_model")
-    # THE agent_role chokepoint. SIX readers disagreed about an unrecognized role, named
-    # here in full because an earlier version of this comment said "six" and then listed
-    # five: (1) `build_capability_document` INFERRED it; (2) `_allowed_output_paths_for_launch`,
-    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` SKIPPED their
-    # work — (1), (3) and (4) are deleted by Z4 (issue #171), (4) in PR-1 and the other two in
-    # PR-2; (5) `record_launch` itself fell back to the step-derived kind, or to the
-    # literal "unknown" for the session-run-index row; and (6) `workflow_conductor.
-    # _register_codex_thread` defaulted to "substep" when re-reading the persisted request.
-    # Requiring the field here, at the one place every launch passes through, is what makes
-    # all of them see one value.
-    #
-    # Two things about the placement USED to be load-bearing; neither is now. (1) `record_launch`
-    # called this validator immediately BEFORE `_append_session_run_index_entry`, so a rejected
-    # role left no orphan `running` row. Since issue #481 that holds for every check of the
-    # launch by the position of `record_launch`'s bookkeeping block, written after the launch
-    # files, so this placement no longer keeps the row honest. (2) it was
-    # upstream of the capability, so a capability the MCP and run-gate phase gates re-checked
-    # with this same predicate could not be minted from an inferred role at all — all three of
-    # those went in issue #171 PR-2, and the chokepoint is now the only reader. Nor is the position WITHIN this function. It sits
-    # after the deterministic-flag and agent_model checks purely so their existing
-    # error-ordering tests keep reporting the error they were written to observe.
-    #
-    # Attribution: the launch request is assembled by the conductor
-    # (`workflow_conductor.build_launch_request`), never by a leaf, so a mismatch is a
-    # transport fault the leaf cannot repair — a raise here, never a content failure.
-    if not _normalized_agent_role(request_payload.get("agent_role")):
-        raise ValueError("launch request must include non-empty agent_role")
-    # Canonicalize as well as validate, as a BACKSTOP for a caller that skips
-    # `prepare_launch_request_payload` (which does the same normalization, and must, because
-    # it renders the prompt — see the comment there; doing it only here fixed nothing).
-    # `record_agent_run` likewise writes its normalized token back into the terminal payload.
-    # NOTE: an earlier version of this comment also named `_write_allowed_output_manifest` as
-    # a reader harmed by an unlowered role. That is FALSE and was measured so: record-launch
-    # calls it without an `agent_role` at all, and its ONE other production call site
-    # (`init_orchestration`) passes the literal `"orchestration"`. The launch payload's
-    # role never reaches it. (An earlier version of this correction said "three other
-    # call sites" — wrong again, in the very sentence fixing a wrong claim.)
-    request_payload["agent_role"] = _require_child_agent_role_for_step(
-        request_payload.get("agent_role"),
-        step,
-        label="launch request:",
-        error_type=ValueError,
-    )
-    if isinstance(node_key, str) and node_key.strip():
-        node_safe = _node_key_to_safe(node_key.strip())
-    else:
-        node_safe = None
-
-    for key in ("ir_ref", "pipeline_ref", "dependency_ref"):
-        value = request_payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"launch request must include non-empty {key}")
-        if _is_placeholder_ref(value):
-            raise ValueError(f"launch request {key} must not contain placeholder tokens")
-
-    ir_ref = request_payload.get("ir_ref")
-    pipeline_ref = request_payload.get("pipeline_ref")
-    dependency_ref = request_payload.get("dependency_ref")
-    if node_safe is not None:
-        if isinstance(ir_ref, str) and ir_ref.strip():
-            _validate_canonical_workspace_root_ref(
-                ref=ir_ref,
-                node_safe=node_safe,
-                kind="ir",
-                label="ir_ref",
-            )
-        if isinstance(pipeline_ref, str) and pipeline_ref.strip():
-            _validate_canonical_workspace_root_ref(
-                ref=pipeline_ref,
-                node_safe=node_safe,
-                kind="pipelines",
-                label="pipeline_ref",
-            )
-    if isinstance(dependency_ref, str) and _is_placeholder_ref(dependency_ref):
-        raise ValueError("launch request dependency_ref must not contain placeholder tokens")
-    step_val = str(request_payload.get("step", "")).strip().lower()
-    if step_val == "compile" and isinstance(dependency_ref, str) and dependency_ref.strip():
-        dep_norm = _normalize_rel_posix(dependency_ref.strip())
-        if not (dep_norm.startswith("spec/") and dep_norm.endswith("/deps.yaml")):
-            raise ValueError(
-                "record-launch: Compile step dependency_ref must be spec/.../deps.yaml, "
-                f"got {dependency_ref!r}. "
-                "Both generate and verify substeps must receive the spec path, "
-                "not workspace/ir/."
-            )
-
-    # value validation of repair_strategy / issue_severity
-    repair_strategy = str(request_payload.get("repair_strategy", "none")).strip()
-    if repair_strategy not in VALID_REPAIR_STRATEGIES:
-        raise ValueError(
-            f"launch request repair_strategy must be one of {sorted(VALID_REPAIR_STRATEGIES)}; "
-            f"got {repair_strategy!r}"
-        )
-
-    issue_severity = str(request_payload.get("issue_severity", "none")).strip()
-    if issue_severity not in VALID_ISSUE_SEVERITIES:
-        raise ValueError(
-            f"launch request issue_severity must be one of {sorted(VALID_ISSUE_SEVERITIES)}; "
-            f"got {issue_severity!r}"
-        )
-
-    # require the repair fields when repair_strategy is reuse/restart
-    if repair_strategy in {"reuse", "restart"}:
-        repair_target = str(request_payload.get("repair_target_agent_run_id", "none")).strip()
-        if not repair_target or repair_target == "none":
-            raise ValueError(
-                "repair launch request requires non-empty repair_target_agent_run_id "
-                f"(repair_strategy={repair_strategy!r})"
-            )
-        repair_reason = str(request_payload.get("repair_reason", "none")).strip()
-        if not repair_reason or repair_reason == "none":
-            raise ValueError(
-                "repair launch request requires non-empty repair_reason "
-                f"(repair_strategy={repair_strategy!r})"
-            )
-
-    # Pure-function leaf (`leaf_mode` present): validate its dedicated shape and, for the pure
-    # verify substep, short-circuit before the verify skill-requirement block below (a pure
-    # verify carries empty skill fields by contract, so those checks would false-reject it —
-    # this branch is the one that currently rejects pure verify). The gate is KEY PRESENCE, not
-    # `is not None`: the invariant is "any present `leaf_mode` other than 'pure' is invalid", so
-    # an explicit `leaf_mode: null` (or "", or "agentic") must reach the validator and be
-    # REJECTED — not silently fall through to the agentic path with write authority. Only an
-    # ABSENT key is the legacy path. `_validate_leaf_launch_request_payload` then requires the
-    # value be exactly "pure".
-    is_pure = "leaf_mode" in request_payload
-    if is_pure:
+    # The gate is KEY PRESENCE: any request that names a `leaf_mode` is held to the workshop
+    # request's shape.
+    if "leaf_mode" in request_payload:
         _validate_leaf_launch_request_payload(request_payload)
-
-    is_verify_substep = (
-        isinstance(step, str)
-        and step.strip().lower() in {"compile", "generate"}
-        and isinstance(substep, str)
-        and substep.strip().lower() == "verify"
-    )
-    # Validate source_id format for any generate-step launch (both generate and
-    # verify substeps).  The orchestration agent must supply source_id in the
-    # launch request when step=generate; validate format here so a mis-formatted
-    # source_id (e.g. using the ir_id slug format instead of `src_YYYYMMDD_seq3`)
-    # is rejected before the child agent runs, rather than discovered later by
-    # generate.verify after a full substep execution.
-    if isinstance(step, str) and step.strip().lower() == "generate":
-        gen_id = request_payload.get("source_id")
-        if not isinstance(gen_id, str) or not gen_id.strip():
-            raise ValueError(
-                "generate step launch request must include non-empty source_id "
-                "(format: src_<YYYYMMDD>_<seq3>, e.g. src_20260511_001)"
-            )
-        if not _SOURCE_ID_RE.match(gen_id.strip()):
-            raise ValueError(
-                f"generate step launch request source_id={gen_id!r} does not match "
-                "required format src_<YYYYMMDD>_<seq3> (e.g. src_20260511_001). "
-                "source_id must start with literal 'src_' prefix followed by 8-digit "
-                "date and 3-digit sequence; do not reuse the ir_id / pipeline_id slug format."
-            )
-    if is_verify_substep and isinstance(step, str) and step.strip().lower() == "generate":
-        # source_id presence and format already validated above; keep this branch
-        # for the additional non-empty guard that predates the format check.
-        gen_id = request_payload.get("source_id")
-        if not isinstance(gen_id, str) or not gen_id.strip():
-            raise ValueError("generate verify launch request must include non-empty source_id")
-
-    # THE TWO SHAPES, refused HERE and not only at the prompt.
-    # `_validate_launch_prompt_text` carries the same refusal and is the one that answers for
-    # an arbitrary prompt BODY. This arm is the request-only statement of the rule: it refuses
-    # before the prompt text is checked, and tests pin it directly. It was added (Z4 PR-2)
-    # because `record_launch` then wrote its `running` row before the prompt-text arm, so a
-    # neither-shape request left an orphan row; since issue #481 every bookkeeping write of
-    # `record_launch` follows every check of the launch, so that orphan is prevented by
-    # placement and this arm is no longer what prevents it. The prompt-text arm stays, because a request can
-    # declare a shape its prompt does not carry.
-    # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
-    # marker set on a real step IS "neither deterministic nor workshop" (its own comment says so),
-    # so the two refusals cannot answer differently.
-    if (isinstance(step, str) and step.strip()
-            and not _required_launch_prompt_markers(request_payload)):
-        raise ValueError(
-            f"launch request declares step={step!r} "
-            f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-            "workshop. A launch is one of those two shapes (the pure leaf went in issue "
-            "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
-            "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
-            "and a `workshop_provider` for an LLM leaf"
-        )
-    if not is_verify_substep:
-        return
-    # Every verify leaf is pure since Z4 (issue #171), and a pure request's skill fields are
-    # empty by contract (validated above). The non-empty `skill_name` / `skill_ref` /
-    # `skill_must_read_refs` requirements that stood here, and the per-substep required-input
-    # set behind them, described a leaf that read documents off disk; there is none.
 
 
 def _load_run_records(
@@ -14185,7 +13784,6 @@ def record_launch(
     # anything — and `write-step-result --backfill`, which existed to break the deadlock it
     # created, goes with it.
     if isinstance(step_raw, str) and step_raw.strip() and isinstance(node_key_raw, str) and node_key_raw.strip():
-        required = _required_child_agent_kind(step_raw)
         launch_ctx = dict(request_payload)
         check = pre_phase_launch(
             repo_root,
@@ -14193,7 +13791,6 @@ def record_launch(
             node_key=node_key_raw.strip(),
             step=step_raw.strip(),
             backend=backend_token,
-            require_child_agent=required,
             launch_request=launch_ctx,
         )
         if check.get("status") == "fail_closed":
@@ -16304,23 +15901,7 @@ def reserve_phase_root(
     step_key = step.strip().lower()
     _required_child_agent_kind(step_key)
     target_token = target_id.strip() if isinstance(target_id, str) else ""
-    # Codex round 32 F2: validate `reserved_id` against `_SLUG_DATE_SEQ3_PATTERN`
-    # at the canonical reservation entrypoint. Round-31 tightened the
-    # freshness reader to this same grammar but left the writer side
-    # unenforced — a workflow could reserve a non-canonical id, write
-    # valid artifacts under it, and then have downstream
-    # `dependency_readiness` silently ignore them. Enforcing the same
-    # grammar here means the trust boundary is symmetric: only IDs that
-    # readers will honor can be issued in the first place.
     reserved_id_clean = reserved_id.strip()
-    if not _SLUG_DATE_SEQ3_PATTERN.match(reserved_id_clean):
-        raise ValueError(
-            f"reserve-phase-root: reserved_id={reserved_id_clean!r} must match "
-            f"<slug>_<YYYYMMDD>_<seq3> (lowercase hyphen-separated slug + "
-            "8-digit date + 3-digit sequence). The freshness selector "
-            "rejects non-canonical IDs, so an artifact written under this "
-            "id would be invisible to downstream dependency_readiness."
-        )
     node_safe = _node_key_to_safe(node_key.strip())
     out = (
         _orchestration_root(repo_root, orchestration_id)
@@ -16854,11 +16435,6 @@ def main(argv: list[str] | None = None) -> int:
     launch_check_parser.add_argument("--backend", default="claude",
                                      choices=sorted(SUPPORTED_PROVIDER_TOKENS))
     launch_check_parser.add_argument(
-        "--require-child-agent", required=True, choices=("step", "substep"),
-        help="Expected child agent kind. Compile/Generate/Validate require 'substep'; "
-             "Build requires 'step'.",
-    )
-    launch_check_parser.add_argument(
         "--launch-request-json",
         default=None,
         type=_json_arg,
@@ -17333,7 +16909,6 @@ def main(argv: list[str] | None = None) -> int:
                 node_key=args.node_key,
                 step=args.step,
                 backend=args.backend,
-                require_child_agent=args.require_child_agent,
                 launch_request=getattr(args, "launch_request_json", None),
             )
         except ValueError as exc:

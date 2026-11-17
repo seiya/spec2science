@@ -805,27 +805,6 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 self.assertIn("deterministic", message)
                 self.assertIn("leaf_mode", message)
 
-    def test_the_request_side_refuses_a_neither_shape_request(self) -> None:
-        """The request-side statement of the two-shapes rule, driven on the validator itself.
-
-        `_validate_launch_request_payload` refuses a neither-shape request before the prompt
-        text is checked. It was added (Z4 PR-2) because `record_launch` then appended the
-        `running` row between the request validator and the prompt-text one, so the
-        prompt-text refusal left an orphan row behind. Issue #481 moved every bookkeeping write
-        after every check of the launch, so that orphan is now prevented by placement for EVERY
-        check, and
-        `test_a_refused_launch_leaves_no_launch_record` pins it through `record_launch` (this
-        shape is its arm 0). What this row still pins is the request-side refusal on its own:
-        it is the only statement of the rule that needs no prompt."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-        payload = {**_launch_request_body("substep_run_neither_001"),
-                   "orchestration_id": "orch_neither_001"}
-        for key in ("leaf_mode", "pure_context", "deterministic"):
-            payload.pop(key, None)
-        with self.assertRaises(ValueError) as caught:
-            _validate_launch_request_payload(dict(payload))
-        self.assertIn("neither deterministic nor workshop", str(caught.exception))
-
     def test_a_refused_launch_leaves_no_launch_record(self) -> None:
         """Issue #481: a launch `record_launch` refuses leaves no bookkeeping record behind.
 
@@ -913,9 +892,6 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                                         if h.get("hook") == "pre_agent_launch"
                                         and h.get("child_agent_run_id") == arid])
 
-        neither = dict(leaf)
-        for key in ("leaf_mode", "pure_context", "deterministic"):
-            neither.pop(key, None)
         execute_arid = "step_run_exec_no_build_id"
         execute = {
             "agent_model": "claude-opus-4-8", "node_key": "problem/shallow_water2d@0.3.0",
@@ -931,8 +907,6 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         }
         # (label, oid, parent, request, child_env, exception, message)
         arms = (
-            ("0 neither shape", "orch_to_001", "orch_run_to_001", neither, None,
-             ValueError, "neither deterministic nor workshop"),
             ("1 markers missing", "orch_to_001", "orch_run_to_001",
              {**det, "launch_prompt_full": "an arbitrary body\n"}, None,
              ValueError, "must preserve launch-prompt template markers"),

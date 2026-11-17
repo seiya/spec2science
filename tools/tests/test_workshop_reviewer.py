@@ -1523,24 +1523,6 @@ class LaunchShapeTests(unittest.TestCase):
                 self.assertIn("features.apps=false", argv)
                 self.assertIn("workspace-write", joined)
 
-    def test_the_validator_refuses_a_reading_request_on_a_provider_with_no_reader_row(
-            self) -> None:
-        """The validator asks the table of the request's KIND, independently of the renderer
-        (which runs first in `prepare_launch_request_payload`): a codex judging request passes
-        while the reader table names codex, and is refused once it does not, while the same
-        provider on a producing pair is not."""
-        req = RenderTests()._request("validate", "judge", workshop_provider="codex_cli")
-        ort._validate_leaf_launch_request_payload(req)
-        claude_only = {"claude_cli": leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
-        with mock.patch.dict(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
-                             clear=True):
-            with self.assertRaises(ValueError) as ctx:
-                ort._validate_leaf_launch_request_payload(req)
-            self.assertIn("one of claude_cli; got 'codex_cli'", str(ctx.exception))
-            producing = RenderTests()._request("compile", "generate",
-                                               workshop_provider="codex_cli")
-            ort._validate_leaf_launch_request_payload(producing)
-
     def test_the_codex_reading_overrides_name_no_wrapper(self) -> None:
         self.assertEqual(leaf_contract.codex_workshop_overrides(None, reading=True),
                          ["--config", 'approval_policy="never"',

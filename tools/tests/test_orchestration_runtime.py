@@ -1804,84 +1804,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(sub.get("agent_model"), "claude-opus-4-8")
             self.assertEqual(sub.get("derivation_key"), "sha256:" + "d" * 64)
 
-    def test_validate_launch_request_payload_requires_agent_model(self) -> None:
-        """A step/substep launch request without agent_model is rejected at
-        record-launch time (fail-fast), since agent_model is not runtime-derivable
-        and must be supplied by the orchestration agent."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        req = {"node_key": "problem/shallow_water2d@0.3.0", "step": "build"}
-        with self.assertRaisesRegex(ValueError, "agent_model"):
-            _validate_launch_request_payload(req)
-
-    def test_validate_launch_request_payload_accepts_deterministic_generate_gate(self) -> None:
-        """The record-launch validation chokepoint's deterministic-flag allowlist must
-        include generate.gate (else every generate node fails at the gate substep's
-        record-launch), and a non-gate deterministic generate substep is still rejected.
-
-        The deterministic-flag check runs before the agent_model/ref checks, so a gate
-        payload that passes it falls through to the agent_model error (proving the
-        deterministic gate did NOT reject it)."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        gate = {"node_key": "component/spec_x@0.1.0", "step": "generate",
-                "substep": "gate", "deterministic": True}
-        # Passes the deterministic allowlist -> fails later on the missing agent_model.
-        with self.assertRaisesRegex(ValueError, "agent_model"):
-            _validate_launch_request_payload(gate)
-
-        # A deterministic flag on the producer generate substep IS rejected.
-        forged = {"node_key": "component/spec_x@0.1.0", "step": "generate",
-                  "substep": "generate", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-
-    def test_validate_launch_request_payload_rejects_retired_generate_checker_substeps(self) -> None:
-        """The retired per-checker substep names (lint/syntax/static) are NOT in the
-        deterministic-flag allowlist: a legacy resume that still emits one fails closed loudly
-        at record-launch, rather than silently claiming the reduced launch-prompt guards."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        for retired in ("lint", "syntax", "static"):
-            payload = {"node_key": "component/spec_x@0.1.0", "step": "generate",
-                       "substep": retired, "deterministic": True}
-            with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-                _validate_launch_request_payload(payload)
-
-    def test_validate_launch_request_payload_accepts_deterministic_compile_static(self) -> None:
-        """The deterministic-flag allowlist must also include compile.static (else every compile
-        node fails at the static substep's record-launch). Like generate.gate, a compile.static
-        payload that passes the allowlist falls through to the agent_model error; a non-static
-        deterministic compile substep is still rejected."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        static = {"node_key": "component/spec_x@0.1.0", "step": "compile",
-                  "substep": "static", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "agent_model"):
-            _validate_launch_request_payload(static)
-
-        forged = {"node_key": "component/spec_x@0.1.0", "step": "compile",
-                  "substep": "verify", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-
-    def test_validate_launch_request_payload_accepts_deterministic_validate_gates(self) -> None:
-        """The deterministic-flag allowlist must include the validate gate substeps
-        pre_judge and post_judge (else every validate node fails at their record-launch);
-        the LLM judge substep must NOT be allowed to claim the deterministic flag."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        for sub in ("pre_judge", "post_judge"):
-            payload = {"node_key": "component/spec_x@0.1.0", "step": "validate",
-                       "substep": sub, "deterministic": True}
-            with self.assertRaisesRegex(ValueError, "agent_model"):
-                _validate_launch_request_payload(payload)
-
-        forged = {"node_key": "component/spec_x@0.1.0", "step": "validate",
-                  "substep": "judge", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-
     def test_phase_contract_accepts_validate_gate_meta_outputs(self) -> None:
         """record-launch's phase-contract check (`_allowed_output_paths_for_launch`) must accept
         the pre_judge/post_judge deterministic substeps' ONLY deliverable — their run-node meta —
@@ -4241,252 +4163,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertNotIn(
             f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile", allowed
         )
-
-    def test_rejects_launch_with_placeholder_plan_or_pipeline_refs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "ir_ref must not contain placeholder"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_run_plan_generate_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "compile",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_plan_generate_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/<agent-determined-plan-id>",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt(
-                            "problem/shallow_water2d@0.3.0",
-                            "compile",
-                            "generate",
-                            "substep_run_plan_generate_001",
-                        ),
-                    },
-                    response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_launch_when_dependency_ref_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "launch request must include non-empty dependency_ref"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_run_plan_generate_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "allowed_output_paths": [
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                        ],
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "compile",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_plan_generate_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt(
-                            "problem/shallow_water2d@0.3.0",
-                            "compile",
-                            "generate",
-                            "substep_run_plan_generate_001",
-                        ),
-                    },
-                    response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_launch_with_placeholder_dependency_ref(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "launch request dependency_ref must not contain placeholder tokens"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_run_plan_generate_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "allowed_output_paths": [
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                        ],
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "compile",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_plan_generate_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/<agent-determined-dependency-ref>",
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt(
-                            "problem/shallow_water2d@0.3.0",
-                            "compile",
-                            "generate",
-                            "substep_run_plan_generate_001",
-                        ),
-                    },
-                    response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_launch_when_pipeline_ref_is_not_pipeline_root_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            bad_pipeline = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001/source/src_001/source_meta.json"
-            )
-            with self.assertRaisesRegex(ValueError, "pipeline_ref must be exactly"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_bad_pipeline_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "generate",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_bad_pipeline_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": bad_pipeline,
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-generate-generate",
-                        "skill_ref": "skills/workflow-generate-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": "prompt",
-                    },
-                    response_payload=_spawn_response_payload("sess_bad_pipeline_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_generate_verify_without_source_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "source_id"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_gen_verify_no_gid",
-                    request_payload={
-                        "agent_role": "substep",
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "generate",
-                        "substep": "verify",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_gen_verify_no_gid",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-generate-verify",
-                        "skill_ref": "skills/workflow-generate-verify/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": "gv verify",
-                    },
-                    response_payload=_spawn_response_payload("sess_gv_no_gid"),
-                 netns_socket_dir=netns_socket_dir())
 
     def test_rejects_pass_step_result_when_required_outputs_are_missing_from_substeps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8000,7 +7676,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         )
 
     def _minimal_request_payload(self, **overrides: object) -> dict[str, object]:
-        """Return a minimal request_payload for the repair_strategy / issue_severity tests."""
+        """Return a minimal request_payload for the record_launch argument tests."""
         base: dict[str, object] = {
             "orchestration_id": "orch_001",
             "agent_run_id": "step_run_repair_001",
@@ -8030,77 +7706,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         if "launch_prompt_full" not in base:
             base["launch_prompt_full"] = render_launch_prompt_text(base)
         return base
-
-    def test_record_launch_rejects_invalid_repair_strategy(self) -> None:
-        """Passing an undefined value to repair_strategy raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "repair_strategy"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(repair_strategy="retry"),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_rejects_invalid_issue_severity(self) -> None:
-        """Passing an undefined value to issue_severity raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "issue_severity"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(issue_severity="blocker"),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_requires_repair_target_for_reuse(self) -> None:
-        """ValueError when repair_target_agent_run_id is "none" with repair_strategy=reuse."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "repair_target_agent_run_id"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(
-                        issue_severity="minor",
-                        repair_strategy="reuse",
-                        repair_target_agent_run_id="none",
-                        repair_reason="fix indentation",
-                    ),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_requires_repair_reason_for_reuse(self) -> None:
-        """ValueError when repair_reason is "none" with repair_strategy=reuse — the second half of
-        the requirement docs/ORCHESTRATION.md §repair / retry states for a re-submission."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "requires non-empty repair_reason"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(
-                        issue_severity="minor",
-                        repair_strategy="reuse",
-                        repair_target_agent_run_id="step_run_prior_001",
-                        repair_reason="none",
-                    ),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_rejects_traversal_in_child_agent_run_id(self) -> None:
         """child_agent_run_id containing path separators must be rejected before path construction."""
@@ -12003,7 +11608,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 node_key="problem/shallow_water2d@0.3.0",
                 step="compile",
                 backend="codex",
-                require_child_agent="substep",
             )
             self.assertEqual(out.get("status"), "fail_closed")
             self.assertEqual(out.get("reason_code"), "dependency_not_ready")
@@ -16022,13 +15626,15 @@ class RecordTimeoutTests(unittest.TestCase):
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
             # Corrupt the launch response so _validate_response_agent_session_id
-            # raises (placeholder token).
+            # raises (no child agent identifier).
             resp_path = (
                 repo_root / "workspace" / "orchestrations" / "orch_to_001"
                 / "launches" / f"{arid}.response.json"
             )
             resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["agent_session_id"] = "<placeholder>"
+            for key in ("agent_session_id", "agent_id", "session_id", "child_agent_id",
+                        "child_agent_session_id", "id", "agent", "child_agent", "data"):
+                resp.pop(key, None)
             resp_path.write_text(json.dumps(resp), encoding="utf-8")
 
             with self.assertRaises(ValueError):
@@ -20031,37 +19637,8 @@ class PreflightLeafReadinessTests(unittest.TestCase):
 
 
 class ReservePhaseRootCanonicalIdTests(unittest.TestCase):
-    """Codex round 32 F2: `reserve_phase_root` must enforce
-    `_SLUG_DATE_SEQ3_PATTERN` on `reserved_id`. Round 31 tightened the
-    freshness reader to this grammar but left the writer side
-    unenforced — a workflow could reserve a non-canonical id and write
-    valid artifacts that downstream dep_readiness silently ignored."""
-
-    def test_reserve_rejects_non_canonical_reserved_id(self) -> None:
-        from tools.orchestration_runtime import reserve_phase_root
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_reserve_bad",
-                spec_ref="spec/component/x",
-            )
-            for bad in (
-                "FAKE_20991231_999",
-                "dep_a_20260101_001",  # underscore inside slug
-                "noseq_20260101",
-                "missing-suffix",
-            ):
-                with self.subTest(reserved_id=bad):
-                    with self.assertRaises(ValueError) as ctx:
-                        reserve_phase_root(
-                            repo_root,
-                            orchestration_id="orch_reserve_bad",
-                            node_key="component/x@0.1.0",
-                            step="compile",
-                            reserved_id=bad,
-                            reserved_by_agent_run_id="arid_caller",
-                        )
-                    self.assertIn("reserved_id", str(ctx.exception))
+    """`reserve_phase_root` records the id it is given. The grammar refusal that stood here
+    (Codex round 32 F2) went in issue #643: the conductor mints every reserved id."""
 
     def test_reserve_accepts_canonical_reserved_id(self) -> None:
         from tools.orchestration_runtime import reserve_phase_root
@@ -23007,7 +22584,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         return workflow_launch_check(
             repo_root, orchestration_id="orch_001",
             node_key="problem/shallow_water2d@0.3.0", step="compile",
-            backend=backend, require_child_agent="substep")
+            backend=backend)
 
     def test_launch_check_accepts_any_probed_launchable_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -23516,7 +23093,9 @@ class AgentRoleFailClosedTests(unittest.TestCase):
 
     # The census. Every test method of this class must appear in exactly one of these.
     _DEFINITION_DRIVEN = frozenset({
-        "test_launch_requires_exactly_the_role_its_step_demands",
+        # `test_launch_requires_exactly_the_role_its_step_demands` was here until issue #643:
+        # the launch-side role check it drove (`_require_child_agent_role_for_step`) is
+        # deleted; the conductor writes the role from the same table.
         "test_terminal_payload_rejects_a_role_outside_the_vocabulary",
         "test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary",
         # `test_the_write_audit_runs_for_every_role_in_the_vocabulary` was here until PR-2 of
@@ -23525,14 +23104,15 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # against — no leaf holds write authority for such an audit to measure.
     })
     _SAMPLE_DRIVEN = frozenset({
-        "test_launch_role_normalization_closes_the_spelling_family",
+        # `test_launch_role_normalization_closes_the_spelling_family` and
+        # `test_the_validator_backstop_canonicalizes_without_prepare` were here until issue
+        # #643, with the launch-side role check and its canonicalizing write-back.
         # `test_the_prompt_actually_shipped_carries_the_task_card` was here until Z4
         # (issue #171): the Task Card was a section of the AGENTIC prompt, and it went with
         # the renderer that built it.
         "test_every_captured_production_payload_declares_the_demanded_role",
         # `test_capability_then_manifest_agree_on_the_role_record_launch_passes` was here
         # until PR-2 of issue #171: `record-launch` writes neither document now.
-        "test_the_validator_backstop_canonicalizes_without_prepare",
         "test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role",
     })
 
@@ -23557,54 +23137,9 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         )
         self.assertFalse(self._DEFINITION_DRIVEN & self._SAMPLE_DRIVEN)
 
-    def test_launch_requires_exactly_the_role_its_step_demands(self) -> None:
-        """Table-driven over every core step: the demanded role passes the role check and
-        every OTHER role in the vocabulary is rejected. Generated from the table, so a new
-        step cannot be added without landing here."""
-        from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
-            STEP_REQUIRED_CHILD_AGENT,
-            _require_child_agent_role_for_step,
-        )
-
-        self.assertTrue(STEP_REQUIRED_CHILD_AGENT, "step table is empty; nothing pinned")
-        for step, required in STEP_REQUIRED_CHILD_AGENT.items():
-            with self.subTest(step=step, role=required):
-                self.assertEqual(
-                    _require_child_agent_role_for_step(
-                        required, step, label="t:", error_type=ValueError),
-                    required,
-                )
-            for other in sorted(AGENT_RUN_ROLES - {required}) + ["bogus", ""]:
-                with self.subTest(step=step, rejected=other):
-                    with self.assertRaisesRegex(
-                        ValueError, "does not satisfy required child agent kind"
-                    ):
-                        _require_child_agent_role_for_step(
-                            other, step, label="t:", error_type=ValueError)
-
-    def test_launch_role_normalization_closes_the_spelling_family(self) -> None:
-        """Case and surrounding whitespace must not select a different branch. A non-string
-        is rejected rather than coerced (`str(123)` would once have produced `'123'`)."""
-        from tools.orchestration_runtime import _require_child_agent_role_for_step
-
-        for spelling in ("substep", "SUBSTEP", " Substep ", "\tsubStep\n"):
-            with self.subTest(spelling=spelling):
-                self.assertEqual(
-                    _require_child_agent_role_for_step(
-                        spelling, "compile", label="t:", error_type=ValueError),
-                    "substep",
-                )
-        for junk in (None, 123, ["substep"], {"role": "substep"}):
-            with self.subTest(junk=junk):
-                with self.assertRaises(ValueError):
-                    _require_child_agent_role_for_step(
-                        junk, "compile", label="t:", error_type=ValueError)
-
     def test_every_captured_production_payload_declares_the_demanded_role(self) -> None:
-        """The captured conductor requests must already satisfy the rule the runtime now
-        enforces. Driven through the REAL `_validate_launch_request_payload`, so this is
-        the production-payload-through-the-real-validator pin, not a re-read of the field.
+        """The captured conductor requests declare the role their step demands, and pass the
+        REAL `_validate_launch_request_payload`.
 
         The fixtures are tied back to the LIVE conductor by `test_workflow_conductor.py`'s
         `test_reproduces_every_real_substep_payload`; on its own this test would not notice
@@ -23627,35 +23162,16 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # workshop captures of their pairs, plus the escalate diagnostician's
         # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
         self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
-        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
         self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if payload.get("leaf_mode") == "workshop":
-                # A capture carries the contract version of ITS run and the validator demands
-                # the current one exactly (`_validate_leaf_launch_request_payload`); the
-                # substitution is made HERE, in the test, so the tracked fixture stays a capture
-                # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`) — and
-                # the provider a `workshop-1` capture predates.
-                payload = {**payload,
-                           "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-                           "workshop_provider": payload.get("workshop_provider", "claude_cli")}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
                     payload.get("agent_role"),
                     _required_child_agent_kind(payload["step"]),
                 )
                 _validate_launch_request_payload(payload)
-                # And the negation: the same payload with the other role is refused.
-                other = "step" if payload["agent_role"] == "substep" else "substep"
-                with self.assertRaisesRegex(
-                    ValueError, "does not satisfy required child agent kind"
-                ):
-                    _validate_launch_request_payload({**payload, "agent_role": other})
-                with self.assertRaisesRegex(ValueError, "non-empty agent_role"):
-                    _validate_launch_request_payload(
-                        {k: v for k, v in payload.items() if k != "agent_role"})
 
     def test_terminal_payload_rejects_a_role_outside_the_vocabulary(self) -> None:
         """`record_agent_run` accepted ANY string before, and `_validate_actual_write_paths`
@@ -23749,32 +23265,6 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                         )
                     except Exception as exc:  # noqa: BLE001 - the message is the assertion
                         self.assertNotIn("must be one of", str(exc))
-
-    def test_the_validator_backstop_canonicalizes_without_prepare(self) -> None:
-        """The write-back inside `_validate_launch_request_payload` is kept as a BACKSTOP
-        for a caller that skips `prepare_launch_request_payload`. Round 3 deleted the only
-        test that drove the validator on its own, so the backstop became invisible:
-        neutering the assignment to a bare call left the whole suite green. Keeping a
-        mechanism while deleting its witness is the same class as this branch's other
-        findings, one layer up — so the witness is restored here, deliberately NOT going
-        through prepare."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        # `validate_execute` is a deterministic SUBSTEP capture, and the role canonicalization
-        # under test is role-shaped rather than substep-specific. (This row used the agentic
-        # `compile_generate` capture until Z4, issue #171, deleted that shape; the pure
-        # `compile_generate` capture that replaced it carries a `prompt_contract_version` the
-        # validator would demand re-stamping, so the deterministic row stays the simpler probe.)
-        fixture = (
-            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "validate_execute.request.json"
-        )
-        base = json.loads(fixture.read_text(encoding="utf-8"))
-        for spelling in ("SUBSTEP", " Substep ", "substep"):
-            with self.subTest(spelling=spelling):
-                payload = {**base, "agent_role": spelling}
-                _validate_launch_request_payload(payload)   # no prepare, by design
-                self.assertEqual(payload["agent_role"], "substep")
 
     def test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role(self) -> None:
         """`prepare_launch_request_payload` does NOT re-render when the caller supplies its own
@@ -26882,8 +26372,8 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
     """The pure leaf went in issue #534 PR-J4-b, and the retirement has two halves that must
     not be confused (the plan's MJ2 row).
 
-    A NEW launch naming it is refused — by the launch validator with a message naming the
-    retired leaf, and end to end at `record_launch` before any launch record is written. A
+    A NEW launch naming it is refused — by the renderer, end to end at `record_launch`, before
+    any launch record is written. A
     RECORD a pure leaf wrote before the retirement is still READ: an orchestration whose old
     rows carry `leaf_mode: pure`, a part label (`pure_part`), a part list (`parts[]`, in the
     stage meta) and the second counter (`workshop_prompt_contract_version`) still passes the
@@ -26903,33 +26393,6 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
                "leaf_mode": "pure", "prompt_contract_version": "pure-49"}
         req.pop("workshop_provider", None)
         return req
-
-    def test_a_new_pure_launch_request_is_refused_naming_the_retired_leaf(self) -> None:
-        req = self._pure_request("child_new_pure", "verify")
-        with self.assertRaises(ValueError) as ctx:
-            ort._validate_leaf_launch_request_payload(
-                {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION})
-        self.assertIn("pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
-        # Control: the same request as a workshop one passes the validator, so the refusal
-        # above is the leaf_mode and nothing else the fixture carries.
-        ort._validate_leaf_launch_request_payload(
-            {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-             "leaf_mode": "workshop", "workshop_provider": "claude_cli",
-             "workshop_lineage_id": "child_new_pure"})
-
-    def test_a_new_workshop_request_carrying_a_pure_part_is_refused(self) -> None:
-        """The compile part split went with the pure leaf: a NEW request labelled with a part
-        is refused rather than recorded as a part no loop runs (old records keep their
-        readers)."""
-        req = {**self._pure_request("child_new_part", "verify"),
-               "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-               "leaf_mode": "workshop", "workshop_provider": "claude_cli",
-               "workshop_lineage_id": "child_new_part"}
-        with self.assertRaises(ValueError) as ctx:
-            ort._validate_leaf_launch_request_payload({**req, "pure_part": "core"})
-        self.assertIn("carries pure_part='core'", str(ctx.exception))
-        # Control: the same request without the label passes.
-        ort._validate_leaf_launch_request_payload(req)
 
     def test_record_launch_refuses_a_new_pure_launch_before_any_launch_record(self) -> None:
         """End to end: a `leaf_mode: pure` request is not a workshop one, so `record_launch`

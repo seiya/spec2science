@@ -521,10 +521,6 @@ AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 # registry claiming it. Which linter a LANGUAGE is linted with is asked of
 # `backend_registry.linter_for_language`, which reads each linter backend's own declaration; it
 # was a table here until issue #289 (R4-b PR-2).
-_NODE_KEY_SAFE_PATTERN_LINEAGE = re.compile(
-    r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
-)
-_SLUG_DATE_SEQ3_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*_(\d{8})_(\d{3})$")
 _STAGE_DATE_SEQ3_PATTERNS: dict[str, re.Pattern[str]] = {
     "src": re.compile(r"^src_(\d{8})_(\d{3})$"),
     "bin": re.compile(r"^bin_(\d{8})_(\d{3})$"),
@@ -837,12 +833,6 @@ def _node_safe_to_node_key(node_safe: str) -> str | None:
     return f"{spec_kind}/{spec_id}@{spec_version}"
 
 
-def _parse_slug_date_seq3_id(value: str) -> tuple[int, int] | None:
-    match = _SLUG_DATE_SEQ3_PATTERN.fullmatch(value.strip())
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2))
-
 
 def _parse_stage_attempt_id(value: str, prefix: str) -> tuple[int, int] | None:
     pattern = _STAGE_DATE_SEQ3_PATTERNS[prefix]
@@ -1142,76 +1132,6 @@ def _lineage_records(
             )
         )
     return records
-
-
-def _validate_pipeline_lineage_presence(
-    executions: list[NodeExecution],
-    violations: list[str],
-) -> None:
-    seen: set[Path] = set()
-    for execution in executions:
-        pipeline_dir = execution.pipeline_dir
-        if pipeline_dir in seen:
-            continue
-        seen.add(pipeline_dir)
-        lineage_path = pipeline_dir / "lineage.json"
-        if not lineage_path.exists():
-            violations.append(f"{lineage_path}: missing")
-            continue
-        try:
-            lineage = _read_json(lineage_path)
-        except json.JSONDecodeError:
-            violations.append(f"{lineage_path}: invalid json")
-            continue
-        if not isinstance(lineage, dict):
-            violations.append(f"{lineage_path}: must be json object")
-            continue
-        node_key = lineage.get("node_key")
-        if not isinstance(node_key, str) or not node_key.strip():
-            violations.append(f"{lineage_path}:node_key must be non-empty string")
-        else:
-            # Tie the declared node_key back to the pipeline's node_key_safe parent
-            # directory so a forged/mistyped parent (e.g. a bumped @version) cannot
-            # be validated against another node's IR. Downstream node matching
-            # normalizes away @version, so this directory binding is the only place
-            # the full versioned identity is enforced.
-            expected_safe = _node_key_to_safe(node_key.strip())
-            actual_safe = _pipeline_node_safe(pipeline_dir)
-            if expected_safe is None:
-                violations.append(
-                    f"{lineage_path}:node_key {node_key.strip()!r} must match "
-                    "'<spec_kind>/<spec_id>@<spec_version>'"
-                )
-            elif expected_safe != actual_safe:
-                violations.append(
-                    f"{lineage_path}:node_key {node_key.strip()!r} (node_key_safe "
-                    f"{expected_safe!r}) must match pipeline node_key_safe directory "
-                    f"{actual_safe!r}"
-                )
-        raw_pid = lineage.get("pipeline_id")
-        if not isinstance(raw_pid, str) or not raw_pid.strip():
-            violations.append(f"{lineage_path}:pipeline_id must be non-empty string")
-        else:
-            pid = raw_pid.strip()
-            if pid != pipeline_dir.name:
-                violations.append(
-                    f"{lineage_path}:pipeline_id {pid!r} must match directory name {pipeline_dir.name!r}"
-                )
-            node_safe_dir = _pipeline_node_safe(pipeline_dir)
-            if node_safe_dir is None:
-                violations.append(
-                    f"{pipeline_dir.parent}: not a target directory — a pipeline lives at "
-                    "workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>"
-                )
-            elif not _NODE_KEY_SAFE_PATTERN_LINEAGE.match(node_safe_dir):
-                violations.append(
-                    f"{pipeline_dir.parent.parent}: invalid node_key_safe directory name for "
-                    "lineage check"
-                )
-            elif _parse_slug_date_seq3_id(pid) is None:
-                violations.append(
-                    f"{lineage_path}:pipeline_id must match <slug>_<YYYYMMDD>_<seq3>; got {pid!r}"
-                )
 
 
 def _validate_source_meta_json_files(
@@ -11280,15 +11200,6 @@ def _validate_post_generate_stage_impl(
             violations.append(f"{derived_path}: missing (ir_ref {ir_ref})")
 
     execution = _stub_execution(pipeline_dir, node_key)
-    # Enforce the lineage top-level schema (pipeline_id presence + the
-    # <slug>_<YYYYMMDD>_<seq3> format + node_key↔directory binding) at Generate time —
-    # the same check post_execute runs via _validate_pipeline_lineage_presence.
-    # Previously this ran only at post_execute, so a malformed / non-top-level
-    # pipeline_id surfaced far downstream at Validate and forced a corrective generate
-    # re-run (audit: orch_20260615T095217Z_74450292). source_id/binary_id/run_id are not
-    # required here — the presence check validates only node_key and pipeline_id, which
-    # are the fields lineage.json already carries at Generate time.
-    _validate_pipeline_lineage_presence([execution], violations)
     _validate_generate_outputs_for_generation(
         repo_root, execution, gen_id, violations
     )
@@ -11439,10 +11350,6 @@ def _validate_impl(
             return violations
         return [f"{workspace_path}/pipelines: no execution artifacts found"]
 
-    _validate_pipeline_lineage_presence(
-        executions=executions,
-        violations=violations,
-    )
     _validate_pipeline_targets_resolve(
         repo_root, [execution.pipeline_dir for execution in executions], violations)
 

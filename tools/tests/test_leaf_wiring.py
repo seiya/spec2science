@@ -288,7 +288,7 @@ class PurePayloadValidationTests(unittest.TestCase):
         without a fixture context is red here rather than accepted on an empty one."""
         for step, substep in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS):
             with self.subTest(pair=f"{step}.{substep}"):
-                # `dependency_ref` is step-shaped and record-launch enforces it: a Compile
+                # `dependency_ref` is step-shaped as the conductor writes it: a Compile
                 # request names the spec's `deps.yaml`, a Generate request the lowered IR.
                 dep_ref = ("spec/problem/dynamics/shallow_water/shallow_water2d/deps.yaml"
                            if step == "compile" else _DEP_REF)
@@ -332,28 +332,26 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertIn("runner_document", str(caught2.exception))
 
     def test_the_shape_vocabulary_is_closed_and_pair_scoped(self) -> None:
-        """An unknown `pure_shape` never falls back to the default template or key set, and a
-        known one is refused on a pair that has no shape."""
+        """An unknown `pure_shape` never falls back to the default template, and a known one is
+        refused on a pair that has no shape: each names no template, and the renderer refuses
+        it (the validator's own shape refusals went in issue #643)."""
         req = _workshop_request("generate", step="generate", dependency_ref=_DEP_REF,
                             pure_context=_pure_context_by_shape(
                                 "generate", "generate", "harness"))
-        for value, expected in ((" ", "must be a non-empty string"),
-                                ("m3c", "must be one of"),
-                                ("HARNESS_TYPO", "must be one of"),
-                                (17, "must be a non-empty string")):
+        for value in ("m3c", "HARNESS_TYPO", 17):
             bad = dict(req)
             bad["pure_shape"] = value
             with self.subTest(pure_shape=value):
                 with self.assertRaises(ValueError) as caught:
-                    ort._validate_leaf_launch_request_payload(bad)
-                self.assertIn(expected, str(caught.exception))
+                    ort.render_launch_prompt_text(bad)
+                self.assertIn("names no rendered prompt", str(caught.exception))
         # A KNOWN shape on a pair the by-shape table does not carry.
         bad = _workshop_request("judge", step="validate",
                             pure_context=_pure_context_for("validate", "judge"))
         bad["pure_shape"] = "harness"
         with self.assertRaises(ValueError) as caught:
-            ort._validate_leaf_launch_request_payload(bad)
-        self.assertIn("pure_shape is only valid for", str(caught.exception))
+            ort.render_launch_prompt_text(bad)
+        self.assertIn("names no rendered prompt", str(caught.exception))
 
     def test_the_shape_vocabulary_matches_the_acceptance_layers(self) -> None:
         """One vocabulary, two readers: the launch validator's non-default shapes and the
@@ -426,25 +424,6 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertIn("validate", message)
         self.assertIn("execute", message)
 
-    def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
-        bad = _workshop_request(deterministic=True)
-        with self.assertRaises(ValueError):
-            ort._validate_leaf_launch_request_payload(bad)
-
-    def test_validate_payload_rejects_unknown_leaf_mode(self) -> None:
-        bad = _workshop_request(leaf_mode="agentic")
-        with self.assertRaises(ValueError):
-            ort._validate_leaf_launch_request_payload(bad)
-
-    def test_validate_payload_pure_requires_exact_contract_version(self) -> None:
-        # Any version other than the CURRENT constant is rejected — including the immediately
-        # preceding one. (The stand-in must not be a version that a later bump makes valid; keep
-        # it a value the contract will never take.)
-        for version in ("pure-OBSOLETE", "pure-1", "pure-3", "", None):
-            bad = _workshop_request(prompt_contract_version=version)
-            with self.assertRaises(ValueError):
-                ort._validate_leaf_launch_request_payload(bad)
-
     def test_validate_payload_pure_requires_context_keys(self) -> None:
         for substep, keys in (
             ("generate", _pure_generate_context()),
@@ -477,9 +456,10 @@ class PurePayloadValidationTests(unittest.TestCase):
                 ort._validate_leaf_launch_request_payload(req)
 
     def test_validate_payload_rejects_explicit_null_leaf_mode(self) -> None:
-        # A PRESENT leaf_mode other than "pure" — including an explicit JSON null — must be
-        # rejected by the full validator, NOT silently treated as an agentic (write-capable)
-        # launch. Key presence, not `is not None`, is the gate.
+        # A PRESENT leaf_mode other than "workshop" — including an explicit JSON null — is
+        # refused on the production path, NOT silently treated as another launch shape: the
+        # renderer `prepare_launch_request_payload` runs refuses it (issue #643 removed the
+        # validator's own leaf_mode refusal).
         # `"pure"` joined the refused values in issue #534 PR-J4-b: the pure leaf is gone, and a
         # NEW request naming it is refused rather than launched (a RECORD naming it is read).
         for bad_value in (None, "", "agentic", "PURE_TYPO", "pure"):
@@ -487,21 +467,6 @@ class PurePayloadValidationTests(unittest.TestCase):
             req["leaf_mode"] = bad_value
             with self.assertRaises(ValueError):
                 ort._validate_launch_request_payload(ort.prepare_launch_request_payload(dict(req)))
-
-    def test_the_validator_refuses_a_pure_request_by_name(self) -> None:
-        """Issue #534 PR-J4-b: the request validator itself refuses a NEW `leaf_mode: pure`
-        request, naming the one accepted mode and the retirement — not only the renderer in
-        front of it (the row above goes through `prepare_launch_request_payload`, whose render
-        refuses first)."""
-        with self.assertRaises(ValueError) as caught:
-            ort._validate_leaf_launch_request_payload(_pure_request("generate"))
-        self.assertIn("leaf_mode must be 'workshop'", str(caught.exception))
-        self.assertIn("the pure leaf went in issue #534 PR-J4-b", str(caught.exception))
-
-    def test_validate_payload_pure_rejects_nonempty_output_paths(self) -> None:
-        bad = _workshop_request(allowed_output_paths=["workspace/pipelines/x/source/s/model.f90"])
-        with self.assertRaises(ValueError):
-            ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_rejects_a_missing_required_verify_key(self) -> None:
         # What is unique here is the COMBINATION — a missing required `pure_context` key pushed
@@ -1528,9 +1493,11 @@ class PureRenderTests(unittest.TestCase):
         # judge's findings. READ: the same routing tokens, nothing assigned. Round 1 narrowed
         # that clause to the `dev` directive that reopens instead of failing closed, and
         # replaced the dangling pointer to an "agent-driven `attribution=ir` route" entry.
+        # READ: same tokens, nothing assigned. Issue #643: the malformed-launch-request clause
+        # says the conductor composes `dependency_ref` (record-launch no longer re-checks it).
         # READ: same tokens, nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #3b60c8d416a3"),
+         " #834469da1eff"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
