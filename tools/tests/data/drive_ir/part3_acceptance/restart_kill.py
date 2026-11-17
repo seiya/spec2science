@@ -69,8 +69,13 @@ def _cmd(target: str, config: Path, out: Path, restart: Path | None) -> list[str
 
 
 def run(target: str, config: Path, out: Path, restart: Path | None = None) -> int:
+    return run_full(target, config, out, restart).returncode
+
+
+def run_full(target: str, config: Path, out: Path,
+             restart: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(_cmd(target, config, out, restart), cwd=REPO,
-                          capture_output=True, text=True).returncode
+                          capture_output=True, text=True)
 
 
 def record(out: Path) -> dict[str, Any]:
@@ -222,8 +227,11 @@ def main() -> int:
         kept = (rec.get("kept") or {}).get("restart_points") or []
         check(target_point not in kept and kept and kept[-1] < target_point,
               f"inside: kept leaves the torn point {target_point} out (last kept {kept[-1:]})")
-        check(run("fortran_cpu", config, work / "inside_refused", cut) == 2,
-              "inside: --restart-from the torn point is refused (exit 2)")
+        refused = run_full("fortran_cpu", config, work / "inside_refused", cut)
+        why = (refused.stdout + refused.stderr).strip()
+        # exit 2 is every refusal's: the message must be the torn file's
+        check(refused.returncode == 2 and f"{cut.name}: unreadable" in why,
+              f"inside: --restart-from the torn point is refused as unreadable ({why[-160:]!r})")
         k = kept[-1]
         rp = capture_store.store("json").record_path(snap(out), capture_store.RESTART_POINT,
                                                      base, k)

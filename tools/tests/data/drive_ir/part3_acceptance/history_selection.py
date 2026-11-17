@@ -10,14 +10,15 @@
    IR's `drive.history` samples at its step). Both are `json`. Printed per case and in total: the
    records, their bytes and their members.
 2. A stride override: `tools/run_configuration.py` on the certified `fortran_cpu` binary, the base
-   case `BASE` as certified (`control`) and with `history.every` changed (`override`). Every physics IR
-   certified so far that samples a history binds its variables (`h`, `hu`, `hv`) to the one
-   input `history.every` (`drive.history`), so the override moves the stride of the three
+   case `BASE` as certified (`control`) and with `history.every` changed (`override`). Every
+   physics IR certified so far that samples a history binds its variables (`h`, `hu`, `hv`) to the
+   one input `history.every` (`drive.history`), so the override moves the stride of the three
    together: no certified physics node has a variable with a stride of its own. This departs from
-   the plan's V-e, which asked for one variable's stride overridden alone. Checked: each run's history steps are the multiples
-   of its stride up to the final step, each record holds exactly the variables `drive.history`
-   names, and at the steps both runs sample the records are equal (binary64); the two final
-   captures are equal, so the stride is a sampling choice and not a change of the run.
+   the plan's V-e, which asked for one variable's stride overridden alone. Checked: each run's
+   history steps are the multiples of its stride up to the final step, each record holds exactly
+   the variables `drive.history` names, and at the steps both runs sample the records are equal
+   (binary64); the two final captures are equal, so the stride is a sampling choice and not a
+   change of the run.
 
 Exit 0 when every check of 2 holds (1 is a measurement and does not fail).
 """
