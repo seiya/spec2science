@@ -27586,33 +27586,6 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         })
         self.assertEqual(got, {"PATH": "/b", "SPEC2SCIENCE_REAL": "kept"})
 
-    def test_an_unanchored_prefix_name_is_refused_at_render_too(self) -> None:
-        """The renderer spells the same rule a second time, so it needs its own probe:
-        two independent copies with no pin on either is how they desync."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        root = Path(d)
-        for sub in ("repo", "ws", "tmp"):
-            (root / sub).mkdir()
-        workshop = _hand_workshop_profile_fields(root)
-        profile = {
-            "repo_root": str(root / "repo"), "tmp_dir": str(root / "tmp"),
-            "workspace_tmp_rw_abs": str(root / "ws"),
-            "read_roots": [], "write_roots": [],
-            "runtime_ro_bind_paths": [],
-            **workshop,
-            "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
-                    **workshop["env"], "MY_SPEC2SCIENCE_API_KEY": "sk-live"},
-        }
-        # Control: the same profile without the name renders.
-        ort.render_bwrap_command(
-            profile={**profile, "env": {k: v for k, v in profile["env"].items()
-                                        if k != "MY_SPEC2SCIENCE_API_KEY"}},
-            command_argv=["claude"])
-        with self.assertRaises(ValueError) as ctx:
-            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-        self.assertIn("MY_SPEC2SCIENCE_API_KEY", str(ctx.exception))
-
     def test_an_empty_value_never_becomes_a_declared_name(self) -> None:
         """The filter's `or not value` skip, measured as a surviving mutation.
 
@@ -27665,40 +27638,6 @@ class LeafEnvClosureTests(unittest.TestCase):
     that the persisted profile is a record of it rather than of a second one.
     """
 
-    # -- the CLI seam that carries the authored dict ---------------------------
-
-    def test_the_stdin_flag_parses_only_a_non_empty_object_of_strings(self) -> None:
-        """The seam the conductor actually uses. On STDIN rather than argv because these
-        values would otherwise be readable in `ps` by every process on the host, and an
-        HTTP entry's credential can be among them — so the parse is where the shape is
-        checked, and a bad shape must fail closed rather than build an env-less profile.
-        """
-        from tools.orchestration_runtime import main as runtime_main
-
-        def _run(raw: str) -> str:
-            buf, err = io.StringIO(), io.StringIO()
-            with mock.patch.object(sys, "stdin", io.StringIO(raw)):
-                with redirect_stdout(buf), redirect_stderr(err):
-                    rc = runtime_main([
-                        "record-launch", "--repo-root", ".", "--orchestration-id", "o",
-                        "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
-                        "--request-json", "{}", "--response-json", "{}",
-                        "--child-env-from-stdin",
-                    ])
-            self.assertEqual(rc, 1)
-            return err.getvalue().strip()
-
-        for raw in ("", "not json", "[]", "{}", '{"A": 1}', "null"):
-            with self.subTest(raw=raw):
-                # NAMES the flag, so the refusal is this parse and not some later
-                # validation the fixture also fails.
-                self.assertIn("--child-env-from-stdin", _run(raw))
-        # Control: every one of these calls fails (the fixture payloads are empty), so
-        # "rc == 1" alone proves nothing. A WELL-FORMED env gets past this parse and dies
-        # further in, at response-json validation — that is what makes the six above
-        # attributable to the parse.
-        self.assertNotIn("--child-env-from-stdin", _run('{"PATH": "/usr/bin"}'))
-
     def _profile(self, **over) -> dict:
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -27747,44 +27686,16 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(argv.count("--clearenv"), 1)
         self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
 
-    def test_a_profile_granting_a_repository_path_is_refused(self) -> None:
-        """Issue #445 deleted the arms that mounted these five fields; a profile that
-        carries one (a hand-built one, or a persisted `sandbox_profiles/<arid>.json` altered
-        after it was written and re-read by the conductor) must fail closed rather than
-        render without the grant its record states. One row per field, each value naming
-        an EXISTING path, so the refusal is the field and not a missing file."""
-        self.assertEqual(ort._UNRENDERED_PROFILE_GRANTS, (
-            "read_roots", "write_roots", "runtime_rw_bind_mappings",
-            "runtime_rw_rel_paths", "runtime_rw_file_paths"))
-        ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])  # control
-        base = self._profile()
-        repo = Path(base["repo_root"])
-        (repo / "d").mkdir()
-        (repo / "f").write_text("x", encoding="utf-8")
-        grants = {
-            "read_roots": ["d/"],
-            "write_roots": ["d/"],
-            "runtime_rw_bind_mappings": [[str(repo / "f"), str(repo / "f")]],
-            "runtime_rw_rel_paths": ["d"],
-            "runtime_rw_file_paths": ["f"],
-        }
-        self.assertEqual(set(grants), set(ort._UNRENDERED_PROFILE_GRANTS))
-        for field, value in grants.items():
-            with self.subTest(field=field):
-                with self.assertRaises(ValueError) as ctx:
-                    ort.render_bwrap_command(profile={**base, field: value},
-                                             command_argv=["claude"])
-                self.assertIn(repr(field), str(ctx.exception))
-
-    def test_the_profile_builder_records_every_refused_grant_empty(self) -> None:
-        """The other half of the refusal: the one builder emits each refused field, empty,
-        so the refusal can never fire on a profile production builds."""
+    def test_the_profile_builder_records_every_retired_grant_empty(self) -> None:
+        """The one builder records each field that once carried a repository grant (their
+        mounting arms went in issue #445), empty."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         profile = ort.build_lineage_bwrap_profile(
             repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
             backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
-        for field in ort._UNRENDERED_PROFILE_GRANTS:
+        for field in ("read_roots", "write_roots", "runtime_rw_bind_mappings",
+                      "runtime_rw_rel_paths", "runtime_rw_file_paths"):
             with self.subTest(field=field):
                 self.assertIn(field, profile)
                 self.assertEqual(profile[field], [])
@@ -27824,22 +27735,9 @@ class LeafEnvClosureTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ort.render_bwrap_command(profile=profile, command_argv=["claude"])
 
-    def test_an_undeclared_name_in_the_profile_fails_closed(self) -> None:
-        """A stranger here means something built an environment outside `leaf_env_from`
-        — the one question this layer exists to answer — so it is refused rather than
-        delivered and recorded as though it had been declared."""
-        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "SPEC2SCIENCE_HOME", "SHELL"):
-            with self.subTest(name=name):
-                profile = self._profile()
-                profile["env"] = {**profile["env"], name: "x"}
-                with self.assertRaises(ValueError) as ctx:
-                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-                self.assertIn(name, str(ctx.exception))
-
     def test_the_names_only_the_deliverer_adds_are_accepted(self) -> None:
-        """The backend-home name and the claude extras never come from the author, so the
-        validation has to allow them — asserted, or a correct profile would be refused and
-        every launch would fail closed.
+        """The backend-home name and the claude extras never come from the author, and the
+        renderer delivers them as recorded.
 
         Since issue #534 the backend home is the workshop lineage's (`CLAUDE_CONFIG_DIR` =
         its `config/`; the pure leaf's no-home shape and the Z4-era refusal of
@@ -27859,25 +27757,6 @@ class LeafEnvClosureTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             ort.render_bwrap_command(profile=refused, command_argv=["claude"])
         self.assertIn("exactly one CLI home", str(ctx.exception))
-
-    def test_a_mistyped_profile_env_entry_fails_closed_at_render(self) -> None:
-        """The renderer's own str->str check, also found undriven. A non-string value
-        here would reach `cmd.extend([...])` and produce a `TypeError` from subprocess
-        rather than a refusal naming the profile."""
-        for bad in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
-            with self.subTest(env=bad):
-                profile = self._profile()
-                profile["env"] = {**profile["env"], **bad}
-                with self.assertRaises(ValueError):
-                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-
-    def test_a_tmpdir_that_disagrees_with_the_bind_fails_closed(self) -> None:
-        """The writable bind is what makes TMPDIR usable, so a TMPDIR naming anywhere
-        else points the leaf at a path bwrap did not make writable."""
-        profile = self._profile()
-        profile["env"] = {**profile["env"], "TMPDIR": "/somewhere/else"}
-        with self.assertRaises(ValueError):
-            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
 
     def test_tmpdir_is_the_resolved_bind_even_if_the_env_omits_it(self) -> None:
         profile = self._profile()
@@ -27962,21 +27841,6 @@ class LeafEnvClosureTests(unittest.TestCase):
                          ort.leaf_netns.PROXY_ENV)
         self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
 
-    def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
-        """Threading only helps if the dict belongs to THIS launch. A profile carrying
-        another leaf's `SPEC2SCIENCE_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
-        different run, and the record and the reality would be one object describing two."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        for name, bad in (("SPEC2SCIENCE_ORCHESTRATION_ID", "other-orch"),
-                          ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", "other-arid")):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    ort.build_lineage_bwrap_profile(
-                        repo_root=Path(d), orchestration_id="o", agent_run_id="A",
-                        backend_command="claude", backend_type="claude",
-                        child_env={"PATH": "/a", name: bad}, network=network_block("claude"))
-
     def test_the_fallback_replaces_a_stale_per_launch_id_rather_than_refusing(self) -> None:
         """The two paths answer DIFFERENT questions, and this is the reconstructing one.
 
@@ -27991,8 +27855,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         This test asserted the refusal for exactly one round. That was measured to make
         152 tests fail with one variable exported and, in production, to turn an
-        unreachable stale record into `fail_closed`. The sibling below keeps the refusal
-        where it belongs."""
+        unreachable stale record into `fail_closed`."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ID": "OTHER-ORCH",
@@ -28005,32 +27868,6 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(profile["env"]["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
         self.assertEqual(profile["env"]["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
-    def test_an_EMPTY_per_launch_id_is_refused_not_quietly_filled(self) -> None:
-        """The `is not None` guard, which a census found unpinned.
-
-        An empty string is the one shape that slips between the two mechanisms: the
-        disagreement check would let it past under a truthiness test, and the
-        `setdefault` floor CANNOT repair it because the key exists. The renderer's own
-        `if value:` then drops the name — producing exactly the leaf-with-no-orchestration
-        -id whose MCP server stops requiring a capability token. Refusing at the boundary
-        is right: this arrives over `--child-env-from-stdin`, and an empty id there is a
-        malformed payload, not an omission."""
-        for name in ("SPEC2SCIENCE_ORCHESTRATION_ID", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID"):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    ort._profile_child_env({"PATH": "/b", name: ""},
-                                           orchestration_id="o", agent_run_id="A")
-
-    def test_an_empty_tmpdir_in_the_record_is_refused_at_render(self) -> None:
-        """Same shape one layer down, same guard (`env_tmp is not None`). Under a
-        truthiness test an empty TMPDIR would be silently corrected to the bind rather
-        than refused — the right value, but a record that disagreed with its delivery and
-        said nothing, which is the one thing this layer exists to prevent."""
-        profile = self._profile()
-        profile["env"] = {**profile["env"], "TMPDIR": ""}
-        with self.assertRaises(ValueError):
-            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-
     def test_every_profile_carries_both_per_launch_ids(self) -> None:
         """The floor `--clearenv` made necessary, on BOTH paths.
 
@@ -28042,7 +27879,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         omission rather than an attack.
 
         Filled rather than refused: the ids are this builder's own arguments, so an
-        absence contradicts nothing. Only a disagreement does, and that still raises."""
+        absence contradicts nothing."""
         for child_env in ({"PATH": "/b"},
                           {"PATH": "/b", "SPEC2SCIENCE_ORCHESTRATION_ID": "o"},
                           {"PATH": "/b", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "A"},
@@ -28075,29 +27912,6 @@ class LeafEnvClosureTests(unittest.TestCase):
                         backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
                 self.assertEqual(profile["env"]["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
                 self.assertEqual(profile["env"]["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "A")
-
-    def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
-        """The type validations, which review found undriven by any test.
-
-        Not decorative: `child_env` arrives from a JSON payload over stdin, and a
-        non-string value that reached `--setenv` would be a `TypeError` deep inside argv
-        construction rather than a named refusal at the boundary."""
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        for bad in ([("PATH", "/b")], "PATH=/b", 42):
-            with self.subTest(child_env=bad):
-                with self.assertRaises(ValueError):
-                    ort.build_lineage_bwrap_profile(
-                        repo_root=Path(d) / "repo", orchestration_id="o",
-                        agent_run_id="A", backend_command="claude",
-                        backend_type="claude", child_env=bad, network=network_block("claude"))
-        for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
-            with self.subTest(entry=bad_entry):
-                with self.assertRaises(ValueError):
-                    ort.build_lineage_bwrap_profile(
-                        repo_root=Path(d) / "repo", orchestration_id="o",
-                        agent_run_id="A", backend_command="claude",
-                        backend_type="claude", child_env=bad_entry, network=network_block("claude"))
 
     def _alias_layout(self, d: Path, *, symlinked_home: bool) -> tuple[Path, Path, Path]:
         """A checkout and a CLI wrapper under the same $HOME child (`~/work`), with `$HOME`

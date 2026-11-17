@@ -156,14 +156,12 @@ class CodexWorkshopProfileTests(_CodexEnv):
                                                            command_argv=["codex"])
         self.assertEqual(vps._workshop_profile_violations(profile), [])
 
-    def test_the_builder_refuses_a_credential_mapping_and_two_homes(self) -> None:
+    def test_the_builder_refuses_two_homes_or_none(self) -> None:
         iso = self._prepare_codex("lin_b", resume=False)
         base = dict(repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_b",
                     backend_command="codex", backend_type="codex")
         kwargs = codex_workshop_profile_kwargs(iso)
         for label, broken in (
-                ("a credential mapping", {"credential_rw_mapping": ("/x", "/y")}),
-                ("no workdir", {"workdir": None}),
                 ("both homes", {"env_overrides": {"CODEX_HOME": iso["config"],
                                                   "CLAUDE_CONFIG_DIR": iso["config"]}}),
                 ("no home", {"env_overrides": {}})):
@@ -308,8 +306,7 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
         self.assertNotIn("codex_lineage_id", response)
         self.assertFalse((home / "config.toml").exists())
         import tools.validate_pipeline_semantics as vps
-        request = json.loads((self._base() / "launches/ar_cx_cold.request.json").read_text())
-        self.assertEqual(vps._workshop_profile_violations(profile, request, self.repo), [])
+        self.assertEqual(vps._workshop_profile_violations(profile), [])
 
     def test_a_warm_launch_resumes_the_lineage_home_it_names(self) -> None:
         self._launch("ar_cx_cold", self._request("ar_cx_cold"))

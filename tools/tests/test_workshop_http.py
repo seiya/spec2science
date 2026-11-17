@@ -841,8 +841,8 @@ class ChatValidateJudgeTests(_ChatDialect, _JudgeReading, unittest.TestCase):
 
 class OpsTableTests(unittest.TestCase):
     def test_the_producer_specs_freeze_the_table_s_operations(self) -> None:
-        """`WORKSHOP_OPS_BY_PAIR` is what the audit compares an HTTP record's surface against;
-        the contexts the conductor freezes serve exactly it."""
+        """`WORKSHOP_OPS_BY_PAIR` is what an HTTP record's surface is composed from; the
+        contexts the conductor freezes serve exactly it."""
         from tools import workshop_wrapper as ww
         self.assertEqual(ww.WrapperContext.__dataclass_fields__["ops"].default,
                          ww.WORKSHOP_OPS_BY_PAIR[("generate", "generate")])

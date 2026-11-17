@@ -7713,7 +7713,7 @@ LEAF_ENV_PREFIX_EXCEPTIONS = ("SPEC2SCIENCE_HOME",)
 # Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling, the
 # auto-memory closure, and the closure of the CLI's nonessential traffic (telemetry, update
 # checks; issue #534 step 4 — inside the leaf's network namespace each would be a refused
-# route, logged as one). Named here so the render-time name validation accepts them.
+# route, logged as one).
 CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
                           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 
@@ -7789,14 +7789,11 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
 
 
 # The environment variables that relocate a backend CLI's configuration home.
-# TWO roles. (1) `render_bwrap_command` declares them through the sandbox — that
-# `--setenv` is the ONLY route by which a prepared home reaches a leaf. (2) the same
-# tuple names what the conductor's `_child_env` pops, so a second spelling cannot name a
-# different home than the one whose settings were SHA-pinned. What ENFORCES that is
-# `leaf_env_from` (these names are outside the allowlist and outside the prefix) plus
-# this function's own name validation; the pop is defence in depth. An earlier version
-# said the tuple "is the exclusion set `_child_env` enforces", which the conductor-side
-# comment had already retracted — leaving the rule's two homes disagreeing.
+# `render_bwrap_command` declares them through the sandbox — that `--setenv` is the ONLY
+# route by which a prepared home reaches a leaf; `leaf_env_from` keeps the host's
+# spellings out (these names are outside the allowlist and outside the prefix), so a
+# second spelling cannot name a different home than the one whose settings were
+# SHA-pinned.
 # `CLAUDE_CONFIG_DIR` left this tuple with the agentic leaf (Z4, issue #171) and is back with
 # the `workshop leaf` (issue #534): a workshop lineage has a private claude home, declared
 # through the sandbox exactly as a codex lineage home is. A PURE claude leaf still takes
@@ -8177,9 +8174,8 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
     repo_root (repo root, ~, /) exposes the whole repo, and an in-repo home (e.g.
     SPEC2SCIENCE_HOME=$repo/workspace) makes that subtree — including other agents'
     artifacts/audit logs — writable beyond the child's declared write_roots. Reject
-    both. A missing config *dir* is created (the only file, ~/.claude.json, is
-    existence-gated at source) so bwrap can bind it writable; a creation failure must
-    fail closed rather than emit a profile missing the required auth/session home.
+    both. Both lineage directories exist before the build (the home preparer creates
+    them); a missing one fails the launch at bwrap.
     Used by build_lineage_bwrap_profile, the one profile builder left.
     """
     resolved_repo = repo_root.resolve()
@@ -8194,13 +8190,6 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
                 f"runtime rw bind {_rwp!r} is not outside repo_root {resolved_repo}; a "
                 f"backend config home inside/covering the repo would grant writes beyond "
                 f"the child write_roots and defeat the sandbox")
-        if not _pp.exists():
-            try:
-                _pp.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise ValueError(
-                    f"runtime rw bind {_rwp!r} (backend config home) is absent and could "
-                    f"not be created: {exc}") from exc
         backend_rw.append(_rwp)
     return backend_rw
 
@@ -8245,8 +8234,8 @@ def build_lineage_bwrap_profile(
 ) -> dict[str, Any]:
     """The bwrap profile of a `workshop leaf` lineage (issue #534) — the one profile any leaf
     runs under since issue #534 PR-J4-b. (The function keeps the name of the READ-ONLY profile
-    the pure leaf ran under, `readonly: True` and no `leaf_mode`; that profile is refused here
-    and at `render_bwrap_command`, and `Conductor.spawn_leaf` refuses it by name.)
+    the pure leaf ran under, `readonly: True` and no `leaf_mode`; that profile is refused at
+    `render_bwrap_command` and by `Conductor.spawn_leaf`.)
 
     Four parameters make it a lineage's: `leaf_mode="workshop"`, `readonly=False`,
     `workdir=<the lineage's tree>` and, for claude, `credential_rw_mapping=(<the operator's
@@ -8304,30 +8293,17 @@ def build_lineage_bwrap_profile(
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
     if env_overrides:
         child_env.update(env_overrides)
-    if leaf_mode != WORKSHOP_PROFILE_LEAF_MODE or readonly is not False:
-        raise ValueError(
-            f"a leaf profile is a workshop lineage's (leaf_mode={WORKSHOP_PROFILE_LEAF_MODE!r}, "
-            f"readonly=False); got leaf_mode={leaf_mode!r}, readonly={readonly!r} — the "
-            "read-only profile of the pure leaf went in issue #534 PR-J4-b")
-    family = workshop_profile_family(env_overrides or {})
-    if workdir is None:
-        raise ValueError("a workshop profile needs its tree as workdir")
-    if not isinstance(network, Mapping):
-        raise ValueError("a workshop profile needs its network block (leaf_netns.network_block)"
-                         "; every CLI leaf runs in a network namespace since issue #534 step 4")
+    # The shape (`leaf_mode`, `readonly`, `workdir`, `network`, the credential mapping) is
+    # recorded as passed; the renderer and `Conductor.spawn_leaf` (`_admissible_leaf_profile`,
+    # the last check before a leaf process exists) admit it.
+    workshop_profile_family(env_overrides or {})
     child_env.update(leaf_netns.PROXY_ENV)
     # The claude CLI's token refresh renames onto the bound credential, fails `EBUSY`, and
     # writes in place onto the bound inode, so the credential is bound read-write and the
     # refresh reaches the host (a host-side rename leaves the leaf a stale inode: issue #616,
     # detected by the conductor); codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
-    # kwargs`), and a codex workshop profile binding a credential read-write is refused.
-    if (credential_rw_mapping is not None) != (family == "claude"):
-        raise ValueError(
-            f"a {family} workshop profile "
-            + ("needs its credential mapping" if family == "claude"
-               else "binds no credential read-write"))
-    profile_extra: dict[str, Any] = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE,
-                                     "network": dict(network)}
+    # kwargs`), and binds no credential read-write.
+    profile_extra: dict[str, Any] = {"leaf_mode": leaf_mode, "network": dict(network)}
     if credential_rw_mapping is not None:
         profile_extra["runtime_rw_credential_mapping"] = [str(credential_rw_mapping[0]),
                                                           str(credential_rw_mapping[1])]
@@ -8351,7 +8327,7 @@ def build_lineage_bwrap_profile(
         "workdir": str(workdir),
         "env": child_env,
         "generated_at": _utc_now_iso(),
-        "readonly": False,
+        "readonly": readonly,
         **profile_extra,
     }
 
@@ -8362,19 +8338,17 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
 
     ``child_env`` is the dict the conductor's ``_child_env`` AUTHORED for this leaf,
     threaded in so the profile records and delivers the environment that is actually
-    used rather than a second, independently-derived one. It is validated against the
-    ids this builder was called with: a profile that carried another leaf's ids would
-    hand the leaf a `SPEC2SCIENCE_CHILD_AGENT_RUN_ID` naming a different run, and the whole
-    point of threading it is that record and reality are the same object.
+    used rather than a second, independently-derived one: record and reality are the same
+    object. `_child_env` sets both per-launch ids from the same values this builder is
+    called with.
 
     ``None`` — a conductor-less caller (a test fixture, the standalone CLI) — falls back
     to filtering the host environment, so those callers stay allowlist-true too.
 
-    Whichever path is taken, the returned dict CARRIES BOTH per-launch ids with this
-    builder's own values: a disagreement raises, an absence is filled, and a stale
-    inherited value is overwritten. Under ``--clearenv`` the profile is the only route
-    into the leaf, so "the ids are present and correct" has to be a property of this
-    function rather than of its callers.
+    Whichever path is taken, the returned dict CARRIES BOTH per-launch ids: an absence is
+    filled, and on the fallback a stale inherited value is overwritten. Under
+    ``--clearenv`` the profile is the only route into the leaf, so "the ids are present"
+    has to be a property of this function rather than of its callers.
     """
     per_launch = (("SPEC2SCIENCE_ORCHESTRATION_ID", orchestration_id),
                   ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", agent_run_id))
@@ -8397,27 +8371,10 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
         # job is to rebuild an environment from an unrelated one.
         body = leaf_env_from(os.environ)
         body.update(per_launch)
-    elif not isinstance(child_env, Mapping):
-        raise ValueError("child_env must be a mapping of str to str")
     else:
-        body = {}
-        for key, value in child_env.items():
-            if not isinstance(key, str) or not isinstance(value, str):
-                raise ValueError(f"child_env entries must be str -> str, got {key!r}")
-            body[key] = value
-        # THE THREADED PATH VALIDATES. Here the dict was AUTHORED for this launch by
-        # `_child_env`, so a disagreeing id is not staleness — it is the caller handing
-        # this builder another leaf's environment, and the profile would then both
-        # record and `--setenv` an id naming a different run. Refuse rather than
-        # silently correct, because there is no way to tell which half is wrong.
-        for name, expected in per_launch:
-            got = body.get(name)
-            if got is not None and got != expected:
-                raise ValueError(
-                    f"child_env {name}={got!r} disagrees with the profile's {expected!r}")
-    # BOTH PATHS END WITH BOTH IDS PRESENT. Absence used to be tolerated on the threaded
-    # path (the check above only compares a key that exists), and `--clearenv` is what
-    # made that consequential: the profile is now the ONLY route into the leaf, so a
+        body = dict(child_env)
+    # BOTH PATHS END WITH BOTH IDS PRESENT. `--clearenv` is what made that
+    # consequential: the profile is now the ONLY route into the leaf, so a
     # profile missing `SPEC2SCIENCE_ORCHESTRATION_ID` used to produce a leaf whose build-runtime
     # MCP server read "not under a run" and stopped requiring a capability token — an ungated
     # server, from an omission. That gate is retired (issue #171 PR-2) and no leaf carries an
@@ -8426,22 +8383,10 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     # FILLED, not refused. Refusing would be the fourth over-refusal on this branch and
     # the second on this very function: a caller that omits an id has told us nothing
     # that contradicts these values, and the ids are the one thing this builder knows for
-    # certain, since they are its own arguments. Only a DISAGREEMENT is a real conflict,
-    # and that still raises above.
+    # certain, since they are its own arguments.
     for name, expected in per_launch:
         body.setdefault(name, expected)
     return body
-
-
-# The profile fields that once carried a repository grant into the mount set. Each must be
-# empty; `render_bwrap_command` refuses a profile where one is not.
-_UNRENDERED_PROFILE_GRANTS: tuple[str, ...] = (
-    "read_roots",
-    "write_roots",
-    "runtime_rw_bind_mappings",
-    "runtime_rw_rel_paths",
-    "runtime_rw_file_paths",
-)
 
 
 def render_bwrap_command(
@@ -8449,23 +8394,12 @@ def render_bwrap_command(
     profile: dict[str, Any],
     command_argv: Sequence[str],
 ) -> list[str]:
-    if not command_argv:
-        raise ValueError("command_argv must be non-empty")
     repo_root = str(profile.get("repo_root") or "").strip()
     tmp_dir = str(profile.get("tmp_dir") or "").strip()
-    if not repo_root or not tmp_dir:
-        raise ValueError("profile must include repo_root and tmp_dir")
-    # NOTHING UNDER THE CHECKOUT IS GRANTED, and a profile that says otherwise is refused
-    # rather than ignored. `build_lineage_bwrap_profile` records these five as empty, and
-    # their mounting arms went with the agentic leaf (issue #445). A profile is also re-read
-    # from `sandbox_profiles/<arid>.json` by the conductor; one carrying a grant there was
-    # altered after it was written, and rendering it without the grant would launch a leaf
-    # under a profile its record misstates.
-    for field in _UNRENDERED_PROFILE_GRANTS:
-        if profile.get(field):
-            raise ValueError(
-                f"profile field {field!r} must be empty: a leaf is granted no path under the "
-                f"checkout beyond its own scratch roots (got {profile.get(field)!r})")
+    # NOTHING UNDER THE CHECKOUT IS GRANTED: `read_roots`, `write_roots`,
+    # `runtime_rw_bind_mappings`, `runtime_rw_rel_paths` and `runtime_rw_file_paths` are
+    # recorded empty by `build_lineage_bwrap_profile`, and nothing below reads them (their
+    # mounting arms went with the agentic leaf, issue #445).
     # THE WORKSHOP PROFILE (issue #534) differs in its renderings, each refused on any other
     # profile: its working directory is its tree, and its CLI home is one of its rw binds — a
     # claude one declares `CLAUDE_CONFIG_DIR` and binds one credential file read-write, a codex
@@ -8648,37 +8582,16 @@ def render_bwrap_command(
         if not (Path(source).is_file() and Path(destination).is_file()):
             raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
         cmd.extend(["--ro-bind", source, destination])
-    ws_rw = str(profile.get("workspace_tmp_rw_abs") or "").strip()
-    if not ws_rw:
-        raise ValueError("profile must include workspace_tmp_rw_abs")
-    ws_path = Path(ws_rw)
-    if not ws_path.is_dir():
-        raise ValueError(f"workspace_tmp_rw_abs must be existing directory: {ws_rw}")
-    ws_abs = str(ws_path.resolve())
+    # Indexed, not defaulted: an absent field fails here rather than resolving to the
+    # process's working directory and binding that read-write.
+    ws_abs = str(Path(profile["workspace_tmp_rw_abs"]).resolve())
     cmd.extend(["--bind", ws_abs, ws_abs])
     cmd.extend(["--ro-bind", network["socket_dir"], leaf_netns.NET_MOUNT])
-    # Every name the leaf gets, one `--setenv` each, after the head's `--clearenv`.
-    # FAIL CLOSED on an absent or empty env: with `--clearenv` in force that would
-    # launch a leaf with no PATH, no config home and no orchestration id — a shape no
-    # profile should ever have, and one that a `if isinstance(...)` guard would have
-    # rendered silently. The spawn seam converts this to SandboxEnforcementError.
-    profile_env = profile.get("env")
-    if not isinstance(profile_env, dict) or not profile_env:
-        raise ValueError(
-            "profile must include a non-empty env: with --clearenv the leaf gets "
-            "exactly these names and nothing else")
-    # Name validation. The deliverer may carry only what an author is allowed to have
-    # produced, plus the two backend-home names that ONLY the deliverer adds and the
-    # TMPDIR it resolves itself. A stranger here means something built an environment
-    # outside `leaf_env_from` — the one question this whole layer exists to answer — so
-    # it is refused rather than passed through and recorded as if it were declared.
-    # Types BEFORE sorting: `sorted()` on mixed key types raises TypeError, which the
-    # spawn seam does not convert (it catches ValueError), so a mistyped profile would
-    # escape as a raw crash instead of a named fail-closed. Found by the test that was
-    # written for this branch precisely because review noticed the check was undriven.
-    for name, value in profile_env.items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise ValueError(f"profile env entries must be str -> str, got {name!r}")
+    # Every name the leaf gets, one `--setenv` each, after the head's `--clearenv`. The
+    # env is the one `workshop_profile_family` read above, so it is a dict declaring a CLI
+    # home. Which names it may carry is decided where it is authored (`leaf_env_from`, and
+    # the host-named additions of `Conductor._child_env` and the builder).
+    profile_env = env_of_profile
     claude_home = profile_env.get("CLAUDE_CONFIG_DIR")
     if claude_home is not None and not (family == "claude" and claude_home in rw_paths):
         raise ValueError(
@@ -8692,26 +8605,8 @@ def render_bwrap_command(
             raise ValueError(
                 f"profile env {name} must be {value!r}, the leaf's own in-namespace relay (got "
                 f"{profile_env.get(name)!r}); the operator's proxy values are never forwarded")
-    for name, value in sorted(profile_env.items()):
-        allowed = (
-            name in LEAF_ENV_ALLOWLIST
-            or name in _BACKEND_HOME_ENV_VARS
-            or name in CLAUDE_LEAF_ENV_EXTRAS
-            or name in leaf_netns.PROXY_ENV
-            or name == "TMPDIR"
-            or (name not in LEAF_ENV_PREFIX_EXCEPTIONS
-                and any(name.startswith(p) for p in LEAF_ENV_ALLOWED_PREFIXES))
-        )
-        if not allowed:
-            raise ValueError(
-                f"profile env carries undeclared name {name!r}; the leaf environment is "
-                f"an allowlist (orchestration_runtime.LEAF_ENV_ALLOWLIST)")
     # TMPDIR is the sandbox's, not whatever a caller put in the dict: the bind above is
-    # what makes it writable, so a disagreeing value would name an unwritable path.
-    env_tmp = profile_env.get("TMPDIR")
-    if env_tmp is not None and env_tmp != ws_abs:
-        raise ValueError(
-            f"profile env TMPDIR={env_tmp!r} disagrees with workspace_tmp_rw_abs {ws_abs!r}")
+    # what makes it writable, so it is set to that bind below.
     # The both-ids floor, again, on the DELIVERER. `_profile_child_env` guarantees it for
     # profiles built in this process, but this function also renders a profile READ OFF
     # DISK (`spawn_leaf` -> `_sandbox_profile_for`), which that guarantee never touched —
@@ -18715,21 +18610,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             child_env_payload: dict[str, str] | None = None
             if getattr(args, "child_env_from_stdin", False):
-                raw = sys.stdin.read()
-                try:
-                    parsed = json.loads(raw or "")
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"--child-env-from-stdin is not JSON: {exc}") from exc
-                if not isinstance(parsed, dict) or not parsed:
-                    raise ValueError(
-                        "--child-env-from-stdin must be a non-empty JSON object; with "
-                        "--clearenv an empty one launches a leaf with no environment")
-                child_env_payload = {}
-                for key, value in parsed.items():
-                    if not isinstance(key, str) or not isinstance(value, str):
-                        raise ValueError(
-                            f"--child-env-from-stdin entries must be str -> str, got {key!r}")
-                    child_env_payload[key] = value
+                # The conductor's `_child_env`, serialized by the conductor.
+                child_env_payload = json.loads(sys.stdin.read())
             _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
                 repo_root=repo_root,

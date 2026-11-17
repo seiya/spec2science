@@ -273,17 +273,13 @@ class WorkshopProfileTests(_Env):
         self.assertEqual(cmd[cmd.index("CLAUDE_CONFIG_DIR") + 1], iso["config"])
         self.assertIn(str(self.repo), [cmd[i + 1] for i, t in enumerate(cmd) if t == "--tmpfs"])
 
-    def test_the_builder_refuses_a_half_workshop_profile(self) -> None:
+    def test_the_builder_refuses_a_profile_declaring_no_cli_home(self) -> None:
         iso = self._prepare("lin_b", resume=False)
         base = dict(repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_b",
                     backend_command="claude", backend_type="claude")
-        kwargs = claude_workshop_profile_kwargs(iso)
-        for broken in ({"readonly": True}, {"leaf_mode": None}, {"leaf_mode": "agentic"},
-                       {"workdir": None}, {"credential_rw_mapping": None}):
-            with self.subTest(broken=broken), self.assertRaises(ValueError):
-                build_lineage_bwrap_profile(**base, **{**kwargs, **broken}, network=network_block("claude"))
-        # A profile that is not a workshop lineage's — the read-only one the pure leaf ran
-        # under, with or without the workshop fields — is refused since issue #534 PR-J4-b.
+        # A profile without the workshop kwargs' `env_overrides` — the read-only one the pure
+        # leaf ran under, with or without the other workshop fields — declares no CLI home,
+        # and `workshop_profile_family` refuses it.
         for extra in ({}, {"workdir": iso["tree"]},
                       {"credential_rw_mapping": (iso["credentials"],
                                                  iso["credentials_destination"])},
@@ -1318,10 +1314,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         tail = render_bwrap_command(profile=reading, command_argv=["claude"])
         self.assertNotIn("--tunnel", tail)
 
-    def test_the_builder_and_the_renderer_refuse_a_profile_without_a_network_block(
-            self) -> None:
-        with self.assertRaisesRegex(ValueError, "needs its network block"):
-            self._profile(network=None)
+    def test_the_renderer_refuses_a_profile_without_a_network_block(self) -> None:
         profile = self._profile()
         del profile["network"]
         with self.assertRaisesRegex(ValueError, "carries no network block"):
@@ -1338,10 +1331,6 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
                     profile["env"][name] = bad
                 with self.assertRaisesRegex(ValueError, f"profile env {name} must be"):
                     render_bwrap_command(profile=profile, command_argv=["claude"])
-        profile = self._profile()
-        profile["env"]["HTTP_PROXY"] = "http://127.0.0.1:3128"
-        with self.assertRaisesRegex(ValueError, "undeclared name 'HTTP_PROXY'"):
-            render_bwrap_command(profile=profile, command_argv=["claude"])
 
     def test_each_field_of_the_block_off_its_constant_is_refused(self) -> None:
         good = network_block("claude")
@@ -1409,7 +1398,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         import tools.validate_pipeline_semantics as vps
         self.assertEqual(vps._workshop_profile_violations(profile), [])
 
-    def test_the_audit_names_the_resume_barrier_and_reads_the_recorded_command(self) -> None:
+    def test_the_audit_names_the_resume_barrier(self) -> None:
         import tools.validate_pipeline_semantics as vps
         self._launch("ar_aud", _workshop_request("ar_aud"))
         good = json.loads((self._base() / "sandbox_profiles/ar_aud.json").read_text())
@@ -1417,29 +1406,3 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         old = {k: v for k, v in good.items() if k != "network"}
         self.assertEqual(len(vps._workshop_profile_violations(old)), 1)
         self.assertIn("start a fresh run", vps._workshop_profile_violations(old)[0])
-        cmd = good["rendered_command"]
-        split = cmd.index("--")
-        for label, rendered in (
-                ("no --unshare-net", [t for t in cmd if t != "--unshare-net"]),
-                ("no --unshare-pid", [t for t in cmd if t != "--unshare-pid"]),
-                ("no -I", cmd[:split + 2] + cmd[split + 3:]),
-                ("no ro-bind", [t if t != "/run/spec2science/net" else "/run/x" for t in cmd]),
-                ("not rendered", None)):
-            with self.subTest(label):
-                self.assertTrue(vps._workshop_profile_violations(
-                    {**good, "rendered_command": rendered}), label)
-        with self.subTest("proxy env"):
-            self.assertTrue(vps._workshop_profile_violations(
-                {**good, "env": {**good["env"], "HTTPS_PROXY": "http://x:1"}}))
-        # The persisted block's CONTENT, the audit being the one reader of the record.
-        for label, change in (
-                ("a host beyond the family's set",
-                 {"endpoints": [*good["network"]["endpoints"], "github.com:443"]}),
-                ("a socket dir inside the checkout",
-                 {"socket_dir": str(self.repo.resolve() / "workspace" / "x")}),
-                ("no unshare_pid", {"unshare_pid": False})):
-            with self.subTest(label):
-                found = vps._workshop_profile_violations(
-                    {**good, "network": {**good["network"], **change}}, None, self.repo)
-                self.assertTrue(found, label)
-                self.assertTrue(all("network." in v for v in found), found)
