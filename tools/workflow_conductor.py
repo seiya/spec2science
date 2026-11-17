@@ -6285,8 +6285,9 @@ class Conductor:
         (`_read_toolchain`, issue #284). Authoring it here removes a
         class of generate regenerate-loops (Makefile-shape failures) and the long Makefile
         contract the generate leaf would otherwise internalize, and makes the build
-        reproducible. Mirrors `_write_lineage` (runtime-owned artifact). Scoped to
-        build_system=make + language=fortran; the caller (`_conductor_authors_makefile`) and the
+        reproducible. Mirrors `_write_lineage` (runtime-owned artifact). Scoped to a toolchain
+        whose build system and language both declare `control_file` (make with fortran or
+        cuda_cpp today); the caller (`_conductor_authors_makefile`) and the
         launch gate decide that a node's toolchain has a control-file writer. The
         post_generate validators still run against this file as a safety net.
 

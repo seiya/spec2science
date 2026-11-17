@@ -566,8 +566,9 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
     if ctx.run_unavailable is not None or ctx.launch_argv_prefix is None:
         return _result(False, category=CATEGORY_RUN_UNAVAILABLE,
                        findings=str(ctx.run_unavailable or "no launch shape"))
-    # The binary runs inside the sandbox; a name that is not a built binary is the launch's
-    # own failure, answered as the run's result.
+    # The binary is joined under `staged_bin` and not checked: an absolute name or a `..` path
+    # runs whatever it names inside the sandbox, which the leaf's own built binary can run
+    # anyway, and the result is feedback no gate reads.
     binary_path = ctx.paths.staged_bin / args["binary"]
     cases_name = args.get("cases_file", "spec.ir.yaml")
     # The conductor's own (unsandboxed) process opens this path, so it stays inside the tree.

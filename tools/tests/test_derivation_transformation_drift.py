@@ -1439,11 +1439,11 @@ PINNED_RENDER: dict[str, str] = {
     # gate (`target_profile.toolchain_servable_reasons`) refuses before any phase, and
     # `_control_file_module` / `_control_file_rules` stop renaming the registry's own exception;
     # a servable node's rendered control file and runner do not move. (Measured by diffing
-    # `render_tuple()` against main 31dfcbf1's: those three rows and no other; review round 1
-    # then corrected `_write_makefile`'s docstring.) The digest
+    # `render_tuple()` against main 31dfcbf1's: those three rows and no other; review rounds 1
+    # and 2 then corrected `_write_makefile`'s docstring.) The digest
     # `render-22` shipped with at 31dfcbf1:
     "render-22@31dfcbf1": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
-    "render-22": "236b509a2daebe2739503937fa243c2c26713089c8171e84c05b826d06db43a6",
+    "render-22": "00331baec229ae2b3c39120b77be635a17e9f91b38daf18d04e2b1d34072449e",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
