@@ -13483,7 +13483,7 @@ class SignatureDriftCanaryTests(unittest.TestCase):
 
 
 class ResolveDependencyFactsTests(unittest.TestCase):
-    """_resolve_dependency_facts mirrors _verify_dep_stage's selection — since issue #250
+    """_resolve_dependency_facts mirrors _verify_dep_stage_detail's selection — since issue #250
     PR-2 the dependency's SELECTED certified outputs under its derivation key — and is
     best-effort (never raises; leaf / unresolved → [])."""
 
@@ -13520,7 +13520,7 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
     def test_resolves_on_disk_selection(self) -> None:
         from tools.orchestration_runtime import (
-            _resolve_dependency_facts, _verify_dep_stage,
+            _resolve_dependency_facts, _verify_dep_stage_detail,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -13542,8 +13542,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertEqual(facts[0]["aggregate_verdict_ref"], verdict_ref)
             # Selection coincides with the readiness gate's choice.
             self.assertTrue(
-                _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
-                                  "aggregate_verdict", target=_TP))
+                _verify_dep_stage_detail(repo_root, "component", "dep_base", "0.1.0",
+                                         "aggregate_verdict", target=_TP)[0])
 
     @staticmethod
     def _dep_ir_signature(symbol: str, args: list[dict]) -> str:
@@ -13653,11 +13653,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertNotIn("published_operations", facts[0])
 
     def test_verdict_bound_to_chosen_binary_else_skipped(self) -> None:
-        """Mirror _verify_dep_stage's Codex-round-24 binding: when the latest binary has
+        """Mirror _verify_dep_stage_detail's Codex-round-24 binding: when the latest binary has
         no verdict and only an OLDER binary's verdict exists, the dep does not resolve (the
         orientation hint must not borrow an unbound verdict)."""
         from tools.orchestration_runtime import (
-            _resolve_dependency_facts, _verify_dep_stage,
+            _resolve_dependency_facts, _verify_dep_stage_detail,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -13676,8 +13676,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                 [{"node_key": "component/dep_base@0.1.0"}])
             # The readiness gate rejects this (verdict not bound to newer binary)...
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_base", "0.1.0",
-                                  "aggregate_verdict", target=_TP))
+                _verify_dep_stage_detail(repo_root, "component", "dep_base", "0.1.0",
+                                         "aggregate_verdict", target=_TP)[0])
             # ...and the orientation resolver agrees: the dep is skipped.
             self.assertEqual(
                 _resolve_dependency_facts(
@@ -17294,7 +17294,7 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
 
     def test_mtime_preserved_content_change_invalidates_cache(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         import os
         with tempfile.TemporaryDirectory() as tmp:
@@ -17309,7 +17309,7 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
             cat1 = _load_spec_catalog(str(repo_root.resolve()))
             self.assertEqual(
-                _resolve_dep_version(cat1, "component", "dep_a", ">=0.1.0"),
+                (_matching_dep_versions(cat1, "component", "dep_a", ">=0.1.0") or (None,))[0],
                 "0.1.0",
             )
             # Capture mtime, edit content, restore mtime — simulates
@@ -17325,7 +17325,7 @@ class CatalogCacheContentKeyedTests(unittest.TestCase):
                              "precondition: mtime is preserved across the edit")
             cat2 = _load_spec_catalog(str(repo_root.resolve()))
             self.assertEqual(
-                _resolve_dep_version(cat2, "component", "dep_a", ">=0.1.0"),
+                (_matching_dep_versions(cat2, "component", "dep_a", ">=0.1.0") or (None,))[0],
                 "0.2.0",
                 "content-keyed cache must observe the new contents even though "
                 "mtime is unchanged",
@@ -17428,7 +17428,7 @@ class CandidateOrderingAndFilterTests(unittest.TestCase):
                          ir_id="dep-a_20260601_001", pipeline_id="dep-a_20260601_001")
             self.assertTrue(self._certified(repo_root, "compile")[0])
             cat = repo_root / "spec" / "registry" / "spec_catalog.yaml"
-            doc = ort._require_yaml().safe_load(cat.read_text(encoding="utf-8"))
+            doc = yaml.safe_load(cat.read_text(encoding="utf-8"))
             entry = dict(next(e for e in doc["specs"] if e.get("spec_id") == "dep_a"))
             other = "spec/component/elsewhere/dep_a"
             (repo_root / other).mkdir(parents=True)
@@ -17438,7 +17438,7 @@ class CandidateOrderingAndFilterTests(unittest.TestCase):
             entry.update({"controlled_spec_path": f"{other}/controlled_spec.md",
                           "tests_path": f"{other}/tests.md", "deps_path": f"{other}/deps.yaml"})
             doc["specs"].append(entry)
-            cat.write_text(ort._require_yaml().safe_dump(doc), encoding="utf-8")
+            cat.write_text(yaml.safe_dump(doc), encoding="utf-8")
             ort._load_spec_catalog.cache_clear()
             self.assertEqual(self._certified(repo_root, "compile")[1]["reason"],
                              "spec_ref_unresolved")
@@ -17518,7 +17518,7 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
         )
 
     def test_touching_older_passing_ir_meta_does_not_override_newer_fail(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
         import os, time
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -17538,13 +17538,14 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
             time.sleep(0.01)
             os.utime(old / "ir_meta.json")
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "ir_ref", target=_TP),
+                _verify_dep_stage_detail(repo_root, "component", "dep_a", "0.1.0", "ir_ref",
+                                         target=_TP)[0],
                 "older artifact touched to a newer mtime must NOT override the "
                 "newer-by-runtime-id failing artifact",
             )
 
     def test_touching_older_pipeline_dir_does_not_override(self) -> None:
-        from tools.orchestration_runtime import _verify_dep_stage, _load_spec_catalog
+        from tools.orchestration_runtime import _verify_dep_stage_detail, _load_spec_catalog
         import os, time
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -17566,7 +17567,8 @@ class ArtifactFreshnessIdBasedOrderingTests(unittest.TestCase):
                 if f.is_file():
                     os.utime(f)
             self.assertFalse(
-                _verify_dep_stage(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref", target=_TP),
+                _verify_dep_stage_detail(repo_root, "component", "dep_a", "0.1.0", "pipeline_ref",
+                                         target=_TP)[0],
                 "touched-newer mtime on old pipeline must not override newer "
                 "(by runtime id) pipeline's failing binary_meta",
             )
@@ -18349,7 +18351,7 @@ class SetStatusPassReplayIdempotencyTests(unittest.TestCase):
 
 class DependencyIdentifierPathSafetyTests(unittest.TestCase):
     """Codex round 15 F2: spec_kind / spec_id / spec_version values from
-    deps.yaml and spec_catalog.yaml are interpolated into workspace paths.
+    deps.yaml are interpolated into workspace paths.
     Path-traversal characters (`..`, `/`, `\\`) and otherwise unsafe tokens
     must be rejected before path construction so a malformed entry cannot
     steer the verifier outside the dependency subtree."""
@@ -18395,49 +18397,6 @@ class DependencyIdentifierPathSafetyTests(unittest.TestCase):
                 meta["dependency_readiness"]["direct_dependency_compile_readiness"],
                 "path-traversal component_id must persist fail-closed",
             )
-
-    def test_spec_catalog_path_traversal_in_spec_id_is_skipped(self) -> None:
-        """A catalog entry with unsafe spec_id must not be indexed; resolution
-        of even legitimate constraints for that id then yields None."""
-        from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n"
-                "    spec_id: \"../../etc/passwd\"\n"
-                "    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            cat = _load_spec_catalog(str(repo_root.resolve()))
-            # The unsafe entry must NOT be present in the indexed catalog.
-            self.assertNotIn(("component", "../../etc/passwd"), cat)
-            # Resolving any constraint for that id returns None.
-            self.assertIsNone(
-                _resolve_dep_version(cat, "component", "../../etc/passwd", ">=0.1.0"),
-            )
-
-    def test_spec_catalog_path_traversal_in_version_is_skipped(self) -> None:
-        from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n"
-                "    spec_version: \"0.1.0/../../etc\"\n",
-                encoding="utf-8",
-            )
-            _load_spec_catalog.cache_clear()
-            cat = _load_spec_catalog(str(repo_root.resolve()))
-            # No entry indexed for dep_a because the only version was unsafe.
-            self.assertNotIn(("component", "dep_a"), cat)
 
     def test_safe_token_unit(self) -> None:
         from tools.orchestration_runtime import _is_safe_path_token as S
@@ -18764,7 +18723,7 @@ class SemverParserPrereleaseBuildTests(unittest.TestCase):
         """Higher-level: catalog containing `1.0.0-rc1` must be ordered and
         matchable by version_constraint expressions."""
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -18780,12 +18739,12 @@ class SemverParserPrereleaseBuildTests(unittest.TestCase):
             catalog = _load_spec_catalog(str(repo_root.resolve()))
             # 1.0.0 > 1.0.0-rc1, so highest-match for any range covering both is 1.0.0.
             self.assertEqual(
-                _resolve_dep_version(catalog, "component", "dep_a", ">=1.0.0-rc1"),
+                (_matching_dep_versions(catalog, "component", "dep_a", ">=1.0.0-rc1") or (None,))[0],
                 "1.0.0",
             )
             # Exact match should pick the prerelease entry.
             self.assertEqual(
-                _resolve_dep_version(catalog, "component", "dep_a", "==1.0.0-rc1"),
+                (_matching_dep_versions(catalog, "component", "dep_a", "==1.0.0-rc1") or (None,))[0],
                 "1.0.0-rc1",
             )
 
@@ -19129,7 +19088,7 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
 
     def test_catalog_edit_within_process_changes_resolved_version(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19143,7 +19102,7 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
             # First load: only 0.1.0 present → constraint resolves to 0.1.0.
             cat1 = _load_spec_catalog(str(repo_root.resolve()))
             self.assertEqual(
-                _resolve_dep_version(cat1, "component", "dep_a", ">=0.1.0 <1.0.0"),
+                (_matching_dep_versions(cat1, "component", "dep_a", ">=0.1.0 <1.0.0") or (None,))[0],
                 "0.1.0",
             )
             # Edit catalog to add another matching version → now ambiguous.
@@ -19161,7 +19120,7 @@ class CatalogCacheInvalidationTests(unittest.TestCase):
             # version (not None). Validates that the cache invalidated AND
             # the new resolver semantics picked 0.2.0.
             self.assertEqual(
-                _resolve_dep_version(cat2, "component", "dep_a", ">=0.1.0 <1.0.0"),
+                (_matching_dep_versions(cat2, "component", "dep_a", ">=0.1.0 <1.0.0") or (None,))[0],
                 "0.2.0",
                 "catalog edit must invalidate cache and resolver picks highest match",
             )
@@ -19599,7 +19558,7 @@ class VersionConstraintResolutionTests(unittest.TestCase):
 
     def test_constraint_matches_unique_version(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19607,7 +19566,7 @@ class VersionConstraintResolutionTests(unittest.TestCase):
             _load_spec_catalog.cache_clear()
             catalog = _load_spec_catalog(str(repo_root.resolve()))
             # Constraint >=0.1.0 <0.2.0 should match only 0.1.0.
-            resolved = _resolve_dep_version(catalog, "component", "dep_a", ">=0.1.0 <0.2.0")
+            resolved = (_matching_dep_versions(catalog, "component", "dep_a", ">=0.1.0 <0.2.0") or (None,))[0]
             self.assertEqual(resolved, "0.1.0")
 
     def test_range_constraint_survives_catalog_publishing_new_version(self) -> None:
@@ -19660,28 +19619,28 @@ class VersionConstraintResolutionTests(unittest.TestCase):
         resolver picks the highest (descending semver order), keeping
         existing specs launchable across catalog growth."""
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._catalog_with_versions(repo_root, ["0.1.0", "0.2.0"])
             _load_spec_catalog.cache_clear()
             catalog = _load_spec_catalog(str(repo_root.resolve()))
-            resolved = _resolve_dep_version(catalog, "component", "dep_a", ">=0.1.0 <1.0.0")
+            resolved = (_matching_dep_versions(catalog, "component", "dep_a", ">=0.1.0 <1.0.0") or (None,))[0]
             self.assertEqual(resolved, "0.2.0",
                              "multi-match constraint must pick highest catalog version")
 
     def test_no_match_constraint_fails_closed(self) -> None:
         from tools.orchestration_runtime import (
-            _load_spec_catalog, _resolve_dep_version,
+            _load_spec_catalog, _matching_dep_versions,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._catalog_with_versions(repo_root, ["0.1.0"])
             _load_spec_catalog.cache_clear()
             catalog = _load_spec_catalog(str(repo_root.resolve()))
-            resolved = _resolve_dep_version(catalog, "component", "dep_a", ">=2.0.0")
-            self.assertIsNone(resolved)
+            self.assertEqual(
+                _matching_dep_versions(catalog, "component", "dep_a", ">=2.0.0"), ())
 
     def test_constraint_drives_workspace_lookup_in_full_verify(self) -> None:
         """End-to-end: deps.yaml declares >=0.1.0 <0.2.0, catalog has both 0.1.0
@@ -20134,148 +20093,13 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
             self.assertTrue(r["direct_dependency_execution_readiness"])
 
 
-class PyYAMLScopedRequirementTests(unittest.TestCase):
-    """Codex round 27 F1: PyYAML is required only for the deps-parsing code
-    paths. Recovery commands (set-status, record-timeout) must continue to
-    work when the package is missing — collapsing them under a module-top
-    `raise ImportError` expanded the blast radius from a localized feature
-    failure to a full control-plane outage."""
-
-    def _missing_yaml_resolver(self) -> Callable[[], Any]:  # type: ignore[name-defined]
-        from tools.orchestration_runtime import _require_yaml as _orig  # noqa: F401
-
-        def _raise() -> Any:
-            raise RuntimeError(
-                "tools.orchestration_runtime: PyYAML is required for parsing "
-                "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`."
-            )
-
-        return _raise
-
-    def test_require_yaml_raises_with_install_hint(self) -> None:
-        from tools.orchestration_runtime import _require_yaml
-        # When PyYAML is actually installed (the test environment), this
-        # returns the module without raising. We assert the contract by
-        # confirming the docstring identifies it as the install-required
-        # resolver and that the returned object exposes `safe_load`.
-        mod = _require_yaml()
-        self.assertTrue(hasattr(mod, "safe_load"))
-
-    def test_set_status_works_without_pyyaml(self) -> None:
-        """set-status MUST NOT import yaml. Patching `_require_yaml` to a
-        raising stub then exercising set-status confirms the recovery
-        path is independent of PyYAML availability."""
-        from tools.orchestration_runtime import (
-            _require_yaml as _live_resolver,  # noqa: F401
-            update_orchestration_status,
-        )
-        import tools.orchestration_runtime as _rt
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root,
-                orchestration_id="orch_recover",
-                spec_ref="spec/component/x",
-            )
-            with patch.object(_rt, "_require_yaml", self._missing_yaml_resolver()):
-                update_orchestration_status(
-                    repo_root=repo_root,
-                    orchestration_id="orch_recover",
-                    status="fail_closed",
-                    reason_code="dependency_not_ready",
-                    reason_detail="recover_smoke",
-                )
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_recover"
-                / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta["status"], "fail_closed")
-            self.assertEqual(meta["reason_code"], "dependency_not_ready")
-
-    def test_dependency_ready_returns_pyyaml_unavailable_not_crash(self) -> None:
-        """Codex round 28 F1: `_dependency_ready` MUST convert a missing-
-        PyYAML `RuntimeError` from `_compute_dep_readiness`
-        into a deterministic gate result (`pyyaml_unavailable`) instead of
-        letting it escape as an unhandled exception. Without this conversion
-        `workflow-launch-check` looks like an infrastructure outage rather
-        than a fail-closed dependency decision."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref, **_kw):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root,
-                orchestration_id="orch_noyaml",
-                spec_ref="spec/component/x",
-            )
-            # Seed dependency_readiness so the gate reaches the recompute
-            # path (otherwise it returns earlier on a missing key).
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_noyaml"
-                / "orchestration_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_readiness"] = {
-                "direct_dependency_compile_readiness": False,
-                "direct_dependency_execution_readiness": False,
-                "detail": {},
-            }
-            meta_path.write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_compute_dep_readiness", _raise):
-                ok, reason = _dependency_ready(
-                    repo_root, "orch_noyaml", step="compile",
-                )
-            self.assertFalse(ok)
-            self.assertEqual(reason, "pyyaml_unavailable")
-
-    def test_mark_dependency_readiness_cli_handles_missing_pyyaml_cleanly(self) -> None:
-        """Codex round 28 F2: the `mark-dependency-readiness` CLI dispatcher
-        previously caught only `ValueError` / `FileNotFoundError`. The
-        round-27 F1 change made `mark_dependency_readiness()` propagate a
-        `RuntimeError` from `_require_yaml()` when PyYAML is absent — that
-        escaped the dispatch table as a raw traceback. The CLI must now
-        convert it into the same stderr+exit-1 contract as other expected
-        verification failures."""
-        import tools.orchestration_runtime as _rt
-
-        def _raise_pyyaml(**kwargs):  # type: ignore[no-untyped-def]
-            raise RuntimeError(
-                "tools.orchestration_runtime: PyYAML is required for parsing "
-                "deps.yaml / spec_catalog.yaml."
-            )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root,
-                orchestration_id="orch_cli_noyaml",
-                spec_ref="spec/component/x",
-            )
-            stderr_buf = io.StringIO()
-            with patch.object(_rt, "mark_dependency_readiness", _raise_pyyaml), \
-                 redirect_stderr(stderr_buf):
-                rc = _rt.main([
-                    "mark-dependency-readiness",
-                    "--repo-root", str(repo_root),
-                    "--orchestration-id", "orch_cli_noyaml",
-                ])
-            self.assertEqual(rc, 1)
-            self.assertIn("PyYAML", stderr_buf.getvalue())
+class MarkDependencyReadinessCliTests(unittest.TestCase):
+    """The `mark-dependency-readiness` dispatch turns the expected verification failures
+    (`ValueError`, `FileNotFoundError`) into exit 1 and lets any other exception escape."""
 
     def test_mark_dependency_readiness_cli_propagates_unrelated_runtimeerror(self) -> None:
-        """Guard: the round-28 F2 catch must NOT swallow unrelated
-        RuntimeErrors. Only those whose message identifies the PyYAML
-        install gap should be downgraded; other RuntimeErrors are real
-        infrastructure bugs and should escape with a traceback."""
+        """A RuntimeError is not an expected verification failure: it escapes with a
+        traceback rather than being downgraded to exit 1."""
         import tools.orchestration_runtime as _rt
 
         def _raise_unrelated(**kwargs):  # type: ignore[no-untyped-def]
@@ -20296,29 +20120,6 @@ class PyYAMLScopedRequirementTests(unittest.TestCase):
                         "--orchestration-id", "orch_cli_infra",
                     ])
             self.assertIn("disk corruption", str(ctx.exception))
-
-    def test_read_deps_yaml_propagates_missing_package_runtimeerror(self) -> None:
-        """When `_require_yaml` raises (PyYAML missing), `_read_deps_yaml`
-        must propagate the RuntimeError to its caller instead of swallowing
-        it into the "deps.yaml unparseable → None" branch. Caller code
-        (mark_dependency_readiness, _compute_dep_readiness)
-        is responsible for surfacing the install hint."""
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _read_deps_yaml
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            spec_dir = repo_root / "spec" / "component" / "x"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n  components: []\n  profiles: []\n",
-                encoding="utf-8",
-            )
-            with patch.object(_rt, "_require_yaml", self._missing_yaml_resolver()):
-                with self.assertRaises(RuntimeError) as ctx:
-                    _read_deps_yaml(repo_root, "spec/component/x")
-            self.assertIn("PyYAML is required", str(ctx.exception))
-
 
 class DependencyReadyLockSerializationTests(unittest.TestCase):
     """Codex round 27 F2: `_dependency_ready` reads orchestration_meta and
@@ -20421,71 +20222,6 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
         compute_idx = events.index("compute_called")
         self.assertLess(enter_idx, compute_idx)
         self.assertLess(compute_idx, exit_idx)
-
-
-class LaunchWithoutPyYAMLTests(unittest.TestCase):
-    """Codex round 28 F1, as issue #250 PR-2 leaves it: when PyYAML is unavailable the
-    launch gate answers `pyyaml_unavailable` for EVERY node — the persisted record is never
-    what it decides from, and the no-deps-leaf shortcut of rounds 29–31 (trust a persisted
-    `certified_deps == []` bound to a byte fingerprint of deps.yaml) went with the
-    fingerprint. No production launch reaches this state: `run_workflow.py` reads the
-    catalog through PyYAML (`resolve_node`) before any orchestration exists."""
-
-    def _seed_persisted_leaf(self, repo_root: Path, orch_id: str) -> Path:
-        spec_ref = "spec/component/leaf"
-        spec_dir = repo_root / spec_ref
-        spec_dir.mkdir(parents=True, exist_ok=True)
-        (spec_dir / "deps.yaml").write_text(
-            "dependencies:\n  components: []\n  profiles: []\n",
-            encoding="utf-8",
-        )
-        init_orchestration(
-            repo_root=repo_root, orchestration_id=orch_id, spec_ref=spec_ref,
-        )
-        meta_path = (
-            repo_root / "workspace" / "orchestrations" / orch_id
-            / "orchestration_meta.json"
-        )
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta["dependency_readiness"] = {
-            "direct_dependency_compile_readiness": True,
-            "direct_dependency_execution_readiness": True,
-            "detail": {
-                "ir_ref_verified": True,
-                "pipeline_ref_verified": True,
-                "aggregate_verdict_verified": True,
-            },
-            "certified_deps": [],
-        }
-        meta_path.write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        return meta_path
-
-    def test_every_node_fails_closed_when_pyyaml_is_missing(self) -> None:
-        import tools.orchestration_runtime as _rt
-        from tools.orchestration_runtime import _dependency_ready
-
-        def _raise(repo_root, spec_ref, **_kw):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._seed_persisted_leaf(repo_root, "orch_leaf")
-            with patch.object(_rt, "_compute_dep_readiness", _raise):
-                self.assertEqual(_dependency_ready(repo_root, "orch_leaf", step="compile"),
-                                 (False, "pyyaml_unavailable"))
-            # A persisted record that names dependencies: the same answer.
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["dependency_readiness"]["certified_deps"] = [
-                {"spec_kind": "component", "spec_id": "dep_a", "spec_version": "0.1.0"},
-            ]
-            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
-                                 encoding="utf-8")
-            with patch.object(_rt, "_compute_dep_readiness", _raise):
-                self.assertEqual(_dependency_ready(repo_root, "orch_leaf", step="compile"),
-                                 (False, "pyyaml_unavailable"))
 
 
 class CanonicalIdEnforcementTests(unittest.TestCase):
@@ -20688,59 +20424,11 @@ class InitialLeafReadinessCertifiedDepsTests(unittest.TestCase):
             self.assertEqual(readiness.get("certified_deps"), [])
             self.assertTrue(readiness.get("direct_dependency_compile_readiness"))
 
-class PreflightSurvivesMissingPyYAMLTests(unittest.TestCase):
-    """Codex round 32 F1: `write_preflight` must not crash when PyYAML
-    is missing — it must compute a degraded `dependency_readiness`
-    payload (fail-closed by default) and let downstream control surfaces
-    keep running. Round 31's `_compute_initial_dependency_readiness`
-    called `_dependency_set_fingerprint` unconditionally, which reached
-    `_require_yaml()` and raised on degraded hosts."""
+class PreflightLeafReadinessTests(unittest.TestCase):
+    """`write_preflight` records a leaf's trivial readiness with `certified_deps: []`."""
 
-    def test_preflight_does_not_raise_when_pyyaml_missing_real_deps(self) -> None:
-        import tools.orchestration_runtime as _rt
-
-        def _raise(*args, **kwargs):  # type: ignore[no-untyped-def]
-            raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            spec_dir = repo_root / "spec" / "component" / "real"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n"
-                "  components:\n"
-                "    - component_id: dep_a\n"
-                "      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_real_noyaml",
-                spec_ref="spec/component/real",
-            )
-            with patch.object(_rt, "_require_yaml", lambda: _raise()):
-                # MUST NOT raise.
-                write_preflight(
-                    repo_root=repo_root,
-                    orchestration_id="orch_real_noyaml",
-                    payload=_launchable_preflight_dict(
-                        checked_at="2026-05-12T00:00:00Z",
-                    ),
-                )
-            meta = json.loads((
-                repo_root / "workspace" / "orchestrations" / "orch_real_noyaml"
-                / "orchestration_meta.json"
-            ).read_text(encoding="utf-8"))
-            # With real deps + PyYAML unavailable we cannot prove leaf
-            # status — payload is fail-closed.
-            readiness = meta["dependency_readiness"]
-            self.assertFalse(readiness["direct_dependency_compile_readiness"])
-            self.assertNotIn("certified_deps", readiness)
-
-    def test_preflight_writes_leaf_certified_deps_when_pyyaml_available(self) -> None:
-        """When PyYAML IS available the leaf path still produces
-        `certified_deps: []` (round 31 F1). Smoke test that round-32 F1
-        did not regress that behavior."""
+    def test_preflight_writes_leaf_certified_deps(self) -> None:
+        """The leaf path produces `certified_deps: []` (round 31 F1)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             spec_dir = repo_root / "spec" / "component" / "smokeleaf"
@@ -20818,82 +20506,6 @@ class ReservePhaseRootCanonicalIdTests(unittest.TestCase):
                 reserved_by_agent_run_id="arid_caller",
             )
             self.assertEqual(payload["reserved_ir_id"], "dep-a_20260101_001")
-
-
-class PreflightPreservesVerifiedOnPyYAMLOutageTests(unittest.TestCase):
-    """Codex round 33 F1: a transient PyYAML outage on the controller
-    must NOT invalidate previously-verified non-leaf readiness records.
-    Round 32 synthesized an incompatible byte-only fingerprint that
-    guaranteed a "mismatch" against the full fingerprint stored at mark
-    time, causing `write_preflight` to overwrite verified state with
-    fail-closed across every non-leaf orchestration."""
-
-    def test_existing_verified_non_leaf_preserved_when_pyyaml_missing(self) -> None:
-        import tools.orchestration_runtime as _rt
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Build a non-leaf orchestration and verify it normally.
-            (repo_root / "spec" / "registry").mkdir(parents=True)
-            (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                "catalog_version: 0.2.0\nspecs:\n"
-                "  - spec_kind: component\n    spec_id: dep_a\n    spec_version: 0.1.0\n",
-                encoding="utf-8",
-            )
-            spec_dir = repo_root / "spec" / "component" / "nonleaf"
-            spec_dir.mkdir(parents=True)
-            (spec_dir / "deps.yaml").write_text(
-                "dependencies:\n"
-                "  components:\n"
-                "    - component_id: dep_a\n"
-                "      version_constraint: \">=0.1.0 <1.0.0\"\n"
-                "  profiles: []\n",
-                encoding="utf-8",
-            )
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_pres",
-                spec_ref="spec/component/nonleaf",
-            )
-            write_preflight(
-                repo_root=repo_root, orchestration_id="orch_pres",
-                payload=_launchable_preflight_dict(checked_at="2026-05-12T00:00:00Z"),
-            )
-            _setup_verified_dep(repo_root, dep_id="dep_a")
-            from tools.orchestration_runtime import (
-                mark_dependency_readiness, _load_spec_catalog,
-            )
-            _load_spec_catalog.cache_clear()
-            mark_dependency_readiness(
-                repo_root=repo_root, orchestration_id="orch_pres",
-            )
-            meta_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_pres"
-                / "orchestration_meta.json"
-            )
-            verified_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            verified_readiness = dict(verified_meta["dependency_readiness"])
-            self.assertTrue(verified_readiness["direct_dependency_compile_readiness"])
-
-            # Now simulate PyYAML outage and re-run preflight.
-            def _raise():  # type: ignore[no-untyped-def]
-                raise RuntimeError("PyYAML is required for parsing deps.yaml")
-
-            with patch.object(_rt, "_require_yaml", _raise):
-                write_preflight(
-                    repo_root=repo_root, orchestration_id="orch_pres",
-                    payload=_launchable_preflight_dict(
-                        checked_at="2026-05-12T01:00:00Z",
-                    ),
-                )
-            after = json.loads(meta_path.read_text(encoding="utf-8"))
-            # The previously-verified record MUST be preserved untouched.
-            self.assertEqual(
-                after["dependency_readiness"], verified_readiness,
-                msg=(
-                    "round-33 F1: PyYAML outage must not overwrite verified "
-                    "non-leaf readiness — found "
-                    f"{after['dependency_readiness']!r}"
-                ),
-            )
 
 
 class SpecCatalogCorruptionTests(unittest.TestCase):
@@ -20995,52 +20607,6 @@ class SpecCatalogCorruptionTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("spec_catalog_corrupt", log)
 
-
-class FreshLeafLaunchableWithoutPyYAMLTests(unittest.TestCase):
-    """Codex round 34 F1: a brand-new no-deps orchestration must remain
-    launchable through `init → preflight → workflow-launch-check` even
-    when the controller is missing PyYAML. The fix is a strict
-    byte-level recognizer for canonical empty-deps `deps.yaml`."""
-
-    def _canonical_leaf(self, repo_root: Path) -> None:
-        spec_dir = repo_root / "spec" / "component" / "freshcanon"
-        spec_dir.mkdir(parents=True)
-        (spec_dir / "deps.yaml").write_text(
-            "dependencies:\n  components: []\n  profiles: []\n",
-            encoding="utf-8",
-        )
-
-    def test_byte_recognizer_accepts_canonical_empty_deps(self) -> None:
-        from tools.orchestration_runtime import _deps_yaml_bytes_are_canonical_empty
-        good = [
-            b"dependencies:\n  components: []\n  profiles: []\n",
-            b"dependencies:\n  profiles: []\n  components: []\n",
-            b"# leading comment\ndependencies:\n  components: []\n  profiles: []\n",
-            # M3a: the optional empty `infrastructure` key is still a canonical leaf (any order),
-            # so an R1 leaf stays launchable under the PyYAML-unavailable byte path.
-            b"dependencies:\n  components: []\n  profiles: []\n  infrastructure: []\n",
-            b"dependencies:\n  infrastructure: []\n  profiles: []\n  components: []\n",
-        ]
-        for sample in good:
-            self.assertTrue(_deps_yaml_bytes_are_canonical_empty(sample), sample)
-
-    def test_byte_recognizer_rejects_populated_or_ambiguous(self) -> None:
-        from tools.orchestration_runtime import _deps_yaml_bytes_are_canonical_empty
-        bad = [
-            b"dependencies:\n  components:\n    - component_id: dep_a\n  profiles: []\n",
-            b"dependencies:\n  components: []\n  profiles:\n    - profile_id: foo\n",
-            b"spec_id: x\ndependencies:\n  components: []\n  profiles: []\n",
-            b"",
-            b"dependencies:\n",
-            # M3a: a POPULATED infrastructure list is not a leaf; a duplicate key, a missing
-            # required key, and an unknown key must all still fall through to full parse.
-            b"dependencies:\n  components: []\n  profiles: []\n  infrastructure:\n    - infrastructure_id: harness_fortran_cpu\n",
-            b"dependencies:\n  components: []\n  profiles: []\n  widgets: []\n",
-            b"dependencies:\n  components: []\n  infrastructure: []\n",  # missing required profiles
-            b"dependencies:\n  components: []\n  components: []\n  profiles: []\n",  # duplicate
-        ]
-        for sample in bad:
-            self.assertFalse(_deps_yaml_bytes_are_canonical_empty(sample), sample)
 
 class SpecCatalogMissingHardFailureTests(unittest.TestCase):
     """Codex round 34 F2: a missing `spec_catalog.yaml` is a HARD
@@ -28919,20 +28485,13 @@ class ProfileExpansionTests(unittest.TestCase):
         self.assertEqual(
             _closure_signature({k: v for k, v in two.items() if k != "profiles"})[2], [])
 
-    def test_every_expansion_refusal_uses_a_declared_reason(self) -> None:
-        """`_PROFILE_EXPANSION_REASONS` is what pins these reasons to the STALE side of the
-        freshness taxonomy, so it has to be the source of the emitted strings rather than a
-        list beside them. Round-1 finding: it was a documentation constant nothing emitted
-        from, so renaming a reason to a `_UNREADABLE_CLOSURE_REASONS` member — which flips the
-        disposition from stale to fresh — changed no test.
-
-        The WIRING is what this row observes, not the shape of the result: asserting only that
-        the reason is a member passes just as well when the refusal bypasses the guard and the
-        literals happen to be right today, which is the mutant that survived round 1's own
-        sweep of this fix."""
+    def test_an_expansion_refusal_goes_through_the_constructor(self) -> None:
+        """A profile refusal of `expand_profile_dependencies` is built by
+        `_profile_expansion_failure` and carries its literal reason. (The declared-reason set
+        and its import-time membership assert went in issue #643: every reason is a literal at
+        its call site.)"""
         import tools.orchestration_runtime as ort
-        from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, expand_profile_dependencies)
+        from tools.orchestration_runtime import expand_profile_dependencies
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo, profile_infra=True)
@@ -28948,18 +28507,12 @@ class ProfileExpansionTests(unittest.TestCase):
                 _e, _r, err = expand_profile_dependencies(
                     repo, "spec/problem/a", entries, catalog)
             self.assertEqual(seen, ["profile_declares_infrastructure"])
-            self.assertIn(err["reason"], _PROFILE_EXPANSION_REASONS)
-        # The guard fires on an UNDECLARED reason rather than being satisfied by the one
-        # refusal this fixture happens to reach.
-        with self.assertRaises(AssertionError):
-            ort._profile_expansion_failure("not_a_declared_reason", "x")
+            self.assertEqual(err["reason"], "profile_declares_infrastructure")
 
     def test_a_registry_outage_inside_the_expansion_is_not_a_profile_reason(self) -> None:
         """`spec_catalog_corrupt` is the ONE error the expansion can return that is not a
         profile reason — the registry could not be READ — and it is reported under the name
-        every other catalog reader uses. It therefore must NOT go through
-        `_profile_expansion_failure`, which would raise on it; round 1's sweep showed that
-        routing it back through the guard changed no test."""
+        every other catalog reader uses, not through `_profile_expansion_failure`."""
         import tools.orchestration_runtime as ort
         from tools.orchestration_runtime import SpecCatalogCorruption, expand_profile_dependencies
         with tempfile.TemporaryDirectory() as tmp:
@@ -28974,7 +28527,6 @@ class ProfileExpansionTests(unittest.TestCase):
                 expanded, record, err = expand_profile_dependencies(
                     repo, "spec/problem/a", entries, catalog)
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
-            self.assertNotIn("spec_catalog_corrupt", ort._PROFILE_EXPANSION_REASONS)
             self.assertEqual((expanded, record), ([], []))
 
     def test_an_unresolvable_profile_directory_fails_closed(self) -> None:
@@ -29780,8 +29332,8 @@ class CrossTargetAgreementTests(unittest.TestCase):
             return contextlib.nullcontext()
 
         def ir_unreadable(a: dict, b: dict) -> Any:
-            return mock.patch.object(ort, "_require_yaml",
-                                     side_effect=RuntimeError("PyYAML missing"))
+            return mock.patch.object(ort, "yaml", mock.Mock(
+                safe_load=mock.Mock(side_effect=RuntimeError("PyYAML missing"))))
 
         def evaluator_raises(a: dict, b: dict) -> Any:
             return mock.patch("tools.primary_evidence.evaluate_primary_predicates",
@@ -30165,25 +29717,12 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
                 self.assertFalse(ok)
 
     def test_a_deps_yaml_without_problems_is_well_formed(self) -> None:
-        from tools.orchestration_runtime import (
-            _deps_yaml_bytes_are_canonical_empty, _parse_dep_entries)
+        from tools.orchestration_runtime import _parse_dep_entries
         entries, ok = _parse_dep_entries({"dependencies": {"components": [], "profiles": []}})
         self.assertEqual((entries, ok), ([], True))
         # `problems` alone does not replace a required key.
         _e, ok = _parse_dep_entries({"dependencies": {"components": [], "problems": []}})
         self.assertFalse(ok)
-        # The byte-level empty recognizer tracks the parser: an empty `problems: []` is still
-        # the canonical empty form, and a duplicate or a populated one is not.
-        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  profiles: []\n"))
-        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  problems: []\n  profiles: []\n"))
-        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  problems: []\n  problems: []\n"
-            b"  profiles: []\n"))
-        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
-            b"dependencies:\n  components: []\n  profiles: []\n  problems:\n"
-            b"    - problem_id: m\n"))
         # Every deps.yaml of the corpus parses well-formed; the two assembled models of the
         # corpus (system tier PR-S2, issue #632 P4) are the only ones with a `problem` entry.
         problems = {}
@@ -30201,10 +29740,9 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
 
     def test_the_deps_key_tables_name_the_same_keys(self) -> None:
         """The parse loop iterates the pair table only, so an allowed key it does not name
-        would parse well-formed with its entries dropped. The module asserts the coupling at
-        import; this row pins that the assertion exists and fires."""
-        import importlib
-
+        would parse well-formed with its entries dropped. The module builds the allowed set as
+        the union of the two tables (the import-time assert went in issue #643); this row pins
+        the tables."""
         import tools.orchestration_runtime as ort
         # The allowed keys are the paired ones plus the non-node ones (issue #644:
         # `libraries`), disjoint.
@@ -30218,21 +29756,6 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         # Every pair's kind is the key's singular: the kind the gates test for.
         self.assertEqual({k.rstrip("s") for k, _f in ort._DEPS_KEY_KIND_FIELDS},
                          {"component", "problem", "profile", "infrastructure"})
-        source = Path(ort.__file__).read_text(encoding="utf-8")
-        broken = source.replace('    ("problems", "problem_id"),\n', "", 1)
-        self.assertNotEqual(broken, source)
-        spec = importlib.util.spec_from_loader("_ort_broken_tables", loader=None)
-        module = importlib.util.module_from_spec(spec)
-        module.__dict__["__file__"] = ort.__file__
-        with self.assertRaisesRegex(AssertionError, "disjoint union"):
-            exec(compile(broken, ort.__file__, "exec"), module.__dict__)
-        # A key both paired and non-node is refused too (its entries would be parsed twice).
-        overlap = source.replace('_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})',
-                                 '_DEPS_NON_NODE_KEYS: frozenset[str] = frozenset('
-                                 '{"libraries", "problems"})', 1)
-        self.assertNotEqual(overlap, source)
-        with self.assertRaisesRegex(AssertionError, "disjoint union"):
-            exec(compile(overlap, ort.__file__, "exec"), module.__dict__)
 
     def test_a_profile_declaring_a_problem_is_refused(self) -> None:
         """D7: once `problems` is an allowed key, a profile's `problems:` entry would parse
@@ -30240,9 +29763,8 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         through the reason constructor."""
         import tools.orchestration_runtime as ort
         from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _load_spec_catalog, _parse_dep_entries,
             _read_deps_yaml, expand_profile_dependencies)
-        self.assertIn("profile_declares_problem", _PROFILE_EXPANSION_REASONS)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             lines = ["catalog_version: 0.2.0", "specs:"]

@@ -83,7 +83,7 @@ def network_block(family: str, wrapper_port: int | None = None) -> dict[str, Any
     return leaf_netns.network_block(netns_socket_dir(), WORKSHOP_CLI_ENDPOINTS[family],
                                     wrapper_port)
 
-#: The canonical empty `deps.yaml` (`_deps_yaml_bytes_are_canonical_empty` recognizes it).
+#: The canonical empty `deps.yaml`.
 EMPTY_DEPS_YAML = "dependencies:\n  components: []\n  profiles: []\n  infrastructure: []\n"
 
 

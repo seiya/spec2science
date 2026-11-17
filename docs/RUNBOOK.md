@@ -66,9 +66,8 @@ with it, every declared format's for every target.
 
 (`PyYAML` is listed here because a run needs it, but it is not a member of
 `REQUIRED_PYTHON_MODULES` and its absence does not carry this reason code: `tools/workflow_conductor.py`
-imports it at module top, and `tools/orchestration_runtime._require_yaml` raises its own
-"install PyYAML" message. Both are already launch-time and legible, which is the property the
-reason codes exist to give the other two families.)
+and `tools/orchestration_runtime.py` import it at module top, so a missing package stops the run
+at startup with Python's own `ModuleNotFoundError`, which is already launch-time and legible.)
 
 ### Refused at startup — `missing_required_host_tools`
 

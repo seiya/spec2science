@@ -21,42 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-# fcntl is POSIX-only. Used by Adv-24 to serialize agent_runs.jsonl
-# duplicate-check + append against concurrent finalizers. On non-POSIX
-# platforms the lock degrades to a no-op (single-process workflows are the
-# only supported configuration there).
-try:
-    import fcntl as _fcntl  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover — non-POSIX
-    _fcntl = None  # type: ignore[assignment]
+# fcntl serializes agent_runs.jsonl duplicate-check + append against concurrent
+# finalizers (Adv-24). The product runs on POSIX: every leaf launch already imports
+# fcntl unconditionally (`tools/workshop_tree.py`).
+import fcntl as _fcntl
 
-# Codex round 25 F1 → round 27 F1: PyYAML is required by the dependency-
-# readiness paths (`_read_deps_yaml`, `_load_spec_catalog_from_bytes`) but
-# NOT by recovery commands (`set-status`,
-# `workflow-launch-check` for leaf nodes, etc.). Module-level import would
-# brick every CLI command when the package is missing — that expanded the
-# blast radius from a localized feature failure to a full control-plane
-# outage. Use a lazy resolver instead so:
-#   - paths that parse YAML get an actionable RuntimeError when the package
-#     is missing (distinct from missing repo data, with install hint),
-#   - all other commands (status updates, audit reads, cleanup) remain
-#     usable without PyYAML installed.
-
-
-def _require_yaml() -> Any:
-    """Lazy PyYAML resolver. Raises a distinct RuntimeError when PyYAML is
-    not installed so the diagnostic is "install PyYAML" rather than
-    "deps.yaml missing/unparseable" (Codex round 25 F1 + round 27 F1)."""
-    try:
-        import yaml as _yaml_mod
-    except ImportError as exc:  # pragma: no cover — install gap
-        raise RuntimeError(
-            "tools.orchestration_runtime: PyYAML is required for parsing "
-            "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`. "
-            "Recovery commands (set-status, etc.) that do "
-            "not parse YAML remain usable without it."
-        ) from exc
-    return _yaml_mod
+import yaml
 
 try:
     from tools import leaf_netns
@@ -206,57 +176,10 @@ def _read_deps_yaml(repo_root: Path, spec_ref: Any) -> dict[str, Any] | None:
         return None
     if not deps_path.is_file():
         return None
-    # Codex round 27 F1: resolve PyYAML BEFORE the try-block so its
-    # install-required `RuntimeError` propagates to the caller. Catching it
-    # here would silently turn "package missing" into "deps.yaml unparseable"
-    # and let dependency_readiness fall through to its "no deps" branch.
-    yaml_mod = _require_yaml()
     try:
-        return yaml_mod.safe_load(deps_path.read_text(encoding="utf-8"))
+        return yaml.safe_load(deps_path.read_text(encoding="utf-8"))
     except Exception:
         return None
-
-
-# A single canonical empty-deps line: `  <key>: []` for one of the deps keys (2-space indent,
-# empty list). Keyed on the same key vocabulary as `_parse_dep_entries` (byte-level, no parse).
-_EMPTY_DEPS_LINE_RE = re.compile(r"^  (components|problems|profiles|infrastructure): \[\]$")
-
-
-def _deps_yaml_bytes_are_canonical_empty(deps_bytes: bytes) -> bool:
-    """Codex round 34 F1 (+ R1/M3a): a CONSERVATIVE byte-level recognizer for the canonical
-    empty-deps form of `deps.yaml`. Returns True only when the file declares, under a single
-    `dependencies:` key, an empty list `[]` for BOTH required keys `components` / `profiles`
-    and — optionally — the `problems` key and the R1 `infrastructure` key, in ANY ordering, with
-    NO other key and NO populated list. Any deviation (extra keys, populated lists, exotic YAML syntax) returns
-    False so the caller falls back to full YAML parsing.
-
-    This lets `_compute_initial_dependency_readiness` recognize a true leaf without invoking
-    PyYAML, so a brand-new no-deps orchestration remains launchable during a controller
-    packaging issue. Intentionally strict: false negatives are safe (caller parses with PyYAML if
-    available, else fails closed); false positives would be a fail-open (orchestration treated as
-    leaf when it actually has deps). Extending it to the empty `infrastructure: []` variant keeps
-    an R1 leaf (a harness node, or any node that spells out an empty infrastructure list)
-    launchable in the PyYAML-unavailable mode — the byte form must track `_parse_dep_entries`.
-    """
-    text = deps_bytes.decode("utf-8", errors="ignore")
-    significant: list[str] = []
-    for raw_line in text.splitlines():
-        # Strip trailing whitespace and inline comments.
-        line = raw_line.split("#", 1)[0].rstrip()
-        if line.strip() == "":
-            continue
-        significant.append(line)
-    if not significant or significant[0] != "dependencies:":
-        return False
-    seen_keys: set[str] = set()
-    for line in significant[1:]:
-        m = _EMPTY_DEPS_LINE_RE.match(line)
-        if m is None or m.group(1) in seen_keys:  # non-empty/unknown key, or a duplicate
-            return False
-        seen_keys.add(m.group(1))
-    # Both required keys present (infrastructure optional); the regex already bounds the key set
-    # to the allowed vocabulary, so no unknown key can slip through.
-    return _DEPS_YAML_REQUIRED_KEYS <= seen_keys
 
 
 class SpecCatalogCorruption(Exception):
@@ -268,10 +191,11 @@ class SpecCatalogCorruption(Exception):
 
 
 @lru_cache(maxsize=16)
-def _load_spec_catalog_from_bytes(
-    content_bytes: bytes,
-) -> dict[tuple[str, str], tuple[str, ...]]:
-    """Parse `spec_catalog.yaml` bytes into `(spec_kind, spec_id) → versions`.
+def _spec_catalog_entries_from_bytes(content_bytes: bytes) -> tuple[dict[str, Any], ...]:
+    """The mapping entries of `spec_catalog.yaml`'s `specs:` list, as parsed (callers must not
+    mutate them). The one parse of the catalog: `_load_spec_catalog` (versions),
+    `_spec_ref_candidates` (spec directories) and `_catalog_family_index` (families) each read
+    these entries with their own tolerances.
 
     Codex round 26 F1: cache keyed on FILE CONTENT bytes (not mtime).
     Restore/copy workflows that preserve mtime while changing content
@@ -293,11 +217,6 @@ def _load_spec_catalog_from_bytes(
             "resolution requires the canonical registry; this is a "
             "repository-wide outage, not a normal dependency miss."
         )
-    # Codex round 27 F1: resolve PyYAML BEFORE the try-block so a missing
-    # package raises `RuntimeError` to the caller instead of being swallowed
-    # as "catalog unparseable → empty dict" (which would make every
-    # `_matching_dep_versions` call return [] and fail readiness silently).
-    yaml_mod = _require_yaml()
     # Codex round 33 F2: catalog parse/schema problems propagate as a
     # distinct `SpecCatalogCorruption` exception rather than being
     # downgraded to `{}` (which made downstream resolution treat
@@ -307,7 +226,7 @@ def _load_spec_catalog_from_bytes(
     # dependency miss). Distinct failure mode matches the treatment of
     # malformed deps.yaml (`deps_yaml_malformed_schema`).
     try:
-        doc = yaml_mod.safe_load(content_bytes.decode("utf-8"))
+        doc = yaml.safe_load(content_bytes.decode("utf-8"))
     except Exception as exc:
         raise SpecCatalogCorruption(
             f"spec_catalog.yaml could not be parsed as YAML: {exc}"
@@ -322,10 +241,17 @@ def _load_spec_catalog_from_bytes(
             "spec_catalog.yaml is missing the canonical `specs:` list "
             f"(found {type(specs).__name__})"
         )
+    return tuple(entry for entry in specs if isinstance(entry, dict))
+
+
+@lru_cache(maxsize=16)
+def _load_spec_catalog_from_bytes(
+    content_bytes: bytes,
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Parse `spec_catalog.yaml` bytes into `(spec_kind, spec_id) → versions`: entries whose
+    three fields are strings, stripped, an entry with an empty one dropped."""
     grouped: dict[tuple[str, str], list[str]] = {}
-    for entry in specs:
-        if not isinstance(entry, dict):
-            continue
+    for entry in _spec_catalog_entries_from_bytes(content_bytes):
         kind = entry.get("spec_kind")
         sid = entry.get("spec_id")
         ver = entry.get("spec_version")
@@ -334,12 +260,7 @@ def _load_spec_catalog_from_bytes(
         kind_token = kind.strip()
         sid_token = sid.strip()
         ver_token = ver.strip()
-        # Codex round 15 F2: reject catalog entries with path-unsafe tokens.
-        if not (
-            _is_safe_path_token(kind_token)
-            and _is_safe_path_token(sid_token)
-            and _is_safe_path_token(ver_token)
-        ):
+        if not (kind_token and sid_token and ver_token):
             continue
         grouped.setdefault((kind_token, sid_token), []).append(ver_token)
     out: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -350,7 +271,17 @@ def _load_spec_catalog_from_bytes(
 
 
 def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, ...]]:
-    """Read catalog bytes each call and dispatch to a content-keyed cache.
+    """`(spec_kind, spec_id) → versions` of the catalog (`_load_spec_catalog_from_bytes`)."""
+    return _load_spec_catalog_from_bytes(_spec_catalog_bytes(repo_root_str))
+
+
+def _spec_catalog_entries(repo_root: Path | str) -> tuple[dict[str, Any], ...]:
+    """The catalog's entries (`_spec_catalog_entries_from_bytes`)."""
+    return _spec_catalog_entries_from_bytes(_spec_catalog_bytes(str(repo_root)))
+
+
+def _spec_catalog_bytes(repo_root_str: str) -> bytes:
+    """Read catalog bytes each call; the parsers above cache on the content.
 
     Codex round 26 F1: previously keyed on `(repo_root, mtime_ns)`, which
     could be bypassed by edits that preserve mtime (restore-from-cache,
@@ -377,17 +308,21 @@ def _load_spec_catalog(repo_root_str: str) -> dict[tuple[str, str], tuple[str, .
             "repository-wide outage, not a normal dependency miss."
         )
     try:
-        content = catalog_path.read_bytes()
+        return catalog_path.read_bytes()
     except OSError as exc:
         raise SpecCatalogCorruption(
             f"spec_catalog.yaml at {catalog_path} is unreadable: {exc}"
         ) from exc
-    return _load_spec_catalog_from_bytes(content)
+
+
+def _clear_spec_catalog_caches() -> None:
+    _spec_catalog_entries_from_bytes.cache_clear()
+    _load_spec_catalog_from_bytes.cache_clear()
 
 
 # Preserve the existing `_load_spec_catalog.cache_clear()` call surface used by
-# tests; delegate to the content-keyed inner cache.
-_load_spec_catalog.cache_clear = _load_spec_catalog_from_bytes.cache_clear  # type: ignore[attr-defined]
+# tests; delegate to the content-keyed inner caches.
+_load_spec_catalog.cache_clear = _clear_spec_catalog_caches  # type: ignore[attr-defined]
 
 
 def resolve_spec_ref_for(
@@ -398,8 +333,7 @@ def resolve_spec_ref_for(
     The dependency closure driver (`tools/run_workflow.py --with-deps`) needs
     the spec_ref PATH of each dependency node so it can run that node's own
     workflow. `_load_spec_catalog` only retains versions per `(kind, spec_id)`
-    and drops paths, so this is a separate, path-preserving read of the same
-    canonical registry.
+    and drops paths, so this reads the paths of the same parsed entries.
 
     The spec_ref is the dirname of the entry's `deps_path`
     (e.g. `spec/.../advdiff1d_linear/deps.yaml` → `spec/.../advdiff1d_linear`);
@@ -410,9 +344,6 @@ def resolve_spec_ref_for(
     `controlled_spec.md`, not in the directory path). When multiple entries for
     the same `(kind, spec_id)` resolve to DIFFERENT directories, that ambiguity
     is fail-closed (returns None) rather than silently picking one.
-
-    `spec_kind` / `spec_id` are validated with `_is_safe_path_token` before any
-    path use, consistent with the rest of the dependency-resolution layer.
     """
     found = _spec_ref_candidates(repo_root, spec_kind, spec_id)
     if len(found) != 1:
@@ -434,30 +365,12 @@ def _spec_ref_candidates(
     distinction so `DerivationResolver.spec_ref` can refuse an ambiguous entry (a definitive
     registry defect, `spec_ref_unresolved`) while a genuinely-absent one is answered as such. Raises ``SpecCatalogCorruption``
     on a missing/unparseable registry, matching ``resolve_spec_ref_for``."""
-    if not (_is_safe_path_token(spec_kind) and _is_safe_path_token(spec_id)):
+    if not (_is_identifier_token(spec_kind) and _is_identifier_token(spec_id)):
         return set()
-    catalog_path = Path(repo_root) / "spec" / "registry" / "spec_catalog.yaml"
-    if not catalog_path.is_file():
-        raise SpecCatalogCorruption(
-            f"spec_catalog.yaml is missing at {catalog_path}. Dependency "
-            "resolution requires the canonical registry."
-        )
-    yaml_mod = _require_yaml()
-    try:
-        doc = yaml_mod.safe_load(catalog_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        raise SpecCatalogCorruption(
-            f"spec_catalog.yaml could not be parsed as YAML: {exc}"
-        ) from exc
-    if not isinstance(doc, dict) or not isinstance(doc.get("specs"), list):
-        raise SpecCatalogCorruption(
-            "spec_catalog.yaml is missing the canonical `specs:` list"
-        )
+    entries = _spec_catalog_entries(repo_root)
     repo_root_resolved = Path(repo_root).resolve()
     found: set[str] = set()
-    for entry in doc["specs"]:
-        if not isinstance(entry, dict):
-            continue
+    for entry in entries:
         if entry.get("spec_kind") != spec_kind or entry.get("spec_id") != spec_id:
             continue
         ref_source = entry.get("deps_path") or entry.get("controlled_spec_path")
@@ -630,19 +543,6 @@ def _matching_dep_versions(
     return matched
 
 
-def _resolve_dep_version(
-    catalog: dict[tuple[str, str], tuple[str, ...]],
-    kind: str,
-    spec_id: str,
-    constraint: str | None,
-) -> str | None:
-    """Return the highest matching version, or None if no version matches.
-    Kept for callers that need a single representative version; readiness
-    verification uses `_matching_dep_versions`."""
-    matched = _matching_dep_versions(catalog, kind, spec_id, constraint)
-    return matched[0] if matched else None
-
-
 # Required deps.yaml `dependencies:` keys (present in every deps.yaml). `infrastructure` is still
 # PARSED, so that a declaration is refused by name at spec-input
 # (`spec_input_gates.infra_dep_declared_violation`, issue #284: a harness is a target attribute)
@@ -659,8 +559,6 @@ _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
 # admits the key and skips it, so no closure code sees a library; `_parse_library_entries`
 # reads it.
 _DEPS_NON_NODE_KEYS: frozenset[str] = frozenset({"libraries"})
-_DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"components", "problems", "profiles", "infrastructure"}) | _DEPS_NON_NODE_KEYS
 # (deps key, per-item id field). `kind = key.rstrip("s")` yields
 # component/problem/profile/infrastructure.
 # A `profile` entry is expanded into the components it selects by
@@ -675,21 +573,17 @@ _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
 )
 # The parse loop of `_parse_dep_entries` iterates `_DEPS_KEY_KIND_FIELDS` alone, so a key in
 # `_DEPS_YAML_ALLOWED_KEYS` that neither the pair table nor `_DEPS_NON_NODE_KEYS` names would
-# parse as well-formed with its entries DROPPED. The allowed set is therefore exactly the two,
-# disjoint, checked at import.
+# parse as well-formed with its entries DROPPED. The allowed set is therefore built as the
+# union of the two.
 _PAIRED_DEPS_KEYS = frozenset(key for key, _field in _DEPS_KEY_KIND_FIELDS)
-if (_PAIRED_DEPS_KEYS | _DEPS_NON_NODE_KEYS != _DEPS_YAML_ALLOWED_KEYS
-        or _PAIRED_DEPS_KEYS & _DEPS_NON_NODE_KEYS):
-    raise AssertionError(
-        "_DEPS_YAML_ALLOWED_KEYS must be the disjoint union of _DEPS_KEY_KIND_FIELDS' keys and "
-        "_DEPS_NON_NODE_KEYS: a key allowed but parsed by neither has its entries dropped")
+_DEPS_YAML_ALLOWED_KEYS: frozenset[str] = _PAIRED_DEPS_KEYS | _DEPS_NON_NODE_KEYS
 
-# Codex round 15 F2: identifiers from deps.yaml / spec_catalog.yaml are
-# interpolated into workspace/<kind>/<safe>/ paths. ANY of `spec_kind`,
-# `spec_id`, `spec_version` containing path separators or traversal sequences
-# would let the verifier walk out of the dependency subtree and treat
-# unrelated files as readiness evidence. Reject anything outside this strict
-# safe-token grammar before path construction.
+
+# Codex round 15 F2: identifiers from deps.yaml are interpolated into
+# workspace/<kind>/<safe>/ paths. ANY of `spec_kind`, `spec_id`, `spec_version`
+# containing path separators or traversal sequences would let the verifier walk
+# out of the dependency subtree and treat unrelated files as readiness evidence.
+# Reject anything outside this strict safe-token grammar before path construction.
 _SAFE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 
 
@@ -698,15 +592,20 @@ def _is_safe_path_token(s: Any) -> bool:
 
     Rejects empty / non-str values, `..` traversal substrings, and any
     character outside `[A-Za-z0-9._+-]`. Path separators (`/`, `\\`), null
-    bytes, and shell metacharacters are all rejected. Used to gate
-    `spec_kind` / `spec_id` / `spec_version` values from deps.yaml and
-    spec_catalog.yaml before they are interpolated into filesystem paths.
+    bytes, and shell metacharacters are all rejected. Gates the `deps.yaml` ids
+    (`_parse_dep_entries`, `_parse_library_entries`) and `_verify_dep_stage_detail`'s
+    tokens.
     """
     if not isinstance(s, str) or not s:
         return False
     if ".." in s:
         return False
     return bool(_SAFE_ID_TOKEN_RE.match(s))
+
+
+def _is_identifier_token(s: Any) -> bool:
+    """A spec identifier read from the catalog or composed from it is a non-empty string."""
+    return isinstance(s, str) and bool(s)
 
 
 def _parse_dep_entries(
@@ -803,39 +702,17 @@ def _parse_library_entries(deps_doc: dict[str, Any]) -> tuple[list[str], bool]:
     return ids, True
 
 
-# The named `{reason}` values `expand_profile_dependencies` can return. Every one of them means
-# the registry WAS read and the declared closure does not resolve — a spec-author defect no leaf
-# can repair. `spec_catalog_corrupt`, which the expansion can also surface, is the registry-read
-# failure and is reported as itself. (Until issue #250 PR-2 the two classes had opposite
-# freshness dispositions; the derivation key refuses every one of them the same way, as an
-# unresolvable compile input.)
-_PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
-    "profile_unresolvable",
-    "profile_spec_ref_unresolved",
-    "profile_deps_unreadable",
-    "profile_deps_malformed",
-    "profile_nesting_unsupported",
-    "profile_declares_infrastructure",
-    "profile_declares_problem",
-    "profile_declares_libraries",
-    "profile_component_declared_twice",
-    "profile_component_conflict",
-})
-
-
+# The named `{reason}` values `expand_profile_dependencies` returns through
+# `_profile_expansion_failure` mean the registry WAS read and the declared closure does not
+# resolve — a spec-author defect no leaf can repair. `spec_catalog_corrupt`, which the expansion
+# can also surface, is the registry-read failure and is reported as itself. (Until issue #250
+# PR-2 the two classes had opposite freshness dispositions; the derivation key refuses every one
+# of them the same way, as an unresolvable compile input.)
 def _profile_expansion_failure(reason: str, detail: str) -> dict[str, str]:
-    """The ONLY constructor of an `expand_profile_dependencies` error, so that
-    `_PROFILE_EXPANSION_REASONS` is the source of these strings rather than a list beside them.
-
-    That membership is not decoration: `ProfileExpansionTests` pins the set, and the reason a
-    caller reads decides its message (`_derived_closure_graph` names it in the unresolvable
-    compile input; the launch-time closure resolver reports it to the operator). Raising on an
-    undeclared reason can only ever fire on a coding error, never on spec input.
-    """
-    if reason not in _PROFILE_EXPANSION_REASONS:
-        raise AssertionError(
-            f"{reason!r} is not a declared profile-expansion reason; add it to "
-            f"_PROFILE_EXPANSION_REASONS before emitting it")
+    """The constructor of an `expand_profile_dependencies` profile error. Every `reason` is a
+    literal at its call site; the reason a caller reads decides its message
+    (`_derived_closure_graph` names it in the unresolvable compile input; the launch-time
+    closure resolver reports it to the operator)."""
     return {"reason": reason, "detail": detail}
 
 
@@ -871,7 +748,8 @@ def expand_profile_dependencies(
     - `error`: `None`, or `{reason, detail}`. Fail-closed with NO partial expansion — a caller
       that receives an error must not use `expanded_entries`.
 
-    The reasons are `_PROFILE_EXPANSION_REASONS` plus `spec_catalog_corrupt`. Nesting (a profile
+    The reasons are the `profile_*` literals passed to `_profile_expansion_failure`, plus
+    `spec_catalog_corrupt`. Nesting (a profile
     adopting a profile) is refused by name rather than recursed: no spec needs it today, and a
     named refusal is one line to relax if one ever does.
 
@@ -912,7 +790,7 @@ def expand_profile_dependencies(
         try:
             profile_ref = resolve_spec_ref_for(repo_root, "profile", sid)
         except SpecCatalogCorruption as exc:
-            # NOT a `_PROFILE_EXPANSION_REASONS` member on purpose: this one IS the
+            # NOT a `profile_*` reason on purpose: this one IS the
             # registry-read failure, reported under the name every other catalog reader uses.
             return [], [], {"reason": "spec_catalog_corrupt", "detail": str(exc)}
         if not profile_ref:
@@ -1018,9 +896,8 @@ def expand_profile_dependencies(
 # tail, etc. — so a planted `FAKE__20991231_999/binary_meta.json` outranked
 # legitimate artifacts despite never having been issued by any writer.
 # Anchoring both ends to the strict slug grammar closes that trust gap.
-# This pattern is identical to `_SLUG_DATE_SEQ3_PATTERN` plus capture
-# groups for date and seq; kept in lock-step by construction (see the
-# `assert` at module load below).
+# `_SLUG_DATE_SEQ3_PATTERN` is this pattern without its two capture groups, built from it
+# below, so the two grammars cannot diverge.
 _FRESHNESS_CANONICAL_ID_RE = re.compile(
     r"^[a-z0-9]+(?:-[a-z0-9]+)*_([0-9]{8})_([0-9]{3})$"
 )
@@ -1656,25 +1533,14 @@ def _certified_ir_dir(
     pins, the harness pin). `None` when no Compile output is eligible under the key
     recomputed now. Before issue #250 PR-2 this was the LATEST ir dir regardless of status."""
     if not (
-        _is_safe_path_token(kind)
-        and _is_safe_path_token(spec_id)
-        and _is_safe_path_token(version)
+        _is_identifier_token(kind)
+        and _is_identifier_token(spec_id)
+        and _is_identifier_token(version)
     ):
         return None
     resolver = resolver or DerivationResolver(repo_root)
     sel = resolver.select(f"{kind}/{spec_id}@{version}", "compile")
     return sel.stage_dir() if sel.ok else None
-
-
-def _verify_dep_stage(
-    repo_root: Path, kind: str, spec_id: str, version: str, stage: str,
-    *, target: TargetProfile | None = None,
-) -> bool:
-    """Check whether the **current** dep artifact for `(kind, id, version)` evidences `stage`
-    completion for `target`. The boolean face of `_verify_dep_stage_detail`, which is the
-    primitive — see there for what each stage requires and why."""
-    return _verify_dep_stage_detail(
-        repo_root, kind, spec_id, version, stage, target=target)[0]
 
 
 #: The certifying phase each dependency-readiness stage asks of a dependency.
@@ -3072,7 +2938,6 @@ def cross_target_agreement(
         run_dir = sel.stage_dir()
         if run_dir is None or not sel.ir_ref:
             return unevaluable("validate_selection_has_no_run")
-        yaml = _require_yaml()
         ir = yaml.safe_load((repo_root / sel.ir_ref / "spec.ir.yaml").read_text(
             encoding="utf-8"))
         ir = ir if isinstance(ir, dict) else {}
@@ -3715,7 +3580,7 @@ def _resolve_dependency_facts(
     dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
     gate.
 
-    Mirrors ``_verify_dep_stage``'s execution-readiness selection EXACTLY so the operations a
+    Mirrors ``_verify_dep_stage_detail``'s execution-readiness selection EXACTLY so the operations a
     leaf reads come from the artifacts readiness actually accepted: the dependency's SELECTED
     certified Validate output under its key (``DerivationResolver.select``), whose run
     directory holds the ``aggregate_verdict.json`` the fact names.
@@ -3773,7 +3638,7 @@ def _resolve_dependency_facts(
     these facts.
 
     Best-effort: NEVER raises. A leaf node (empty ``direct_deps``), a missing/unparseable
-    IR, a missing PyYAML, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
+    IR, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
 
     The facts are for ONE target (issue #284) — the resolver's, else ``target``: a dependency's
     verdict and source are per-target artifacts, and the consumer's language is the target's.
@@ -3792,7 +3657,7 @@ def _resolve_dependency_facts(
         if not ir_path.is_file():
             return []
         try:
-            ir_doc = _require_yaml().safe_load(ir_path.read_text(encoding="utf-8"))
+            ir_doc = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
         except Exception:
             return []
         if not isinstance(ir_doc, dict):
@@ -4100,7 +3965,7 @@ def _ir_public_api(
         ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
             return None
-        doc = _require_yaml().safe_load(
+        doc = yaml.safe_load(
             (ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             return None
@@ -4139,7 +4004,7 @@ def _ir_published_signature(
         ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
             return None
-        doc = _require_yaml().safe_load(
+        doc = yaml.safe_load(
             (ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
         pa = doc.get("public_api") if isinstance(doc, dict) else None
         sigs = pa.get("signatures") if isinstance(pa, dict) else None
@@ -4220,18 +4085,11 @@ def _catalog_family_index(repo_root: Path) -> list[dict[str, str]]:
     selector to group nodes by ``(spec_kind, family)`` — a dimension ``_load_spec_catalog``
     (versions only) drops."""
     try:
-        catalog_path = Path(repo_root) / "spec" / "registry" / "spec_catalog.yaml"
-        if not catalog_path.is_file():
-            return []
-        doc = _require_yaml().safe_load(catalog_path.read_text(encoding="utf-8"))
+        entries = _spec_catalog_entries(repo_root)
     except Exception:
         return []
-    if not isinstance(doc, dict) or not isinstance(doc.get("specs"), list):
-        return []
     out: list[dict[str, str]] = []
-    for entry in doc["specs"]:
-        if not isinstance(entry, dict):
-            continue
+    for entry in entries:
         kind = str(entry.get("spec_kind") or "").strip()
         spec_id = str(entry.get("spec_id") or "").strip()
         version = str(entry.get("spec_version") or "").strip()
@@ -4284,7 +4142,7 @@ def _resolve_exemplar_source(
     R1 lands the harness node, the runner leaves the physics node; since issue #589 the exemplar
     is the model alone.
 
-    Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage``
+    Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage_detail``
     / ``_certified_model_source``): for each sibling catalog spec, its SELECTED certified
     Validate output under its key (a genuinely certified node, not merely built —
     ``DerivationResolver.select``) and the certified Generate output that verdict stands on.
@@ -4303,7 +4161,7 @@ def _resolve_exemplar_source(
         if not ir_path.is_file():
             return None
         try:
-            ir_doc = _require_yaml().safe_load(ir_path.read_text(encoding="utf-8"))
+            ir_doc = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
         except Exception:
             return None
         if not isinstance(ir_doc, dict):
@@ -4353,8 +4211,8 @@ def _resolve_exemplar_source(
         best: tuple[tuple[str, int], dict[str, Any]] | None = None
         resolver = DerivationResolver(repo_root, target=target)
         for cand_id, cand_version in siblings:
-            if not (_is_safe_path_token(self_kind) and _is_safe_path_token(cand_id)
-                    and (not cand_version or _is_safe_path_token(cand_version))):
+            if not (_is_identifier_token(self_kind) and _is_identifier_token(cand_id)
+                    and (not cand_version or _is_identifier_token(cand_version))):
                 continue
             # Scan every catalog version's pipeline dir (a spec may have >1); pick the
             # certified pipeline with the freshest canonical id across them.
@@ -4598,7 +4456,7 @@ def _compute_initial_dependency_readiness(
     Under a `target` (the orchestration's, issue #284) a node that is not itself
     `infrastructure` has the target's harness as a direct dependency even with an empty
     `deps.yaml` (`target_harness_entries`), so it is not a trivial leaf. Asking that reads the
-    catalog, whose failure propagates like a PyYAML one (`write_preflight` handles both).
+    catalog, whose failure propagates (`write_preflight` handles it).
     """
     if _target_harness_entries_for_spec_ref(repo_root, spec_ref, target):
         return {
@@ -4610,25 +4468,6 @@ def _compute_initial_dependency_readiness(
                 "aggregate_verdict_verified": False,
             },
         }
-    # Codex round 34 F1: detect a canonical empty-deps leaf via a strict
-    # BYTE-LEVEL recognizer BEFORE touching PyYAML, so a controller PyYAML
-    # outage does not make `write_preflight` persist an all-false readiness
-    # record for a FRESH leaf orchestration (a brand-new no-deps workflow
-    # could not launch).
-    # The byte-level recognizer is intentionally conservative: false
-    # negatives just defer to PyYAML parsing (or fail-closed under
-    # outage); false positives would be fail-open, so the grammar is
-    # restricted to the canonical pattern.
-    spec_token = spec_ref.strip() if isinstance(spec_ref, str) and spec_ref.strip() else ""
-    deps_bytes_for_leaf: bytes | None = None
-    if spec_token:
-        deps_path = (repo_root / spec_token / "deps.yaml").resolve()
-        try:
-            deps_path.relative_to(repo_root.resolve())
-            if deps_path.is_file():
-                deps_bytes_for_leaf = deps_path.read_bytes()
-        except (ValueError, OSError):
-            deps_bytes_for_leaf = None
     trivial: dict[str, Any] = {
         "direct_dependency_compile_readiness": True,
         "direct_dependency_execution_readiness": True,
@@ -4641,15 +4480,6 @@ def _compute_initial_dependency_readiness(
         # certify); `write_preflight` refreshes such a record from the current deps.yaml.
         "certified_deps": [],
     }
-    if deps_bytes_for_leaf is not None and _deps_yaml_bytes_are_canonical_empty(
-        deps_bytes_for_leaf
-    ):
-        # Byte-confirmed leaf, decided without PyYAML.
-        return trivial
-    # Codex round 33 F1: PyYAML errors past this point propagate so
-    # `write_preflight` can decide between "preserve existing verified
-    # record" and "write fail-closed". Non-leaf specs cannot be verified
-    # without YAML, so a PyYAML outage MUST fail-closed for those.
     fail_closed: dict[str, Any] = {
         "direct_dependency_compile_readiness": False,
         "direct_dependency_execution_readiness": False,
@@ -4661,11 +4491,6 @@ def _compute_initial_dependency_readiness(
         # Fail-closed payloads explicitly omit `certified_deps`: there is
         # no proof of any verification state to record.
     }
-    # Codex round 33 F1: PyYAML errors propagate; write_preflight handles
-    # the "preserve existing or write degraded fail-closed" decision based
-    # on whether prior verified state exists. Letting `_read_deps_yaml` /
-    # `_require_yaml` raise here is the correct behavior so the caller can
-    # distinguish "could not evaluate" from "evaluated to fail-closed".
     deps_doc = _read_deps_yaml(repo_root, spec_ref)
     if not isinstance(deps_doc, dict):
         return fail_closed
@@ -4698,7 +4523,11 @@ _NODE_KEY_SAFE_PATTERN = re.compile(
 _NODE_KEY_KIND_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _NODE_KEY_ID_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _NODE_KEY_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._-]*$")
-_SLUG_DATE_SEQ3_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*_[0-9]{8}_[0-9]{3}$")
+_SLUG_DATE_SEQ3_PATTERN = re.compile(
+    _FRESHNESS_CANONICAL_ID_RE.pattern
+    .replace(r"([0-9]{8})", r"[0-9]{8}")
+    .replace(r"([0-9]{3})", r"[0-9]{3}")
+)
 
 # `run_id` is the one id in the family that is NOT a `<slug>_<date>_<seq3>`
 # value: it carries a fixed literal `run_` prefix (`run_<YYYYMMDD>_<seq3>`,
@@ -4721,28 +4550,6 @@ _RUN_ID_RE = re.compile(r"^run_[0-9]{8}_[0-9]{3}$")
 # the ir_id slug format) fails fast before the generate agent wastes a full
 # substep run that would only be caught by generate.verify.
 _SOURCE_ID_RE = re.compile(r"^src_[0-9]{8}_[0-9]{3}$")
-
-# Codex round 31 F2 → round 36: keep reader (`_FRESHNESS_CANONICAL_ID_RE`)
-# and writer (`_SLUG_DATE_SEQ3_PATTERN`) grammars in lock-step. The capture
-# groups in the reader (`([0-9]{8})` / `([0-9]{3})`) are the only intentional
-# difference; their pattern bodies must be identical so a future edit to one
-# without the other surfaces at module load instead of silently re-opening
-# the trust gap fixed in round 31. Round 36 promotes this from `assert` (which
-# `python -O` elides) to an unconditional RuntimeError so the load-bearing
-# invariant survives optimized interpreter modes. Round 36 also tightens the
-# reader's digit classes to `[0-9]` (same as the writer) for genuine
-# equivalence — `\d` would match Unicode digits.
-if _SLUG_DATE_SEQ3_PATTERN.pattern != (
-    _FRESHNESS_CANONICAL_ID_RE.pattern
-    .replace(r"([0-9]{8})", r"[0-9]{8}")
-    .replace(r"([0-9]{3})", r"[0-9]{3}")
-):
-    raise RuntimeError(
-        "freshness reader and writer regexes have diverged — round 31 F2 "
-        "invariant violated. Reader: "
-        f"{_FRESHNESS_CANONICAL_ID_RE.pattern!r}; writer: "
-        f"{_SLUG_DATE_SEQ3_PATTERN.pattern!r}."
-    )
 
 
 def _parse_node_key_strict(node_key: Any) -> tuple[str, str, str]:
@@ -4952,10 +4759,6 @@ def _read_session_run_index_from_path(path: Path) -> dict[str, Any]:
 def _json_transaction_exclusive_lock(transaction_dir: Path) -> Iterator[None]:
     """Serialize every session-index writer with registration/recovery transactions."""
     lock_path = transaction_dir / "session_run_index.json.lock"
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        _fcntl_warn_once("Codex registration transaction")
-        yield
-        return
     with _fcntl_exclusive_lock(lock_path):
         yield
 
@@ -5488,29 +5291,8 @@ def _orchestration_meta_lock_path(repo_root: Path, orchestration_id: str) -> Pat
     return _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json.lock"
 
 
-_FCNTL_FALLBACK_WARNED = False
-
-
-def _fcntl_warn_once(scope: str) -> None:
-    global _FCNTL_FALLBACK_WARNED
-    if _FCNTL_FALLBACK_WARNED:
-        return
-    _FCNTL_FALLBACK_WARNED = True
-    import sys as _sys
-    print(
-        "orchestration_runtime: WARNING — fcntl is unavailable on this "
-        f"platform; {scope} serialization is a no-op. Concurrent invocations "
-        "may race. Restrict orchestration to a single process or run on a "
-        "POSIX system to enable lock serialization.",
-        file=_sys.stderr,
-    )
-
-
 @contextlib.contextmanager
 def _fcntl_exclusive_lock(lock_path: Path) -> Iterator[None]:
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        yield
-        return
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
@@ -5531,16 +5313,6 @@ def _fcntl_exclusive_lock(lock_path: Path) -> Iterator[None]:
 
 @contextlib.contextmanager
 def _runs_jsonl_exclusive_lock(repo_root: Path, orchestration_id: str) -> Iterator[None]:
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        # L-NEW-4: on non-POSIX platforms (Windows, etc.) fcntl is unavailable,
-        # so the lock degrades to a no-op. Two concurrent finalizers would
-        # then race silently. Single-process workflows are unaffected, but
-        # any multi-process driver would defeat Adv-24 serialization without
-        # warning. Emit a one-shot stderr message so the operator sees the
-        # downgrade rather than discovering it via corrupt state.
-        _fcntl_warn_once("agent_runs.jsonl")
-        yield
-        return
     with _fcntl_exclusive_lock(_runs_jsonl_lock_path(repo_root, orchestration_id)):
         yield
 
@@ -5550,10 +5322,6 @@ def _orchestration_meta_exclusive_lock(
     repo_root: Path, orchestration_id: str
 ) -> Iterator[None]:
     """Serialize the terminal-status critical section in update_orchestration_status."""
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        _fcntl_warn_once("orchestration_meta.json")
-        yield
-        return
     with _fcntl_exclusive_lock(_orchestration_meta_lock_path(repo_root, orchestration_id)):
         yield
 
@@ -5977,16 +5745,11 @@ def _write_phase_state(repo_root: Path, orchestration_id: str, doc: dict[str, An
 
 
 def _load_phase_state(repo_root: Path, orchestration_id: str) -> dict[str, Any] | None:
+    """The host-written `phase_state.json` (sole writer `_write_phase_state`), or None."""
     path = _phase_state_path(repo_root, orchestration_id)
     if not path.exists():
         return None
-    try:
-        data = _read_json(path)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"phase_state.json is invalid JSON: {path}") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError(f"phase_state.json must be object: {path}")
-    return data
+    return _read_json(path)
 
 
 def _current_hostname_for_record() -> str:
@@ -6043,11 +5806,6 @@ def reconcile_phase_state_for_resume(
             },
         )
         return doc
-    orch_id = existing.get("orchestration_id")
-    if orch_id != orchestration_id:
-        raise RuntimeError(
-            f"phase_state.json orchestration_id mismatch: expected {orchestration_id!r}, got {orch_id!r}"
-        )
     merged = dict(existing)
     merged["node_states"] = _merge_node_states(merged.get("node_states"), orchestration_id)
     _write_phase_state(repo_root, orchestration_id, merged)
@@ -6139,11 +5897,6 @@ def _transition_phase_state(
     doc = _load_phase_state(repo_root, orchestration_id)
     if doc is None:
         doc = _new_phase_state_document(orchestration_id)
-    elif doc.get("orchestration_id") not in (orchestration_id, None):
-        raise RuntimeError(
-            "phase_state.json orchestration_id mismatch: "
-            f"expected {orchestration_id!r}, got {doc.get('orchestration_id')!r}"
-        )
     prev = doc.get("current_state")
     doc["current_state"] = new_state
     if doc.get("orchestration_id") != orchestration_id:
@@ -6189,11 +5942,6 @@ def _transition_node_step_phase_state(
     doc = _load_phase_state(repo_root, orchestration_id)
     if doc is None:
         doc = _new_phase_state_document(orchestration_id)
-    elif doc.get("orchestration_id") not in (orchestration_id, None):
-        raise RuntimeError(
-            "phase_state.json orchestration_id mismatch: "
-            f"expected {orchestration_id!r}, got {doc.get('orchestration_id')!r}"
-        )
     doc["orchestration_id"] = orchestration_id
     ns_any = doc.get("node_states")
     ns: dict[str, Any] = ns_any if isinstance(ns_any, dict) else {}
@@ -6402,24 +6150,9 @@ def _dependency_ready(
         # derivation key over its inputs, its output's `artifact_hashes`), so nothing a
         # fingerprint of the selected files saw is invisible to it.
         spec_ref = meta.get("spec_ref")
-        # Codex round 28 F1: `_compute_dep_readiness` reaches `_read_deps_yaml` /
-        # `_load_spec_catalog_from_bytes`, which raise `RuntimeError` when PyYAML is not
-        # installed (round 27 F1). Letting that escape `_dependency_ready` turns a missing
-        # package into an un-handled launch-gate exception (the upstream CLI prints a
-        # traceback instead of `dependency_not_ready`). Convert the install failure into a
-        # deterministic fail-closed gate result with a specific reason. The no-deps-leaf
-        # shortcut that used to stand here (rounds 29–31: trust a persisted `certified_deps
-        # == []` bound to a byte fingerprint of deps.yaml) went with the fingerprint; no
-        # production launch reaches this branch without PyYAML, because `run_workflow.py`
-        # reads the catalog through it before any orchestration exists (`resolve_node`).
         target = _target_of_orchestration_meta(repo_root, meta)
-        try:
-            recomputed, _certified, fail_reason = _compute_dep_readiness(
-                repo_root, spec_ref, target=target)
-        except RuntimeError as exc:
-            if "PyYAML" in str(exc):
-                return False, "pyyaml_unavailable"
-            raise
+        recomputed, _certified, fail_reason = _compute_dep_readiness(
+            repo_root, spec_ref, target=target)
         if recomputed is None:
             # Codex round 20 F1: production launch checks MUST fail closed when
             # live recomputation cannot run — there is no way to re-verify
@@ -9375,17 +9108,11 @@ _PROMPT_TEMPLATE_FILES = {
 def _load_launch_prompt_templates() -> dict[str, str]:
     """Load every registered launch-prompt template from tools/prompt_templates/, verbatim.
 
-    Keyed by `_PROMPT_TEMPLATE_FILES`; a registered file that is missing is a RuntimeError, so
-    a key and its file are added or removed in one change.
+    Keyed by `_PROMPT_TEMPLATE_FILES`; a registered file that is missing stops the read with
+    its OSError, so a key and its file are added or removed in one change.
     """
-    templates: dict[str, str] = {}
-    for key, fname in _PROMPT_TEMPLATE_FILES.items():
-        path = _PROMPT_TEMPLATE_DIR / fname
-        try:
-            templates[key] = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError(f"launch prompt template missing: {path} ({exc})") from exc
-    return templates
+    return {key: (_PROMPT_TEMPLATE_DIR / fname).read_text(encoding="utf-8")
+            for key, fname in _PROMPT_TEMPLATE_FILES.items()}
 
 
 def _build_dependency_surface_facts(surface: Any) -> str:
@@ -9459,7 +9186,7 @@ def _build_dependency_surface_facts(surface: Any) -> str:
         if block:
             lines.append("  ```yaml")
             lines.extend(
-                f"  {ln}" for ln in _require_yaml().safe_dump(
+                f"  {ln}" for ln in yaml.safe_dump(
                     block, sort_keys=False, allow_unicode=True).rstrip("\n").split("\n"))
             lines.append("  ```")
     if len(lines) == 1:
@@ -10225,12 +9952,8 @@ def _render_leaf_repair_prompt(request_payload: dict[str, Any]) -> str:
     (`_leaf_launch_body`; issue #510) beside the `<tool_surface>` row. (The pure leaf's cold
     repair re-inlined its prior document as `<prior_document>`; that went in issue #534
     PR-J4-b.)"""
-    templates = _load_launch_prompt_templates()
     repair_key = _leaf_repair_template_name(request_payload)
-    if repair_key not in templates:
-        raise ValueError(f"launch request names no rendered prompt: no template for "
-                         f"{repair_key!r}")
-    template = templates[repair_key]
+    template = _load_launch_prompt_templates()[repair_key]
     findings = str(request_payload.get("repair_findings", "")).strip()
     subs: dict[str, str] = {
         "node_key": str(request_payload.get("node_key", "")),
@@ -14018,18 +13741,6 @@ def _probe_codex_backend(
     return checks, version_proc.stdout.strip()
 
 
-def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Make each check's `pass` lookupable by name. `pass` is bool or None (skipped, not run)."""
-    by_name: dict[str, Any] = {}
-    for item in checks:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name")
-        if isinstance(name, str):
-            by_name[name] = item.get("pass")
-    return by_name
-
-
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
     """The probe-time gate on both backends. The `pass` key is required, an explicit False
     `pass` is a failure, at least one non-None `pass` must exist, and all of those must be True.
@@ -14938,25 +14649,14 @@ def write_preflight(
                 # fingerprint of the selected files detected nothing it does not, and the
                 # record it reset is not what the gate decides from.
                 existing = meta.get("dependency_readiness")
-                # Codex round 33 F1: when PyYAML is unavailable we cannot
-                # recompute the full fingerprint that a previously-verified
-                # non-leaf record was built with. Synthesizing a byte-only
-                # fallback (round 32) caused a guaranteed fingerprint
-                # MISMATCH and overwrote verified state with fail-closed —
-                # a transient packaging issue on the controller erased
-                # every non-leaf orchestration's verified state. Skip the
-                # invalidation block entirely on PyYAML outage:
-                #   - existing verified record → preserved (degraded mode)
-                #   - no existing record → write minimal fail-closed inline
-                #     so the gate refuses launches until PyYAML is restored.
                 try:
                     computed = _compute_initial_dependency_readiness(
                         repo_root, meta.get("spec_ref"),
                         target=_target_of_orchestration_meta(repo_root, meta),
                     )
                 except SpecCatalogCorruption:
-                    # Codex round 34 F2: catalog corruption / missing.
-                    # Same treatment as PyYAML outage: preserve existing
+                    # Codex round 34 F2: catalog corruption / missing:
+                    # preserve existing
                     # verified state, or write fail-closed if no prior
                     # record. mark-dependency-readiness will surface the
                     # specific reason loudly when next invoked.
@@ -14990,46 +14690,8 @@ def write_preflight(
                             },
                         )
                         computed = None  # type: ignore[assignment]
-                except RuntimeError as exc:
-                    if "PyYAML" not in str(exc):
-                        raise
-                    if isinstance(existing, dict):
-                        # Preserve existing readiness; record degraded mode
-                        # in the phase state log so operators can correlate.
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_preserved_pyyaml_unavailable",
-                                "reason": "pyyaml_unavailable_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
-                    else:
-                        # No prior record — write a minimal fail-closed
-                        # payload (no fingerprint we can compute, no
-                        # certified_deps) so the gate refuses launch.
-                        meta["dependency_readiness"] = {
-                            "direct_dependency_compile_readiness": False,
-                            "direct_dependency_execution_readiness": False,
-                            "detail": {
-                                "ir_ref_verified": False,
-                                "pipeline_ref_verified": False,
-                                "aggregate_verdict_verified": False,
-                            },
-                        }
-                        _write_json(meta_path, meta)
-                        _append_phase_state_log(
-                            repo_root, orchestration_id,
-                            {
-                                "ts": _utc_now_iso(),
-                                "event": "dependency_readiness_degraded_init",
-                                "reason": "pyyaml_unavailable_at_preflight",
-                            },
-                        )
-                        computed = None  # type: ignore[assignment]
                 if computed is None:
-                    # PyYAML-degraded mode handled above; skip the rest of
+                    # Catalog-degraded mode handled above; skip the rest of
                     # the invalidation/refresh logic.
                     pass
                 elif not isinstance(existing, dict) or (
@@ -15861,12 +15523,7 @@ def _agent_runs_writer_active(runs_path: Path) -> bool:
     free (no active writer). Used to distinguish an in-flight concurrent
     append (which legitimately leaves the trailing line truncated) from
     durable crash corruption that masquerades as the same shape.
-
-    On non-POSIX platforms (no fcntl) we conservatively return True so that
-    legacy single-process workflows keep tolerating partial reads.
     """
-    if _fcntl is None:  # pragma: no cover — non-POSIX
-        return True
     lock_path = runs_path.parent / (runs_path.name + ".lock")
     if not lock_path.exists():
         # No lock file means no record_agent_run has ever held the lock here.
@@ -18495,18 +18152,6 @@ def main(argv: list[str] | None = None) -> int:
                 orchestration_id=args.orchestration_id,
             )
         except (ValueError, FileNotFoundError) as exc:
-            print(f"mark-dependency-readiness: {exc}", file=sys.stderr)
-            return 1
-        except RuntimeError as exc:
-            # Codex round 28 F2: PyYAML not installed → `_require_yaml()`
-            # raises `RuntimeError` from `_read_deps_yaml` /
-            # `_load_spec_catalog_from_bytes`. Surface as a clean stderr
-            # message under the same CLI contract as other expected
-            # verification failures rather than letting wrappers see a
-            # Python traceback (which would be classified as an
-            # infrastructure crash, not a dependency rejection).
-            if "PyYAML" not in str(exc):
-                raise
             print(f"mark-dependency-readiness: {exc}", file=sys.stderr)
             return 1
     elif args.command == "workflow-launch-check":

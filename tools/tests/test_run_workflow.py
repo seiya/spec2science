@@ -5301,7 +5301,6 @@ class DependencyClosureTests(unittest.TestCase):
                     repo_root, "spec/problem/a")
             self.assertEqual(ordered, [])
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
-            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
 
     @staticmethod
     def _add_problems(repo_root: Path, spec_ref: str, members: list[str]) -> None:

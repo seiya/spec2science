@@ -258,9 +258,8 @@ class ProfileTests(unittest.TestCase):
 
     def test_a_profile_declaring_libraries_is_refused(self) -> None:
         from tools.orchestration_runtime import (
-            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _load_spec_catalog, _parse_dep_entries,
             _read_deps_yaml, expand_profile_dependencies)
-        self.assertIn("profile_declares_libraries", _PROFILE_EXPANSION_REASONS)
         for declared in (True, False):
             with self.subTest(declared=declared), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)

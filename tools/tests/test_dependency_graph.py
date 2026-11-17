@@ -373,11 +373,8 @@ class BuildDependencyGraphTests(unittest.TestCase):
     def test_an_unreadable_registry_at_the_expansion_is_not_a_profile_reason(self) -> None:
         """The `SpecCatalogCorruption` guard the expansion call site carries. A round-5 census
         found it unwitnessed, and swallowing it is not a crash but a MISCLASSIFICATION: the
-        expansion would then report `profile_unresolvable` — a `_PROFILE_EXPANSION_REASONS`
-        member, hence the STALE side of `_dependency_resolution_freshness` — for a node whose
-        registry could not be READ, which is the FRESH side. That is the one-keystroke class
-        `_profile_expansion_failure` exists to prevent, one frame outside the constructor it
-        guards, so `test_every_expansion_refusal_uses_a_declared_reason` cannot reach it."""
+        expansion would then report `profile_unresolvable` — a profile reason — for a node whose
+        registry could not be READ, one frame outside `_profile_expansion_failure`."""
         import tools.orchestration_runtime as ort
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
@@ -406,7 +403,6 @@ class BuildDependencyGraphTests(unittest.TestCase):
                     target_node_key="problem/p@0.1.0")
             self.assertIsNone(graph)
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
-            self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
 
     def test_an_unresolvable_profile_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
