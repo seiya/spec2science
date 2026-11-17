@@ -16835,7 +16835,7 @@ def main(argv: list[str] | None = None) -> int:
     launch_check_parser = subparsers.add_parser(
         "workflow-launch-check",
         description=(
-            "Pre-phase gate: checks execution platform availability, session policy, "
+            "Pre-phase gate: checks execution platform availability, "
             "dependency readiness, and required child agent kind. "
             "Returns JSON with status ('pass'|'fail_closed') and next_action. "
             "Run once before the first phase; fail_closed must stop the orchestration."
