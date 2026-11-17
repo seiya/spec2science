@@ -14096,8 +14096,11 @@ class Conductor:
             # Runtime error is a CONTENT failure (buggy generated code): rc 0 so run_phase
             # routes it via the validate tables / diagnostician, not transport fail_closed.
             # No trial_meta is written, so determine_substep_status fails this substep.
+            # The library's own reason (a timeout) goes with it, into the operator's log only:
+            # the Generate restart this routes to reads no findings.
+            why = f" ({res_run['error']})" if res_run.get("error") else ""
             return {"returncode": 0, "stdout": stdout,
-                    "stderr": stderr + "\n[run_program failed: runtime_error]"}
+                    "stderr": stderr + f"\n[run_program failed: runtime_error]{why}"}
 
         # 3. promote primary evidence (selective per artifact type) + author metadata.
         artifacts = self._required_evidence_artifacts(ir)
@@ -14311,6 +14314,11 @@ class Conductor:
             block = "\n[execute fail]\n" + gate.stdout + gate.stderr
             if snapshot_gap:
                 block += "\n" + snapshot_gap
+            # A re-run the library stopped (its timeout) compares as a verdict mismatch below;
+            # this names the cause the comparison cannot.
+            if res_qc.get("error"):
+                block += (f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} "
+                          f"re-run (the serial reference) did not complete: {res_qc['error']}")
             # A continuation refused in another shape than the run's (issue #632): its captures
             # are absent there, and that shape's comparison with the reference fails; this says
             # why, which the comparison alone does not.
