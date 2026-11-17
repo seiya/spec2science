@@ -23,8 +23,8 @@ the episode files under `.claude/skills/spec2science-enforcement-change/referenc
 
 ## The DEV layer
 - `.claude/settings.json` and `.codex/hooks.json` register `tools/hooks/dev_cli.py`. It applies two
-  stdlib-only rule modules and nothing else: `tools/hooks/operator_safety.py` (the hard-reset
-  command, the validator's verify-bypass flags — the operator's own checkout) and
+  stdlib-only rule modules and nothing else: `tools/hooks/operator_safety.py` (the validator's
+  verify-bypass flags — the operator's own checkout) and
   `tools/hooks/dev_session_hygiene.py` (an agent session must not wait by sleeping — the session's
   own process table).
 - **`dev_cli.py` imports the standard library and those two modules, deliberately, and encodes each

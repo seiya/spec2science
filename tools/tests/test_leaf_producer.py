@@ -846,11 +846,6 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         self.assertIn("the_syntax_compiler", executables)
         self.assertIn("the_launcher", executables)
 
-    def test_a_language_with_no_lint_preset_is_a_host_precondition(self) -> None:
-        with mock.patch.object(wc.backend_registry, "linter_for_language", return_value=None):
-            with self.assertRaisesRegex(RuntimeError, "no static lint preset"):
-                self._freeze()
-
     def test_the_toolchain_roots_cover_every_program_a_run_starts(self) -> None:
         import tools.orchestration_runtime as ort_mod
         from tools.build_runtime import lint_preset_executables

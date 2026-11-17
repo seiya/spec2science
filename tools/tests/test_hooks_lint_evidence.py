@@ -19,11 +19,6 @@ class LintEvidenceTest(unittest.TestCase):
         p = lint_evidence_path(pipeline_root=Path("/pipe"), source_id="src_x")
         self.assertEqual(p, Path("/pipe/lint_evidence/src_x.json"))
 
-    def test_traversal_guard_rejects_unsafe_source_id(self) -> None:
-        for bad in ("", ".", "..", "a/b", "a\\b", "a\x00b"):
-            with self.assertRaises(ValueError):
-                lint_evidence_path(pipeline_root=Path("/pipe"), source_id=bad)
-
     def test_write_then_read_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

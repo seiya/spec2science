@@ -40,17 +40,12 @@ def max_spec_id_len() -> int:
     spec_id bound that leaves room for its suffixes. A spec_id names one node for every target,
     so the gate takes the strictest language's answer. Read per call: the registry loads a
     language package only when `capability_module` is asked, so importing this module loads
-    none."""
-    bounds = [
+    none. With no such language `min` raises: there is no bound, and no default stands in."""
+    return min(
         registry.capability_module("language", lang, "bundle_facts").SPEC_ID_MAX
         for lang in registry.backend_ids("language")
         if registry.provides("language", lang, "bundle_facts")
-    ]
-    if not bounds:
-        raise RuntimeError(
-            "no declared language backend provides bundle_facts, so no spec_id bound exists; "
-            "see tools/backends/registry.py")
-    return min(bounds)
+    )
 
 # The character grammar a case_id must obey. The runner harness builds each per-case snapshot
 # path by concatenating the runtime case_id — a file named after it under `raw/state_snapshots/` — so a

@@ -345,8 +345,9 @@ class EndToEndTests(unittest.TestCase):
     def test_the_post_execute_gate_accepts_the_entries_it_binds(self) -> None:
         """The real post-execute gate functions over the two entries this executor wrote, in a
         synthetic tree where the shipped runner IS the node's build `bin/` file and the shipped
-        control file IS its source `src/` one: no violation. Each entry with its site value put
-        back — `command` from `site.remote_command`, `cwd` from `site.remote_cwd` — is refused."""
+        control file IS its source `src/` one: no violation. The run entry with its site `command`
+        put back (`site.remote_command`) is refused. (The quality-check entry's `cwd` rule went in
+        issue #643: its argv is a preset and its control file host-rendered.)"""
         import tools.validate_pipeline_semantics as vps
 
         repo = self.h.root / "repo"
@@ -395,8 +396,7 @@ class EndToEndTests(unittest.TestCase):
                                return_value=("make", "fortran")):
             self.assertEqual(violations(), [])
             for log, key, site_key, refusal in (
-                    (run_log, "command", "remote_command", "Mixed-build attribution"),
-                    (qc_log, "cwd", "remote_cwd", "must run inside source/<source_id>/src")):
+                    (run_log, "command", "remote_command", "Mixed-build attribution"),):
                 with self.subTest(key=key):
                     kept = log.read_text()
                     entry = json.loads(kept)

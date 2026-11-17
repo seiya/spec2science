@@ -13,8 +13,8 @@ own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCH
 post-execute gate binds the binary — the argument after the recorded launch prefix — to the
 node's own build `bin/`; the argv the site executed
 is the entry's `site.remote_command`. Its `cwd` is the command's `record_cwd`, the local
-directory it stands for (the gate requires a quality check's to be the node's source `src/`),
-and the site's is `site.remote_cwd`.
+directory it stands for (a quality check's is the node's source `src/`), and the site's is
+`site.remote_cwd`.
 
 What the executor knows is a SEQUENCE of commands (`CommandSpec`), each an argv, a working
 directory, an environment override set and a timeout, and the files to ship. It does not know
@@ -203,8 +203,8 @@ class CommandSpec:
     under (the validator requires the names the local path records). `argv` and `cwd` are
     REMOTE paths, and `cwd` lies under the job directory. `record_cwd` is the LOCAL directory the
     command stands for — the `project_dir` the local path would have handed the library — and it
-    is what the entry records as `cwd`: the post-execute gate requires a quality check's `cwd`
-    to be the node's own `source/<source_id>/src`, holding its build control file. The remote
+    is what the entry records as `cwd` (a quality check's is the node's own
+    `source/<source_id>/src`, holding its build control file). The remote
     `cwd` is the entry's `site.remote_cwd`. `env` is an override set whose names must be
     variable names (each word is rendered through `shlex.quote`). `timeout_sec` has
     no default: the local library's are 3600 for `run_program`, 1800 for `run_quality_checks`

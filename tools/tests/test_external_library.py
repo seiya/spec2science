@@ -664,9 +664,6 @@ class ControlFileAndSyntaxTests(_Fixture):
             self.assertFalse(check(None)["ok"])
             ok = check([str(self.dirs["include"])])
             self.assertTrue(ok["ok"], ok.get("stderr"))
-            for bad in ("a", [1]):
-                with self.subTest(bad=bad), self.assertRaises(ValueError):
-                    check(bad)  # type: ignore[arg-type]
         from tools.backends.compiler.nvcc import syntax as nvcc_syntax
         with self.assertRaises(ValueError):
             nvcc_syntax.argv(standard="c++17", scratch_dir=".s", parallel_backend=None,

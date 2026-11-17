@@ -47,22 +47,17 @@ def _backend_registry() -> Any:
     return registry
 
 
-def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
-    """An integer argument, held to `minimum`; below it is refused rather than clamped."""
-    if raw is None:
-        return default
-    value = int(raw)
-    if value < minimum:
-        raise ValueError(f"{name} must be >= {minimum} (got {value})")
-    return value
+def _int_arg(raw: Any, default: int) -> int:
+    """An integer argument, or `default` when the caller names none. Every caller composes
+    the value from a host constant (issue #643)."""
+    return default if raw is None else int(raw)
 
 
 def _build_syntax_source_re(suffixes: tuple[str, ...]) -> re.Pattern[str]:
     """A source name: a file name carrying one of the language's source suffixes.
 
     `suffixes` is the language's `syntax_promotions.SOURCE_SUFFIXES`, the set auto-discovery
-    also filters on, so an added suffix cannot make auto-discovery accept a file an explicit
-    `sources` list refuses."""
+    also filters on."""
     alternation = "|".join(re.escape(s.lstrip(".")) for s in suffixes)
     return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({alternation})$", re.IGNORECASE)
 
@@ -78,13 +73,12 @@ class SyntaxSourceNameError(ValueError):
 
 def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: str, *,
                              suffixes: tuple[str, ...], language: str) -> None:
-    """Constrain the source list appended to the compiler front-end argv.
+    """Constrain the auto-discovered source list appended to the compiler front-end argv.
 
-    A source is a file of the adapter's language (`suffixes`) sitting in `project_dir`. Anything else the driver would
-    accept there — an option, a response file, a path out of the directory, a symlink
-    to one — makes the check compile something other than what was staged, and it
-    reports `ok: True` either way. Refused in every mode; the workflow never passes
-    this argument at all, and an operator passing it means file names.
+    A source is a file of the adapter's language (`suffixes`) sitting in `project_dir`. The
+    names are the leaf's. Anything else the driver would accept there — an option, a response
+    file, a path out of the directory, a symlink to one — makes the check compile something
+    other than what was staged, and it reports `ok: True` either way.
     """
     root = Path(project_dir).resolve()
     source_re = _build_syntax_source_re(suffixes)
@@ -115,19 +109,6 @@ def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: st
 
 
 DEFAULT_COMMAND_LOG_FILE = "command_log.jsonl"
-
-def _is_compiled_language(language: str) -> bool:
-    """Whether `language` is compiled — its language backend's `bundle_facts.COMPILED`. A
-    compiled language needs a build tool that tracks dependencies between its sources; which
-    languages are compiled is the backend's fact, not a set spelled here (issue #289)."""
-    return bool(_backend_registry().is_compiled_language((language or "").strip().lower()))
-
-
-#: The build systems a compiled language may build through: those that track dependencies
-#: between compiled sources (`AGENTS.md` §Build-runtime execution rules names this set). A
-#: named policy, not a fact of one backend; which build system a target uses is its profile's
-#: `toolchain.build_system`, so nothing here is a default.
-COMPILED_LANGUAGE_BUILD_SYSTEMS = frozenset({"make", "cmake", "meson", "ninja"})
 
 
 def _trim(text: str, limit: int) -> str:
@@ -189,39 +170,18 @@ def _attribution(args: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _sandbox_argv_prefix(args: dict[str, Any]) -> list[str]:
-    """The optional `sandbox_argv_prefix` of a call: the argv the caller confines the command
-    under (a `bwrap ... --` head the conductor renders for a `workshop leaf`'s wrapper,
-    `orchestration_runtime.render_wrapper_sandbox_prefix`), spliced in front of the command by
-    `_run_command`. Type-only, as every other argument (`docs/BUILD_RUNTIME.md` §Operations
-    rules): an array of non-empty strings, or absent. The content is the caller's."""
-    raw = args.get("sandbox_argv_prefix")
-    if raw is None:
-        return []
-    if not isinstance(raw, list) or not all(isinstance(a, str) and a for a in raw):
-        raise ValueError("sandbox_argv_prefix must be an array of non-empty strings")
-    return list(raw)
-
-
-def _on_spawn(args: dict[str, Any]) -> Any:
-    """The optional `on_spawn` callable of a call: told the process-group id of a sandboxed
-    command as soon as it starts, so an in-process caller can kill the group while the call
-    is still blocked (the wrapper stops every run of a lineage the host ends). Only meaningful
-    with `sandbox_argv_prefix`, the case in which the command runs in a session of its own."""
-    raw = args.get("on_spawn")
-    if raw is None:
-        return None
-    if not callable(raw):
-        raise ValueError("on_spawn must be callable")
-    if args.get("sandbox_argv_prefix") is None:
-        raise ValueError("on_spawn requires sandbox_argv_prefix")
-    return raw
-
-
 def _sandbox_args(args: dict[str, Any]) -> dict[str, Any]:
-    """Both sandbox keys of a call, validated at the entry point before anything runs or is
-    skipped, as the `_run_command` keywords they become."""
-    return {"sandbox_argv_prefix": _sandbox_argv_prefix(args), "on_spawn": _on_spawn(args)}
+    """Both sandbox keys of a call, as the `_run_command` keywords they become.
+
+    `sandbox_argv_prefix` is the argv the caller confines the command under (a `bwrap ... --`
+    head the conductor renders for a `workshop leaf`'s wrapper,
+    `orchestration_runtime.render_wrapper_sandbox_prefix`), spliced in front of the command.
+    `on_spawn` is told the process-group id of a sandboxed command as soon as it starts, so an
+    in-process caller can kill the group while the call is still blocked (the wrapper stops
+    every run of a lineage the host ends); the wrapper passes it only together with a prefix.
+    Both are the caller's and are not checked (`docs/BUILD_RUNTIME.md` §Operations rules)."""
+    return {"sandbox_argv_prefix": list(args.get("sandbox_argv_prefix") or []),
+            "on_spawn": args.get("on_spawn")}
 
 
 def _sandboxed_run(argv: list[str], *, cwd: str, env: dict[str, str], timeout_sec: int,
@@ -265,15 +225,7 @@ def _run_command(
     sandbox_argv_prefix: list[str] | None = None,
     on_spawn: Any = None,
 ) -> dict[str, Any]:
-    if not command:
-        raise ValueError("command must not be empty")
-
     path = Path(cwd)
-    if not path.exists():
-        raise ValueError(f"project_dir does not exist: {cwd}")
-    if not path.is_dir():
-        raise ValueError(f"project_dir is not a directory: {cwd}")
-
     merged_env = os.environ.copy()
     if env:
         merged_env.update({str(k): str(v) for k, v in env.items()})
@@ -495,25 +447,6 @@ def build_command(
     raise ValueError(f"unsupported build_system: {build_system}")
 
 
-#: The build systems `build_command`'s own rows run (those no backend owns yet). Held equal to
-#: those rows by `test_known_build_systems_is_the_domain_build_command_answers`.
-_UNOWNED_BUILD_SYSTEMS: tuple[str, ...] = (
-    "cmake", "meson", "ninja", "cargo", "go", "maven", "gradle", "npm", "pnpm", "poetry",
-)
-
-
-def known_build_systems() -> frozenset[str]:
-    """Every build system `compile_project` runs: the unowned rows of `build_command` and each
-    `build_system` record that carries `build_execute` in its package — exactly the values
-    `build_command` answers without raising, so the dependency-aware rule is that domain and
-    not a second list beside it (issue #469). Each is a standard build tool that tracks
-    dependencies; an arbitrary command is not among them."""
-    registry = _backend_registry()
-    extracted = {b for b in registry.backend_ids("build_system")
-                 if "build_execute" in registry.get("build_system", b).backend_provides}
-    return frozenset(_UNOWNED_BUILD_SYSTEMS) | extracted
-
-
 def build_system_executable(build_system: str) -> str:
     """The host executable `build_system` builds through.
 
@@ -529,24 +462,13 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
     language = str(args.get("language", "")).strip().lower()
     target = args.get("target")
-    # Each bound has a minimum, enforced here. `make -j-5` waits forever, which spends the caller's whole
-    # timeout on nothing.
-    jobs = _bounded_int(args.get("jobs"), default_build_jobs(), 1, "jobs")
-    timeout_sec = _bounded_int(args.get("timeout_sec"), COMPILE_PROJECT_TIMEOUT_SEC, 1,
-                               "timeout_sec")
-    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
+    jobs = _int_arg(args.get("jobs"), default_build_jobs())
+    timeout_sec = _int_arg(args.get("timeout_sec"), COMPILE_PROJECT_TIMEOUT_SEC)
+    capture_limit = _int_arg(args.get("capture_limit"), 120000)
     command_log_path = args.get("command_log_path")
-    if command_log_path is not None and not isinstance(command_log_path, str):
-        raise ValueError("command_log_path must be a string")
     extra_args = args.get("extra_args", [])
     env = args.get("env")
-    if env is not None and not isinstance(env, dict):
-        raise ValueError("env must be an object")
     sandbox = _sandbox_args(args)
-    if target is not None and not isinstance(target, str):
-        raise ValueError("compile_project target must be a string")
-    if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
-        raise ValueError("compile_project extra_args must be an array of strings")
 
     build_system = args.get("build_system")
     if build_system:
@@ -554,16 +476,8 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     else:
         build_system = _recommended_build_system(project_dir)["build_system"]
 
-    if build_system not in known_build_systems():
-        raise ValueError(
-            "build_system must be a standard dependency-aware build tool the library can run"
-        )
-    if (_is_compiled_language(str(language or ""))
-            and build_system not in COMPILED_LANGUAGE_BUILD_SYSTEMS):
-        raise ValueError(
-            "for a compiled language, use "
-            f"{'/'.join(sorted(COMPILED_LANGUAGE_BUILD_SYSTEMS))}")
-
+    # An unsupported build system is `build_command`'s refusal; which build system a target
+    # uses is its profile's, held by the launch gate (`target_profile.toolchain_servable_reasons`).
     command = build_command(build_system, target, jobs, extra_args)
     result = _run_command(
         command=command,
@@ -621,7 +535,7 @@ def _quality_check_preset_commands() -> dict[str, tuple[str, ...]]:
 
 
 #: Composed once at import, so a preset declared twice refuses the module rather than the first
-#: call (the same shape as `_check_lint_preset_declarations`).
+#: call.
 _QUALITY_CHECK_PRESET_COMMANDS: dict[str, tuple[str, ...]] = _quality_check_preset_commands()
 
 
@@ -637,18 +551,11 @@ def quality_check_command(preset: str) -> list[str]:
 
 def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    timeout_sec = _bounded_int(args.get("timeout_sec"), RUN_PROGRAM_TIMEOUT_SEC, 1, "timeout_sec")
-    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
+    timeout_sec = _int_arg(args.get("timeout_sec"), RUN_PROGRAM_TIMEOUT_SEC)
+    capture_limit = _int_arg(args.get("capture_limit"), 120000)
     command_log_path = args.get("command_log_path")
-    if command_log_path is not None and not isinstance(command_log_path, str):
-        raise ValueError("command_log_path must be a string")
     env = args.get("env")
-    command = args.get("command")
-    if not isinstance(command, list) or not command:
-        raise ValueError("command must be a non-empty string array")
-    command = [str(item) for item in command]
-    if env is not None and not isinstance(env, dict):
-        raise ValueError("env must be an object")
+    command = [str(item) for item in args["command"]]
     sandbox = _sandbox_args(args)
 
     run_env: dict[str, str] | None
@@ -672,23 +579,15 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
 
 def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    timeout_sec = _bounded_int(args.get("timeout_sec"), QUALITY_CHECKS_TIMEOUT_SEC, 1, "timeout_sec")
-    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
+    timeout_sec = _int_arg(args.get("timeout_sec"), QUALITY_CHECKS_TIMEOUT_SEC)
+    capture_limit = _int_arg(args.get("capture_limit"), 120000)
     command_log_path = args.get("command_log_path")
-    if command_log_path is not None and not isinstance(command_log_path, str):
-        raise ValueError("command_log_path must be a string")
     env = args.get("env")
-    if env is not None and not isinstance(env, dict):
-        raise ValueError("env must be an object")
     sandbox = _sandbox_args(args)
-    # Required: which preset runs is the target's build system's (the conductor always passes
-    # it), and a default would be one build system's preset answering for every target.
+    # No default: which preset runs is the target's build system's (the conductor always passes
+    # it), and a default would be one build system's preset answering for every target. A
+    # missing one is `quality_check_command`'s unsupported preset.
     preset = args.get("preset")
-    if not isinstance(preset, str) or not preset:
-        raise ValueError("preset is required")
-
-    if "command" in args:
-        raise ValueError("run_quality_checks does not allow custom command; use preset")
 
     command = quality_check_command(preset)
 
@@ -766,33 +665,6 @@ _LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
 #: other. Declared once, in the registry (`COMPOSITE_LINTERS`, issue #424), which the
 #: post_generate validator reads too.
 _LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = dict(_backend_registry().COMPOSITE_LINTERS)
-
-
-def _check_lint_preset_declarations() -> None:
-    """Fail at import on a preset table these two readers would disagree about.
-
-    Both tables are now the registry's (issue #424), whose own `_check_declarations` refuses the
-    same two shapes for the records; these arms witness that declaration as this module composed
-    it.
-
-    A name in both tables would make `lint_preset_sub_presets` and the result-shape branch in
-    `tool_run_linter` disagree about whether it is simple, so one preset would return two shapes
-    depending on which reader asked. A composite naming a preset with no command row would
-    `KeyError` mid-run, after its earlier sub-runs had already executed.
-
-    A raise rather than an `assert`, for the reason `tools/backends/registry._check_declarations`
-    gives: `python -O` strips an assert, and refusing the module is cheaper than either failure.
-    """
-    both = sorted(set(_LINT_PRESET_COMMANDS) & set(_LINT_PRESET_COMPOSITES))
-    if both:
-        raise ValueError(f"lint preset is either simple or composite, not both: {both}")
-    for preset, subs in _LINT_PRESET_COMPOSITES.items():
-        unknown = sorted(set(subs) - set(_LINT_PRESET_COMMANDS))
-        if unknown:
-            raise ValueError(f"lint preset {preset!r} composes unregistered presets: {unknown}")
-
-
-_check_lint_preset_declarations()
 
 
 def lint_preset_sub_presets(preset: str) -> tuple[str, ...]:
@@ -873,28 +745,18 @@ def _no_lint_sources_result(preset: str) -> dict[str, Any]:
 def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     """Run static analysis linters for generated sources (Generate stage only).
 
-    Presets invoke fixed commands; arbitrary user commands are not allowed.
-    This is not compile_project and does not route through build_system.
+    Presets invoke fixed commands. This is not compile_project and does not route through build_system.
     """
     project_dir = str(args.get("project_dir", "."))
-    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
-    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
+    timeout_sec = _int_arg(args.get("timeout_sec"), 1800)
+    capture_limit = _int_arg(args.get("capture_limit"), 120000)
     command_log_path = args.get("command_log_path")
-    if command_log_path is not None and not isinstance(command_log_path, str):
-        raise ValueError("command_log_path must be a string")
     env = args.get("env")
-    if env is not None and not isinstance(env, dict):
-        raise ValueError("env must be an object")
     sandbox = _sandbox_args(args)
 
-    if "command" in args:
-        raise ValueError("run_linter does not allow custom command; use preset")
-    # REQUIRED: which linter a node is linted with is its language's answer
+    # No default: which linter a node is linted with is its language's answer
     # (`registry.linter_for_language`), and a default here was one language's (issue #289).
-    raw_preset = args.get("preset")
-    if not isinstance(raw_preset, str) or not raw_preset.strip():
-        raise ValueError("run_linter requires a non-empty string 'preset'")
-    preset = raw_preset.strip().lower()
+    preset = args["preset"].strip().lower()
 
     run_env: dict[str, str] | None
     if env is None:
@@ -1040,7 +902,7 @@ def _syntax_compiler_version(version_argv: tuple[str, ...]) -> str | None:
 def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     """Run a compiler front-end in syntax-only mode over staged sources.
 
-    Registered adapters only; arbitrary user commands are not allowed. Produces no
+    Registered adapters only; the command is the adapter's argv. Produces no
     build artifacts (lint-class, not a build; does not route through build_system).
     A missing compiler binary returns {ok: True, skipped: True, ...} — whether a
     stage may be skipped (an optional stage) or must hard-fail (the language's
@@ -1061,33 +923,18 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     them to the search path. Its content is the operator's site data and is not checked.
     """
     project_dir = str(args.get("project_dir", "."))
-    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
-    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
+    timeout_sec = _int_arg(args.get("timeout_sec"), 1800)
+    capture_limit = _int_arg(args.get("capture_limit"), 120000)
     command_log_path = args.get("command_log_path")
-    if command_log_path is not None and not isinstance(command_log_path, str):
-        raise ValueError("command_log_path must be a string")
     env = args.get("env")
-    if env is not None and not isinstance(env, dict):
-        raise ValueError("env must be an object")
     sandbox = _sandbox_args(args)
 
-    if "command" in args:
-        raise ValueError(
-            "run_syntax_check does not allow custom command; use a registered compiler adapter"
-        )
-    for required in ("compiler", "std"):
-        value = args.get(required)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"run_syntax_check requires a non-empty string {required!r}")
-    compiler = str(args["compiler"]).strip().lower()
-    std = str(args["std"]).strip().lower()
+    # Indexed, not read with a default: a missing value must not become the spelling `none`
+    # in the argv, which would read as the leaf's syntax error.
+    compiler = args["compiler"].strip().lower()
+    std = args["std"].strip().lower()
     architecture = args.get("architecture")
-    if architecture is not None and not isinstance(architecture, str):
-        raise ValueError("architecture must be a string")
     parallel_backend = args.get("parallel_backend")
-    if parallel_backend is not None and (
-            not isinstance(parallel_backend, str) or not parallel_backend.strip()):
-        raise ValueError("parallel_backend must be a non-empty string")
     if parallel_backend is not None:
         # Normalised ONCE, as `compiler` and `std` are, and the normalised value is what every
         # reader below gets: the wrapper choice and the adapter's own switch must not read one
@@ -1099,28 +946,16 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     language = syntax_language(adapter)
 
     include_dirs = args.get("include_dirs", [])
-    if not isinstance(include_dirs, list) or not all(isinstance(d, str) for d in include_dirs):
-        raise ValueError("include_dirs must be an array of strings")
-
-    sources = args.get("sources")
-    if sources is not None and (
-        not isinstance(sources, list) or not all(isinstance(s, str) for s in sources)
-    ):
-        raise ValueError("sources must be an array of source file names")
 
     proj = Path(project_dir)
-    if not proj.is_dir():
-        raise ValueError(f"project_dir is not a directory: {project_dir}")
-
     suffixes = tuple(language.SOURCE_SUFFIXES)
-    ordered_sources = list(sources) if sources is not None else language.compile_order(proj)
-    # The same rule for both readings, and BEFORE the compiler-availability skip below:
-    # the rule is about the names, not about what a compiler would do with them, and an
-    # optional stage skipping on a machine without that compiler must not be the reason
-    # a bad name goes unnoticed. Auto-discovery filters on suffix alone, so a staged file
-    # named `-o.<suffix>` or `@resp.<suffix>` walked into the compiler argv as an option — and
-    # the workflow always takes that branch, since it passes no `sources`. A stray one is a
-    # visible gate failure rather than a silently skipped file.
+    ordered_sources = language.compile_order(proj)
+    # BEFORE the compiler-availability skip below: the rule is about the names, not about
+    # what a compiler would do with them, and an optional stage skipping on a machine without
+    # that compiler must not be the reason a bad name goes unnoticed. Auto-discovery filters
+    # on suffix alone, so a staged file named `-o.<suffix>` or `@resp.<suffix>` would walk into
+    # the compiler argv as an option. A stray one is a visible gate failure rather than a
+    # silently skipped file.
     _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check",
                              suffixes=suffixes, language=str(adapter.LANGUAGE))
 

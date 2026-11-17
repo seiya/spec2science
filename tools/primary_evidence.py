@@ -4105,11 +4105,8 @@ def write_case_inputs(ir: dict[str, Any], ir_dir: Path) -> list[Path]:
 
 def _write_case_files(payloads: dict[str, dict[str, Any]], out_dir: Path) -> list[Path]:
     """`write_case_inputs`' writer: one file per case id, each through a temporary name of its
-    own and `os.replace`, in case order."""
-    from tools.spec_input_gates import CASE_ID_TOKEN_RE   # function-level: render-free import
-    for cid in payloads:
-        if not CASE_ID_TOKEN_RE.match(cid) or ".." in cid:
-            raise PrimaryEvidenceError(f"case_id {cid!r} is not a safe file name token")
+    own and `os.replace`, in case order. The ids are the IR's, which the Compile gate
+    (`_validate_case_ids`) holds to the case-id token rule."""
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for cid in sorted(payloads):

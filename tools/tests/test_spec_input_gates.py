@@ -80,11 +80,13 @@ class MaxSpecIdLenTest(unittest.TestCase):
             self.assertEqual(floor_without, max_spec_id_len())
 
     def test_no_language_is_a_refusal_not_an_unbounded_gate(self) -> None:
+        """No language answering is `min`'s refusal of an empty set, not a default bound
+        (issue #643 deleted the RuntimeError that said the same before `min` did)."""
         from unittest import mock
 
         from tools.backends import registry
         with mock.patch.object(registry, "backend_ids", return_value=()):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ValueError):
                 max_spec_id_len()
 
 

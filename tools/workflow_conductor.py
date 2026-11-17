@@ -5751,19 +5751,11 @@ class Conductor:
         which is the documented leaf-authored path.
 
         The values come from the target profile (issue #284), whose loader admits only
-        lowercase unpadded tokens. The padding refusal below predates that — it was written
-        when two readers of the IR's `impl_defaults.toolchain` normalized differently — and it
-        stays because `record_launch`'s counterpart (`control_file_host_authored`) refuses the
-        same way and the two must answer alike for any caller. The registry normalizes with
-        `.strip().lower()`, so handing it a padded value would answer True where this
-        predicate means False — hence the equality test below rather than a bare lookup.
+        lowercase unpadded tokens, and the launch gate (`target_profile.toolchain_servable_reasons`)
+        requires `control_file` of both axes.
         """
-        for axis, value in (("build_system", build_system), ("language", language)):
-            if value != value.strip():
-                return False
-            if not backend_registry.provides(axis, value, "control_file"):
-                return False
-        return True
+        return all(backend_registry.provides(axis, value, "control_file")
+                   for axis, value in (("build_system", build_system), ("language", language)))
 
     def _conductor_authors_makefile(self, refs: NodeRefs) -> bool:
         """The conductor authors `src/Makefile` iff the neutral core has a control-file writer
@@ -5774,8 +5766,7 @@ class Conductor:
         rules come from the conductor-authored `dependency_graph.json` sidecar's `all_nodes`;
         Model B), so the conductor
         authors it too and the generate leaf must not. Single source of truth for the live
-        author call AND the write-authorization removal, so they cannot disagree (which would
-        orphan the Makefile, or leave it double-owned). A node that is not make+fortran keeps LLM
+        author call. A node whose toolchain has no control-file writer would keep LLM
         authoring — unreachable today for every node kind, because the toolchain is the run's
         target's (`_read_toolchain`, issue #284) and the launch gate refuses a target whose
         toolchain the host cannot serve."""
@@ -5883,19 +5874,18 @@ class Conductor:
         removes them from the leaf's `allowed_output_paths` reads the same two answers.
 
         HOW MANY READERS THIS FACT ALREADY HAS. Counted as SITES THAT RE-DERIVE IT, which is
-        the number that matters for drift, there are FOUR: the two predicates immediately below
-        this helper, the validator's mirror (`validate_pipeline_semantics._m3c_language`, fed
-        the pipeline's target by `_execution_m3c_language`), and
-        `orchestration_runtime.control_file_host_authored`, which record_launch calls to stamp the
-        control-file authorship flag onto the launch request. Since issue #284 all four read the
-        toolchain off the same target profile (the conductor's, or the one the pipeline path
-        names), so what can still drift is the QUESTION each asks of it, not the value.
+        the number that matters for drift, there are THREE: the two predicates immediately below
+        this helper and the validator's mirror (`validate_pipeline_semantics._m3c_language`, fed
+        the pipeline's target by `_execution_m3c_language`). A fourth, the runtime's
+        `control_file_host_authored`, stamped a flag no code read and went in issue #643. Since
+        issue #284 all of them read the toolchain off the same target profile (the conductor's,
+        or the one the pipeline path names), so what can still drift is the QUESTION each asks
+        of it, not the value.
 
-        Two earlier versions of this count were wrong in opposite ways — "the conductor /
-        validator pair" undercounted, and its replacement said "THREE" and then listed four
-        items — so the unit is written out: a re-derivation is a site that reads the toolchain
-        and answers for itself. This helper adds none; a change to the ANSWER has to visit all
-        four.
+        Earlier versions of this count were wrong in opposite ways — "the conductor / validator
+        pair" undercounted, and its replacement said "THREE" and then listed four items — so the
+        unit is written out: a re-derivation is a site that reads the toolchain and answers for
+        itself. This helper adds none; a change to the ANSWER has to visit all three.
 
         Why a set of BASENAMES: everything the gate scans lives directly under `src/`, and the
         probe directories the lint attribution builds are flat copies. A caller that needs paths
@@ -6294,8 +6284,10 @@ class Conductor:
         (`_read_toolchain`, issue #284). Authoring it here removes a
         class of generate regenerate-loops (Makefile-shape failures) and the long Makefile
         contract the generate leaf would otherwise internalize, and makes the build
-        reproducible. Mirrors `_write_lineage` (runtime-owned artifact). Scoped to
-        build_system=make + language=fortran; c/cpp/mixed fall back to LLM authoring. The
+        reproducible. Mirrors `_write_lineage` (runtime-owned artifact). Scoped to a toolchain
+        whose build system and language both declare `control_file` (make with fortran or
+        cuda_cpp today); the caller (`_conductor_authors_makefile`) and the
+        launch gate decide that a node's toolchain has a control-file writer. The
         post_generate validators still run against this file as a safety net.
 
         Imposes `BIN ?= <spec_id>_runner` (overridable so Build/Validate.execute can pin the
@@ -6314,19 +6306,13 @@ class Conductor:
         A non-empty dependency closure (Model B, docs/design) emits per-dep object rules +
         a `DEP_OBJS` link list; the conductor stages each `<dep>_model.f90` into `$(OBJDIR)`
         before `make` (`_stage_dependency_sources`, called from `_build_inproc`). `run_phase`
-        authors this for every make+fortran node (leaf or dependency) — see
+        authors this for every node (leaf or dependency) whose toolchain has a control-file
+        writer — see
         `_conductor_authors_makefile`.
         """
         tc = self._read_toolchain(refs)
         language = tc["language"]
         build_system = tc["build_system"]
-        if not self._core_authors_control_file(build_system, language):
-            # A toolchain the neutral core has no control-file writer for keeps LLM authoring.
-            # Same predicate as `_conductor_authors_makefile`, which decides the matching
-            # write-authorization: if these two disagreed the file would be orphaned or
-            # double-owned. `_read_toolchain` has already lowered both values, and it does not
-            # strip — which the predicate relies on, so do not normalize again here.
-            return
         # The optional toolchain.compiler pins the compiler (another compiler's build only needs
         # this profile field plus a run_syntax_check adapter); unset keeps the language's default.
         # A parallel backend's compiler wrapper replaces both (issue #316).
@@ -6704,14 +6690,8 @@ class Conductor:
     def _control_file_module(build_system: str) -> Any:
         """The target build system's `control_file` module — the renderer of its control file
         (issue #289, R4-b PR-3). Reached only once `_core_authors_control_file` has answered
-        True for the pair, so a refusal here is a registry / package disagreement, raised as the
-        `RuntimeError` a host precondition is."""
-        try:
-            return backend_registry.capability_module("build_system", build_system,
-                                                      "control_file")
-        except (backend_registry.UnsupportedBackend,
-                backend_registry.BackendNotExtracted) as exc:
-            raise RuntimeError(f"control_file_renderer_unavailable: {exc}") from exc
+        True for the pair."""
+        return backend_registry.capability_module("build_system", build_system, "control_file")
 
     def _target_architecture(self) -> str | None:
         """The target profile's `hardware.architecture`, which a compile for a device class takes
@@ -6724,12 +6704,7 @@ class Conductor:
         """The target language's half of the control file: what it must say to compile and link
         this language (`control_file` of the language axis, `rules(...)`), for the target's
         standard, parallel backend and hardware architecture."""
-        try:
-            module = backend_registry.capability_module("language", tc["language"],
-                                                        "control_file")
-        except (backend_registry.UnsupportedBackend,
-                backend_registry.BackendNotExtracted) as exc:
-            raise RuntimeError(f"control_file_rules_unavailable: {exc}") from exc
+        module = backend_registry.capability_module("language", tc["language"], "control_file")
         return module.rules(standard=tc["standard"], parallel_backend=tc["backend"],
                             architecture=architecture,
                             compiler_wrapper=compiler_wrapper(tc["backend"]))
@@ -10486,25 +10461,14 @@ class Conductor:
         tcs = case.get("test_case_set") if isinstance(case, dict) else None
         if not isinstance(tcs, list):
             return ()
-        # strip() so the case_id identity is the SAME across the runner argv
-        # (--cases), the expected per-case capture deliverable
-        # path.
-        #
-        # This case_id becomes a FILESYSTEM PATH — the runner writes a file named after it under
-        # the run's capture directory — so a `/` or `..` would let the run write outside
-        # its directory. The Compile gate `_validate_case_ids` rejects such an id for every node,
-        # but this is the shared runtime boundary (M3c and non-M3c alike), so drop any unsafe
-        # token here too: never put a traversal string on the argv, even from a hand-crafted IR
-        # that bypassed Compile. A dropped case is simply absent from the run (and from the
-        # deliverable set this same list feeds); if a predicate still references it, its record
-        # is structural (the capture is absent). Either way the run stays
-        # in-directory — the dropped case never produces an out-of-bounds write.
-        from tools.spec_input_gates import CASE_ID_TOKEN_RE
+        # strip() so the case_id identity is the SAME across the runner argv (--cases) and the
+        # expected per-case capture deliverable path. A non-string or blank id is dropped, as
+        # the Compile gate `_validate_case_ids` skips it; every other id has crossed that gate,
+        # which refuses a token that could leave the run's capture directory.
         return tuple(sorted(
             tok for c in tcs
             if isinstance(c, dict) and isinstance(c.get("case_id"), str)
             and (tok := c["case_id"].strip())
-            and CASE_ID_TOKEN_RE.match(tok) and ".." not in tok
         ))
 
     def read_base_case_ids(self, refs: NodeRefs) -> tuple[str, ...]:
@@ -10945,13 +10909,8 @@ class Conductor:
         refused loudly rather than driven with another one's variables (`build_execute`, issue
         #289 R4-b PR-3 — until then this compared the value against one spelling); so is one
         whose record claims the job without its package carrying it. The launch gate asks the
-        same capability first (`target_profile.toolchain_servable_reasons`)."""
-        reason = backend_registry.missing_capability_reason(
-            "build_system", str(build_system), "build_execute")
-        if reason is not None:
-            raise RuntimeError(
-                f"deterministic in-process {phase} does not drive build_system "
-                f"{build_system!r}: {reason}")
+        same capability first (`target_profile.toolchain_servable_reasons`); the registry's own
+        refusal is what remains here."""
         try:
             return backend_registry.capability_module("build_system", str(build_system),
                                                       "build_execute")
@@ -11217,9 +11176,9 @@ class Conductor:
         where a correct tree without the headers fails the wrapper's lint and syntax and passes
         the host's).
 
-        Raises `RuntimeError` on a host precondition (a language with no lint preset or no
-        syntax stage) — the gates raise the same for the same node. A target whose class this
-        host cannot run leaves `run` unavailable rather than failing the launch."""
+        A language with no lint preset or no syntax stage is refused before any phase (the
+        launch-time host prerequisites and the launch gate). A target whose class this host
+        cannot run leaves `run` unavailable rather than failing the launch."""
         from functools import partial
 
         from tools.build_runtime import (
@@ -11240,12 +11199,6 @@ class Conductor:
                              **self._leaf_bundle_violation_inputs(refs), build_graph=build_graph)
         render, render_inputs = self._control_file_render_inputs(refs)
         lint_preset = backend_registry.linter_for_language(language)
-        if lint_preset is None:
-            raise RuntimeError(
-                f"workshop wrapper: toolchain.language={language!r} has no static lint preset")
-        if not backend_registry.provides("language", language, "syntax_promotions"):
-            raise RuntimeError(
-                f"workshop wrapper: toolchain.language={language!r} has no syntax stage")
         syntax_facts = backend_registry.capability_module(
             "language", language, "syntax_promotions")
         syntax_compiler = str(backend_registry.capability_module(
@@ -11934,10 +11887,7 @@ class Conductor:
 
         for sub in (result.get("runs") or [{**result, "sub_preset": preset}]):
             sub_preset = str(sub.get("sub_preset") or sub.get("preset") or preset)
-            try:
-                record = backend_registry.get("linter", sub_preset)
-            except Exception:  # pragma: no cover - an unregistered preset is refused upstream
-                continue
+            record = backend_registry.get("linter", sub_preset)
             if "lint" not in record.backend_provides:
                 continue
             # A run with NO EXIT STATUS never reached a verdict, and that is decided HERE
@@ -12136,13 +12086,9 @@ class Conductor:
         from tools.hooks.lint_evidence import write_lint_evidence
 
         language = self._read_toolchain(refs)["language"]
+        # A language with no linter is refused at launch
+        # (`host_prerequisites.resolve_launch_axis_selection`).
         preset = backend_registry.linter_for_language(language)
-        if preset is None:
-            # No static-lint mapping for this language: a precondition error, not a content
-            # failure the generate retry loop could fix -> transport fail_closed.
-            raise RuntimeError(
-                f"generate.gate lint check: toolchain.language={language!r} has no static lint preset: "
-                f"no linter backend declares it in LANGUAGES")
 
         src_dir = self.repo_root / refs.source_dir() / "src"
         # Canonical lint command-log placement: <src>/command_log.jsonl (same file the
@@ -12289,12 +12235,6 @@ class Conductor:
 
         tc = self._read_toolchain(refs)
         language = tc["language"]
-        if not backend_registry.provides("language", language, "syntax_promotions"):
-            raise RuntimeError(
-                f"generate.gate syntax check: toolchain.language={language!r} has no syntax "
-                f"stage — "
-                + str(backend_registry.missing_capability_reason(
-                    "language", language, "syntax_promotions")))
         # Single source of truth for the source suffix set: the language backend the tool also
         # discovers and orders by. The conductor's "no source to check" test and the tool's
         # discover-and-order set must not drift.
@@ -12770,8 +12710,8 @@ class Conductor:
 
         # Host-side, leaf-non-writable certificate the post_generate validator certifies
         # against (mirrors write_lint_evidence). Written whenever the gate recorded a stage:
-        # every language reaching this line has one (a language with no syntax stage raised
-        # above), and certification requires it for every language.
+        # every language reaching this line has one (the launch gate requires the syntax stage
+        # of the target's language), and certification requires it for every language.
         if stages:
             write_syntax_evidence(
                 pipeline_root=self.repo_root / refs.pipeline_ref,
@@ -15878,7 +15818,8 @@ class Conductor:
         # must not author it, and generate.gate's static (post_generate) checker inspects it. The
         # template encodes the fixed runner->model use-graph and, for a dependency node, the
         # closure object rules (Model B); the dep sources are staged at build (see
-        # _stage_dependency_sources). c/cpp/mixed keep LLM authoring (see _write_makefile).
+        # _stage_dependency_sources). A toolchain with no control-file writer never reaches
+        # this line: the launch gate requires `control_file` of both axes.
         # A pure producer authors the bundle-DERIVED Makefile after the producer returns
         # (`_write_leaf_bundle_artifacts`), so it compiles exactly the bundle's file set — skip
         # the IR-shaped pre-authoring here for a pure node (the runner glue below is still

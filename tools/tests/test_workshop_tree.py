@@ -459,13 +459,6 @@ class WrapperBoundsAndDeriveTests(_LineageCase):
                                "findings": "no such"})
         self.assertFalse((self.paths.tree / _CONTROL).exists())
 
-    def test_derive_names_a_missing_staged_closure(self) -> None:
-        self.write("x_model.f90", "m\n")
-        self.manifest("x_model.f90")
-        ctx = _context(self.paths, self.reserved, closure_file_names=("dep_model.f90",))
-        self.assertEqual(ww.run_wrapper_op(ctx, "derive")["category"],
-                         ww.CATEGORY_STAGED_CLOSURE)
-
     def test_compile_derives_for_itself_and_reports_its_derivation(self) -> None:
         # No `derive` first, and no manifest: compile answers with the assembly's finding.
         ctx = _context(self.paths, self.reserved)
@@ -476,33 +469,37 @@ class WrapperBoundsAndDeriveTests(_LineageCase):
         self.assertEqual(ww.run_wrapper_op(bad, "compile"),
                          {"ok": False, "category": "bundle_x", "findings": "why"})
 
-    def test_operations_taking_no_arguments_refuse_some(self) -> None:
-        ctx = _context(self.paths, self.reserved)
-        for op in ("derive", "compile", "lint", "syntax_check"):
-            with self.subTest(op=op):
-                self.assertEqual(ww.run_wrapper_op(ctx, op, {"x": 1})["category"],
-                                 ww.CATEGORY_BAD_ARGUMENTS)
-
     def test_run_resolves_every_path_itself(self) -> None:
+        """The conductor's own (unsandboxed) process opens `cases_file`: a path out of the tree
+        is refused before anything starts, and a link in the tree is not followed (the case
+        file reached through it contributes no case id)."""
+        from unittest import mock
+
         (self.paths.staged_bin / "x_runner").write_text("#!/bin/sh\n")
         (self.paths.staged_bin / "x_runner").chmod(0o755)
         outside = Path(self._tmp.name) / "cases.yaml"
-        outside.write_text("cases: []\n")
+        outside.write_text("case:\n  test_case_set:\n  - case_id: c_outside\n")
         (self.paths.tree / "ln.yaml").symlink_to(outside)
-        ctx = _context(self.paths, self.reserved, max_wrapper_calls=100)
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=100,
+                       seed_texts=((ww.SEEDED_IR_NAME, _SEEDS[ww.SEEDED_IR_NAME]),))
+        calls: list[dict] = []
+
+        def record(args):
+            calls.append(dict(args))
+            return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
         bad = [
-            {"binary": "../x_runner"}, {"binary": "/bin/sh"}, {"binary": "absent"},
             {"binary": "x_runner", "cases_file": "../../cases.yaml"},
             {"binary": "x_runner", "cases_file": "/etc/passwd"},
-            {"binary": "x_runner", "cases_file": "ln.yaml"},
-            {"binary": "x_runner", "case_ids": ["-o"]},
-            {"binary": "x_runner", "case_ids": "c1"},
-            {"binary": "x_runner", "argv": ["x"]},
         ]
-        for args in bad:
-            with self.subTest(args=args):
-                self.assertEqual(ww.run_wrapper_op(ctx, "run", args)["category"],
-                                 ww.CATEGORY_BAD_ARGUMENTS)
+        with mock.patch("tools.build_runtime.tool_run_program", record):
+            for args in bad:
+                with self.subTest(args=args):
+                    self.assertEqual(ww.run_wrapper_op(ctx, "run", args)["category"],
+                                     ww.CATEGORY_BAD_ARGUMENTS)
+            self.assertEqual(calls, [])
+            ww.run_wrapper_op(ctx, "run", {"binary": "x_runner", "cases_file": "ln.yaml"})
+        self.assertNotIn("c_outside", calls[0]["command"])
 
     def test_run_on_a_host_that_cannot_run_the_target_says_so(self) -> None:
         ctx = _context(self.paths, self.reserved, run_unavailable="no gpu",
@@ -585,17 +582,6 @@ class WrapperCallCompositionTests(_LineageCase):
         self.assertEqual(prefix[prefix.index(str(self.paths.staged_bin.resolve())) - 1],
                          "--ro-bind")
         self.assertNotIn(str(self.paths.staged_obj.resolve()), prefix)
-
-    def test_a_binary_that_is_a_link_or_option_shaped_is_refused(self) -> None:
-        outside = Path(self._tmp.name) / "elsewhere"
-        outside.write_text("#!/bin/sh\n")
-        (self.paths.staged_bin / "linked").symlink_to(outside)
-        self.make_binary("-x")
-        ctx = _context(self.paths, self.reserved, max_wrapper_calls=10)
-        for name in ("linked", "-x"):
-            with self.subTest(name=name):
-                self.assertEqual(ww.run_wrapper_op(ctx, "run", {"binary": name})["category"],
-                                 ww.CATEGORY_BAD_ARGUMENTS)
 
     def test_compile_lists_built_files_only_and_spawns_are_reported(self) -> None:
         from unittest import mock
@@ -717,9 +703,10 @@ class WrapperCallCompositionTests(_LineageCase):
         """F-J3-3 (issue #534 PR-J3-a): the schema says `case_ids` defaults to every case, and
         the runner refuses a run naming none; so no ids (absent or `[]`) is every
         `case.test_case_set[].case_id` of the case file, in declaration order, read by the
-        runner renderer's own reader — a recorded IR included — an explicit list is passed
-        unchanged, and a case file naming no case, an unsafe id or a duplicate is refused before
-        anything runs."""
+        runner renderer's own reader — a recorded IR included — and an explicit list is passed
+        unchanged. A case file that reader refuses (no case, an unsafe id, a duplicate, another
+        shape) gives no default id: the run carries none of its ids, and the runner itself
+        refuses a run naming no case."""
         from unittest import mock
 
         import yaml
@@ -743,12 +730,12 @@ class WrapperCallCompositionTests(_LineageCase):
 
         (self.paths.tree / "sub" / "few.yaml").write_text(ir("c2"))
         (self.paths.tree / "other.yaml").write_text(ir("c9"))
-        refused = {"none.yaml": "case:\n  test_case_set: []\n",
+        unread = {"none.yaml": "case:\n  test_case_set: []\n",
                    "flat.yaml": "- case_id: c1\n",
                    "top_level.yaml": "cases:\n- case_id: c1\n",
                    "option.yaml": ir("-o"), "traversal.yaml": ir("../x"),
                    "twice.yaml": ir("c1", "c1")}
-        for name, text in refused.items():
+        for name, text in unread.items():
             (self.paths.tree / name).write_text(text)
         ctx = self.run_context(max_wrapper_calls=100)
         rows = [
@@ -770,14 +757,14 @@ class WrapperCallCompositionTests(_LineageCase):
                 "binary": "x_runner", "cases_file": "real.ir.yaml"})["ok"])
             command = self.calls[0]["command"]
             self.assertEqual(command[command.index(str(binary)) + 1:][2:], real_ids)
-            for cases_file in refused:
+            for cases_file in unread:
                 with self.subTest(cases_file=cases_file):
                     self.calls.clear()
                     out = ww.run_wrapper_op(
                         ctx, "run", {"binary": "x_runner", "cases_file": cases_file})
-                    self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS)
-                    self.assertIn(f"the case file {cases_file}", out["findings"])
-                    self.assertEqual(self.calls, [])
+                    self.assertTrue(out["ok"], out)
+                    command = self.calls[0]["command"]
+                    self.assertEqual(command[command.index(str(binary)) + 1:][2:], [])
 
     def test_a_continuation_case_is_not_run_here(self) -> None:
         """Issue #632: a continuation case runs only in `Validate.execute`'s second pass, from a
@@ -945,27 +932,17 @@ class WrapperCallCompositionTests(_LineageCase):
     def test_a_started_run_has_each_named_case_s_file_where_the_driver_reads_it(self) -> None:
         """The harness's `__read_case` reads `case_inputs/` in the directory of the path `--cases`
         names (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), and `_op_run` writes it beside the
-        tree's IR alone, for the seed's cases alone. So a `cases_file` in a subdirectory, or one
-        naming a case the seed does not hold, must not start a driver that stops on its first
-        case with `no readable case file`: the program is given the seeded path, and a case with
-        no file is refused."""
+        tree's IR alone. So a `cases_file` in a subdirectory must not start a driver that stops on
+        its first case with `no readable case file`: the program is given the seeded path."""
         from unittest import mock
-
-        import yaml
-
-        from tools.tests.test_driver_render import call_ir
 
         self.make_binary()
         text, _ = self._drive_seed()
-        other = call_ir(9)
         self.write("sub/few.yaml", text)
-        self.write("root_few.yaml", yaml.safe_dump(other))
         ctx = self.run_context(seed_ir=text, max_wrapper_calls=10)
         for name, args in (
                 ("a case file in a subdirectory", {"binary": "x_runner",
-                                                   "cases_file": "sub/few.yaml"}),
-                ("a case the seed does not hold", {"binary": "x_runner",
-                                                   "cases_file": "root_few.yaml"})):
+                                                   "cases_file": "sub/few.yaml"}),):
             with self.subTest(name):
                 absent: list[str] = []
 
@@ -993,21 +970,23 @@ class WrapperCallCompositionTests(_LineageCase):
             self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
         self.assertEqual(seen["m1.json"], expected["m1"])
 
-    def test_a_lineage_with_no_seeded_ir_answers_unavailable_and_starts_nothing(self) -> None:
+    def test_a_lineage_with_no_seeded_ir_fails_and_starts_nothing(self) -> None:
+        """A host fault (a `run` lineage is always seeded the certified IR): the call fails as
+        a `wrapper_error` before any case file is written or anything starts."""
         from unittest import mock
 
         self.make_binary()
         ctx = _context(self.paths, self.reserved, seed_texts=(("tests.md", "# tests\n"),))
         with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
             out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner", "case_ids": ["c1"]})
-        self.assertEqual(out["category"], ww.CATEGORY_RUN_UNAVAILABLE, out)
-        self.assertIn(ww.SEEDED_IR_NAME, out["findings"])
+        self.assertFalse(out["ok"], out)
         self.assertEqual(self.calls, [])
         self.assertFalse((self.paths.tree / "case_inputs").exists())
 
-    def test_a_seeded_ir_the_host_cannot_evaluate_answers_unavailable(self) -> None:
-        """No repair of the bundle answers it: the IR came through `Compile.static`. Each row
-        breaks the seed a different way, and nothing starts."""
+    def test_a_seeded_ir_the_host_cannot_evaluate_fails_and_starts_nothing(self) -> None:
+        """A host fault (the IR came through `Compile.static`, which evaluated every case): the
+        call fails as a `wrapper_error`. Each row breaks the seed a different way, and nothing
+        starts."""
         import yaml
         from unittest import mock
 
@@ -1023,7 +1002,7 @@ class WrapperCallCompositionTests(_LineageCase):
                 with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
                     out = ww.run_wrapper_op(ctx, "run",
                                             {"binary": "x_runner", "case_ids": ["m1"]})
-                self.assertEqual(out["category"], ww.CATEGORY_RUN_UNAVAILABLE, out)
+                self.assertFalse(out["ok"], out)
                 self.assertEqual(self.calls, [])
 
     def test_a_failed_derive_leaves_no_control_file_behind(self) -> None:
@@ -1333,11 +1312,6 @@ class WrapperCheckIrTests(_IrLineageCase):
         self.assertEqual(declared, {"ok": True, "declared_fail": "tests declared"})
         self.assertEqual(seen, [], "the validators ran on a tree that holds no IR to judge")
 
-    def test_check_ir_takes_no_arguments(self) -> None:
-        result = ww.run_wrapper_op(_ir_context(self.paths, self.reserved, []), "check_ir",
-                                   {"path": "x"})
-        self.assertEqual(result["category"], ww.CATEGORY_BAD_ARGUMENTS)
-
     def test_an_operation_the_lineage_does_not_serve_is_refused_before_it_is_counted(self) -> None:
         ir_ctx = _ir_context(self.paths, self.reserved, [], max_wrapper_calls=1)
         for op in ww.WRAPPER_OPS + ("nope",):
@@ -1351,11 +1325,8 @@ class WrapperCheckIrTests(_IrLineageCase):
         self.assertEqual(ww.run_wrapper_op(bundle_ctx, "check_ir")["category"],
                          ww.CATEGORY_BAD_ARGUMENTS)
         self.assertEqual(wt.read_lineage_record(self.paths)["wrapper_calls_used"], 0)
-        # A bundle op named by a context that lacks the bundle callables is a host fault too.
-        lacking = _ir_context(self.paths, self.reserved, [], ops=("derive",))
-        self.assertEqual(ww.run_wrapper_op(lacking, "derive")["category"],
-                         ww.CATEGORY_WRAPPER_ERROR)
-        # ...and an op a context NAMES without the fields to serve it is a host fault, counted.
+        # An op a context NAMES without the fields to serve it fails inside the operation:
+        # feedback, counted.
         odd = _ir_context(self.paths, self.reserved, [], ops=("check_ir",), assemble=None)
         self.assertEqual(ww.run_wrapper_op(odd, "check_ir")["category"],
                          ww.CATEGORY_WRAPPER_ERROR)

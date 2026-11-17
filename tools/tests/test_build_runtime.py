@@ -1,8 +1,8 @@
 """Tests for tools/build_runtime.py, the build-runtime library the conductor calls in-process.
 
 run_syntax_check: the Generate.syntax compiler front-end gate — adapter argv shape,
-module/use topological source ordering, missing-compiler skip, custom-command
-rejection, and (when gfortran is installed) a real -fsyntax-only smoke covering the
+module/use topological source ordering, missing-compiler skip, and (when gfortran
+is installed) a real -fsyntax-only smoke covering the
 error classes the retired post_generate text heuristics used to mimic.
 """
 
@@ -122,16 +122,19 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
 
     def test_compiler_and_std_are_required(self) -> None:
         # Both used to default to one language's spelling (`gfortran`, `f2008`) in a tool
-        # that serves every language; the caller names its target's values.
+        # that serves every language; the caller names its target's values. An absent one is
+        # the index's `KeyError` naming it (issue #643 deleted the non-empty-string refusal),
+        # never a default and never the spelling `none` in the argv.
         d = self._src_dir({"a.f90": "program p\nend program p\n"})
-        for args in ({"project_dir": str(d)},
-                     {"project_dir": str(d), "compiler": "gfortran"},
-                     {"project_dir": str(d), "std": "f2008"},
-                     {"project_dir": str(d), "compiler": " ", "std": "f2008"}):
+        for args, missing in (({"project_dir": str(d)}, "compiler"),
+                              ({"project_dir": str(d), "compiler": "gfortran"}, "std"),
+                              ({"project_dir": str(d), "std": "f2008"}, "compiler")):
             with self.subTest(args=args):
-                with self.assertRaises(ValueError) as ctx:
+                with mock.patch.object(self.mod.subprocess, "run") as run, \
+                        self.assertRaises(KeyError) as ctx:
                     self.mod.tool_run_syntax_check(args)
-                self.assertIn("requires a non-empty string", str(ctx.exception))
+                self.assertIn(missing, str(ctx.exception))
+                run.assert_not_called()
 
     def test_a_compiler_that_declares_no_syntax_check_is_refused(self) -> None:
         # A registered compiler record is not an adapter: only `syntax_check` makes one.
@@ -214,12 +217,6 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
                 (d / "deep" / "er").mkdir(parents=True)
                 (d / "deep" / "er" / f"n{suffix}").write_text("\n", encoding="utf-8")
                 self.assertEqual(module.compile_order(d), [f"deep/er/n{suffix}"])
-
-    def test_rejects_custom_command(self) -> None:
-        d = self._src_dir({})
-        with self.assertRaises(ValueError):
-            self.mod.tool_run_syntax_check(
-                {"project_dir": str(d), "command": ["gfortran", "x.f90"]})
 
     def test_rejects_unknown_compiler(self) -> None:
         d = self._src_dir({})
@@ -330,13 +327,6 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.assertIsNone(self.mod.syntax_compiler_wrapper("mpi", "nvcc"))
         self.assertIs(self.mod.syntax_compiler_wrapper("mpi", wrapper.WRAPPED_COMPILER), wrapper)
         self.assertIsNone(self.mod.syntax_compiler_wrapper(None, wrapper.WRAPPED_COMPILER))
-
-    def test_a_malformed_parallel_backend_is_refused(self) -> None:
-        d = self._src_dir({"m.f90": "module m\nend module m\n"})
-        for bad in ("", "  ", 3, ["mpi"]):
-            with self.subTest(parallel_backend=bad), self.assertRaises(ValueError):
-                self.mod.tool_run_syntax_check({"project_dir": str(d), "compiler": "gfortran",
-                                                "std": "f2008", "parallel_backend": bad})
 
     def test_compile_error_returns_ok_false(self) -> None:
         d = self._src_dir({"bad.f90": "program p\n  implicit none (external)\nend program p\n"})
@@ -648,13 +638,14 @@ class CallerEnvTests(unittest.TestCase):
 
 
 class CompileProjectArgumentTests(unittest.TestCase):
-    """`compile_project`'s `target` and `extra_args` are checked for TYPE and nothing else.
+    """`compile_project`'s `target` and `extra_args` are not checked.
 
     Until issue #457 the library also refused a switch, an execution-redirecting assignment
-    and a shell-active character in either half. Every in-tree caller composes these values
-    from host constants (`_build_inproc` passes the make backend's `build_overrides` and no
-    `target`), so that layer was deleted; these rows pin what remains and that the argv the
-    caller composes is the argv that runs."""
+    and a shell-active character in either half, and until issue #643 it refused a value of
+    the wrong type. Every in-tree caller composes these values from host constants
+    (`_build_inproc` passes the make backend's `build_overrides` and no `target`), so both
+    layers were deleted; these rows pin that the argv the caller composes is the argv that
+    runs."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -673,20 +664,6 @@ class CompileProjectArgumentTests(unittest.TestCase):
         ) as run_command:
             self.mod.tool_compile_project(args)
         return run_command
-
-    def test_the_types_are_checked_before_anything_runs(self) -> None:
-        for payload, message in (({"extra_args": "OBJDIR=x"}, "extra_args must be an array"),
-                                 ({"extra_args": ["A=1", 2]}, "extra_args must be an array"),
-                                 ({"target": 7}, "target must be a string"),
-                                 ({"env": ["A=1"]}, "env must be an object")):
-            with self.subTest(payload=payload), mock.patch.object(
-                    self.mod, "_run_command") as run_command:
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod.tool_compile_project(
-                        {"project_dir": str(self.project_dir), "build_system": "make",
-                         **payload})
-                self.assertIn(message, str(ctx.exception))
-                run_command.assert_not_called()
 
     def test_the_conductor_payload_runs_as_composed(self) -> None:
         # Exactly the shape `_build_inproc` passes: three assignments, no target.
@@ -708,13 +685,16 @@ class CompileProjectArgumentTests(unittest.TestCase):
 
 
 class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
-    """`sources` is appended to the compiler front-end argv, so it is argv, not data.
+    """The auto-discovered source list is appended to the compiler front-end argv, so it is
+    argv, not data, and its names are the leaf's.
 
     The gcc driver reads its own options anywhere in that list: `-B<dir>/` execs a
     planted `f951` and `@file` reads further options out of a file — whose own name may
     end in `.f90` — and either way the check returns ok=True having compiled something
-    other than what was staged. The rule is what a source name IS. Refused in every
-    mode; the workflow never passes this argument at all."""
+    other than what was staged. The rule is what a source name IS
+    (`_validate_syntax_sources`). The caller-supplied `sources` argument this rule also
+    covered was deleted in issue #643 (no caller passed it), so the name rows drive the rule
+    directly and the entry-point rows drive auto-discovery."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -726,18 +706,11 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
         (self.project_dir / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
 
-    def _call(self, sources: list) -> dict:
-        return self.mod.tool_run_syntax_check(
-            {"project_dir": str(self.project_dir), "sources": sources,
-             "compiler": "gfortran", "std": "f2008"})
-
-    def test_an_explicit_source_is_refused_without_a_compiler_too(self) -> None:
-        # The skip for an uninstalled compiler used to return first, so `/etc/passwd`
-        # came back `{ok: True, skipped: True}` on a machine without gfortran.
-        with mock.patch.object(self.mod.shutil, "which", return_value=None):
-            with self.assertRaises(ValueError) as ctx:
-                self._call(["/etc/passwd"])
-        self.assertIn("fortran source files in project_dir", str(ctx.exception))
+    def _call(self, sources: list) -> None:
+        """The name rule `tool_run_syntax_check` applies to the list it discovered."""
+        self.mod._validate_syntax_sources(
+            sources, str(self.project_dir), "run_syntax_check",
+            suffixes=tuple(_fortran_syntax().SOURCE_SUFFIXES), language="fortran")
 
     def test_a_clean_tree_still_skips_when_the_compiler_is_absent(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
@@ -782,16 +755,14 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
 
     def test_the_source_suffixes_are_the_tool_s_own(self) -> None:
         # The name rule is built from the same tuple auto-discovery uses, so an added
-        # suffix cannot make an explicit `sources` list refuse a file the tool would
-        # otherwise have found itself.
+        # suffix cannot make the rule refuse a file the tool found itself.
         suffixes = tuple(_fortran_syntax().SOURCE_SUFFIXES)
         for suffix in suffixes:
             with self.subTest(suffix=suffix):
                 self.assertTrue(self.mod._build_syntax_source_re(suffixes).match(f"a{suffix}"))
 
     def test_auto_discovery_is_held_to_the_same_rule(self) -> None:
-        # The workflow never passes `sources`, so this is the reading that actually
-        # runs. Auto-discovery filters on suffix alone, so a staged `-o.f90` walked
+        # Auto-discovery is the only reading that runs. It filters on suffix alone, so a staged `-o.f90` walked
         # into the compiler argv as an option and the file was never parsed.
         (self.project_dir / "-o.f90").write_text("program r\nend program r\n",
                                                  encoding="utf-8")
@@ -844,10 +815,8 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.assertNotIn("top level", str(ctx.exception))
 
     def test_staged_source_names_are_accepted(self) -> None:
-        with mock.patch.object(self.mod.shutil, "which", return_value=None):
-            result = self._call(["a.f90"])
-        # Reaches the ordinary missing-compiler skip, i.e. it was not refused.
-        self.assertTrue(result["skipped"])
+        # The other direction, so the refusal rows above cannot pass by refusing everything.
+        self.assertIsNone(self._call(["a.f90"]))
 
 
 class BuildCommandTests(unittest.TestCase):
@@ -1064,60 +1033,15 @@ class BuildCommandTests(unittest.TestCase):
             self.mod.tool_compile_project({"project_dir": empty, "language": "fortran"})
         run.assert_not_called()
 
-    def test_known_build_systems_is_the_domain_build_command_answers(self) -> None:
-        """The dependency-aware rule's domain is exactly what `build_command` runs: the reason it
-        may be one list rather than two (issue #469 replaced the second copy). Both directions,
-        against the acceptance probe rather than against `_UNOWNED_BUILD_SYSTEMS`, which is the
-        list under test."""
-        self.assertEqual(set(self.mod.known_build_systems()), self._accepted_build_systems())
-        # The registry half, which `make` alone exercises today (round 1: replacing the query
-        # with `| {"make"}` survived): a second build system whose record carries
-        # `build_execute` joins the domain, and one that does not stays out.
-        registry = self.mod._backend_registry()
-        real_ids, real_get = registry.backend_ids, registry.get
-
-        def ids(axis: str) -> tuple[str, ...]:
-            extra = ("synthbuild", "synthplain") if axis == "build_system" else ()
-            return tuple(real_ids(axis)) + extra
-
-        def get(axis: str, value: str) -> object:
-            if axis == "build_system" and value == "synthbuild":
-                return mock.Mock(backend_provides=("build_execute",))
-            if axis == "build_system" and value == "synthplain":
-                return mock.Mock(backend_provides=("control_file",))
-            return real_get(axis, value)
-
-        with mock.patch.object(registry, "backend_ids", side_effect=ids), \
-                mock.patch.object(registry, "get", side_effect=get):
-            known = self.mod.known_build_systems()
-        self.assertIn("synthbuild", known)
-        self.assertNotIn("synthplain", known)
+    def test_compile_project_refuses_a_build_system_build_command_does_not_answer(self) -> None:
+        """An unsupported build system is `build_command`'s refusal, reached through the entry
+        point before anything runs (issue #643 deleted the second domain list,
+        `known_build_systems`, that refused it first)."""
         with mock.patch.object(self.mod, "_run_command") as run, \
-                self.assertRaisesRegex(ValueError, "dependency-aware build tool"):
+                self.assertRaisesRegex(ValueError, "unsupported build_system: scons"):
             self.mod.tool_compile_project({
                 "project_dir": self._dir_with(), "build_system": "scons"})
         run.assert_not_called()
-
-    def test_a_compiled_language_is_held_to_the_named_build_systems(self) -> None:
-        """`AGENTS.md`'s policy: a compiled language builds only through make / cmake / meson /
-        ninja. A build system the library runs but outside that set is refused for `fortran`,
-        and the refusal names the set without naming a default (issue #469 dropped "make is the
-        default."); each member is accepted."""
-        with mock.patch.object(self.mod, "_run_command") as run, \
-                self.assertRaisesRegex(ValueError, "compiled language") as ctx:
-            self.mod.tool_compile_project({
-                "project_dir": self._dir_with(), "language": "fortran", "build_system": "cargo"})
-        run.assert_not_called()
-        self.assertIn("cmake/make/meson/ninja", str(ctx.exception))
-        self.assertNotIn("default", str(ctx.exception))
-        for build_system in ("make", "cmake", "meson", "ninja"):
-            with self.subTest(build_system=build_system), \
-                    mock.patch.object(self.mod, "_run_command",
-                                      return_value={"ok": True}) as run:
-                self.mod.tool_compile_project({
-                    "project_dir": self._dir_with(), "language": "fortran",
-                    "build_system": build_system})
-                run.assert_called_once()
 
     #: Build systems whose EXECUTABLE is not their id. The one piece of knowledge this row holds,
     #: and it is held here because `build_command` is the only other place it exists — comparing
@@ -1228,23 +1152,6 @@ class ArgumentContractTests(unittest.TestCase):
     what its body calls). The served schema they used to derive their tables from is gone,
     so the tables are spelled here."""
 
-    #: The integer bounds `_bounded_int` holds each entry point to: (tool, argument, minimum).
-    #: Spelled from the call sites (`_bounded_int(..., <minimum>, "<argument>")`); the MCP
-    #: schema the rows used to read them from declared the same eleven.
-    BOUNDED = (
-        ("compile_project", "jobs", 1),
-        ("compile_project", "timeout_sec", 1),
-        ("compile_project", "capture_limit", 1000),
-        ("run_program", "timeout_sec", 1),
-        ("run_program", "capture_limit", 1000),
-        ("run_quality_checks", "timeout_sec", 1),
-        ("run_quality_checks", "capture_limit", 1000),
-        ("run_linter", "timeout_sec", 1),
-        ("run_linter", "capture_limit", 1000),
-        ("run_syntax_check", "timeout_sec", 1),
-        ("run_syntax_check", "capture_limit", 1000),
-    )
-
     @classmethod
     def setUpClass(cls) -> None:
         cls.mod = _load_module()
@@ -1253,67 +1160,30 @@ class ArgumentContractTests(unittest.TestCase):
         self.project_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
 
-    def _args(self, tool: str) -> dict:
-        args: dict = {"project_dir": str(self.project_dir)}
-        if tool == "run_program":
-            args["command"] = ["true"]
-        if tool == "compile_project":
-            args["build_system"] = "make"
-        if tool == "run_linter":
-            args["preset"] = "fortitude"
-        if tool == "run_quality_checks":
-            args["preset"] = "make_test"
-        if tool == "run_syntax_check":
-            args.update(compiler="gfortran", std="f2008")
-        return args
-
-    def test_every_minimum_is_refused_below_its_bound(self) -> None:
-        """`_bounded_int` is the only thing refusing these: `make -j-5` waits forever and
-        `timeout_sec=0` kills the build instantly, neither with an error naming the cause.
-        Deleting the `if value < minimum` raise once left the full suite green."""
-        for tool, prop, minimum in self.BOUNDED:
-            with self.subTest(tool=tool, argument=prop):
-                args = self._args(tool)
-                args[prop] = minimum - 1
-                with mock.patch.object(
-                    self.mod, "_run_command",
-                    return_value={"ok": True, "return_code": 0,
-                                  "stdout": "", "stderr": ""},
-                ) as run_command, self.assertRaises(ValueError) as ctx:
-                    getattr(self.mod, f"tool_{tool}")(args)
-                self.assertIn(prop, str(ctx.exception))
-                self.assertIn(str(minimum), str(ctx.exception))
-                run_command.assert_not_called()
-
-    def test_the_bound_itself_is_accepted(self) -> None:
-        # Off-by-one in the other direction.
-        for tool, prop, minimum in self.BOUNDED:
-            with self.subTest(tool=tool, argument=prop):
-                args = self._args(tool)
-                args[prop] = minimum
-                with mock.patch.object(
-                    self.mod, "_run_command",
-                    return_value={"ok": True, "return_code": 0,
-                                  "stdout": "", "stderr": ""},
-                ):
-                    getattr(self.mod, f"tool_{tool}")(args)
-
     def test_the_required_set_is_what_the_entry_point_refuses_without(self) -> None:
         """Driven, for the entry points whose required set issue #289 and issue #469 widened:
         dropping any required argument is a refusal naming it, and a call with all of them
         reaches the tool. The only row observing `run_linter`'s and `run_quality_checks`'
         refusal of a missing `preset` (the second had a default until issue #469);
         `compile_project`'s refusal of a missing `build_system` over a directory with no marker
-        is observed here and by `test_an_unmarked_directory_is_refused_and_says_to_pass_build_system`."""
+        is observed here and by `test_an_unmarked_directory_is_refused_and_says_to_pass_build_system`.
+
+        Since issue #643 deleted the entry points' own non-empty-string refusals, `run_linter`,
+        `run_program` and `run_syntax_check` index their required arguments, so the refusal is the `KeyError`
+        naming it; `run_quality_checks`' is `quality_check_command`'s unsupported preset and
+        `compile_project`'s is the recommender's — no default stands in for any of them."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         (d / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
         full = {
             "run_syntax_check": {"project_dir": str(d), "compiler": "gfortran", "std": "f2008"},
+            "run_program": {"project_dir": str(d), "command": ["/bin/true"]},
             "run_linter": {"project_dir": str(d), "preset": "fortitude"},
             "run_quality_checks": {"project_dir": str(d), "preset": "make_test"},
             "compile_project": {"project_dir": str(d), "build_system": "make"},
         }
+        refusal = {"run_syntax_check": KeyError, "run_program": KeyError, "run_linter": KeyError,
+                   "run_quality_checks": ValueError, "compile_project": ValueError}
         for tool, args in full.items():
             with self.subTest(tool=tool):
                 handler = getattr(self.mod, f"tool_{tool}")
@@ -1324,7 +1194,7 @@ class ArgumentContractTests(unittest.TestCase):
                     handler(dict(args))
                     for name in sorted(set(args) - {"project_dir"}):
                         partial = {k: v for k, v in args.items() if k != name}
-                        with self.assertRaises(ValueError) as ctx:
+                        with self.assertRaises(refusal[tool]) as ctx:
                             handler(partial)
                         self.assertIn(name, str(ctx.exception))
 
@@ -1443,12 +1313,6 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             self.assertIn(preset, message)
         self.assertEqual(self.calls, [])
 
-    def test_a_custom_command_is_still_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            self.mod.tool_run_linter(
-                {"preset": "fortitude", "project_dir": ".", "command": ["rm", "-rf", "/"]})
-        self.assertEqual(self.calls, [])
-
     def test_a_composite_names_only_presets_the_command_table_defines(self) -> None:
         """A composite that named an unknown sub-preset would `KeyError` mid-run, after its
         earlier sub-runs had already executed."""
@@ -1506,43 +1370,6 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             self.assertEqual(fresh.lint_preset_sub_presets("zz_comp"), ("zz_lint", "ruff"))
         restored = _fresh_module()
         self.assertNotIn("zz_lint", restored._SIMPLE_LINT_PRESETS)
-
-    def test_each_arm_of_the_import_time_declaration_check_refuses(self) -> None:
-        """All three raises, driven one at a time. Before this the count driven was ZERO.
-
-        The guard had four arms and the orphan one was the only one with a test; issue #120
-        deleted that arm together with the table it watched, and took the file's only witness for
-        this function with it. What the three survivors protect is not decorative: a name in both
-        tables makes `lint_preset_sub_presets` and `tool_run_linter`'s result-shape branch
-        disagree about whether a preset is simple, so one preset returns two shapes depending on
-        which reader asked; a composite naming a preset with no command row `KeyError`s mid-run,
-        AFTER its earlier sub-runs have already executed; and a default with no row breaks every
-        caller that names no preset. Each is reached from `Generate.gate` through `run_linter`.
-
-        Driven with synthetic tables because today's declarations are consistent — which is the
-        point of an import-time check — and each arm is asserted to name the offending preset, so
-        a guard that raised the wrong message would fail rather than pass on the raise alone.
-        """
-        cases = (
-            ("both simple and composite",
-             {"_LINT_PRESET_COMPOSITES": {**self.mod._LINT_PRESET_COMPOSITES,
-                                          "fortitude": ("fortitude",)}},
-             "fortitude"),
-            ("a composite naming an unregistered sub-preset",
-             {"_LINT_PRESET_COMPOSITES": {**self.mod._LINT_PRESET_COMPOSITES,
-                                          "zz_composite": ("zz_absent",)}},
-             "zz_absent"),
-        )
-        for label, attrs, expected in cases:
-            with self.subTest(arm=label):
-                with mock.patch.multiple(self.mod, **attrs):
-                    with self.assertRaises(ValueError) as caught:
-                        self.mod._check_lint_preset_declarations()
-                self.assertIn(expected, str(caught.exception))
-
-    def test_the_declaration_check_accepts_the_real_tables(self) -> None:
-        """The other direction, so the three arms above cannot pass by refusing everything."""
-        self.mod._check_lint_preset_declarations()
 
     def test_a_preset_whose_record_declares_no_package_is_refused_by_name(self) -> None:
         """`mixed` is the live instance: a composite carries `lint` in `core_provides`, so
@@ -1684,8 +1511,8 @@ class BuildExecuteBackendTests(unittest.TestCase):
 
 class SandboxArgvPrefixTests(unittest.TestCase):
     """`sandbox_argv_prefix` (issue #534 PR-1): the confinement a `workshop leaf`'s wrapper runs
-    a command under. Type-only, spliced in front of the command, recorded beside it, and run in
-    a session of its own whose process-group id the caller is told."""
+    a command under. Not checked (issue #643), spliced in front of the command, recorded beside
+    it, and run in a session of its own whose process-group id the caller is told."""
 
     def setUp(self) -> None:
         self.mod = _load_module()
@@ -1716,19 +1543,6 @@ class SandboxArgvPrefixTests(unittest.TestCase):
             "command_log_path": str(self.dir / "log.jsonl"),
             **extra,
         })
-
-    def test_a_non_list_prefix_is_refused_before_anything_runs(self) -> None:
-        for bad in ("bwrap --", ["bwrap", 3], ["bwrap", ""], {"a": 1}):
-            with self.subTest(bad=bad):
-                with self.assertRaisesRegex(ValueError, "sandbox_argv_prefix"):
-                    self._run(sandbox_argv_prefix=bad)
-        self.assertFalse((self.dir / "log.jsonl").exists())
-
-    def test_on_spawn_needs_a_prefix_and_a_callable(self) -> None:
-        with self.assertRaisesRegex(ValueError, "requires sandbox_argv_prefix"):
-            self._run(on_spawn=lambda pgid: None)
-        with self.assertRaisesRegex(ValueError, "callable"):
-            self._run(sandbox_argv_prefix=[str(self.fake), "--"], on_spawn="x")
 
     def test_the_prefix_is_spliced_logged_and_the_env_passed(self) -> None:
         seen: list[int] = []
@@ -1832,19 +1646,6 @@ class SandboxArgvPrefixTests(unittest.TestCase):
         self.assertIsNone(result["return_code"])
         self.assertIsInstance(result["stdout"], str)
         self.assertIsInstance(result["stderr"], str)
-
-    def test_every_entry_point_reads_the_key(self) -> None:
-        bad = {"sandbox_argv_prefix": "bwrap"}
-        calls = [
-            (self.mod.tool_compile_project, {"build_system": "make"}),
-            (self.mod.tool_run_quality_checks, {"preset": "make_test"}),
-            (self.mod.tool_run_linter, {"preset": "fortitude"}),
-            (self.mod.tool_run_syntax_check, {"compiler": "gfortran", "std": "f2008"}),
-        ]
-        for fn, args in calls:
-            with self.subTest(fn=fn.__name__):
-                with self.assertRaisesRegex(ValueError, "sandbox_argv_prefix"):
-                    fn({"project_dir": str(self.dir), **args, **bad})
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -17,8 +17,8 @@ importing a shared adapter; `tools/tests/test_hooks_dev_cli.py` pins its output 
 encodings cannot drift from what each CLI expects.
 
 What it enforces is two stdlib-only rule modules and nothing else.
-`tools/hooks/operator_safety.py` guards the operator's own checkout (the hard-reset
-command, the validator's verify-bypass flags). `tools/hooks/dev_session_hygiene.py` guards
+`tools/hooks/operator_safety.py` guards the operator's own checkout (the validator's
+verify-bypass flags). `tools/hooks/dev_session_hygiene.py` guards
 the session's own process table: an agent session must not wait by sleeping. They stay
 separate modules because they answer different questions, not for tidiness.
 """

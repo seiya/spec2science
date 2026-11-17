@@ -215,26 +215,24 @@ ALGORITHM_STEP_KINDS = {
     "reduction",
     "diagnostic",
 }
-FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
 
 
 def _make_quality_check_applies(build_system: str | None, language: str | None) -> bool:
     """Whether the build-control-file quality-check contract binds this node.
 
-    The three gates that check it — the no-relink rule, the `make test` invocation rule, and the
-    `run_quality_checks` command rule — read the control file's grammar and require its
-    `test`/`check` target. That is `control_file` knowledge, so the build-system half asks the
-    registry which value declares it (the `make` backend's package since issue #289's R4-b PR-3,
-    where the first two gates now live) instead of naming one. The language half
+    The two gates that check it — the no-relink rule and the `make test` invocation rule — read
+    the control file's grammar and require its `test`/`check` target. That is `control_file`
+    knowledge, so the build-system half asks the registry which value declares it (the `make`
+    backend's package since issue #289's R4-b PR-3, where both gates now live) instead of naming
+    one. The language half
     is the policy "a compiled language's quality check runs through the build system's test
     target rather than a script", and which languages are compiled is the language backend's
     declaration (`registry.is_compiled_language`); it was a set of language tokens here until
     issue #289 (R4-b PR-2), three of them values no backend implements.
 
-    The three gates spelled the condition out rather than sharing a predicate, and the third of
-    them (`_validate_quality_check_commands`) wrote it INVERTED, so any change had to be made in
-    three places in two polarities. (An earlier version of this paragraph said "a fourth site",
-    miscounting the same three.)
+    The gates once spelled the condition out rather than sharing a predicate (a third,
+    `_validate_quality_check_commands`'s `run_quality_checks` command rule, wrote it INVERTED and
+    was removed in issue #643), so a change had to be made in several places in two polarities.
 
     NORMALIZATION: `provides` strips and case-folds the build-system value while the language
     half is compared exactly. Measured, that makes this predicate fire on 16 spellings the old
@@ -2832,12 +2830,11 @@ def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str |
     # comparing against `(make, fortran)` after the conductor moved to the registry, so declaring
     # `control_file` for a second build system made the two disagree: the conductor host-renders
     # the runner while this predicate answers False and switches `_validate_model_source_isolation`
-    # off for it — a violation passing. Normalization stays the caller's for the same reason it
-    # does there (the readers of this key deliberately differ on padding).
+    # off for it — a violation passing.
     for axis, value, capability in (("build_system", build_system, "control_file"),
                                     ("language", language, "control_file"),
                                     ("language", language, "runner_render")):
-        if value != value.strip() or not backend_registry.provides(axis, value, capability):
+        if not backend_registry.provides(axis, value, capability):
             return None
     return language
 
@@ -2873,7 +2870,7 @@ def _ir_bundle_shape(ir: dict[str, Any], node_key: str,
     # The same two questions the conductor's control-file predicate asks, asked the same way —
     # see `Conductor._core_authors_control_file`, which is what that predicate delegates to.
     for axis, value in (("build_system", build_system), ("language", language)):
-        if value != value.strip() or not backend_registry.provides(axis, value, "control_file"):
+        if not backend_registry.provides(axis, value, "control_file"):
             return None
     return "harness" if language in BUNDLE_LANGUAGES else None
 
@@ -3752,32 +3749,6 @@ def _ir_document_path_for_execution(
     if ir_dir is None:
         return None
     return ir_dir / "spec.ir.yaml"
-
-
-def _resolve_logged_path(repo_root: Path, raw_path: str) -> Path:
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path
-    return repo_root / path
-
-
-def _generate_src_dirs(pipeline_dir: Path) -> list[Path]:
-    generate_root = pipeline_dir / "source"
-    if not generate_root.exists():
-        return []
-    return sorted(
-        gen_dir / "src"
-        for gen_dir in generate_root.iterdir()
-        if gen_dir.is_dir() and (gen_dir / "src").exists()
-    )
-
-
-def _path_is_same_or_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
 
 
 def _algorithm_state_contract(contract: dict[str, Any]) -> dict[str, Any] | None:
@@ -7335,11 +7306,6 @@ def _validate_quality_check_commands(
     if source_command_ref is None:
         return
 
-    # The target's toolchain (issue #284; the IR's `impl_defaults.toolchain` until R4-a PR-2).
-    build_system, language = _target_toolchain_from_pipeline_dir(
-        repo_root, execution.pipeline_dir)
-
-    generate_src_dirs = _generate_src_dirs(execution.pipeline_dir)
     # The cross-phase canonical placement is bound strictly to the trial's
     # `source_source_id` (single source of truth). Sibling/older
     # generations under the same pipeline are not acceptable evidence for
@@ -7458,102 +7424,8 @@ def _validate_quality_check_commands(
             )
             continue
 
-        executable = Path(normalized[0]).name.lower()
-        if executable in FORBIDDEN_QUALITY_CHECK_EXECUTABLES:
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} uses forbidden executable ({executable})"
-            )
-            continue
-
-        if any("quality_check.py" in token.lower() for token in normalized):
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} must not execute quality_check.py directly"
-            )
-            continue
-
-        # Which preset the recorded argv ran is the target build system's question
-        # (`build_execute.quality_check_preset`, issue #424 PR-2; an executable allowlist and a
-        # `make` block here until then). A build system whose package does not carry the job
-        # cannot answer it, so the record is refused with the registry's reason rather than
-        # read by another build system's rule — unreachable through the launch gate, which
-        # requires `build_execute` (`target_profile.toolchain_servable_reasons`).
-        execute_reason = backend_registry.missing_capability_reason(
-            "build_system", str(build_system or ""), "build_execute")
-        execute = None
-        if execute_reason is None:
-            try:
-                execute = backend_registry.capability_module(
-                    "build_system", str(build_system), "build_execute")
-            except (backend_registry.UnsupportedBackend,
-                    backend_registry.BackendNotExtracted) as exc:
-                execute_reason = str(exc)
-        if execute is None:
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} cannot be "
-                f"judged for toolchain.build_system={build_system}: {execute_reason}"
-            )
-            continue
-        preset = execute.quality_check_preset(normalized)
-        if preset is None and not _make_quality_check_applies(build_system, language):
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                f"must use {'/'.join(execute.QUALITY_CHECK_COMMANDS)} for "
-                f"toolchain.build_system={build_system}"
-            )
-            continue
-        raw_cwd = matched.get("cwd")
-        cwd_path = (
-            _resolve_logged_path(repo_root, raw_cwd)
-            if isinstance(raw_cwd, str) and raw_cwd.strip()
-            else None
-        )
-
-        if _make_quality_check_applies(build_system, language):
-            # The target build system's quality-check presets, the control file they read and
-            # its targets are that backend's (`control_file`, issue #289 R4-b PR-3).
-            control_file = backend_registry.capability_module(
-                "build_system", str(build_system), "control_file")
-            presets = control_file.QUALITY_CHECK_PRESETS
-            if preset not in presets:
-                violations.append(
-                    f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    f"must use {'/'.join(presets)} for toolchain.language={language} and "
-                    f"toolchain.build_system={build_system}"
-                )
-                continue
-
-            if cwd_path is None:
-                violations.append(
-                    f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    "must record cwd under source/<source_id>/src"
-                )
-                continue
-
-            if not generate_src_dirs or not any(
-                _path_is_same_or_under(cwd_path, src_dir) for src_dir in generate_src_dirs
-            ):
-                violations.append(
-                    f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    f"must run inside source/<source_id>/src for {build_system}-based quality "
-                    "check"
-                )
-                continue
-
-            control_file_path = cwd_path / control_file.CONTROL_FILE_BASENAME
-            if not control_file_path.exists():
-                violations.append(
-                    f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                    f"requires {control_file.CONTROL_FILE_BASENAME} in quality check cwd "
-                    f"({control_file_path})"
-                )
-                continue
-
-            required_target = presets[preset]
-            if required_target not in control_file.targets(control_file_path):
-                violations.append(
-                    f"{control_file_path}: missing {required_target} target required by "
-                    f"run_quality_checks command_id={command_id}"
-                )
+        # The argv is the target build system's preset (`build_runtime.quality_check_command`),
+        # and the control file whose test target it runs is host-rendered for every bundle.
 
 
 def _validate_tests_verdict_summary_consistency(

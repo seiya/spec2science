@@ -6853,42 +6853,6 @@ def _orchestration_holds_launch_record(
     ).is_file()
 
 
-def control_file_host_authored(build_system: str | None, language: str | None) -> bool:
-    """Does the HOST author the build control file for this toolchain, from the runtime's side.
-
-    The counterpart of ``Conductor._core_authors_control_file``, asking the registry the same
-    question (``control_file`` of both axes) rather than comparing against a pair spelled here.
-    The two must agree exactly: if the conductor authors while this side reports otherwise, the
-    leaf's write-pin is kept and the file is double-owned; the other way round it is authored by
-    nobody.
-
-    NAMED, and called by ``record_launch`` rather than inlined there, because the agreement was
-    only ever checked against a hand-copied RECONSTRUCTION of the inline expression in the test
-    suite — and a reconstruction is exactly as good as its last update. It was wrong once
-    already (it omitted the build-system normalization), and after the conductor moved to the
-    registry it went on comparing against ``(make, fortran)``, so a declaration that made the
-    live pair disagree could not be observed by the test that exists to observe it.
-
-    PADDING is refused here, exactly as the conductor's predicate refuses it. An earlier version
-    of this docstring claimed the opposite — that the function deliberately did not normalize —
-    while ``registry.provides`` strips internally, so it silently accepted a padded language
-    where the conductor declined: the two were documented as exact counterparts and were not. No live
-    input reaches that difference (``record_launch``'s readers strip before calling), so this
-    guard changes nothing today; it makes the counterpart claim true for any caller.
-
-    An ABSENT value answers False: a toolchain that names no build system or no language has
-    no control file the host writes for it. The answer is RECORDED only: ``record_launch``
-    stamps it on the launch request, and no code reads it since the leaf's write set went with
-    Z4. Until issue #424 PR-2 an absent value defaulted here to one build system and
-    one language, which is knowledge of a backend the neutral core may not hold
-    (`docs/BACKEND_BOUNDARY.md`); no live input reaches the difference, because
-    ``record_launch`` passes the target profile's toolchain, whose loader requires both.
-    """
-    return all(
-        value == value.strip() and backend_registry.provides(axis, value, "control_file")
-        for axis, value in (("build_system", build_system or ""), ("language", language or "")))
-
-
 def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, Any]:
     """The toolchain of the target a launch's pipeline is built for, read off the store
     coordinate of its `pipeline_ref` (`target_profile.load_pipeline_target`, issue #284).
@@ -15763,21 +15727,13 @@ def record_launch(
         # The toolchain of the target the request's pipeline is built for (issue #284; read
         # off the IR's `impl_defaults` until R4-a PR-2), so the canonical-placement helper can
         # gate cross-phase auto-inject on the build system (the documented Make-only
-        # exception), and so the control-file authorship flag is the conductor's answer: both
-        # sides ask the same profile. A request whose `pipeline_ref` carries no target is
-        # refused here (`TargetProfileError`).
+        # exception). A request whose `pipeline_ref` carries no target is refused here
+        # (`TargetProfileError`).
         _pipe_ref_for_tc = str(request_payload.get("pipeline_ref") or "").strip()
         if _pipe_ref_for_tc:
             _tc_resolved = _pipeline_target_toolchain(repo_root, _pipe_ref_for_tc)
             request_payload = dict(request_payload)
             request_payload["_resolved_build_system"] = str(_tc_resolved["build_system"])
-            # The conductor authors the control file iff the neutral core has a writer for the
-            # target's (build_system, language) — `Conductor._conductor_authors_makefile`, for
-            # leaf and dependency nodes alike (Model B). Recorded on the request; its reader (the
-            # leaf's `allowed_output_paths` keeping the file when the conductor did not author
-            # it) went with the agentic leaf in Z4 (issue #171).
-            request_payload["_resolved_makefile_host_authored"] = control_file_host_authored(
-                str(_tc_resolved["build_system"]), str(_tc_resolved["language"]))
         if is_pure:
             # A pure leaf authors nothing in its window, so it declares no output path. The
             # empty list flows through the (inert for generate) lineage / cross-phase blocks
