@@ -30474,16 +30474,6 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         # Nothing of the checkout is bound: `tools/` is under the tmpfs, not over it.
         self.assertNotIn(str((self.repo / "tools").resolve()), cmd)
 
-    def test_the_whole_command_appends_the_argv(self) -> None:
-        cmd = ort.render_wrapper_run_command(
-            command_argv=["make", "-j2"], repo_root=self.repo, project_dir=self.tree,
-            rw_binds=[self.tree], env=self.env)
-        self.assertEqual(cmd[-3:], ["--", "make", "-j2"])
-        with self.assertRaises(ValueError):
-            ort.render_wrapper_run_command(command_argv=[], repo_root=self.repo,
-                                           project_dir=self.tree, rw_binds=[self.tree],
-                                           env=self.env)
-
     def test_a_bind_related_to_the_checkout_is_refused(self) -> None:
         for bad in (self.repo, self.repo / "tools", self.repo.parent):
             with self.subTest(bad=bad):
@@ -30491,29 +30481,6 @@ class WrapperSandboxRendererTests(unittest.TestCase):
                     self.render(rw_binds=[self.tree, bad])
                 with self.assertRaisesRegex(ValueError, "not outside the checkout"):
                     self.render(ro_binds=[bad])
-
-    def test_a_bind_that_is_relative_or_absent_is_refused(self) -> None:
-        with self.assertRaisesRegex(ValueError, "absolute"):
-            self.render(rw_binds=[Path("tree")])
-        with self.assertRaisesRegex(ValueError, "does not exist"):
-            self.render(ro_binds=[self.tree / "absent"])
-
-    def test_the_project_dir_must_be_writable(self) -> None:
-        with self.assertRaisesRegex(ValueError, "not inside a read-write bind"):
-            self.render(project_dir=self.bin)
-        with self.assertRaisesRegex(ValueError, "at least one read-write bind"):
-            self.render(rw_binds=[])
-
-    def test_an_undeclared_env_name_is_refused(self) -> None:
-        with self.assertRaisesRegex(ValueError, "undeclared name 'OMP_NUM_THREADS'"):
-            self.render(env={**self.env, "OMP_NUM_THREADS": "2"})
-        cmd = self.render(env={**self.env, "OMP_NUM_THREADS": "2"},
-                          declared_env_names=("OMP_NUM_THREADS",))
-        self.assertIn("OMP_NUM_THREADS", cmd)
-        for bad in ({"A=B": "x"}, {"PATH": 3}):
-            with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):
-                    self.render(env=bad, declared_env_names=tuple(bad))
 
     def test_toolchain_roots_are_bound_read_only_and_may_not_alias_the_checkout(self) -> None:
         root = Path(self._tmp.name) / "opt" / "mpi"

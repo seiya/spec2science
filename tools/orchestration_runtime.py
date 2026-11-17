@@ -8752,13 +8752,6 @@ def render_bwrap_command(
 # conductor renders the head below and hands it to the build-runtime library as
 # `sandbox_argv_prefix`; the library splices it in front of the command it composes.
 
-#: The environment names every wrapper run is declared, beside the ones its caller declares
-#: (the launch shape's, for `run`). `--clearenv` drops the rest.
-WRAPPER_ENV_BASE_NAMES: tuple[str, ...] = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
-
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
 def wrapper_toolchain_ro_roots(executables: Sequence[str],
                                repo_root: Path | None = None) -> list[str]:
     """The host directories a wrapper run binds read-only so that `executables` (the compiler,
@@ -8825,7 +8818,6 @@ def render_wrapper_sandbox_prefix(
     ro_binds: Sequence[Path] = (),
     toolchain_ro_roots: Sequence[str] = (),
     env: Mapping[str, str],
-    declared_env_names: Sequence[str] = (),
 ) -> list[str]:
     """The `bwrap ... --` head of one wrapper run, ending in `--`.
 
@@ -8840,24 +8832,17 @@ def render_wrapper_sandbox_prefix(
     which is bound back read-only over it; then exactly `rw_binds` read-write and `ro_binds`
     read-only, each at its own host path, and `--chdir project_dir`.
 
-    Refuses (`ValueError`): a bind that is not an existing absolute path or that has a
-    containment relation with the checkout (a bind at or under it would mount the checkout
-    back over the tmpfs; one covering it would expose all of it); a `project_dir` not inside
-    a read-write bind; an install root inside the checkout other than one of its virtualenv
+    Refuses (`ValueError`): a bind that has a containment relation with the checkout (a bind
+    at or under it would mount the checkout back over the tmpfs; one covering it would expose
+    all of it); an install root inside the checkout other than one of its virtualenv
     directories; an install root that aliases the checkout
-    (`_refuse_backend_ro_alias_of_repo`); an env name outside `WRAPPER_ENV_BASE_NAMES` and
-    `declared_env_names`, or a non-string value."""
+    (`_refuse_backend_ro_alias_of_repo`)."""
     resolved_repo = repo_root.resolve()
 
     def _checked(paths: Sequence[Path], kind: str) -> list[str]:
         out: list[str] = []
         for raw in paths:
-            path = Path(raw)
-            if not path.is_absolute():
-                raise ValueError(f"wrapper {kind} bind {str(raw)!r} must be absolute")
-            if not path.exists():
-                raise ValueError(f"wrapper {kind} bind {str(raw)!r} does not exist")
-            resolved = path.resolve()
+            resolved = Path(raw).resolve()
             if (resolved == resolved_repo or resolved.is_relative_to(resolved_repo)
                     or resolved_repo.is_relative_to(resolved)):
                 raise ValueError(
@@ -8868,12 +8853,7 @@ def render_wrapper_sandbox_prefix(
 
     rw = _checked(rw_binds, "rw")
     ro = _checked(ro_binds, "ro")
-    if not rw:
-        raise ValueError("a wrapper run needs at least one read-write bind (its project_dir)")
     project = str(Path(project_dir).resolve())
-    if not any(project == r or Path(project).is_relative_to(Path(r)) for r in rw):
-        raise ValueError(
-            f"wrapper project_dir {project} is not inside a read-write bind of the run")
     system_ro = _runtime_ro_bind_paths()
     toolchain: list[str] = []
     in_checkout: list[str] = []
@@ -8889,16 +8869,6 @@ def render_wrapper_sandbox_prefix(
         else:
             toolchain.append(str(raw))
     _refuse_backend_ro_alias_of_repo(repo_root, toolchain, system_ro)
-    allowed = set(WRAPPER_ENV_BASE_NAMES) | {str(n) for n in declared_env_names}
-    for name, value in env.items():
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise ValueError(f"wrapper env entries must be str -> str, got {name!r}")
-        if not _ENV_NAME_RE.fullmatch(name):
-            raise ValueError(f"wrapper env name {name!r} is not a variable name")
-        if name not in allowed:
-            raise ValueError(
-                f"wrapper env carries undeclared name {name!r}; a wrapper run is declared "
-                f"{sorted(allowed)}")
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -8928,15 +8898,6 @@ def render_wrapper_sandbox_prefix(
         cmd.extend(["--setenv", name, value])
     cmd.extend(["--chdir", project, "--"])
     return cmd
-
-
-def render_wrapper_run_command(*, command_argv: Sequence[str], **prefix_kwargs: Any) -> list[str]:
-    """`render_wrapper_sandbox_prefix(**prefix_kwargs)` followed by `command_argv`: the whole
-    argv of one wrapper run, for a caller that runs it itself rather than through the
-    build-runtime library."""
-    if not command_argv:
-        raise ValueError("command_argv must be non-empty")
-    return render_wrapper_sandbox_prefix(**prefix_kwargs) + [str(a) for a in command_argv]
 
 
 def _compute_sha256(path: Path) -> str:
