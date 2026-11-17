@@ -201,19 +201,17 @@ Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.r
 
 ## finalize-child
 
-**One-call child finalization.** Performs, in one process and in the mandated order, `deactivate-child` → `record-reply` → `record-agent-run`, reusing each function so every guard is preserved (the active_child ordering and the child-reply budget guard). It is the conductor's one finalize path; the individual subcommands remain available for edge recovery. Its `--return-token` and `--reply-excerpt` arguments, and the `record-child-return` step they fed, were retired in [issue #447](https://github.com/seiya/spec2science/issues/447) (D2).
+**One-call child finalization.** Performs, in one process and in the mandated order, `deactivate-child` → `record-reply` → `record-agent-run`, reusing each function so every guard is preserved (the active_child ordering). It is the conductor's one finalize path; the individual subcommands remain available for edge recovery. Its `--return-token` and `--reply-excerpt` arguments, and the `record-child-return` step they fed, were retired in [issue #447](https://github.com/seiya/spec2science/issues/447) (D2).
 
 | arg | required | description |
 |---|---|---|
 | `--repo-root` | yes | |
 | `--orchestration-id` | yes | |
 | `--agent-run-id` | yes | the child agent's UUID, the same value as the `agent_run_id` of the agent-run payload (the conductor writes both from one value) |
-| `--reply-text` | one required | the child's verbatim final message (budget-checked; see below). Only safe for a small reply — a single argv element is capped at 128 KiB |
+| `--reply-text` | one required | the child's verbatim final message. Only safe for a small reply — a single argv element is capped at 128 KiB |
 | `--reply-from-stdin` | one required | flag. read the reply from stdin. **The conductor always uses this form, unconditionally, regardless of reply size** |
 | `--agent-run-json` | one required | the `record-agent-run` payload inline (same schema as [record-agent-run](#record-agent-run)). Only safe for a small payload — a single argv element is capped at 128 KiB |
 | `--agent-run-json-file` | one required | path to a file holding the same payload. **The conductor always uses this form, unconditionally, regardless of payload size**; it writes `workspace/orchestrations/<oid>/launches/<agent_run_id>.agent_run.input.json` and keeps it as evidence |
-
-> **Child-reply budget:** `record-agent-run` measures `launches/<arid>.reply.txt` against a ~2000-char budget. An over-budget reply adds a `reply_over_budget` field to the result (telemetry, kept through the terse projection) and is audited to `hooks/workflow_hooks.jsonl`. With `SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1` it instead fails the call, so the child must be re-launched with a terse final message (a `status:` line, `output_refs`, and a few lines of rationale — full detail belongs in the child's artifacts). The same budget applies whether `record-agent-run` is called directly or via `finalize-child`.
 
 ---
 
@@ -259,7 +257,7 @@ Generate `workspace/orchestrations/<orch>/steps/<node_key_safe>/<step>/<arid>/st
 
 ### Overwriting a prior attempt
 
-A pre-existing `step_result.json` means this (node, phase) is on a LATER ATTEMPT: for a substep-aware phase the path is keyed by the constant orchestration executor arid, so every attempt writes to the same file. The prior one is moved aside as `step_result.overwritten.<N>.json`, unconditionally — an attempt's own account of itself is a record, and the next attempt must not silently replace it. The write is rolled back whole if the `post_phase_complete` hook rejects the payload, so a refused write leaves the pre-write state exactly.
+A pre-existing `step_result.json` means this (node, phase) is on a LATER ATTEMPT: for a substep-aware phase the path is keyed by the constant orchestration executor arid, so every attempt writes to the same file. The prior one is moved aside as `step_result.overwritten.<N>.json`, unconditionally — an attempt's own account of itself is a record, and the next attempt must not silently replace it. If the write itself fails, the prior one is moved back, so a failed write leaves the pre-write state exactly.
 
 `--backfill` used to sit here: it wrote a step_result for an already-terminal step agent that had none, bypassing the `child_finished` gate. Both it and the `record-launch` build-relaunch guard that created the need for it are gone with issue #177. They existed for the completion vouch's rule that every terminal arid be vouched by a step_result — an unvouched arid deadlocked the pass, and a relaunch could not clear it because each `run child → write one step_result` was net-zero. The vouch no longer asks that (`docs/ORCHESTRATION.md` §completion), so an attempt that ended without a step_result is simply a failed attempt and there is no deadlock to break.
 

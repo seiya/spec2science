@@ -130,14 +130,6 @@ def _normalize_rel_posix(path_token: str) -> str:
 
 
 TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
-# Budget (chars) for a child's verbatim final reply (launches/<arid>.reply.txt). The reply
-# lands in the orchestration transcript twice (the child leaf return + the record-reply
-# argument) and is re-read every turn (cache_read scales with context × turns), so an
-# over-long reply is a primary driver of the quadratic orchestration cost. record_agent_run
-# flags an over-budget reply as telemetry by default; SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1 makes it
-# a hard fail so the child must be re-launched with a terse final message (full detail belongs
-# in the child's artifacts, which the orchestration reads on demand — not in the reply).
-REPLY_BUDGET_CHARS = 2000
 # Phases that run via substep agents (the orchestration agent aggregates and is the
 # step_result executor). Build is the only no-substep phase (step agent is the executor).
 # Mirrors SUBSTEP_WORKFLOW_STEPS in tools/validate_pipeline_semantics.py.
@@ -5614,25 +5606,6 @@ def _sandbox_profiles_dir(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "sandbox_profiles"
 
 
-def _hooks_log_path(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "hooks" / "workflow_hooks.jsonl"
-
-
-def _append_workflow_hook_log(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    hook_name: str,
-    status: str,
-    detail: dict[str, Any],
-) -> None:
-    path = _hooks_log_path(repo_root, orchestration_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry: dict[str, Any] = {"ts": _utc_now_iso(), "hook": hook_name, "status": status, **detail}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
 def _phase_state_path(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "phase_state.json"
 
@@ -6302,13 +6275,6 @@ def pre_phase_launch(
     merged: dict[str, Any] = dict(base)
     merged["hook"] = "pre_phase_launch"
     if merged.get("status") != "pass":
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="pre_phase_launch",
-            status="deny",
-            detail={"reason": merged.get("reason_code"), "detail": merged.get("reason_detail")},
-        )
         return merged
     if launch_request:
         pr = launch_request.get("pipeline_ref")
@@ -6326,21 +6292,7 @@ def pre_phase_launch(
                 merged["reason_detail"] = reason
                 merged["next_action"] = "stop_before_phase_body"
                 merged["blocking_policy_scope"] = "downstream_artifacts"
-                _append_workflow_hook_log(
-                    repo_root,
-                    orchestration_id,
-                    hook_name="pre_phase_launch",
-                    status="deny",
-                    detail={"reason": "downstream_artifact_not_ready", "detail": reason},
-                )
                 return merged
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_phase_launch",
-        status="allow",
-        detail={"node_key": node_key, "step": step.strip().lower()},
-    )
     return merged
 
 
@@ -6391,13 +6343,6 @@ def pre_orchestration_start(
         "workspace_bootstrap": created_ws,
         "parallel_nodes_explicit": parallel_nodes_explicit_persisted,
     }
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_orchestration_start",
-        status="allow",
-        detail=detail,
-    )
     return {"status": "pass", "hook": "pre_orchestration_start", **detail}
 
 
@@ -9993,47 +9938,6 @@ def _validate_agent_summary_text(payload: dict[str, Any], summary_text: str) -> 
         raise ValueError("agent.summary.txt must include summary or failure reason")
 
 
-def _evaluate_reply_budget(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    reply_ref: str,
-) -> dict[str, Any] | None:
-    """Measure a child's verbatim reply against REPLY_BUDGET_CHARS.
-
-    Returns ``{"chars": n, "budget": REPLY_BUDGET_CHARS}`` when the reply exceeds the
-    budget (so record_agent_run can surface it as telemetry), else ``None``. Always
-    appends an audit entry on an over-budget reply. With SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1
-    it raises instead of returning, turning the soft warning into a hard fail (the
-    orchestration must then re-launch the child with a terse final message). A missing /
-    unreadable reply file is treated as under budget (never blocks on absence).
-    """
-    path = repo_root / reply_ref
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    n = len(text)
-    if n <= REPLY_BUDGET_CHARS:
-        return None
-    info = {"chars": n, "budget": REPLY_BUDGET_CHARS}
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="reply_over_budget",
-        status="warn",
-        detail={"agent_run_id": agent_run_id, **info},
-    )
-    if os.environ.get("SPEC2SCIENCE_ENFORCE_REPLY_BUDGET") == "1":
-        raise ValueError(
-            f"record-agent-run: child reply is {n} chars, over the {REPLY_BUDGET_CHARS}-char budget "
-            f"(SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a status "
-            f"line, output_refs, and a few lines of rationale; full detail belongs in the child's artifacts."
-        )
-    return info
-
-
 def _node_key_to_safe(node_key: str) -> str:
     spec_kind, spec_id, spec_version = _parse_node_key_strict(node_key)
     return f"{spec_kind}__{spec_id}__{spec_version}"
@@ -11182,58 +11086,6 @@ def _pre_phase_complete_judge_checks(
                 raise ValueError(f"blocked judge requires {name} under execution directory")
 
 
-def post_phase_complete(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    node_key: str,
-    step: str,
-    agent_run_id: str,
-    payload: dict[str, Any],
-) -> None:
-    step_token = step.strip().lower()
-    violations: list[str] = []
-    orch_root = _orchestration_root(repo_root, orchestration_id)
-    resp_path = orch_root / "launches" / f"{agent_run_id.strip()}.response.json"
-    req_path = orch_root / "launches" / f"{agent_run_id.strip()}.request.json"
-    if resp_path.is_file() and req_path.is_file():
-        try:
-            rsp = _read_json(resp_path)
-            req = _read_json(req_path)
-        except (OSError, json.JSONDecodeError):
-            rsp = {}
-            req = {}
-        if isinstance(req, dict) and isinstance(rsp, dict):
-            rq_sid = req.get("agent_session_id")
-            rs_sid = rsp.get("agent_session_id")
-            if (
-                isinstance(rq_sid, str)
-                and rq_sid.strip()
-                and isinstance(rs_sid, str)
-                and rs_sid.strip()
-                and rq_sid.strip() != rs_sid.strip()
-            ):
-                violations.append(
-                    "post_phase_complete: launch response agent_session_id mismatch vs request"
-                )
-    if violations:
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="post_phase_complete",
-            status="deny",
-            detail={"violations": violations, "step": step_token},
-        )
-        raise RuntimeError("post_phase_complete denied: " + "; ".join(violations))
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="post_phase_complete",
-        status="allow",
-        detail={"step": step_token, "agent_run_id": agent_run_id},
-    )
-
-
 def _validate_step_result_payload(
     repo_root: Path,
     orchestration_id: str,
@@ -11256,13 +11108,6 @@ def _validate_step_result_payload(
                 f"terminal step_result for {step_token} requires validation_stage in "
                 f"{sorted(allowed)}; status={status_token!r} validation_stage={validation_stage!r}"
             )
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="pre_phase_complete",
-            status="allow",
-            detail={"step": step_token, "status": status_token, "validation_stage": validation_stage},
-        )
 
     if step_token == "validate" and status_token in TERMINAL_STATUSES:
         _pre_phase_complete_judge_checks(
@@ -13822,7 +13667,7 @@ def record_launch(
     _write_text(reply_path, reply_text)
     # THE BOOKKEEPING THAT NAMES THIS LAUNCH comes after the launch record and after every
     # check of the launch above (issue #481). The four `launches/` files are the launch record;
-    # the session-index row, the `pre_agent_launch` hook entry and the graph edge each name it,
+    # the session-index row and the graph edge each name it,
     # so by position a launch refused by any of those checks leaves none of them, and none of
     # them names a launch with no `request.json`. Before the move a late refusal left an edge
     # with no request file, which `_prune_orphan_agent_graph_edges` keeps and the completion
@@ -13840,13 +13685,6 @@ def record_launch(
         status="running",
         workshop_lineage_id=(workshop_isolation["lineage_id"]
                              if workshop_isolation is not None else None),
-    )
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_agent_launch",
-        status="allow",
-        detail={"child_agent_run_id": child_agent_run_id},
     )
     graph_path = root / "agent_graph.json"
     graph = _load_graph(graph_path)
@@ -14003,7 +13841,6 @@ def record_agent_run(
     payload["agent_role"] = role_token
     payload.setdefault("started_at", _utc_now_iso())
 
-    reply_budget_info: dict[str, Any] | None = None
     if role_token in {"step", "substep"}:
         payload.setdefault("context_isolated", True)
         request_ref, response_ref = _launch_refs(orchestration_id, agent_run_id)
@@ -14013,16 +13850,6 @@ def record_agent_run(
         payload.setdefault("launch_prompt_ref", prompt_ref)
         payload.setdefault("launch_reply_ref", reply_ref)
         _validate_step_or_substep_launch_refs(repo_root, payload)
-        # Budget the child's verbatim reply (telemetry by default; hard fail under
-        # SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Evaluated before the terminal append so a
-        # hard fail leaves no durable record — the orchestration re-launches terser.
-        reply_budget_info = _evaluate_reply_budget(
-            repo_root,
-            orchestration_id,
-            agent_run_id=agent_run_id,
-            reply_ref=str(payload["launch_reply_ref"]),
-        )
-
         # Auto-derive identity fields the orchestration agent need not re-supply.
         # `parent_agent_run_id` and `agent_model` are recorded into the launch
         # request by record-launch (parent unconditionally; agent_model required
@@ -14240,11 +14067,6 @@ def record_agent_run(
                 repo_root, orchestration_id, agent_run_id=agent_run_id
             )
 
-    # Surface an over-budget reply in the CLI result (soft mode) without persisting it
-    # into the durable agent_runs.jsonl record. _TERSE_ALWAYS_KEEP retains it through the
-    # terse projection so the orchestration always sees the warning.
-    if reply_budget_info is not None:
-        return {**payload, "reply_over_budget": reply_budget_info}
     return payload
 
 
@@ -14313,8 +14135,6 @@ def record_reply_text(
     agent_run_id: str,
     reply_text: str,
 ) -> dict[str, Any]:
-    if not isinstance(reply_text, str) or not reply_text.strip():
-        raise ValueError("record-reply requires non-empty reply_text")
     _, reply_ref = _launch_dialog_refs(orchestration_id, agent_run_id)
     reply_path = repo_root / reply_ref
     _write_text(reply_path, reply_text)
@@ -14338,8 +14158,7 @@ def finalize_child(
 
     Performs, in the mandated order and in a single process,
     `deactivate_child_agent` -> `record_reply_text` -> `record_agent_run`, reusing those
-    functions unchanged so every guard is preserved (the active_child ordering, and the
-    reply budget guard which reads the reply written by step 2).
+    functions unchanged so every guard is preserved (the active_child ordering).
 
     `agent_run_payload` is the `record-agent-run` payload; the conductor writes its
     `agent_run_id` and `--agent-run-id` from one value.
@@ -14353,36 +14172,6 @@ def finalize_child(
     if not isinstance(reply_text, str) or not reply_text.strip():
         raise ValueError(
             "finalize-child requires a non-empty reply (--reply-text or --reply-from-stdin)")
-    # Hard reply-budget gate runs BEFORE any state-consuming side effect. Without this,
-    # record_agent_run's hard check (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1) would fire only after
-    # deactivate-child has already consumed the active marker, leaving the run un-retriable
-    # via finalize-child. The soft path
-    # (telemetry) is still handled by record_agent_run below, which reads the written reply.
-    # Measure the EXACT persisted form: record_reply_text -> _write_text appends a trailing
-    # newline when absent, so an exact-boundary reply (== budget, no newline) becomes
-    # budget+1 on disk; counting the persisted length keeps this precheck consistent with the
-    # downstream record_agent_run check and avoids a boundary leak past the side effects.
-    persisted_reply = reply_text if reply_text.endswith("\n") else reply_text + "\n"
-    if (
-        len(persisted_reply) > REPLY_BUDGET_CHARS
-        and os.environ.get("SPEC2SCIENCE_ENFORCE_REPLY_BUDGET") == "1"
-    ):
-        # Audit the reject before raising — mirrors _evaluate_reply_budget's hook entry on
-        # the direct record-agent-run path, so finalize-child hard failures stay visible in
-        # hooks/workflow_hooks.jsonl (operators diagnose budget failures from that log).
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="reply_over_budget",
-            status="reject",
-            detail={"agent_run_id": arid, "chars": len(persisted_reply), "budget": REPLY_BUDGET_CHARS},
-        )
-        raise ValueError(
-            f"finalize-child: child reply is {len(persisted_reply)} chars, over the {REPLY_BUDGET_CHARS}-char "
-            f"budget (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a "
-            f"status line, output_refs, and a few lines of rationale; full detail belongs in the artifacts."
-        )
-
     # The launch must still be open: `record_launch` writes this marker last and the first
     # finalization consumes it. Without the check a second finalization of the same arid, or
     # one for an arid never launched, would overwrite `launches/<arid>.reply.txt` before
@@ -14429,8 +14218,6 @@ def finalize_child(
         "reply_ref": reply.get("reply_ref"),
         "finalized_at": _utc_now_iso(),
     }
-    if isinstance(run_record, dict) and run_record.get("reply_over_budget"):
-        result["reply_over_budget"] = run_record["reply_over_budget"]
     return result
 
 
@@ -14516,36 +14303,16 @@ def write_step_result(
             seq += 1
         result_path.rename(archived_prior_path)
 
-    committed_new = False
     try:
         _write_json(result_path, result)
-        committed_new = True
-        post_phase_complete(
-            repo_root,
-            orchestration_id,
-            node_key=node_key,
-            step=step,
-            agent_run_id=agent_run_id,
-            payload=result,
-        )
     except BaseException:
         # Roll the overwrite back whole, so a retry sees the exact pre-write state.
         # `_write_json` must stay inside this guard — after the rename the prior attempt
         # exists ONLY under its archive name, so letting a failed write escape would
         # leave result_path absent and the next attempt blind to the prior substep ids.
-        # BaseException, not RuntimeError: a KeyboardInterrupt or an OSError mid-write
-        # must restore just as a rejected hook does.
-        #
-        # Unlink ONLY what this call committed. `_write_json` is atomic (temp file +
-        # os.replace), so when it is what raised, result_path still holds the prior
-        # content — unlinking unconditionally would destroy a file the failed write had
-        # preserved, and in the no-archive branch there would be nothing to restore it
-        # from. Nothing has been tombstoned yet (that happens only after the hook passes).
-        if committed_new:
-            try:
-                result_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        # BaseException: a KeyboardInterrupt or an OSError mid-write must restore too.
+        # `_write_json` is atomic (temp file + os.replace), so when it raised nothing new
+        # was committed at result_path; only the archive is moved back.
         if archived_prior_path is not None:
             try:
                 archived_prior_path.rename(result_path)
@@ -15382,7 +15149,7 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
 # Fields preserved in a terse result whenever present and non-empty, even if not
 # in the per-command list above, so a terse success can never silently hide a
 # soft-failure signal carried in the payload.
-_TERSE_ALWAYS_KEEP: tuple[str, ...] = ("violations", "error", "errors", "warning", "warnings", "reply_over_budget")
+_TERSE_ALWAYS_KEEP: tuple[str, ...] = ("violations", "error", "errors", "warning", "warnings")
 
 
 def _project_terse_result(command: str, result: Any) -> Any:
@@ -15653,7 +15420,7 @@ def main(argv: list[str] | None = None) -> int:
             "One-call child finalization: deactivate-child -> record-reply -> "
             "record-agent-run, in that order, reusing each guard. --agent-run-json is the "
             "record-agent-run payload (its agent_run_id is --agent-run-id); "
-            "--reply-text is the child's verbatim final message (budget-checked)."
+            "--reply-text is the child's verbatim final message."
         ),
     )
     finalize_parser.add_argument("--repo-root", required=True)
@@ -16048,9 +15815,6 @@ def main(argv: list[str] | None = None) -> int:
             reply_text = sys.stdin.read()
         else:
             reply_text = args.reply_text
-        if not isinstance(reply_text, str) or not reply_text.strip():
-            print("finalize-child requires --reply-text or --reply-from-stdin", file=sys.stderr)
-            return 1
         try:
             result = finalize_child(
                 repo_root=repo_root,
@@ -16088,16 +15852,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "record-reply":
         if args.reply_from_stdin:
             reply_text = sys.stdin.read()
-            if not isinstance(reply_text, str):
-                reply_text = ""
         else:
             reply_text = args.reply_text
-        if not isinstance(reply_text, str):
-            print("record-reply requires --reply-text or --reply-from-stdin", file=sys.stderr)
-            return 1
-        if not reply_text.strip():
-            print("record-reply requires non-empty reply_text", file=sys.stderr)
-            return 1
         try:
             result = record_reply_text(
                 repo_root=repo_root,

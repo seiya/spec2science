@@ -727,12 +727,12 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
     def test_a_refused_launch_leaves_no_launch_record(self) -> None:
         """Issue #481: a launch `record_launch` refuses leaves no bookkeeping record behind.
 
-        The session-index `running` row, the `pre_agent_launch` hook entry and the
-        `agent_graph.json` edge are written in one block AFTER the four `launches/` files,
+        The session-index `running` row and the `agent_graph.json` edge (and, until issue
+        #643, a hook-log entry) are written in one block AFTER the four `launches/` files,
         which come after every check of the launch. (A damaged `phase_state.json` can still
         raise after the block; it is not a check of the launch, and the comment at the block
         says what it leaves.) Before the move the row preceded the prompt-text
-        refusals (arms 1-3, gone with those refusals in issue #643) and all three preceded the
+        refusals (arms 1-3, gone with those refusals in issue #643) and all of them preceded the
         late arms (4, 5); the orphan EDGE is the
         costly one, because `_prune_orphan_agent_graph_edges` keeps an edge with no
         `request.json` and the completion check then refuses `pass` on every later attempt.
@@ -742,7 +742,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         record the arms assert absent, which is what shows the absence assertions can see
         them, and they also pin the values the moved block writes. The last row interrupts the
         LAST launch-file write (`reply.txt`): the block must come after all four, so an
-        interrupted write leaves none of the three either."""
+        interrupted write leaves none of them either."""
         from unittest import mock
 
         from tools.tests.test_orchestration_runtime import (
@@ -767,14 +767,9 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
             entries = ort._read_session_run_index(repo_root, oid).get("entries", [])
             graph_path = root / "agent_graph.json"
             edges = ort._load_graph(graph_path)["edges"] if graph_path.exists() else []
-            hook_path = ort._hooks_log_path(repo_root, oid)
-            hooks = ([json.loads(line) for line in hook_path.read_text(encoding="utf-8")
-                      .splitlines() if line.strip()] if hook_path.exists() else [])
             return {
                 "row": any(e.get("agent_run_id") == arid for e in entries),
                 "edge": any(e.get("child_agent_run_id") == arid for e in edges),
-                "hook": any(h.get("hook") == "pre_agent_launch"
-                            and h.get("child_agent_run_id") == arid for h in hooks),
                 "launches": bool(list((root / "launches").glob(f"{arid}.*"))),
                 "marker": ort._active_child_marker_path(repo_root, oid, arid).exists(),
                 "claude_marker": ort._active_child_agent_run_id_path(repo_root, oid).exists(),
@@ -794,7 +789,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                                   response_payload={**response(arid),
                                                     **_spawn_response_payload(f"sess_{arid}")}, netns_socket_dir=netns_socket_dir())
                 self.assertEqual(records(repo_root, oid, arid),
-                                 dict.fromkeys(("row", "edge", "hook", "launches", "marker",
+                                 dict.fromkeys(("row", "edge", "launches", "marker",
                                                 "claude_marker"), True))
                 root = repo_root / "workspace" / "orchestrations" / oid
                 (row,) = [e for e in ort._read_session_run_index(repo_root, oid)["entries"]
@@ -805,11 +800,6 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 self.assertIn({"parent_agent_run_id": "orch_run_to_001",
                                "child_agent_run_id": arid, "relation_type": "launch"},
                               ort._load_graph(root / "agent_graph.json")["edges"])
-                hooks = [json.loads(line) for line in ort._hooks_log_path(repo_root, oid)
-                         .read_text(encoding="utf-8").splitlines() if line.strip()]
-                self.assertIn("allow", [h.get("status") for h in hooks
-                                        if h.get("hook") == "pre_agent_launch"
-                                        and h.get("child_agent_run_id") == arid])
 
         execute_arid = "step_run_exec_no_build_id"
         execute = {
@@ -842,7 +832,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                                       request_payload=dict(request),
                                       response_payload=response(arid), child_env=child_env, netns_socket_dir=netns_socket_dir())
                 self.assertEqual(records(repo_root, oid, arid),
-                                 dict.fromkeys(("row", "edge", "hook", "launches", "marker",
+                                 dict.fromkeys(("row", "edge", "launches", "marker",
                                                 "claude_marker"), False))
 
         # The crash window: the LAST launch-file write (`reply.txt`) fails, so the other three
@@ -870,8 +860,8 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                              sorted(f"{arid}.{s}" for s in
                                     ("request.json", "response.json", "prompt.txt")))
             seen = records(repo_root, oid, arid)
-            self.assertEqual({k: seen[k] for k in ("row", "edge", "hook")},
-                             dict.fromkeys(("row", "edge", "hook"), False))
+            self.assertEqual({k: seen[k] for k in ("row", "edge")},
+                             dict.fromkeys(("row", "edge"), False))
 
 class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
     """`_write_leaf_bundle_artifacts` refuses a `logical_path` that escapes `src/`.
@@ -1269,11 +1259,6 @@ class NoOrchestrationDirRecordsALeafWriteAuthorityTests(unittest.TestCase):
             for suffix in ("request.json", "response.json", "prompt.txt"):
                 self.assertTrue((root / "launches" / f"{pure_arid}.{suffix}").is_file(),
                                 f"launches/{pure_arid}.{suffix} is missing")
-            # The HOST-side hook log (`_append_workflow_hook_log`) is not a leaf record:
-            # the conductor writes it about its own decisions, and it is the one thing
-            # under `hooks/` that survives the leaf hook layer.
-            self.assertTrue((root / "hooks" / "workflow_hooks.jsonl").is_file(),
-                            "the host workflow hook log is missing")
 
 
 
