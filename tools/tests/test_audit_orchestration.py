@@ -1878,12 +1878,25 @@ class InRepoRecordSectionTests(unittest.TestCase):
                                                "sandbox_not_enforced": 2})
             self.assertEqual([r["agent_run_id"] for r in sv["records"]],
                              ["arid-1", "arid-2", "arid-3"])
-            self.assertIn("3 sandbox enforcement record(s):", md)
+            self.assertIn("3 record(s) under `violations/`, each with its `kind`:", md)
             self.assertIn("- `sandbox_not_enforced`: 2", md)
             self.assertIn("- `sandbox_profile_build_failed`: 1", md)
-            self.assertIn("[2026-09-05T00:00:02Z] `sandbox_not_enforced` arid=`arid-2`", md)
+            self.assertIn("[2026-09-05T00:00:02Z] kind `sandbox_enforcement_violation` "
+                          "`sandbox_not_enforced` arid=`arid-2`", md)
             self.assertNotIn("No sandbox enforcement violation was recorded",
                              md.split("## Sandbox")[1].split("## Token")[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            # A record a retired writer left (before issue #171 PR-2) is listed as its own kind,
+            # not as a sandbox enforcement violation.
+            root = self._root(tmp)
+            (root / "violations").mkdir()
+            (root / "violations" / "arid-9.unauthorized_write_violation.json").write_text(
+                json.dumps({"kind": "unauthorized_write_violation", "agent_run_id": "arid-9"}),
+                encoding="utf-8")
+            result, md = self._rendered(tmp)
+            self.assertEqual([r["kind"] for r in result["sandbox_violations"]["records"]],
+                             ["unauthorized_write_violation"])
+            self.assertIn("kind `unauthorized_write_violation` `None` arid=`arid-9`", md)
 
     def test_an_unreadable_violation_record_is_a_diagnostic_failure(self) -> None:
         # The record a leaf's confinement wrote must not read as "nothing recorded"

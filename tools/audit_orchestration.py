@@ -254,8 +254,10 @@ def collect_sandbox_violations(root: Path) -> dict[str, Any]:
 
     One live writer, `_write_sandbox_enforcement_violation`; the reason vocabulary is NOT
     restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it), the file's value is
-    reported as written. Since issue #171 PR-2 the directory exists only when a violation was
-    recorded. An orchestration older than that is read from its files.
+    reported as written, and so is each record's `kind`: a record a retired writer left (an
+    orchestration older than issue #171 PR-2) carries its own kind and no reason, and is listed
+    as what it says it is. Since that change the directory exists only when a violation was
+    recorded.
 
     Raises on an unreadable or non-JSON file rather than dropping it: a violation record
     that cannot be read is exactly the one this section must not report as absent.
@@ -271,6 +273,7 @@ def collect_sandbox_violations(root: Path) -> dict[str, Any]:
         by_reason[str(reason)] += 1
         records.append({
             "file": path.name,
+            "kind": payload.get("kind"),
             "reason": reason,
             "agent_run_id": payload.get("agent_run_id"),
             "evaluated_at": payload.get("evaluated_at"),
@@ -1298,14 +1301,14 @@ def _render_sandbox_violations(summary: dict[str, Any] | None, lines: list[str],
     if not records:
         lines.append("No sandbox enforcement violation was recorded.")
     else:
-        lines.append(f"{len(records)} sandbox enforcement record(s):")
+        lines.append(f"{len(records)} record(s) under `violations/`, each with its `kind`:")
         for reason, cnt in sorted(((summary or {}).get("by_reason") or {}).items()):
             lines.append(f"- `{reason}`: {cnt}")
         lines.append("")
         for r in records:
             lines.append(
-                f"- [{r.get('evaluated_at')}] `{r.get('reason')}` arid=`{r.get('agent_run_id')}` "
-                f"(`{r.get('file')}`)"
+                f"- [{r.get('evaluated_at')}] kind `{r.get('kind')}` `{r.get('reason')}` "
+                f"arid=`{r.get('agent_run_id')}` (`{r.get('file')}`)"
             )
     lines.append("")
 
