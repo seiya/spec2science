@@ -633,7 +633,7 @@ def _procedure_interface_name(type_text: Any) -> str | None:
 # How a consumer's leaf is SHOWN the interface read above (issue #289, R4-b PR-4 precondition).
 # The neutral renderer (`orchestration_runtime._published_operations_lines`) walks the resolved
 # dependency facts and states what is language-free — the dependency, the operation's header,
-# the unresolved-name and signature-drift warnings. The call-site guidance around them names
+# the unresolved-name warning. The call-site guidance around them names
 # this language's argument passing, intents, array ranks and slices, and how a procedure
 # argument is written; that is this module's, and it reaches the leaf only when the consumer's
 # language is Fortran. Moved verbatim: the rendered block is byte-identical.

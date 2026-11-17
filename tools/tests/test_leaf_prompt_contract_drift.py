@@ -1483,7 +1483,6 @@ def _dependency_facts_payload(language: str, detailed: bool) -> dict[str, object
     an operation with no argument facts."""
     operation: dict[str, object] = {
         "operation": "dep__op", "interface": "dep__op(x)",
-        "signature_drift": ["x"],
         "procedure_interfaces": {"dep_rhs": ["dep_rhs(u)"]},
     }
     if detailed:
@@ -1748,8 +1747,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
         for language, texts in _contract_tuple()["dependency_facts_render"].items():  # type: ignore[union-attr]
             with self.subTest(language=language):
                 self.assertEqual(len(texts), 2)
-                for fixed in ("WARNING — the IR-declared operation",
-                              "certified IR pins a DIFFERENT", "prototype `dep_rhs`"):
+                for fixed in ("WARNING — the IR-declared operation", "prototype `dep_rhs`"):
                     self.assertIn(fixed, texts[0])
                 self.assertNotEqual(texts[0], texts[1])
                 module = _registry.capability_module("language", language, "signatures")
