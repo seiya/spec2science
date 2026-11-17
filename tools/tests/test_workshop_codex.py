@@ -71,8 +71,7 @@ class _CodexEnv(_Env):
         self.addCleanup(patcher.stop)
 
     def _prepare_codex(self, lineage: str, *, resume: bool) -> dict | None:
-        return ort._prepare_codex_workflow_home(self.repo, _ORCH, lineage, resume=resume,
-                                                workshop=True)
+        return ort._prepare_codex_workflow_home(self.repo, _ORCH, lineage, resume=resume)
 
 
 class CodexLineageHomeTests(_CodexEnv):

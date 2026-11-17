@@ -12257,87 +12257,6 @@ def _probe_codex_home_writable() -> dict[str, Any]:
     return {"name": "codex_home_writable", "pass": ok, "detail": detail_text}
 
 
-def _require_secure_backend_home(home: Path, label: str = "Codex", *,
-                                 tighten: bool = False) -> None:
-    """Fail closed unless ``home`` is a private, non-symlinked directory.
-
-    ONE spelling for every backend home: the Claude private home (issue #63; gone with
-    the agentic leaf in Z4, issue #171) had the same threat model as the Codex one — a world-writable or symlinked home lets
-    another process substitute the very configuration that is about to be
-    SHA-pinned, so the pin would certify bytes the leaf never loads. ``label``
-    only names the backend in the message; the checks are identical by design and
-    must not be allowed to drift apart per backend.
-
-    ``tighten`` decides what a WRONG MODE means, and the two callers want different
-    answers. On REUSE the home already exists and its mode may have drifted — a backup
-    restored without permissions is the ordinary way — so the mode is established, exactly
-    as `_require_secure_home_ancestor` does one level up. Refusing there made a drift on
-    the home itself brick every later launch of that orchestration FOREVER, with no chmod
-    named in the message, while the identical drift on its parent was silently fixed: the
-    justification written for the ancestors applied word for word to the leaf and had not
-    been carried there. Immediately AFTER creation the answer is the opposite and
-    ``tighten`` stays False, because there the check exists to catch a chmod that did not
-    take, and tightening would be the very thing it is watching for.
-
-    Symlink, non-directory and foreign uid refuse in both modes: those are disagreements
-    no chmod resolves.
-    """
-    try:
-        info = home.lstat()
-    except OSError as exc:
-        raise ValueError(f"isolated {label} home is inaccessible: {home}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"isolated {label} home must be a real directory: {home}")
-    if info.st_uid != os.getuid():
-        raise ValueError(f"isolated {label} home is not owned by this user: {home}")
-    if stat.S_IMODE(info.st_mode) != 0o700:
-        if not tighten:
-            raise ValueError(f"isolated {label} home must have mode 0700: {home}")
-        _chmod_directory_no_follow(home, 0o700, label)
-        after = home.lstat()
-        if stat.S_IMODE(after.st_mode) != 0o700:
-            raise ValueError(
-                f"isolated {label} home is still not mode 0700 after chmod (got "
-                f"{stat.S_IMODE(after.st_mode):#o}); the filesystem holding {home} does "
-                "not support it, so the leaf's transcripts cannot be kept private there"
-            )
-
-
-def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
-    """`chmod` a DIRECTORY without following a symlink at that path.
-
-    `os.chmod` follows symlinks, so between the `lstat` that approved a path and the
-    `chmod` that tightens it, the directory can be replaced by a link and the mode of an
-    unrelated path is changed instead — with the re-read then failing and blaming the
-    FILESYSTEM, which sends the operator after the wrong thing entirely. MEASURED: a
-    victim directory outside the tree came back 0o700 while the refusal said "does not
-    support it".
-
-    Opening with `O_NOFOLLOW | O_DIRECTORY` and using `fchmod` closes both halves: the
-    open refuses the substituted link, so nothing else is touched and the diagnosis stays
-    about this path. Only another process of the SAME uid can run the race at all — the
-    tree is 0700 and a leaf cannot see it — which is why this is cheap insurance rather
-    than a defence.
-    """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
-    try:
-        fd = os.open(str(path), flags)
-    except OSError as exc:
-        raise ValueError(
-            f"isolated {label} home path could not be opened as a real directory to set "
-            f"its mode: {path}: {exc}"
-        ) from exc
-    try:
-        os.fchmod(fd, mode)
-    except OSError as exc:
-        raise ValueError(
-            f"isolated {label} home path mode could not be changed to {mode:#o}: "
-            f"{path}: {exc}"
-        ) from exc
-    finally:
-        os.close(fd)
-
-
 # `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
 # `tools/operator_private_root.py`, not defined here. TWO subtrees of the operator-private root are
 # relocatable, and each name moves exactly one of them:
@@ -12500,10 +12419,9 @@ def _require_usable_private_root_override(env_name: str, root: Path, subject: st
                 "There is no working configuration here to preserve. Point it at a "
                 "directory that neither contains nor sits inside the checkout"
             )
-    # Redundant for the VERDICT and load-bearing for the MESSAGE: the very next thing
-    # `_create_workflow_backend_home` does is the ancestors loop, whose
-    # `_require_secure_home_ancestor` refuses a non-directory at the same path — but with a
-    # message that names neither the variable nor the reason. It WAS unpinned for this
+    # Load-bearing for the MESSAGE: without it the ancestors loop of
+    # `_create_workflow_backend_home` fails on a non-directory at the same path with an
+    # `OSError` that names neither the variable nor the reason. It WAS unpinned for this
     # caller (a round-3 census measured `test_orchestration_runtime.py` staying green while
     # only the token-side subtests failed); issue #176 ported that token-side row to the
     # homes caller, so `test_operator_private_root.py::WorkflowHomesRootOverrideTests::
@@ -12529,9 +12447,8 @@ def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
     DETERMINISTIC ON PURPOSE, replacing `tempfile.mkdtemp`. The randomness the mkdtemp
     names carried was a defense for `/tmp`, which is world-writable: any local user could
     pre-create a predictable name and win the race for the directory the home is about to
-    become. Under a 0700 root owned by this uid that threat is gone, and what replaces it
-    is the EXCLUSIVE creation in `_create_workflow_backend_home` — a second creator gets
-    `FileExistsError`, not a shared home.
+    become. Under a 0700 root owned by this uid that threat is gone, and each lineage home
+    inside the backend directory is created exclusively by its cold launch.
 
     The id becomes a path segment OUTSIDE the repository, so it is refused here unless it
     is a plain token. `init_orchestration` already refuses anything else, and this is the
@@ -12552,80 +12469,20 @@ def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
     return _workflow_homes_root() / oid / backend
 
 
-def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bool) -> None:
-    """Fail closed unless an ancestor directory of a backend home is safe to descend.
-
-    Three checks REFUSE, because each is a disagreement this code cannot resolve: a
-    symlink or a non-directory means something other than this tree is deciding where the
-    home lands, and a directory owned by another uid is not ours to touch at all.
-
-    The mode does NOT refuse — it is TIGHTENED. That is the difference between "the
-    caller said something incompatible with me" and "the caller did not say anything",
-    and the mode is the second: a directory at 0755 has not claimed it should stay at
-    0755, and the mode this code wants is one it can simply establish. Refusing instead
-    made an operator following `docs/RUNBOOK.md` — which offers
-    `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
-    plain `mkdir` created the root 0755 under the default umask; and it made a mode drift
-    on `~/.spec2science/homes` (a backup restored without permissions) refuse every launch of
-    every orchestration. The chmod is exactly what the create path does one branch away,
-    so tightening here makes the two agree rather than adding an authority.
-
-    The tightening is `require_private`-gated for the same reason the check was:
-    `~/.spec2science` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
-    start-claim writer both create it best-effort and neither forces its mode, it is
-    shared with `start_claims/`, and it is the one level here that this code did not
-    necessarily create. `docs/RUNBOOK.md` recommends
-    `chmod 700` for it. `homes/` and `homes/<oid>/` are this code's own.
-    """
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise ValueError(f"isolated {label} home ancestor is inaccessible: {path}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"isolated {label} home ancestor must be a real directory: {path}")
-    if info.st_uid != os.getuid():
-        raise ValueError(f"isolated {label} home ancestor is not owned by this user: {path}")
-    if require_private and stat.S_IMODE(info.st_mode) != 0o700:
-        _chmod_directory_no_follow(path, 0o700, label)
-        # Re-read rather than assume: on a filesystem that does not honour the mode
-        # (a FAT/exFAT mount, some network filesystems) the chmod succeeds and changes
-        # nothing, and descending would put the transcripts somewhere world-readable.
-        after = path.lstat()
-        if stat.S_IMODE(after.st_mode) != 0o700:
-            raise ValueError(
-                f"isolated {label} home ancestor is still not mode 0700 after chmod "
-                f"(got {stat.S_IMODE(after.st_mode):#o}); the filesystem holding {path} "
-                "does not support it, so the leaf's transcripts cannot be kept private "
-                "there"
-            )
-
-
 def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
                                   backend: str, label: str) -> Path:
-    """Create `<homes-root>/<oid>/<backend>` exclusively and return it.
+    """Create `<homes-root>/<oid>/<backend>` and return it.
 
-    The replacement for `tempfile.mkdtemp(dir="/tmp")` in both preparers. Three steps,
-    in this order, all of them fail-closed:
+    Each missing ancestor, and the backend directory itself, is created 0700 (`mkdir`'s mode
+    argument is masked by the umask, so a `chmod` follows); the operator-private tree is the
+    operator's own, and its state is not policed beyond that (issue #643). A backend directory
+    that is already there — a run that crashed between creating it and recording it, or a
+    reused orchestration id — is adopted: each lineage home inside it is created exclusively
+    by its cold launch. Then the owner marker is written in the PARENT
+    (`_write_workflow_home_owner`).
 
-      1. secure every ancestor. Each is created with an explicit `mkdir(0o700)` +
-         `chmod` (mkdir's mode argument is masked by the umask; the chmod is not), and
-         an ancestor that ALREADY exists is checked rather than trusted — a symlink or
-         another user's directory anywhere on the way down would otherwise decide where
-         the home lands;
-      2. create the leaf directory with `os.mkdir`, which is EXCLUSIVE. A directory that
-         is already there is not adopted: it means a previous run created it and either
-         crashed before recording it, or its metadata was lost, and adopting it would
-         hand a new orchestration another run's transcripts. The error names the path and
-         the remedy;
-      3. re-check the created directory through `_require_secure_backend_home`, the same
-         spelling both preparers used before, so the property asserted at the end is the
-         one the rest of the code depends on.
-
-    Then the owner marker is written in the PARENT (step 4, see `_write_workflow_home_owner`).
-
-    Called under the caller's `_orchestration_meta_exclusive_lock`, like the mkdtemp it
-    replaces, so two concurrent child launches of the same orchestration cannot both reach
-    step 2.
+    Called under the caller's `_orchestration_meta_exclusive_lock`, so two concurrent child
+    launches of the same orchestration do not both create it.
     """
     home = _workflow_backend_home_path(orchestration_id, backend)
     root = _workflow_homes_root()
@@ -12634,7 +12491,7 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     # location the caller chose, and silently building a deep tree under a typo'd path is
     # the failure mode that costs most. Without one, `~/.spec2science` may legitimately not
     # exist yet (a host that has never run `init_orchestration`).
-    ancestors: list[tuple[Path, bool]] = []
+    ancestors: list[Path] = []
     if override_used:
         # The conditions live in a shared helper. The `subject` WORDING is per-caller so
         # the refusal names the operator's own tree: it carries the backend label, and the
@@ -12643,143 +12500,36 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
         _require_usable_private_root_override(
             WORKFLOW_HOMES_ROOT_ENV, root, f"isolated {label} home root",
             repo_root=repo_root)
-        ancestors.append((root, True))
+        ancestors.append(root)
     else:
-        ancestors.append((root.parent, False))  # ~/.spec2science — mode not forced
-        ancestors.append((root, True))          # ~/.spec2science/homes
-    ancestors.append((home.parent, True))  # <homes-root>/<oid>
-    for path, require_private in ancestors:
-        if path.exists() or path.is_symlink():
-            _require_secure_home_ancestor(path, label, require_private=require_private)
+        ancestors.append(root.parent)  # ~/.spec2science
+        ancestors.append(root)         # ~/.spec2science/homes
+    ancestors.append(home.parent)      # <homes-root>/<oid>
+    for path in (*ancestors, home):
+        if path.is_dir():
             continue
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            # Lost a race with another process creating the same ancestor; validate the
-            # winner rather than assuming it.
-            _require_secure_home_ancestor(path, label, require_private=require_private)
-            continue
-        except OSError as exc:
-            raise ValueError(f"cannot create isolated {label} home ancestor {path}: {exc}") from exc
+        path.mkdir(mode=0o700, exist_ok=True)
         os.chmod(path, 0o700)
-    # BEFORE the exclusive creation: a refusal here must leave nothing behind, and a
-    # directory created and then refused would block the legitimate owner's next launch.
-    _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
-    try:
-        os.mkdir(home, 0o700)
-    except FileExistsError as exc:
-        raise ValueError(
-            f"isolated {label} home already exists but is not recorded in this "
-            f"orchestration's metadata: {home}. It belongs to an earlier run whose "
-            "metadata was lost, or to a run that crashed between creating the home and "
-            "recording it. Inspect it, then remove it with `python3 "
-            f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id} "
-            "--delete` — adding --allow-unverifiable if that run's metadata is gone, "
-            "and terminalizing it first (the set-status block under docs/RUNBOOK.md "
-            "#launch-incomplete-recovery) if its recorded status is still non-terminal, "
-            "which the crash case leaves it."
-        ) from exc
-    except OSError as exc:
-        raise ValueError(f"cannot create isolated {label} home {home}: {exc}") from exc
-    os.chmod(home, 0o700)
-    _require_secure_backend_home(home, label)
     _write_workflow_home_owner(repo_root, orchestration_id, home.parent, label)
     return home
 
 
-def _require_owner_marker_agrees(repo_root: Path, orchestration_id: str,
-                                 owner_dir: Path, label: str) -> None:
-    """Refuse when an existing owner marker is a DIFFERENT live claim on this directory.
-
-    Called BEFORE the exclusive `mkdir`, and the order is the whole point: validating
-    after it leaves the refused run's own backend directory on disk, which then blocks
-    the legitimate owner's next launch with the unrecorded-home error. Found by the probe
-    written for this very check — its first control ("the same checkout's second backend
-    must still work") failed on the debris the refusal had just created.
-
-    See `_write_workflow_home_owner` for what the marker is and why the checkout-gone
-    case is adopted instead.
-    """
-    marker_path = owner_dir / WORKFLOW_HOME_OWNER_FILENAME
-    if not marker_path.is_file():
-        return
-    try:
-        existing = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        # Unreadable: the prune tool's `unverifiable` answer, not a launch refusal.
-        #
-        # RESIDUE, and wider than the shape this sentence used to name. A marker that is
-        # unreadable — and equally one that is valid JSON, a dict, and merely INCOMPLETE
-        # (no `repo_root`) — is neither refused here nor replaced by
-        # `_write_workflow_home_owner`'s stale-owner branch, which requires a `repo_root`
-        # STRING that differs. So such an entry stays `unverifiable` forever and is
-        # deletable with `--allow-unverifiable` while its run is live: the end state the
-        # moved-checkout refresh closed, reached by a different route. No code path
-        # produces either shape — it takes filesystem damage or hand editing — which is
-        # why this is recorded rather than fixed.
-        return
-    if not isinstance(existing, dict):
-        return
-    other_oid = existing.get("orchestration_id")
-    if isinstance(other_oid, str) and other_oid and other_oid != orchestration_id:
-        raise ValueError(
-            f"isolated {label} home directory {owner_dir} is claimed by orchestration "
-            f"{other_oid!r}, not {orchestration_id!r}. Inspect it with `python3 "
-            f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id}` "
-            "before removing anything."
-        )
-    other_repo = existing.get("repo_root")
-    if (isinstance(other_repo, str) and other_repo
-            and other_repo != str(Path(repo_root).resolve())
-            and _orchestration_meta_path_exists(Path(other_repo), orchestration_id)):
-        raise ValueError(
-            f"isolated {label} home directory {owner_dir} belongs to a different checkout "
-            f"({other_repo}) whose metadata for {orchestration_id!r} is still present, so "
-            "both are live claims on one orchestration id. Use a distinct orchestration "
-            "id for this run; a home shared between two checkouts would hand each the "
-            "other's transcripts, and the prune tool would read the wrong checkout's "
-            "status when deciding to delete."
-        )
-
-
-def _resecure_workflow_home_on_reuse(repo_root: Path, orchestration_id: str,
-                                     home: Path, label: str) -> None:
-    """Re-assert the ancestors AND the owner marker for a home that ALREADY exists.
-
-    Two things ran only on the creation path, and both are about the state a home is
-    FOUND in rather than the state it is made in — which is the reuse path's whole
-    subject.
-
-    THE ANCESTORS. `docs/RUNBOOK.md` says a mode that "later drifts (a backup restored
-    without permissions)" is tightened, and that held only for a launch that CREATED a
-    home: a warm reuse checked the home itself and never looked above it. Measured before
-    this — with `<homes-root>` or `<homes-root>/<oid>` dropped to 0755, relaunching left
-    them there indefinitely. The transcripts stayed 0700, so what leaked was the metadata
-    (which orchestrations exist, which backends ran), but the document's claim was false
-    and the drift persisted until some unrelated new orchestration rebuilt the path.
-
-    THE MARKER.
+def _refresh_workflow_home_owner_on_reuse(repo_root: Path, orchestration_id: str,
+                                          home: Path, label: str) -> None:
+    """Re-write the owner marker for a home that ALREADY exists.
 
     The marker's whole reason for being refreshed — a checkout that moved, so the recorded
     path locates nothing — is a RESUME scenario, and the refresh lived only on the
-    creation path. `_write_workflow_home_owner`'s own docstring named the moved-checkout
-    operator as the case it handles, while nothing on the reuse path ever ran it.
-
-    The consequence was not cosmetic. A moved checkout's run stayed `unverifiable`
-    forever, and that verdict is the one `--allow-unverifiable` releases — and that route
-    skips the locked status re-read entirely, so `refused:orchestration_not_terminal`,
-    documented as having no override, became unreachable for it. Reproduced end to end:
-    `prune --all --allow-unverifiable --delete` removed the home of an orchestration whose
-    recorded status was `running`.
+    creation path once. A moved checkout's run then stayed `unverifiable` to the prune tool
+    forever, and `--allow-unverifiable` deletes such a home without the locked status
+    re-read: `prune --all --allow-unverifiable --delete` removed the home of an orchestration
+    whose recorded status was `running` (reproduced end to end).
 
     SCOPED TO OUR OWN LAYOUT. A home recorded before issue #64 lives wherever it lived — a
-    `mkdtemp` directory directly under `/tmp`, whose leaf name carries a random suffix and
-    whose parent is `/tmp`, which is nobody's orchestration directory. TWO guards reject
-    it and the NAME one runs first: `_workflow_backend_home_path` raises unless
-    `home.name` is a declared backend dirname, and this function returns on that
-    `ValueError` before the parent comparison below is reached. Writing a marker there
-    would litter a shared tmpfs with a file claiming an orchestration id. So the refresh
-    runs only when the home sits exactly where this code puts one.
+    `mkdtemp` directory directly under `/tmp`, whose parent is nobody's orchestration
+    directory — and writing a marker there would litter a shared tmpfs with a file claiming
+    an orchestration id. So the refresh runs only when the home sits exactly where this code
+    puts one.
     """
     try:
         expected = _workflow_backend_home_path(orchestration_id, home.name)
@@ -12790,9 +12540,6 @@ def _resecure_workflow_home_on_reuse(repo_root: Path, orchestration_id: str,
             return
     except (OSError, RuntimeError, ValueError):
         return
-    _require_secure_home_ancestor(_workflow_homes_root(), label, require_private=True)
-    _require_secure_home_ancestor(home.parent, label, require_private=True)
-    _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
     _write_workflow_home_owner(repo_root, orchestration_id, home.parent, label)
 
 
@@ -12812,23 +12559,9 @@ def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
     `orchestration_meta.json` — the file the host writes under a lock. Treating the marker
     as the authority would let anything that could write it decide a deletion.
 
-    The bytes are NOT verified, because `created_at` is regenerated on every call and the
-    second backend of the same orchestration legitimately arrives with the marker already
-    there. What IS verified is the pair that identifies the run — and this is a refusal
-    rather than a fill, because a marker naming a different orchestration or a different
-    LIVE checkout is a DISAGREEMENT: two runs claiming one directory.
-
-    That mattered, measured. Two checkouts using the same explicit orchestration id with
-    different backends each got their own `<oid>/<backend>` (the exclusive creation is
-    per backend), while the second silently inherited the FIRST's marker. The prune tool
-    then read the first checkout's status — terminal — and deleted the second checkout's
-    LIVE codex home. Reproduced end to end before this check existed.
-
-    A marker whose checkout is GONE is adopted rather than refused, and that is the fill
-    half: the previous owner cannot be asked anything, nothing contradicts this run, and
-    refusing would break the ordinary case of an operator who moved a checkout and
-    resumed. The discriminator is whether the recorded path still holds metadata for
-    this same orchestration — if it does, both are live claims and the launch stops.
+    A marker naming another checkout is REPLACED by this one (the operator who moved a
+    checkout and resumed is the ordinary case). Two checkouts running one orchestration id
+    on one homes root is the operator's own configuration and is not policed (issue #643).
     """
     marker_path = owner_dir / WORKFLOW_HOME_OWNER_FILENAME
     resolved_repo = str(Path(repo_root).resolve())
@@ -12841,10 +12574,8 @@ def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
         },
         sort_keys=True,
     ).encode("utf-8")
-    # A marker naming a checkout that is GONE is REPLACED, not kept. `_require_owner_
-    # marker_agrees` has already decided that case is safe to adopt (nothing else claims
-    # the id), and leaving the stale path in place would make the locator locate nothing
-    # forever — the prune tool would answer `unverifiable` for a run whose owner is
+    # A marker naming another checkout is REPLACED, not kept: leaving the stale path in place
+    # would make the locator locate nothing forever — the prune tool would answer `unverifiable` for a run whose owner is
     # perfectly identifiable, which is fail-closed but useless. A marker that AGREES is
     # left alone rather than rewritten, so `created_at` keeps meaning "when this
     # orchestration directory was created" instead of "when a backend last launched".
@@ -12974,8 +12705,7 @@ def codex_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any
 
 
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage_id: str,
-                                 *, resume: bool, workshop: bool = True
-                                 ) -> dict[str, str] | None:
+                                 *, resume: bool) -> dict[str, str] | None:
     """Prepare the private Codex home of ONE `workshop leaf` lineage of an orchestration (issue
     #534 step 2 PR-2): the lineage home is `workshop_tree.LineagePaths(backend="codex").home` —
     `config/` (0700, the leaf's `CODEX_HOME`, holding the `config.toml` that marks the TREE
@@ -12985,11 +12715,6 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
     `record_launch` prepares it warm on both of the lineage's launches. Returns `{home, config,
     tree, auth, auth_destination, config_toml, lineage_id, homes_root}`
     (`_prepare_codex_workshop_lineage`).
-
-    `workshop` must be True. The pure codex leaf's THREAD lineage — a bare `CODEX_HOME` at
-    `<container>/<lineage_id>/`, bound rw whole — was the other layout this prepared, and it
-    went with the pure leaf in issue #534 PR-J4-b; asking for it is refused rather than
-    answered with the workshop layout.
 
     Two levels, and the leaf sees only the lower one:
 
@@ -13002,10 +12727,9 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
         read, a sibling: the sibling is simply not mounted. This is what closed the shared
         per-orchestration home TODO recorded from issue #227 (issue #245).
 
-    `lineage_id` is the `agent_run_id` of the lineage's cold launch, and it becomes a path
-    segment outside the repository, so it is refused unless it is a plain token
-    (`_is_safe_path_id`), the same wall `_workflow_backend_home_path` puts before the
-    orchestration id. `record_launch` refuses a malformed one first; this is the second wall.
+    `lineage_id` is the `agent_run_id` of the lineage's cold launch (a host-minted id; a
+    recorded one is refused by `record_launch` unless it is a plain token), and it becomes a
+    path segment outside the repository.
 
     ``resume`` decides what a lineage directory's presence means: cold, the lineage home is
     created EXCLUSIVELY (one already there is refused, not adopted); warm, it must ALREADY
@@ -13017,20 +12741,11 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
     The container part is unchanged from the per-orchestration design: its path is persisted
     so the same tree is reused across `--resume`, a vanished container (an operator prune, a
     lost filesystem) is re-created at the same path — with no lineage inside, so every
-    recorded lineage is cold-fallback only — and an existing one has its mode, ancestors and
-    owner marker re-asserted on every preparation. Authentication is deliberately *not*
+    recorded lineage is cold-fallback only — and an existing one has its owner marker
+    refreshed on every preparation. Authentication is deliberately *not*
     copied: the bwrap profile binds the operator's `auth.json` read-only over the placeholder.
     """
-    if workshop is not True:
-        raise ValueError(
-            "isolated Codex home: only a workshop lineage is prepared; the pure codex thread "
-            "lineage went with the pure leaf in issue #534 PR-J4-b")
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
-    if not _is_safe_path_id(lineage_token):
-        raise ValueError(
-            "isolated Codex home: lineage_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {lineage_id!r})"
-        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     # The container is one 0700 directory per orchestration, named DETERMINISTICALLY
     # since issue #64 (`<homes-root>/<oid>/codex`): the randomness it replaced was a
@@ -13040,8 +12755,6 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
     # lineage creation below, which is why the whole function runs under it.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError("orchestration metadata missing while preparing Codex home")
         raw_home = meta.get("codex_workflow_home")
         container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
@@ -13055,13 +12768,10 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
                 # the `resume=True` missing branch and the conductor goes cold.
                 container = None
             else:
-                # `tighten=True`: a mode that drifted on the container (a backup restored
-                # without permissions) is established, not refused — see
-                # `_require_secure_backend_home`. The CONTAINER path is what the reuse
-                # re-securing takes: it is keyed on `home.name` being a backend dirname,
-                # and would silently return on a lineage path.
-                _require_secure_backend_home(container, tighten=True)
-                _resecure_workflow_home_on_reuse(
+                # The CONTAINER path is what the marker refresh takes: it is keyed on
+                # `home.name` being a backend dirname, and would silently return on a
+                # lineage path.
+                _refresh_workflow_home_owner_on_reuse(
                     repo_root, orchestration_id, container, "Codex")
         if container is None:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for leaf
@@ -13081,7 +12791,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
 def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, container: Path,
                                     home: Path, lineage_token: str, *, resume: bool
                                     ) -> dict[str, str] | None:
-    """The lineage half of `_prepare_codex_workflow_home(workshop=True)`, run under its
+    """The lineage half of `_prepare_codex_workflow_home`, run under its
     metadata lock with the container already established. The claude preparer's lineage half
     (`_prepare_claude_workshop_home`), with codex's two files in `config/`."""
     from tools.workshop_tree import LineagePaths
@@ -13091,8 +12801,6 @@ def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, cont
             home.lstat()
         except FileNotFoundError:
             return None
-        _require_secure_backend_home(home, "Codex", tighten=True)
-        _require_secure_backend_home(config, "Codex", tighten=True)
     else:
         try:
             os.mkdir(home, 0o700)
@@ -13106,10 +12814,8 @@ def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, cont
         except OSError as exc:
             raise ValueError(f"cannot create isolated Codex lineage home {home}: {exc}") from exc
         os.chmod(home, 0o700)
-        _require_secure_backend_home(home, "Codex")
         os.mkdir(config, 0o700)
         os.chmod(config, 0o700)
-        _require_secure_backend_home(config, "Codex")
         LineagePaths(homes_root=container.parent.parent, orchestration_id=orchestration_id,
                      lineage_id=lineage_token,
                      orchestration_dir=_orchestration_root(repo_root, orchestration_id),
@@ -13195,15 +12901,9 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
     actually used (the recorded one on a reuse, so a relocated `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`
     does not split one orchestration's lineages across two roots)."""
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
-    if not _is_safe_path_id(lineage_token):
-        raise ValueError(
-            "isolated Claude home: lineage_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {lineage_id!r})")
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError("orchestration metadata missing while preparing Claude home")
         raw_home = meta.get("claude_workflow_home")
         container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
@@ -13213,8 +12913,7 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
             except FileNotFoundError:
                 container = None
             else:
-                _require_secure_backend_home(container, "Claude", tighten=True)
-                _resecure_workflow_home_on_reuse(
+                _refresh_workflow_home_owner_on_reuse(
                     repo_root, orchestration_id, container, "Claude")
         if container is None:
             container = _create_workflow_backend_home(
@@ -13228,8 +12927,6 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
                 home.lstat()
             except FileNotFoundError:
                 return None
-            _require_secure_backend_home(home, "Claude", tighten=True)
-            _require_secure_backend_home(config, "Claude", tighten=True)
         else:
             try:
                 os.mkdir(home, 0o700)
@@ -13244,10 +12941,8 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
                 raise ValueError(
                     f"cannot create isolated Claude lineage home {home}: {exc}") from exc
             os.chmod(home, 0o700)
-            _require_secure_backend_home(home, "Claude")
             os.mkdir(config, 0o700)
             os.chmod(config, 0o700)
-            _require_secure_backend_home(config, "Claude")
             from tools.workshop_tree import LineagePaths
             LineagePaths(homes_root=container.parent.parent,
                          orchestration_id=orchestration_id, lineage_id=lineage_token,
@@ -13277,9 +12972,9 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
 
 def _prepare_codex_workshop_home(repo_root: Path, orchestration_id: str, lineage_id: str,
                                  *, resume: bool) -> dict[str, str] | None:
-    """`_prepare_codex_workflow_home(workshop=True)`, in the claude preparer's signature."""
+    """`_prepare_codex_workflow_home`, in the claude preparer's signature."""
     return _prepare_codex_workflow_home(repo_root, orchestration_id, lineage_id,
-                                        resume=resume, workshop=True)
+                                        resume=resume)
 
 
 def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_id: str,
@@ -13296,15 +12991,9 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
 
     Returns `{home, tree, lineage_id, homes_root}`."""
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
-    if not _is_safe_path_id(lineage_token):
-        raise ValueError(
-            "HTTP workshop home: lineage_id must be a plain [A-Za-z0-9_-] token "
-            f"(got {lineage_id!r})")
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
-        if not isinstance(meta, dict):
-            raise ValueError("orchestration metadata missing while preparing the HTTP home")
         raw_home = meta.get("http_workflow_home")
         container: Path | None = None
         if isinstance(raw_home, str) and raw_home.strip():
@@ -13314,8 +13003,7 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
             except FileNotFoundError:
                 container = None
             else:
-                _require_secure_backend_home(container, "HTTP", tighten=True)
-                _resecure_workflow_home_on_reuse(
+                _refresh_workflow_home_owner_on_reuse(
                     repo_root, orchestration_id, container, "HTTP")
         if container is None:
             container = _create_workflow_backend_home(
@@ -13328,7 +13016,6 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
                 home.lstat()
             except FileNotFoundError:
                 return None
-            _require_secure_backend_home(home, "HTTP", tighten=True)
         else:
             try:
                 os.mkdir(home, 0o700)
@@ -13343,7 +13030,6 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
                 raise ValueError(
                     f"cannot create HTTP workshop lineage home {home}: {exc}") from exc
             os.chmod(home, 0o700)
-            _require_secure_backend_home(home, "HTTP")
             from tools.workshop_tree import LineagePaths
             LineagePaths(homes_root=container.parent.parent,
                          orchestration_id=orchestration_id, lineage_id=lineage_token,

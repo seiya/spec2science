@@ -721,15 +721,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         orchestration id" — which was a defense for `tempfile.mkdtemp(dir="/tmp")`:
         `/tmp` is world-writable, so a predictable name lets any local user pre-create
         the directory the home is about to become and win it. Issue #64 moved the tree
-        under `operator_secret_root()`, whose every level this code creates 0700 and
-        re-checks for ownership and symlinks, so no other user can place anything on
-        the path at all. What replaces the randomness is the EXCLUSIVE `os.mkdir` —
-        pinned by `DurableWorkflowHomesTests.
-        test_an_unrecorded_existing_home_is_refused_rather_than_adopted`. That witness
-        drives the CLAUDE preparer; both preparers reach the same
-        `_create_workflow_backend_home`, so what it pins is the shared creation, not a
-        per-backend behaviour. (An earlier version of this sentence named a codex-specific
-        test that does not exist.)
+        under `operator_secret_root()`, whose every level this code creates 0700. What
+        replaces the randomness is the EXCLUSIVE creation of each lineage home by its cold
+        launch (`test_prepare_codex_home_refuses_a_cold_launch_into_an_existing_lineage`).
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOMES_ROOT_ENV,
@@ -757,20 +751,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 second = _prepare_codex_workflow_home(repo_root, orch, "arid-b", resume=False)
                 # A warm preparation of an existing lineage answers the same home.
                 warm = _prepare_codex_workflow_home(repo_root, orch, "arid-a", resume=True)
-                # The pure codex THREAD lineage (a bare `CODEX_HOME` bound rw whole) went
-                # with the pure leaf (issue #534 PR-J4-b): asking for it is refused, cold or
-                # warm, and creates nothing — never answered with the workshop layout.
-                for resume in (False, True):
-                    with self.subTest(pure_layout_resume=resume), self.assertRaisesRegex(
-                            ValueError, "pure codex thread lineage went with the pure leaf"):
-                        _prepare_codex_workflow_home(repo_root, orch, "arid-p", resume=resume,
-                                                     workshop=False)
             homes_root = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV])
             container = homes_root / orch / "codex"
             home_a, home_b = Path(first["home"]), Path(second["home"])
             self.assertEqual(home_a, container / "arid-a")
             self.assertEqual(home_b, container / "arid-b")
-            self.assertFalse((container / "arid-p").exists())
             self.assertEqual(first["lineage_id"], "arid-a")
             self.assertEqual(warm["home"], first["home"])
             self.assertFalse(home_a.is_relative_to(repo_root), "CODEX_HOME must ignore in-repo TMPDIR")
@@ -943,8 +928,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
         An `agent_run_id` is minted once, so nothing legitimate reaches this; a directory
         at the path before its cold launch is another run's state, and adopting it would
-        hand this thread that state. The refusal names the lineage, not the container
-        (the container message is `_create_workflow_backend_home`'s and still stands).
+        hand this thread that state. The refusal names the lineage.
         """
         from tools.orchestration_runtime import _prepare_codex_workflow_home
 
@@ -962,12 +946,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 # The refused call neither removed nor rewrote the existing lineage.
                 self.assertTrue((Path(first["home"]) / "config" / "config.toml").is_file())
                 self.assertIn("arid-x", str(caught.exception))
-                # A lineage id that is not a plain path token is refused before any
-                # path is joined — the second wall behind `record_launch`'s regex.
-                for bad in ("../escape", "a/b", "", " ", "x y"):
-                    with self.subTest(lineage=bad), self.assertRaisesRegex(
-                            ValueError, "lineage_id must be a plain"):
-                        _prepare_codex_workflow_home(repo_root, orch, bad, resume=False)
 
     def test_prepare_codex_home_warm_answers_the_sentinel_and_creates_nothing(self) -> None:
         """`resume=True` for a lineage that is not there returns None and leaves no trace.
@@ -25323,8 +25301,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
     The claude and codex preparers are covered above for what each of them BUILDS. What
     this class covers is the part they now share: WHERE the home lands, that the location
-    is derived rather than random, that its ancestors are checked rather than trusted,
-    and that a directory already sitting on the path is refused rather than adopted.
+    is derived rather than random, the mode of what it creates, and the owner marker.
     """
 
     def _claude_repo(self, td: str, orchestration_id: str = "orch_d") -> Path:
@@ -25348,8 +25325,8 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """Prepare a private backend home, with the operator credential resolved beside the
         repo. The backend is codex because it is the only one with a private home now; what
         every row here is about is the SHARED creation of the CONTAINER
-        (`_create_workflow_backend_home` / `_require_secure_backend_home` /
-        `_resecure_workflow_home_on_reuse`), which is backend-independent. The returned
+        (`_create_workflow_backend_home` / `_refresh_workflow_home_owner_on_reuse`), which is
+        backend-independent. The returned
         `home` is the lineage home one level below it (issue #245); rows that are about
         the container take `Path(iso["home"]).parent`."""
         from tools.orchestration_runtime import _prepare_codex_workflow_home
@@ -25507,116 +25484,29 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(json.loads(meta_path.read_text(encoding="utf-8"))
                              ["codex_workflow_home_generation"], 3)
 
-    def test_an_unrecorded_existing_home_is_refused_rather_than_adopted(self) -> None:
-        """The exclusive `os.mkdir` is what replaced the mkdtemp randomness.
-
-        A directory already on the deterministic path belongs to an earlier run whose
-        metadata was lost, or to one that crashed between creating the home and
-        recording it. Adopting it would hand this orchestration that run's transcripts —
-        the leaf-to-leaf leak the isolated home exists to prevent — so it fails closed,
-        and the message names both the path and the remedy. Weaken the creation to
-        `exist_ok=True` and this test is what fails.
+    def test_an_unrecorded_existing_container_is_adopted(self) -> None:
+        """A backend directory already on the deterministic path — a run that crashed between
+        creating it and recording it, or a reused orchestration id — is adopted rather than
+        refused (issue #643: the operator's own tree). What it holds is left as it is, and the
+        lineage is created inside it exclusively.
         """
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
             squatter = self._homes_root() / "orch_d" / "codex"
             squatter.mkdir(parents=True)
-            os.chmod(squatter.parent, 0o700)
-            os.chmod(squatter, 0o700)
             (squatter / "transcript.jsonl").write_text("older run\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "not recorded in this orchestration"):
-                self._prepare_home(root, "orch_d")
-            # Refusing must not destroy the evidence it refused over.
+            iso = self._prepare_home(root, "orch_d")
+            self.assertEqual(Path(iso["home"]).parent, squatter)
             self.assertEqual((squatter / "transcript.jsonl").read_text(encoding="utf-8"),
                              "older run\n")
-            with self.assertRaisesRegex(ValueError, "prune_workflow_homes"):
-                self._prepare_home(root, "orch_d")
-
-    def test_a_symlinked_ancestor_is_refused_before_anything_is_written(self) -> None:
-        """An ancestor that already exists is CHECKED, not trusted.
-
-        The homes root and the per-orchestration directory are created by this code, but
-        on a second launch they are found rather than made. A symlink placed at either
-        level would otherwise decide where the home — and with it the credential bind
-        destination — actually lands.
-
-        The symlink TARGET is a second temporary directory rather than one inside the
-        checkout, and that is load-bearing since the in-repo refusal landed: a homes root
-        that RESOLVES inside the checkout is refused earlier, by a different rule with a
-        different message, and this test would then be observing that one instead of the
-        ancestor check it names. `test_a_homes_root_inside_the_checkout_is_refused` is
-        where the in-repo rule is pinned.
-        """
-        for level in ("root", "orchestration"):
-            with self.subTest(level=level):
-                with tempfile.TemporaryDirectory() as td, \
-                        tempfile.TemporaryDirectory() as outside:
-                    self.addCleanup(_discard_isolated_homes, "orch_d")
-                    _discard_isolated_homes("orch_d")
-                    root = self._claude_repo(td)
-                    elsewhere = Path(outside) / f"elsewhere_{level}"
-                    elsewhere.mkdir(mode=0o700)
-                    homes_root = self._homes_root()
-                    if level == "root":
-                        shutil.rmtree(homes_root, ignore_errors=True)
-                        target = homes_root
-                    else:
-                        homes_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        os.chmod(homes_root, 0o700)
-                        target = homes_root / "orch_d"
-                    os.symlink(elsewhere, target)
-                    try:
-                        with self.assertRaisesRegex(ValueError, "must be a real directory"):
-                            self._prepare_home(root, "orch_d")
-                        # Nothing was written through the symlink before the refusal.
-                        self.assertEqual(list(elsewhere.iterdir()), [])
-                    finally:
-                        # Undone HERE, not via addCleanup: cleanups run at the end of the
-                        # whole test, so the root-level symlink would still be in place
-                        # for the orchestration-level subtest.
-                        target.unlink()
-
-    def test_a_loosely_moded_ancestor_is_TIGHTENED_rather_than_refused(self) -> None:
-        """0700 holds at every level this code owns — by being ESTABLISHED, not demanded.
-
-        A homes root left at 0755 or 0777 is a directory another local user can read, and
-        at 0777 add to and rename within, which is the whole reason the mkdtemp
-        randomness could be dropped only once the tree became private. But a mode is
-        something this code can simply set, and REFUSING made two pieces of correct
-        operator behaviour fail every launch: `docs/RUNBOOK.md` offers
-        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
-        creating it 0755 under the default umask bricked the lever; and a mode drift on
-        `~/.spec2science/homes` — a backup restored without permissions — bricked every
-        orchestration. Both measured before the change.
-
-        What must still hold afterwards is the property, so that is what is asserted: the
-        launch succeeds AND every level this code owns comes out 0700.
-        """
-        for mode in (0o755, 0o777, 0o750):
-            with self.subTest(mode=oct(mode)):
-                self.addCleanup(_discard_isolated_homes, "orch_d")
-                _discard_isolated_homes("orch_d")
-                with tempfile.TemporaryDirectory() as td:
-                    root = self._claude_repo(td)
-                    homes_root = self._homes_root()
-                    homes_root.mkdir(parents=True, exist_ok=True)
-                    os.chmod(homes_root, mode)
-                    iso = self._prepare_home(root, "orch_d")
-                    self.assertEqual(homes_root.stat().st_mode & 0o777, 0o700)
-                    self.assertEqual((homes_root / "orch_d").stat().st_mode & 0o777, 0o700)
-                    self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
     def test_the_operator_secret_root_itself_is_never_re_moded(self) -> None:
-        """`~/.spec2science` is left exactly as the operator has it. Nothing observed that.
+        """`~/.spec2science` is left exactly as the operator has it.
 
-        `_require_secure_home_ancestor`'s docstring and `docs/RUNBOOK.md` both state it —
-        the root is shared with `operator_tokens/` and `start_claims/`, the operator-token
-        writer has created it best-effort since long before this branch, and RUNBOOK
-        RECOMMENDS `chmod 700` rather than doing it. Dropping the `require_private` gate
-        so every ancestor gets tightened left the whole suite green, which means the one
-        sentence a reader relies on had no witness at all.
+        `docs/RUNBOOK.md` states it — the root is shared with `start_claims/`, and RUNBOOK
+        RECOMMENDS `chmod 700` rather than doing it.
 
-        Asserted as the pair: the level this code owns comes out 0700, the level above it
+        Asserted as the pair: the level this code creates comes out 0700, the level above it
         is untouched at whatever it was.
         """
         with tempfile.TemporaryDirectory() as td:
@@ -25635,61 +25525,16 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual((secret_root / "homes").stat().st_mode & 0o777, 0o700)
             self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
-    def test_an_ancestor_owned_by_another_user_is_still_refused(self) -> None:
-        """Tightening the MODE does not mean touching a directory that is not ours.
-
-        The distinction the mode change rests on: a loose mode is something the caller
-        did not say, and this code can establish it; another uid is a DISAGREEMENT it
-        cannot resolve, and chmod would fail there anyway. `os.getuid` is patched rather
-        than a real second user created, because a test cannot make one.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            homes_root = self._homes_root()
-            homes_root.mkdir(parents=True, exist_ok=True)
-            with mock.patch("os.getuid", return_value=os.getuid() + 1):
-                with self.assertRaisesRegex(ValueError, "not owned by this user"):
-                    self._prepare_home(root, "orch_d")
-            self.assertFalse((homes_root / "orch_d").exists())
-
-    def test_an_ancestor_whose_mode_cannot_be_set_is_refused(self) -> None:
-        """The tightening is fail-closed when it does not take.
-
-        A filesystem that ignores `chmod` (FAT/exFAT, some network mounts) reports
-        success and changes nothing, and descending anyway would put the leaf's
-        transcripts somewhere other local users can read. The mode is therefore re-read
-        after the chmod rather than assumed.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            homes_root = self._homes_root()
-            homes_root.mkdir(parents=True, exist_ok=True)
-            os.chmod(homes_root, 0o755)
-            # `os.fchmod`, not `os.chmod`: the tightening goes through
-            # `_chmod_directory_no_follow`, which opens the directory and uses the
-            # descriptor so a substituted symlink cannot redirect it.
-            with mock.patch("os.fchmod"):  # a chmod that "succeeds" and does nothing
-                with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
-                    self._prepare_home(root, "orch_d")
-            os.chmod(homes_root, 0o700)
-
     def test_a_hostile_umask_neither_breaks_the_launch_nor_loosens_the_home(self) -> None:
-        """The chmod after each `mkdir`, and the re-check after it, in one witness.
+        """The chmod after each `mkdir`.
 
-        Both survived every mutation sweep on this branch, and a reviewer wrote them off
-        as redundant on the grounds that removal "fails closed at
-        `_require_secure_backend_home`". Failing closed is not the same as costing
-        nothing: MEASURED here, `os.mkdir(path, 0o700)` under a umask that contains owner
-        bits yields 0o400 (umask 0o300), 0o200 (0o500) or 0o000 (0o700), so without the
-        chmod the launch does not merely lose a defense — it DIES, on every launch, on a
-        host whose umask is unusual but legal. The chmod is what makes it work; the
-        re-check is what stops it from proceeding when the chmod does not take (a
-        filesystem that ignores it — FAT/exFAT, some network mounts — reports success and
-        changes nothing).
+        MEASURED here, `os.mkdir(path, 0o700)` under a umask that contains owner bits
+        yields 0o400 (umask 0o300), 0o200 (0o500) or 0o000 (0o700), so without the chmod
+        the launch DIES, on every launch, on a host whose umask is unusual but legal. The
+        chmod is what makes it work.
 
         Asserted as both halves of the same property: the launch succeeds AND the home
-        is 0700. Delete the chmod and the first fails; make the chmod a no-op and the
-        second is caught rather than shipped.
+        is 0700.
         """
         for umask_value in (0o300, 0o500, 0o700):
             with self.subTest(umask=oct(umask_value)):
@@ -25723,28 +25568,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                         self.assertEqual(
                             (Path(iso["config"]) / name).stat().st_mode & 0o777, 0o600,
                             msg=f"{name} under umask {umask_value:#o}")
-
-    def test_a_home_whose_mode_did_not_take_is_refused_rather_than_used(self) -> None:
-        """`_require_secure_backend_home` after the creation is the last word.
-
-        Everything it checks is established two lines above it, which is why it survives
-        mutation — until the chmod silently does not take, which is exactly when a
-        re-check is the only thing left. Driven by patching `os.chmod` to a no-op under a
-        umask that makes the raw `mkdir` mode wrong.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            homes_root = self._homes_root()
-            (homes_root / "orch_d").mkdir(parents=True, exist_ok=True)
-            os.chmod(homes_root, 0o700)
-            os.chmod(homes_root / "orch_d", 0o700)
-            previous = os.umask(0o300)
-            try:
-                with mock.patch("os.chmod"), mock.patch("os.fchmod"):
-                    with self.assertRaisesRegex(ValueError, "must have mode 0700"):
-                        self._prepare_home(root, "orch_d")
-            finally:
-                os.umask(previous)
 
     def test_the_owner_marker_names_the_checkout_and_tolerates_a_second_backend(self) -> None:
         """`<homes-root>/<oid>/owner.json` — a LOCATOR for the prune tool.
@@ -25780,77 +25603,17 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             # who created the orchestration directory, not who touched it last.
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), first)
 
-    def test_the_reuse_path_tightens_a_drifted_home(self) -> None:
-        """The REUSE path tightens rather than refuses, so a drifted mode does not brick an
-        orchestration.
+    def test_a_second_backend_and_a_moved_checkout_keep_the_marker_true(self) -> None:
+        """The owner marker across two backends of one orchestration and a moved checkout.
 
-        This row used to drive both preparers and was called `test_both_backends_…`: the
-        `tighten=True` was pinned on the claude side only, so reverting the codex call to a
-        refusal left the suite green. Z4 (issue #171) left one preparer, so what it drives is
-        that one — and the tightening itself is `_require_secure_backend_home`, which has
-        carried a single spelling for every backend all along.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            repo_root, auth_home = self._codex_repo(td)
-            with mock.patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
-                lineage = Path(self._prepare_home(repo_root, "orch_d")["home"])
-                container = lineage.parent
-                # Both levels drift; a warm preparation of the same lineage re-asserts
-                # both (the container through the reuse branch, the lineage through its
-                # own `tighten=True`), and a cold one for a new lineage the container.
-                os.chmod(container, 0o755)
-                os.chmod(lineage, 0o755)
-                self._prepare_home(repo_root, "orch_d", resume=True)
-                self.assertEqual(container.stat().st_mode & 0o777, 0o700)
-                self.assertEqual(lineage.stat().st_mode & 0o777, 0o700)
-                os.chmod(container, 0o755)
-                self._prepare_home(repo_root, "orch_d", "lineage-e")
-                self.assertEqual(container.stat().st_mode & 0o777, 0o700)
-
-    def test_a_reuse_tightening_that_does_not_take_is_refused(self) -> None:
-        """The re-read after the home's own tightening, which nothing observed.
-
-        Its twin one level up (the ancestor) is pinned; the home's was not, so skipping
-        the re-read entirely left the suite green — and skipping it means launching into
-        a home the chmod silently failed to make private, on a filesystem that reports
-        success and changes nothing. `os.fchmod` is patched because that is what
-        `_chmod_directory_no_follow` uses.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            root = self._claude_repo(td)
-            lineage = Path(self._prepare_home(root, "orch_d")["home"])
-            container = lineage.parent
-            for drifted, kwargs in ((container, {"lineage_id": "lineage-e"}),
-                                    (lineage, {"resume": True})):
-                with self.subTest(level=drifted.name):
-                    os.chmod(drifted, 0o755)
-                    with mock.patch("os.fchmod"), \
-                            self.assertRaisesRegex(ValueError,
-                                                   "still not mode 0700 after chmod"):
-                        # fchmod succeeds and changes nothing
-                        self._prepare_home(root, "orch_d", **kwargs)
-                    os.chmod(drifted, 0o700)
-
-    def test_a_rival_live_checkout_cannot_take_over_an_orchestration_directory(self) -> None:
-        """Two checkouts, one explicit orchestration id, and the second inherited the
-        first's `owner.json`.
-
-        The exclusive creation is PER BACKEND, so checkout B asking for `codex` while
-        checkout A already made `claude` sailed past it and then silently accepted A's
-        marker. The prune tool reads the marker to decide which checkout to ask about the
-        status, so it read A's — terminal — and deleted B's LIVE codex home. Reproduced
-        end to end before the check existed.
-
-        Three cases in one test, because the refusal is only correct if the two adjacent
-        legitimate ones still work:
-          * a RIVAL checkout whose metadata for the id is still present -> refused, and
-            NOTHING left behind (the check runs before the exclusive mkdir; validating
-            after it left the refused run's own directory blocking the real owner);
           * the SAME checkout's second backend -> accepted, marker untouched, so
             `created_at` keeps meaning when the directory was made;
           * a MOVED checkout, old path gone -> adopted AND the marker rewritten to the
             path that exists, because a locator that locates nothing makes the prune tool
             answer `unverifiable` forever for a run whose owner is identifiable.
+
+        Two checkouts running one orchestration id on one homes root is the operator's own
+        configuration and is not refused (issue #643).
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOME_OWNER_FILENAME, _create_workflow_backend_home)
@@ -25872,13 +25635,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             _create_workflow_backend_home(a, "orch_shared", "claude", "Claude")
             first = json.loads(marker.read_text(encoding="utf-8"))
             self.assertEqual(first["repo_root"], str(a.resolve()))
-
-            b = _checkout(root, "checkout_b", "running")
-            with self.assertRaisesRegex(ValueError, "belongs to a different checkout"):
-                _create_workflow_backend_home(b, "orch_shared", "codex", "Codex")
-            self.assertFalse((homes / "orch_shared" / "codex").exists(),
-                             "a refused launch left its own backend directory behind, "
-                             "which blocks the legitimate owner's next launch")
 
             second = _create_workflow_backend_home(a, "orch_shared", "codex", "Codex")
             self.assertEqual(second.name, "codex")
@@ -25995,40 +25751,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                              "a marker was written into a homes tree that is not the "
                              "one this launch resolves")
 
-    def test_a_rival_checkout_cannot_take_over_by_REUSING_an_existing_home(self) -> None:
-        """The marker check on the REUSE path, which no test observed.
-
-        `_require_owner_marker_agrees` guards two callers and only the creation one was
-        witnessed: deleting the reuse call left the whole suite green while a copied
-        checkout — same orchestration id, same metadata, different directory — was
-        allowed to adopt the home AND had the marker rewritten to name it. That is
-        precisely the precondition of the harm the creation-side check exists for: the
-        prune tool reads the marker to decide whose status to ask about, so it would then
-        ask the wrong checkout and delete a live run's only record.
-
-        A COPIED checkout rather than a moved one, because the moved case is the one the
-        refresh deliberately adopts; what must be refused is a second checkout whose
-        metadata for this orchestration is still there.
-        """
-        from tools.orchestration_runtime import WORKFLOW_HOME_OWNER_FILENAME
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            original = self._claude_repo(str(root / "original"))
-            (original / "workspace" / "orchestrations" / "orch_d"
-             / "orchestration_meta.json").write_text(
-                json.dumps({"orchestration_id": "orch_d", "status": "running"}),
-                encoding="utf-8")
-            self._prepare_home(original, "orch_d")
-            marker = self._homes_root() / "orch_d" / WORKFLOW_HOME_OWNER_FILENAME
-            before = json.loads(marker.read_text(encoding="utf-8"))
-
-            rival = root / "copied"
-            shutil.copytree(original, rival)
-            with self.assertRaisesRegex(ValueError, "belongs to a different checkout"):
-                self._prepare_home(rival, "orch_d")
-            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), before,
-                             "a rival checkout rewrote the marker by reusing the home")
-
     def test_a_module_run_outside_pytest_writes_nothing_into_the_home(self) -> None:
         """The module redirect, which the suite cannot observe from inside itself.
 
@@ -26110,29 +25832,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/homes"))
         self.assertNotIn("~", str(resolved))
 
-    def test_a_marker_naming_another_orchestration_refuses_the_launch(self) -> None:
-        """The other half of the marker check, and the cheaper one to get wrong.
-
-        A directory whose marker names a DIFFERENT orchestration id is not a stale owner
-        to adopt — it is the wrong directory entirely, and no "is that checkout still
-        there" question makes it right.
-        """
-        from tools.orchestration_runtime import (
-            WORKFLOW_HOME_OWNER_FILENAME, _create_workflow_backend_home)
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            oid_dir = self._homes_root() / "orch_d"
-            oid_dir.mkdir(parents=True)
-            os.chmod(oid_dir, 0o700)
-            (oid_dir / WORKFLOW_HOME_OWNER_FILENAME).write_text(
-                json.dumps({"schema": 1, "orchestration_id": "somebody_else",
-                            "repo_root": str(root)}), encoding="utf-8")
-            os.chmod(oid_dir / WORKFLOW_HOME_OWNER_FILENAME, 0o600)
-            repo = self._claude_repo(td)
-            with self.assertRaisesRegex(ValueError, "claimed by orchestration"):
-                _create_workflow_backend_home(repo, "orch_d", "codex", "Codex")
-            self.assertFalse((oid_dir / "codex").exists())
-
     def test_the_suites_own_homes_guard_raises_before_anything_is_created(self) -> None:
         """A witness for `tools/tests/conftest.py`'s guard, which had none.
 
@@ -26207,37 +25906,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(Path(td) / "abs")},
                     clear=False):
                 self.assertEqual(workflow_homes_root(), Path(td) / "abs")
-
-    def test_a_reuse_re_secures_the_ancestors_not_only_the_home(self) -> None:
-        """`docs/RUNBOOK.md` promises a LATER drift is tightened; only creation did that.
-
-        The ancestor check ran inside `_create_workflow_backend_home`, so a warm reuse
-        looked at the home and never above it. Measured before the fix: with
-        `<homes-root>` or `<homes-root>/<oid>` dropped to 0755, relaunching left them
-        there indefinitely — the transcripts stayed 0700, so what leaked was which
-        orchestrations exist and which backends ran, but the document's sentence was
-        false and the drift persisted until an unrelated new orchestration rebuilt the
-        path.
-
-        All four levels are asserted, because the container's own tightening already
-        had a witness and would have carried a two-level assertion on its own; the
-        lineage home (issue #245) is the fourth, tightened by the warm branch's own
-        `tighten=True`.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            repo = self._claude_repo(td)
-            homes = self._homes_root()
-            lineage = Path(self._prepare_home(repo, "orch_d")["home"])
-            container = lineage.parent
-            for target, label in ((homes, "homes root"),
-                                  (container.parent, "orchestration dir"),
-                                  (container, "the container"),
-                                  (lineage, "the lineage home")):
-                with self.subTest(level=label):
-                    os.chmod(target, 0o755)
-                    self._prepare_home(repo, "orch_d", resume=True)
-                    self.assertEqual(target.stat().st_mode & 0o777, 0o700,
-                                     f"{label} stayed loose across a warm reuse")
 
     def test_a_relative_homes_root_override_is_refused_at_creation(self) -> None:
         """Absolute or nothing, and `.absolute()` is NOT what makes it so.

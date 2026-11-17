@@ -847,8 +847,9 @@ attributed to `~/.spec2science` above it. Both went with the leaf hook layer.
 **`chmod 700 ~/.spec2science` is recommended** on a
 shared host. The workflow creates the directory best-effort and does not force its mode,
 because a root that predates this recommendation would otherwise fail every launch;
-everything it creates BELOW that level is 0700 and is re-checked for ownership and
-symlinks on each launch.
+everything it creates BELOW that level is created 0700. An existing directory is used as it
+is found: its mode, owner and type are not checked on a later launch
+([issue #643](https://github.com/seiya/spec2science/issues/643)).
 
 `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` relocates the homes tree and `SPEC2SCIENCE_START_CLAIM_ROOT` the
 claims tree. Both exist for tests and for an operator with a specific reason; neither is
@@ -938,12 +939,8 @@ what closed it was the sandbox mount namespace rather than this guard. That meas
 went with its subject in issue #176; the analogue for a relocated homes root is
 unmeasured.)
 
-The MODE is not a precondition: a root you create with a plain `mkdir` is tightened to
-0700 on first use rather than refused, as is a mode that later drifts (a backup restored
-without permissions) — and since the tightening also runs on a warm reuse, a drift is
-corrected by the next launch of the same orchestration rather than only by a new one.
-What is refused is a symlink, a non-directory, a directory owned by another user, and a
-filesystem on which the tightening does not take.
+The MODE is not a precondition: a root you create with a plain `mkdir` is used at the
+mode you gave it, and the directories the workflow creates under it are created 0700.
 
 ### Why the homes are kept, and how to remove one
 
@@ -1019,12 +1016,11 @@ An orchestration named explicitly on the command line and then refused — or at
 failed — makes the tool exit 2; a refusal during `--all` does not, because there the
 refusals are the report.
 
-**One failure mode worth recognising, and the two causes need different commands.** If a
-launch reports `isolated <backend> home already exists but is not recorded in this
-orchestration's metadata`, a previous run created the directory and died before recording
-it, or its metadata was lost. The home is never adopted — that would hand a new
-orchestration an earlier run's transcripts — so inspect it and then remove it. Which
-command works depends on which cause it was, and the difference is not cosmetic:
+**An orphaned home, and the two causes need different commands.** A backend directory that
+a previous run created and died before recording, or whose metadata was lost, is adopted by
+the next launch of the same orchestration id (each lineage home inside it is still created
+exclusively by its cold launch). To remove it instead, which command works depends on which
+cause it was, and the difference is not cosmetic:
 
 - **the metadata is gone** (the checkout was removed, or the orchestration directory
   was): the entry is `refused:unverifiable_owner`, and `--allow-unverifiable --delete`
