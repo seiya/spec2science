@@ -6593,8 +6593,8 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_leaf_timeout_is_terminal_not_retried(self) -> None:
         """A leaf the conductor killed at the cap is terminalized IN BAND — the ordinary
-        finalize_child chain closes the attempt (the `record-timeout` CLI stays what it always
-        was: the operator's procedure for a conductor that DIED). And it is not retried: a
+        finalize_child chain closes the attempt (a conductor that DIED is recovered by
+        `--resume`). And it is not retried: a
         re-launch would stake another full cap of wall-clock on a leaf that already wedged."""
         # Exactly what `_timed_out_result` hands back: partial output, the conductor's marker,
         # and — the load-bearing part — `timed_out=True`.

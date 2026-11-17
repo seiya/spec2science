@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover — non-POSIX
 
 # Codex round 25 F1 → round 27 F1: PyYAML is required by the dependency-
 # readiness paths (`_read_deps_yaml`, `_load_spec_catalog_from_bytes`) but
-# NOT by recovery commands (`set-status`, `record-timeout`,
+# NOT by recovery commands (`set-status`,
 # `workflow-launch-check` for leaf nodes, etc.). Module-level import would
 # brick every CLI command when the package is missing — that expanded the
 # blast radius from a localized feature failure to a full control-plane
@@ -53,7 +53,7 @@ def _require_yaml() -> Any:
         raise RuntimeError(
             "tools.orchestration_runtime: PyYAML is required for parsing "
             "deps.yaml / spec_catalog.yaml. Install with `pip install -r requirements.txt`. "
-            "Recovery commands (set-status, record-timeout, etc.) that do "
+            "Recovery commands (set-status, etc.) that do "
             "not parse YAML remain usable without it."
         ) from exc
     return _yaml_mod
@@ -5228,10 +5228,8 @@ def _active_children_dir(repo_root: Path, orchestration_id: str) -> Path:
     """Backend-neutral per-arid active-child marker directory (Adv-16).
 
     Each launched child writes `active_children/<agent_run_id>.txt` here.
-    deactivate_child / record_agent_run terminal / record_timeout's success
-    path remove the marker. record_timeout REFUSES to proceed while the
-    marker exists — this gives Codex the same refusal that Claude gets from
-    active_child_agent_run_id.txt.
+    deactivate_child / record_agent_run terminal remove the marker.
+    `finalize_child` refuses an arid whose marker is gone.
     """
     return _orchestration_root(repo_root, orchestration_id) / "active_children"
 
@@ -5247,7 +5245,7 @@ def _clear_stale_active_child_markers(
 
     When the host process exits while a child launch is in flight (interrupted /
     hung child, or a token-limit kill), no live host is left to finalize the child, and
-    nobody has yet run deactivate-child / record-timeout by hand, so `active_child_agent_run_id.txt` and the
+    nobody has yet run deactivate-child by hand, so `active_child_agent_run_id.txt` and the
     `active_children/<arid>.txt` markers persist. The Claude-backend sequential
     check in `record_launch` then rejects the next launch, permanently wedging the
     documented recovery (`launch_incomplete_active_child` / `llm_launch_interrupted`).
@@ -8838,7 +8836,7 @@ def _cleanup_agent_tmp_root(
     - Validates that the target lives under repo_root/workspace/tmp/ before
       unlinking — refuses to traverse symlinks pointing elsewhere.
     - rmtree errors are not raised (cleanup must not fail the calling
-      record-agent-run / record-timeout flow), but they are surfaced via
+      record-agent-run flow), but they are surfaced via
       the False return so callers can suppress the cleanup_committed marker.
     """
     if not isinstance(agent_run_id, str) or not agent_run_id.strip():
@@ -10952,7 +10950,7 @@ def resume_orchestration(
         # (idempotent — the helper no-ops once the row is already `running`).
         _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
         # A host that died mid-launch leaves the active_child window open (no live
-        # host finalized the child, and nobody ran deactivate-child / record-timeout). The terminal status proves
+        # host finalized the child, and nobody ran deactivate-child). The terminal status proves
         # no child is actually running, so clear the stale markers here — otherwise
         # the resumed agent's first record-launch hits the Claude-backend sequential
         # check and is rejected, permanently wedging recovery for
@@ -15844,10 +15842,9 @@ def record_launch(
             child_agent_run_id,
         )
     # Adv-16: backend-neutral per-arid active-child marker. Codex lack
-    # the single-active-child constraint that the Claude marker enforces, but
-    # record-timeout still refuses to finalize a run whose child is marked
-    # active. Marker is created here for ALL backends and removed by
-    # deactivate-child / record-agent-run terminal.
+    # the single-active-child constraint that the Claude marker enforces;
+    # `finalize-child` requires this marker on every backend. Marker is created
+    # here for ALL backends and removed by deactivate-child / record-agent-run terminal.
     marker_dir = _active_children_dir(repo_root, orchestration_id)
     marker_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(
@@ -15958,259 +15955,6 @@ def _read_existing_run_ids(path: Path, *, caller_holds_lock: bool = False) -> se
     return run_ids
 
 
-def record_timeout(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    reason: str,
-    force_reason: str | None = None,
-) -> dict[str, Any]:
-    """Canonical recovery for substep/step API stream idle timeout.
-
-    Normal path: the caller observes the child leaf returning, calls
-    deactivate-child → record-timeout. The Adv-14/16 guards refuse to finalize
-    while liveness markers are still present.
-
-    Adv-26 escape hatch: pass `force_reason` (or --force-reason on CLI) to
-    bypass the active-children/legacy-marker guards. deactivate-child verifies
-    nothing about the leaf (it only clears markers), so the one state it
-    refuses is a Claude sequential pointer naming a DIFFERENT child — and
-    there the per-arid marker stays, so record-timeout refuses too. The bypass
-    clears both markers on the operator's responsibility; force_reason is
-    appended to the audit trail (timeout_reason) and recorded as
-    `forced=True` in the run payload.
-    """
-    if not isinstance(agent_run_id, str) or not agent_run_id.strip():
-        raise ValueError("record-timeout requires non-empty --agent-run-id")
-    arid = agent_run_id.strip()
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("record-timeout requires non-empty --reason")
-    reason_text = reason.strip()
-    forced = isinstance(force_reason, str) and force_reason.strip() != ""
-    forced_reason_text = force_reason.strip() if forced else None
-
-    orch_root = _orchestration_root(repo_root, orchestration_id)
-    req_path = orch_root / "launches" / f"{arid}.request.json"
-    resp_path = orch_root / "launches" / f"{arid}.response.json"
-    if not req_path.exists():
-        raise ValueError(
-            f"record-timeout cannot find launch request: {req_path}. "
-            "Ensure record-launch was executed before the child leaf launch."
-        )
-    if not resp_path.exists():
-        raise ValueError(
-            f"record-timeout cannot find launch response: {resp_path}."
-        )
-    try:
-        req_doc = _read_json(req_path)
-        resp_doc = _read_json(resp_path)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"record-timeout failed to read launch artifacts: {exc}") from exc
-    if not isinstance(req_doc, dict) or not isinstance(resp_doc, dict):
-        raise ValueError("record-timeout: launch request/response must be JSON objects")
-
-    role_token = ""
-    role_obj = req_doc.get("agent_role")
-    if isinstance(role_obj, str) and role_obj.strip():
-        role_token = role_obj.strip().lower()
-    if role_token not in {"step", "substep"}:
-        raise ValueError(
-            f"record-timeout only supports step/substep agents; agent_role={role_token!r}. "
-            "Use set-status for orchestration timeouts."
-        )
-
-    backend_obj = resp_doc.get("backend")
-    backend_token = backend_obj.strip().lower() if isinstance(backend_obj, str) and backend_obj.strip() else ""
-    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"record-timeout: launch response backend={backend_token!r} not in "
-            f"{sorted(SUPPORTED_PROVIDER_TOKENS)}"
-        )
-
-    # Adv-14: liveness/ownership guards before fabricating a terminal record
-    # and wiping workspace/tmp/<arid>/. record-timeout cannot directly verify
-    # that the child process is dead, but it MUST refuse obvious mis-fires
-    # (duplicate timer, delayed callback, mis-routed retry) that would
-    # finalize a still-active run and destroy its scratch.
-    runs_path = orch_root / "agent_runs.jsonl"
-    # H3: this early read is unlocked. record_agent_run runs another check
-    # under fcntl.LOCK_EX (Adv-24) so a race between this read and a
-    # concurrent in-progress record_agent_run for the same arid is caught
-    # there. Distinguish the two cases in the error message:
-    #   - "already finalized": the entry was durably present when we read.
-    #   - "raced concurrent finalizer": the locked re-check at
-    #     record_agent_run will surface this with its own message; this
-    #     unlocked path errs on the side of failing fast with the safer
-    #     wording that matches the most common cause.
-    if runs_path.is_file() and not _agent_runs_writer_active(runs_path):
-        # No writer holds the lock at this instant → the existing entry, if
-        # any, is durable rather than mid-write. Safe to claim "already
-        # finalized" without ambiguity.
-        existing_run_ids = _read_existing_run_ids(runs_path)
-        if arid in existing_run_ids:
-            raise ValueError(
-                f"record-timeout: agent_run_id={arid!r} already has a durable "
-                f"entry in agent_runs.jsonl (the run was already finalized). "
-                f"Refusing to add a duplicate terminal record — investigate "
-                f"why the timeout path was re-entered."
-            )
-    elif runs_path.is_file():
-        # Writer active: defer to record_agent_run's locked re-check, which
-        # will raise "race detected on locked re-check" with precise wording
-        # if and only if the racing writer commits an entry for this arid.
-        pass
-    # session_run_index status check — the index is updated to the terminal
-    # status on successful record-agent-run, so any non-running status here
-    # signals that another finalization path already won the race.
-    index_doc = _read_session_run_index_consistent(repo_root, orchestration_id)
-    for _entry in index_doc.get("entries", []) or []:
-        if isinstance(_entry, dict) and _entry.get("agent_run_id") == arid:
-            _sess_status = _entry.get("status")
-            if isinstance(_sess_status, str) and _sess_status.strip().lower() != "running":
-                raise ValueError(
-                    f"record-timeout: session_run_index for {arid!r} shows "
-                    f"status={_sess_status!r}, not 'running'. Refusing — the "
-                    f"run has already terminated or was never launched."
-                )
-            break
-    # Adv-16: backend-neutral active-child marker check. record-launch creates
-    # `active_children/<arid>.txt` for ALL backends; deactivate-child removes
-    # it once the caller has seen the child leaf exit. While the marker exists
-    # nobody has said the child finished — firing record-timeout in that state
-    # would race the still-pending leaf return on Codex as well as Claude.
-    # Adv-26: forced=True skips this guard for genuinely-wedged children
-    # (operator override; force_reason is recorded in the audit trail).
-    # Adv-37: forced bypass NO LONGER unlinks markers up-front. If
-    # record_agent_run() below fails (validation, locked re-check, etc.)
-    # the run must remain protected by its existing markers so a retry is
-    # possible. Marker removal happens AFTER record_agent_run succeeds.
-    marker_path = _active_child_marker_path(repo_root, orchestration_id, arid)
-    forced_marker_to_remove: list[Path] = []
-    if marker_path.is_file():
-        if not forced:
-            raise ValueError(
-                f"record-timeout: active-child marker {marker_path.name} still exists "
-                f"under workspace/orchestrations/{orchestration_id}/active_children/. "
-                f"Once the child leaf process has exited, run "
-                f"`deactivate-child --child-run-id {arid}`, then retry record-timeout. "
-                f"If deactivate-child refuses because the Claude sequential pointer "
-                f"names a different child, use --force-reason '<text>' to bypass."
-            )
-        # Forced bypass: queue the marker for removal AFTER record_agent_run
-        # commits the durable terminal entry.
-        forced_marker_to_remove.append(marker_path)
-    # Defensive: also check the legacy Claude single-file marker for backward
-    # compat (record-launch keeps writing it for sequential-child enforcement).
-    if backend_token == "claude":
-        active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
-        if active_path.is_file():
-            try:
-                active_arid = active_path.read_text(encoding="utf-8").strip()
-            except OSError:
-                active_arid = ""
-            if active_arid == arid:
-                if not forced:
-                    raise ValueError(
-                        f"record-timeout: active_child_agent_run_id.txt still points "
-                        f"to {arid!r}. Once the child leaf process has exited, run "
-                        f"`deactivate-child --child-run-id {arid}`, then retry "
-                        f"record-timeout."
-                    )
-                forced_marker_to_remove.append(active_path)
-    started_at = resp_doc.get("started_at")
-    if not isinstance(started_at, str) or not started_at.strip():
-        started_at = _utc_now_iso()
-
-    # Resolve identity fields from authoritative sources rather than synthesising them.
-    # Order of precedence (Adv-3):
-    #   1. session_run_index.json — written by record-launch with the actual launched
-    #      identity (agent_session_id may differ from agent_run_id for Codex backend
-    #      and may be reused across runs under repair_strategy=reuse).
-    #   2. launches/<arid>.response.json (record-launch persists the response payload).
-    #   3. launches/<arid>.request.json for fields the response does not carry
-    #      (parent_agent_run_id, context_id when explicitly set in request).
-    #   4. arid itself, as last-resort default for Claude Code where
-    #      agent_session_id == context_id == agent_run_id by contract.
-    # index_doc was loaded above for the Adv-14 liveness guards.
-    index_entry: dict[str, Any] = {}
-    for entry in index_doc.get("entries", []) or []:
-        if isinstance(entry, dict) and entry.get("agent_run_id") == arid:
-            index_entry = entry
-            break
-
-    def _first_str(*candidates: Any) -> str | None:
-        for c in candidates:
-            if isinstance(c, str) and c.strip():
-                return c.strip()
-        return None
-
-    session_value = _first_str(
-        index_entry.get("agent_session_id"),
-        resp_doc.get("agent_session_id"),
-        arid,
-    ) or arid
-    context_value = _first_str(
-        index_entry.get("context_id"),
-        req_doc.get("context_id"),
-        resp_doc.get("context_id"),
-        # Claude Code contract: context_id == agent_run_id.
-        arid if backend_token == "claude" else None,
-        session_value,
-    ) or session_value
-    parent_value = _first_str(req_doc.get("parent_agent_run_id"))
-
-    composed_reason = reason_text
-    if forced:
-        composed_reason = f"{reason_text} | FORCED: {forced_reason_text}"
-    payload: dict[str, Any] = {
-        "agent_run_id": arid,
-        "agent_role": role_token,
-        "agent_backend": backend_token,
-        "status": "timeout",
-        "started_at": started_at,
-        "finished_at": _utc_now_iso(),
-        "agent_session_id": session_value,
-        "context_id": context_value,
-        "context_isolated": True,
-        "timeout_reason": composed_reason,
-        # _extract_agent_summary_text scans for keys ending in "summary"/"reason";
-        # surface the timeout reason as result_summary so agent.summary.txt
-        # validation passes without requiring callers to duplicate the field.
-        "result_summary": f"timeout: {composed_reason}",
-    }
-    if forced:
-        payload["forced"] = True
-        payload["forced_reason"] = forced_reason_text
-    if parent_value is not None:
-        payload["parent_agent_run_id"] = parent_value
-    for field in ("node_key", "step", "substep", "agent_model"):
-        val = req_doc.get(field)
-        if isinstance(val, str) and val.strip():
-            payload[field] = val.strip()
-    # `derivation_key` (issue #250) is NOT copied here: `record_agent_run` below backfills it
-    # from the same launch request for every step / substep row, so a timeout row carries it
-    # through the one reader rather than two (a hunk sweep measured the copy here inert).
-
-    result = record_agent_run(
-        repo_root=repo_root,
-        orchestration_id=orchestration_id,
-        payload=payload,
-    )
-    # Adv-37: only after the durable terminal record committed do we touch
-    # forced-bypass markers. The row written above is always a step / substep
-    # row with status `timeout`, so record_agent_run's terminal branch has
-    # already unlinked both markers and this pass changes nothing today: it
-    # duplicates that branch, and no test pins it. (Until issue #447 (D2) it
-    # also removed the child-return ack, which only it did.)
-    for stale_marker in forced_marker_to_remove:
-        try:
-            stale_marker.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return result
-
-
 def record_agent_run(
     repo_root: Path,
     orchestration_id: str,
@@ -16294,8 +16038,7 @@ def record_agent_run(
         # for step/substep launches), so we backfill them here rather than rely
         # on the caller's record-agent-run payload — which the canonical field
         # tables historically omitted, leaving every step/substep entry without
-        # them and failing pre_judge. Mirrors the record_timeout path which
-        # already pulls both from the launch request. Read defensively: if the
+        # them and failing pre_judge. Read defensively: if the
         # request is missing/unreadable, leave the fields absent so the terminal
         # validator and pre_judge still fail loud rather than silently passing.
         try:
@@ -16627,8 +16370,8 @@ def deactivate_child_agent(
     # Adv-18: validate-first, unlink-second. The previous implementation
     # unlinked the per-arid backend-neutral marker (Adv-16) BEFORE checking
     # the legacy Claude marker, which meant a stray/misrouted deactivate-child
-    # call could clear a still-running child's record-timeout liveness guard
-    # and enable a downstream record-timeout to wipe live tmp scratch.
+    # call could clear a still-running child's per-arid marker, after which
+    # that child's own finalize-child is refused.
     # Both marker checks now run before any state mutation.
     active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
     legacy_marker_present = active_path.is_file()
@@ -16764,8 +16507,8 @@ def finalize_child(
             f"finalize-child: no active_children/{arid}.txt marker — the run was never "
             f"launched, is already finalized, or was released by a manual "
             f"`deactivate-child`. Nothing was written. A run released by hand and not yet "
-            f"finalized is terminalized with `record-timeout --agent-run-id {arid} "
-            f"--reason <text>`."
+            f"finalized is closed by terminalizing the orchestration with `set-status` and "
+            f"recovering it with `--resume`, which prunes the unfinalized child."
         )
     deactivation = deactivate_child_agent(
         repo_root,
@@ -18235,37 +17978,6 @@ def main(argv: list[str] | None = None) -> int:
     record_reply_parser.add_argument("--reply-text")
     record_reply_parser.add_argument("--reply-from-stdin", action="store_true")
 
-    record_timeout_parser = subparsers.add_parser(
-        "record-timeout",
-        description=(
-            "Canonical recovery for substep/step API stream idle timeout. "
-            "Reads launches/<agent_run_id>.request.json and .response.json to "
-            "build a record-agent-run payload with status='timeout' and "
-            "delegates to record-agent-run (which validates partial writes and "
-            "cleans up workspace/tmp/<agent_run_id>/)."
-        ),
-    )
-    record_timeout_parser.add_argument("--repo-root", required=True)
-    record_timeout_parser.add_argument("--orchestration-id", required=True)
-    record_timeout_parser.add_argument("--agent-run-id", required=True)
-    record_timeout_parser.add_argument(
-        "--reason",
-        required=True,
-        help="Human-readable timeout reason (e.g., 'API stream idle timeout after 600s').",
-    )
-    record_timeout_parser.add_argument(
-        "--force-reason", default=None,
-        help=(
-            "Adv-26 escape hatch: bypass the active-children/legacy marker guards "
-            "when deactivate-child refuses (the Claude sequential pointer names a "
-            "different child). "
-            "Required text becomes part of timeout_reason and the run payload "
-            "carries forced=True + forced_reason for audit. Use sparingly — the "
-            "normal deactivate-child → record-timeout flow is preferred whenever "
-            "possible."
-        ),
-    )
-
     status_parser = subparsers.add_parser("set-status")
     status_parser.add_argument("--repo-root", required=True)
     status_parser.add_argument("--orchestration-id", required=True)
@@ -18711,18 +18423,6 @@ def main(argv: list[str] | None = None) -> int:
                 reply_text=reply_text,
             )
         except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-    elif args.command == "record-timeout":
-        try:
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id=args.orchestration_id,
-                agent_run_id=args.agent_run_id,
-                reason=args.reason,
-                force_reason=args.force_reason,
-            )
-        except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
     elif args.command == "check-phase-certified":

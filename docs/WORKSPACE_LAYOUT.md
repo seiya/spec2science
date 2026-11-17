@@ -79,7 +79,7 @@ workspace/
 │       │   └── <agent_run_id>.txt                 (marker at record-launch; deleted by deactivate-child)
 │       │
 │       ├── cleanup_committed/
-│       │   └── <agent_run_id>.json                (the cleanup-completion marker of record-timeout etc.)
+│       │   └── <agent_run_id>.json                (the cleanup-completion marker of a terminal row)
 │       │
 │       └── violations/                          (created only when one occurs — nothing
 │           └── <id>.json                            pre-creates it since issue #171 PR-2.

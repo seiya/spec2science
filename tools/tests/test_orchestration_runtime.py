@@ -64,7 +64,6 @@ from tools.orchestration_runtime import (
     prepare_launch_request_payload,
     record_agent_run,
     record_launch,
-    record_timeout,
     _read_json_or_none,
     reserve_phase_root,
     _evaluate_reply_budget,
@@ -15188,7 +15187,7 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
     """One child at a time on the claude backend, refused at the SECOND launch.
 
     `active_children/<arid>.txt` guards the finalize side of the lifecycle —
-    `record-timeout` refuses while a child is live — and `active_child_agent_run_id.txt`
+    `finalize-child` refuses an arid without it — and `active_child_agent_run_id.txt`
     is the launch side. It is the only
     thing that stops a conductor bug from running two claude leaves against one
     orchestration, where both write the same phase root and the second's record silently
@@ -15284,7 +15283,7 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
 
 
 class RecordTimeoutTests(unittest.TestCase):
-    """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
+    """A substep launch and its finalization: record-launch, finalize-child, the terminal row."""
 
     def _setup_substep_launch(self, repo_root: Path,
                               response_extra: dict | None = None,
@@ -15636,9 +15635,26 @@ class RecordTimeoutTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
         self.assertNotIn("ANTHROPIC_BASE_URL", "\x00".join(profile["rendered_command"]))
 
+    def _record_timeout_row(self, repo_root: Path, arid: str) -> dict:
+        """Helper: terminalize the fixture's substep launch with a `timeout` row through
+        `record_agent_run`, the one terminal writer (the in-band per-leaf cap and an old
+        record both carry the status)."""
+        return record_agent_run(
+            repo_root=repo_root,
+            orchestration_id="orch_to_001",
+            payload={
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "agent_backend": "claude",
+                "status": "timeout",
+                "agent_session_id": arid,
+                "context_id": arid,
+                "result_summary": "timeout: leaf cut off",
+            },
+        )
+
     def _deactivate(self, repo_root: Path, arid: str) -> None:
-        """Helper: clear the active marker so the Adv-14 guard accepts the
-        subsequent record-timeout call."""
+        """Helper: clear the active marker, as `finalize-child`'s first step does."""
         from tools.orchestration_runtime import deactivate_child_agent
         deactivate_child_agent(
             repo_root=repo_root,
@@ -15892,7 +15908,7 @@ class RecordTimeoutTests(unittest.TestCase):
                     )
             self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).exists())
 
-    def test_record_timeout_appends_terminal_entry_and_cleans_tmp(self) -> None:
+    def test_a_timeout_row_carries_its_derivation_and_cleans_tmp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root, deterministic=True)
@@ -15903,15 +15919,9 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertTrue(tmp_dir.exists())
 
             self._deactivate(repo_root, arid)
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="API stream idle timeout after 600s",
-            )
+            result = self._record_timeout_row(repo_root, arid)
             self.assertEqual(result.get("status"), "timeout")
             self.assertEqual(result.get("agent_run_id"), arid)
-            self.assertEqual(result.get("timeout_reason"), "API stream idle timeout after 600s")
 
             runs_path = repo_root / "workspace" / "orchestrations" / "orch_to_001" / "agent_runs.jsonl"
             entries = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -15920,85 +15930,10 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertEqual(timeout_entry["status"], "timeout")
             self.assertIn("finished_at", timeout_entry)
             self.assertEqual(timeout_entry["agent_role"], "substep")
-            self.assertEqual(timeout_entry["timeout_reason"], "API stream idle timeout after 600s")
             # A timed-out attempt is still an attempt of its derivation (issue #250).
             self.assertEqual(timeout_entry["derivation_key"], "sha256:" + "e" * 64)
             self.assertFalse(tmp_dir.exists(),
-                             "workspace/tmp/<arid>/ must be cleaned by record-timeout")  # noqa: E501
-
-    def test_record_timeout_rejects_missing_launch_request(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_to_002")
-            _mark_dependencies_ready(repo_root, "orch_to_002")
-            with self.assertRaisesRegex(ValueError, "cannot find launch request"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_002",
-                    agent_run_id="never-launched",
-                    reason="x",
-                )
-
-    def test_record_timeout_requires_non_empty_reason(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            with self.assertRaisesRegex(ValueError, "non-empty --reason"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_003",
-                    agent_run_id="any",
-                    reason="   ",
-                )
-
-    def test_record_timeout_preserves_launched_context_id_and_parent(self) -> None:
-        """Adv-3: context_id (per-run isolation context, distinct from
-        agent_session_id under Codex's repair_strategy=reuse) and
-        parent_agent_run_id must be carried over from the launch artifacts /
-        session_run_index, not synthesised from agent_session_id."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-
-            # Simulate a backend where context_id was explicitly recorded at
-            # launch time as a separate identifier from agent_session_id
-            # (e.g. Codex distinguishes session and per-run isolated context).
-            # agent_session_id stays bound to the launch response (record-agent-run
-            # rejects mismatch) but context_id can diverge.
-            from tools.orchestration_runtime import (
-                _read_session_run_index,
-                _session_run_index_path,
-            )
-            doc = _read_session_run_index(repo_root, "orch_to_001")
-            for entry in doc.get("entries", []):
-                if entry.get("agent_run_id") == arid:
-                    entry["context_id"] = "explicit-isolated-context-id-XYZ"
-            (_session_run_index_path(repo_root, "orch_to_001")).write_text(
-                json.dumps(doc), encoding="utf-8"
-            )
-
-            self._deactivate(repo_root, arid)
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="stream idle timeout",
-            )
-            self.assertEqual(result.get("context_id"), "explicit-isolated-context-id-XYZ",
-                             "context_id from session_run_index must be preserved, NOT replaced by agent_session_id")
-            self.assertEqual(result.get("parent_agent_run_id"), "orch_run_to_001",
-                             "parent_agent_run_id from launch request must be preserved")
-
-            # Verify the persisted entry on disk also has the right identity.
-            runs_path = repo_root / "workspace" / "orchestrations" / "orch_to_001" / "agent_runs.jsonl"
-            entries = [
-                json.loads(line)
-                for line in runs_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            timeout_entry = next((e for e in entries if e.get("agent_run_id") == arid), None)
-            self.assertIsNotNone(timeout_entry)
-            self.assertEqual(timeout_entry["context_id"], "explicit-isolated-context-id-XYZ")
-            self.assertEqual(timeout_entry["parent_agent_run_id"], "orch_run_to_001")
+                             "workspace/tmp/<arid>/ must be cleaned by the terminal row")
 
     def test_record_agent_run_terminal_routes_through_ownership_guard(self) -> None:
         """Adv-7 end-to-end: the cleanup at end of record_agent_run must go
@@ -16016,8 +15951,7 @@ class RecordTimeoutTests(unittest.TestCase):
             arid = self._setup_substep_launch(repo_root)
             workspace_tmp = repo_root / "workspace" / "tmp"
             workspace_tmp.mkdir(parents=True, exist_ok=True)
-            # external dir lives OUTSIDE repo_root so that record-timeout's
-            # workspace-diff check does not flag it as an unauthorized write.
+            # external dir lives OUTSIDE repo_root, where the cleanup must not reach.
             external = Path(ext_tmp) / "external_real_dir"
             external.mkdir()
             sentinel = external / "must_not_delete.txt"
@@ -16032,12 +15966,7 @@ class RecordTimeoutTests(unittest.TestCase):
             os.symlink(external, link_path)
 
             self._deactivate(repo_root, arid)
-            record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="stream idle timeout",
-            )
+            self._record_timeout_row(repo_root, arid)
 
             self.assertTrue(
                 sentinel.exists(),
@@ -16158,7 +16087,7 @@ class RecordTimeoutTests(unittest.TestCase):
     def test_read_existing_run_ids_tolerates_partial_tail_when_writer_active(self) -> None:
         """Adv-21+Adv-40: while a writer holds the runs lock, a truncated
         trailing line is treated as in-flight append and tolerated.
-        Exercised directly on `_read_existing_run_ids` (not record_timeout)
+        Exercised directly on `_read_existing_run_ids` (not a terminal writer)
         because record_agent_run's own LOCK_EX would deadlock against a
         same-process holder."""
         import os as _os
@@ -16396,12 +16325,7 @@ class RecordTimeoutTests(unittest.TestCase):
                 tmp_present_at_lock_release.append(tmp_dir.exists())
 
             with _mp.object(_rt, "_validate_terminal_run_payload", _spying_validate):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="NEW-M2 deferred-cleanup test",
-                )
+                self._record_timeout_row(repo_root, arid)
             self.assertTrue(tmp_present_at_lock_release,
                             "spy must have observed validation completion")
             self.assertTrue(
@@ -16477,12 +16401,7 @@ class RecordTimeoutTests(unittest.TestCase):
             tmp_dir.mkdir(parents=True, exist_ok=True)
             (tmp_dir / "scratch.py").write_text("print('s')\n", encoding="utf-8")
 
-            record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="two-phase invariant test",
-            )
+            self._record_timeout_row(repo_root, arid)
 
             runs_path = (
                 repo_root / "workspace" / "orchestrations" / "orch_to_001"
@@ -16748,120 +16667,10 @@ class RecordTimeoutTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "malformed non-trailing JSON"):
                 _read_existing_run_ids(runs)
 
-    def test_record_timeout_refuses_when_arid_already_in_agent_runs_jsonl(self) -> None:
-        """Adv-14: a duplicate timeout call (e.g. retry / delayed callback)
-        must not fabricate a second terminal record nor wipe scratch — refuse
-        if any entry for arid already exists in agent_runs.jsonl."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Pre-seed the runs ledger with an arbitrary entry for the same arid
-            # (the actual content doesn't matter — duplicate detection is on id).
-            runs_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "agent_runs.jsonl"
-            )
-            with runs_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"agent_run_id": arid, "status": "running"}) + "\n")
-
-            with self.assertRaisesRegex(ValueError, "already has a durable entry"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="duplicate timer",
-                )
-
-    def test_record_timeout_refuses_when_session_run_index_status_not_running(self) -> None:
-        """Adv-14: refuse if session_run_index already shows the run as
-        terminal — another finalization path won the race."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _read_session_run_index, _session_run_index_path,
-            )
-            doc = _read_session_run_index(repo_root, "orch_to_001")
-            for entry in doc.get("entries", []):
-                if entry.get("agent_run_id") == arid:
-                    entry["status"] = "pass"  # simulate prior terminal record
-            (_session_run_index_path(repo_root, "orch_to_001")).write_text(
-                json.dumps(doc), encoding="utf-8"
-            )
-
-            with self.assertRaisesRegex(ValueError, "session_run_index.*not 'running'"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="late callback",
-                )
-
-    def test_record_timeout_refuses_when_active_child_marker_still_set(self) -> None:
-        """Adv-14 + Adv-16: refuse if backend-neutral per-arid marker
-        active_children/<arid>.txt still exists. The orchestration must call
-        deactivate-child first (signaling that the child leaf actually
-        returned) before record-timeout can run, regardless of backend."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _active_child_agent_run_id_path,
-                _active_child_marker_path,
-            )
-            # The fixture (claude backend) produces both markers.
-            self.assertTrue(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-
-            with self.assertRaisesRegex(ValueError, "active-child marker .* still exists"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="early fire",
-                )
-
-    def test_record_timeout_refuses_for_codex_backend_when_marker_present(self) -> None:
-        """Adv-16: backend-neutral guard. Codex never had the legacy
-        single-file Claude marker, so the per-arid marker is the only
-        liveness handshake protecting them from delayed/duplicated timeouts.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Force the launch response into a non-Claude backend so the
-            # legacy single-file Claude marker is bypassed and only the new
-            # per-arid marker remains as protection.
-            resp_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "launches" / f"{arid}.response.json"
-            )
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["backend"] = "codex"
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
-            from tools.orchestration_runtime import (
-                _active_child_agent_run_id_path,
-                _active_child_marker_path,
-            )
-            # Remove Claude legacy marker so the per-arid marker is the sole
-            # remaining defense (mirrors how a real Codex run would look —
-            # record_launch never writes it for non-Claude backends).
-            _active_child_agent_run_id_path(repo_root, "orch_to_001").unlink(missing_ok=True)
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file(),
-                            "per-arid marker must exist for the protection to be testable")
-
-            with self.assertRaisesRegex(ValueError, "active-child marker .* still exists"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="codex delayed callback",
-                )
-
     def test_deactivate_child_validates_before_unlinking_per_arid_marker(self) -> None:
         """Adv-18: a stray deactivate-child for a non-active arid must NOT
-        clear the per-arid marker. Otherwise it could unlock record-timeout
-        for a still-running child by removing its liveness guard."""
+        clear the per-arid marker. Otherwise the still-running child's own
+        finalize-child would be refused for want of it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             real_arid = self._setup_substep_launch(repo_root)
@@ -16883,14 +16692,6 @@ class RecordTimeoutTests(unittest.TestCase):
                 real_marker.is_file(),
                 "stray deactivate-child must NOT remove the live child's marker",
             )
-            # And record-timeout for the live arid is still blocked.
-            with self.assertRaisesRegex(ValueError, "active-child marker .* still exists"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=real_arid,
-                    reason="should be blocked",
-                )
 
     def test_record_launch_writes_no_parent_return_token(self) -> None:
         """Issue #447 D2 retired the child-return handshake: record-launch no longer
@@ -16921,112 +16722,16 @@ class RecordTimeoutTests(unittest.TestCase):
             )
             self.assertTrue(r2.get("already_inactive"))
 
-    def test_forced_record_timeout_preserves_markers_when_record_agent_run_fails(self) -> None:
-        """Adv-37: in the forced bypass path, markers must NOT be cleared
-        until record_agent_run successfully commits the terminal entry.
-        Otherwise a record_agent_run failure leaves the run without markers
-        AND without terminal record — wedged forever, no retry possible."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _active_child_marker_path, _active_child_agent_run_id_path,
-            )
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-            self.assertTrue(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
-
-            # Inject a duplicate entry into agent_runs.jsonl so record_agent_run's
-            # locked re-check raises ValueError mid-flow.
-            runs_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "agent_runs.jsonl"
-            )
-            with runs_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"agent_run_id": arid, "status": "running"}) + "\n")
-
-            with self.assertRaises(ValueError):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="forced timeout that will fail mid-commit",
-                    force_reason="operator override",
-                )
-            # Markers MUST survive the failed call so retry/recovery is possible.
-            self.assertTrue(
-                _active_child_marker_path(repo_root, "orch_to_001", arid).is_file(),
-                "active_children marker must NOT be unlinked before terminal commit",
-            )
-            self.assertTrue(
-                _active_child_agent_run_id_path(repo_root, "orch_to_001").is_file(),
-                "legacy Claude marker must NOT be unlinked before terminal commit",
-            )
-
-    def test_record_timeout_force_reason_bypasses_marker_for_wedged_child(self) -> None:
-        """Adv-26: with the active-child markers still present (deactivate-child not
-        run, or refused because the Claude pointer names another child), the
-        --force-reason escape clears the markers and finalizes the run, with
-        forced=True + forced_reason recorded in the payload for audit."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Intentionally do NOT call _deactivate: the markers are still present, which
-            # is the state --force-reason exists to bypass.
-            from tools.orchestration_runtime import (
-                _active_child_marker_path, _active_child_agent_run_id_path,
-            )
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-
-            # Without --force-reason: blocked.
-            with self.assertRaisesRegex(ValueError, "active-child marker"):
-                record_timeout(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    reason="wedged child",
-                )
-
-            # With --force-reason: succeeds.
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="API stream wedged after 30 minutes",
-                force_reason="operator override: child PID killed externally",
-            )
-            self.assertEqual(result.get("status"), "timeout")
-            self.assertTrue(result.get("forced"))
-            self.assertIn("operator override", result.get("forced_reason", ""))
-            self.assertIn("FORCED", result.get("timeout_reason", ""))
-            # Markers cleared by the forced bypass.
-            self.assertFalse(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-            self.assertFalse(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
-
-    def test_record_timeout_succeeds_after_deactivate_child(self) -> None:
-        """Adv-14 happy path: deactivate-child clears the marker; then
-        record-timeout proceeds and finalizes the run."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import deactivate_child_agent
-            deactivate_child_agent(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                child_run_id=arid,
-            )
-            result = record_timeout(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                reason="legitimate timeout after deactivate",
-            )
-            self.assertEqual(result.get("status"), "timeout")
-
     def test_finalize_after_a_manual_deactivate_names_the_remedy_that_converges(self) -> None:
-        """An operator who ran `deactivate-child` by hand (RUNBOOK substep-timeout recovery,
-        step 1) and then reaches for `finalize-child` is refused: the marker is gone. The
-        refusal must name that state and the remedy, and the remedy must work as printed."""
-        from tools.orchestration_runtime import deactivate_child_agent, finalize_child
+        """An operator who ran `deactivate-child` by hand and then reaches for
+        `finalize-child` is refused: the marker is gone. The refusal must name that state and
+        the remedy, and the remedy must work as printed: `set-status` terminalizes the
+        orchestration and `--resume` (`resume_orchestration`) prunes the unfinalized child's
+        graph edge, so the resumed run is not held by it."""
+        from tools.orchestration_runtime import (
+            deactivate_child_agent, finalize_child, resume_orchestration,
+            update_orchestration_status,
+        )
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
@@ -17039,31 +16744,29 @@ class RecordTimeoutTests(unittest.TestCase):
                     agent_run_payload={"agent_run_id": arid, "status": "fail"})
             message = str(cm.exception)
             self.assertIn("deactivate-child", message)
-            self.assertIn(f"record-timeout --agent-run-id {arid}", message)
-            result = record_timeout(repo_root=repo_root, orchestration_id="orch_to_001",
-                                    agent_run_id=arid, reason="released by hand")
-            self.assertEqual(result.get("status"), "timeout")
+            self.assertIn("set-status", message)
+            self.assertIn("--resume", message)
+            update_orchestration_status(
+                repo_root=repo_root, orchestration_id="orch_to_001", status="fail")
+            graph_path = (repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                          / "agent_graph.json")
 
-    def test_record_timeout_cli_dispatch(self) -> None:
-        """The `record-timeout` subcommand is wired into main()."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            self._deactivate(repo_root, arid)
-            argv = [
-                "record-timeout",
-                "--repo-root", str(repo_root),
-                "--orchestration-id", "orch_to_001",
-                "--agent-run-id", arid,
-                "--reason", "stream idle timeout",
-            ]
-            stdout = io.StringIO()
-            with redirect_stdout(stdout):
-                rc = main(argv)
-            self.assertEqual(rc, 0)
-            payload = json.loads(stdout.getvalue())
-            self.assertEqual(payload.get("status"), "timeout")
-            self.assertEqual(payload.get("agent_run_id"), arid)
+            def _children() -> list:
+                graph = json.loads(graph_path.read_text(encoding="utf-8"))
+                return [e.get("child_agent_run_id") for e in graph.get("edges", [])]
+
+            state_path = graph_path.parent / "phase_state.json"
+
+            def _child_running() -> bool:
+                doc = json.loads(state_path.read_text(encoding="utf-8"))
+                return any(v == "child_running" for steps in doc.get("node_states", {}).values()
+                           for v in steps.values())
+
+            self.assertIn(arid, _children())
+            self.assertTrue(_child_running())
+            resume_orchestration(repo_root, "orch_to_001")
+            self.assertNotIn(arid, _children())
+            self.assertFalse(_child_running())
 
 
 class LaunchSettingSurfacePersistenceTests(unittest.TestCase):

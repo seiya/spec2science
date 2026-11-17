@@ -711,7 +711,7 @@ def _scan_workspace_for_forbidden_scripts(workspace_root: Path) -> list[str]:
     """Reject *.py under workspace/ EXCEPT inside per-agent tmp dirs of LIVE runs.
 
     workspace/tmp/<agent_run_id>/ is a sanctioned scratch root while the agent
-    is still in flight. record-agent-run / record-timeout removes the directory
+    is still in flight. record-agent-run removes the directory
     at terminal status, so any *.py that survives a terminal entry indicates a
     cleanup bug and MUST be surfaced (otherwise leaked executable content
     accumulates undetected).

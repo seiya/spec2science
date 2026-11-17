@@ -171,8 +171,8 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
             )
 
     def test_flags_python_script_when_orchestration_terminated_but_child_not_recorded(self) -> None:
-        """Adv-4: orchestration crashed (or user aborted) before reaching
-        record-timeout. orchestration_meta.json shows fail_closed/fail/timeout
+        """Adv-4: orchestration crashed (or user aborted) before finalizing
+        the child. orchestration_meta.json shows fail_closed/fail/timeout
         but the launched child has no terminal entry. The exemption must NOT
         apply — leaked scratch must be surfaced."""
         for orch_terminal in ("fail", "fail_closed", "timeout", "cancel", "blocked", "pass"):
@@ -959,8 +959,8 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
             orch_dir = repo_root / "workspace" / "orchestrations" / "orch_partial"
             (orch_dir / "active_children").mkdir(parents=True, exist_ok=True)
             # Only arid_alive has its marker present; arid_leaked's was
-            # cleared (e.g., by deactivate-child) but record-agent-run /
-            # record-timeout never ran to clean its tmp dir.
+            # cleared (e.g., by deactivate-child) but record-agent-run
+            # never ran to clean its tmp dir.
             (orch_dir / "active_children" / f"{arid_alive}.txt").write_text(
                 arid_alive, encoding="utf-8",
             )
