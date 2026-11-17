@@ -579,104 +579,41 @@ def _clear_active_child(repo: Path) -> None:
 
 
 class PreflightTests(unittest.TestCase):
-    # The option lines of every flag a claude workshop argv carries, spelled as CLI 2.1.309's
-    # `--help` spells them (a long alias after the flag, a wrapped description line below).
-    _HELP = ("Usage: claude\n  --allowedTools, --allowed-tools <tools...>  x\n"
-             "  --disable-slash-commands  x\n"
-             "  --mcp-config <configs...>  x\n"
-             "  --output-format <format>  x\n"
-             "  --permission-mode <mode>  x\n  --permission-prompts <target>  x\n"
-             "  --restricted  x\n"
-             "                                        --strict-mcp-config to skip MCP servers\n"
-             "  --strict-mcp-config  x\n"
-             "  --system-prompt <prompt>  x\n  --tools <tools...>  x\n")
-
-    def _runner(self, help_text: str, rc: int = 0):
-        import subprocess
-
-        def run(argv, **kw):
-            return subprocess.CompletedProcess(argv, rc, help_text, "")
-        return run
-
-    def test_the_check_requires_every_option_as_an_option_line(self) -> None:
-        self.assertIs(ort._claude_workshop_flag_set_check("claude", self._runner(self._HELP))
-                      ["pass"], True)
-        for option in ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS:
-            with self.subTest(dropped=option):
-                text = "\n".join(line for line in self._HELP.splitlines()
-                                 if not line.strip().startswith(option))
-                # A mention inside another option's description does not answer for it.
-                text += f"\n  --other  see {option}\n"
-                check = ort._claude_workshop_flag_set_check("claude", self._runner(text))
-                self.assertIs(check["pass"], False)
-                self.assertIn(option, check["detail"])
-        self.assertIs(ort._claude_workshop_flag_set_check(
-            "claude", self._runner(self._HELP, rc=1))["pass"], False)
-
-    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
-        """A `--help` that cannot run at all is a failed capability row, named, not an
-        exception out of the preflight."""
-        def gone(argv, **kw):
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
-        check = ort._claude_workshop_flag_set_check("/nonexistent/claude", gone)
-        self.assertIs(check["pass"], False)
-        self.assertIn("FileNotFoundError", check["detail"])
-
-    def test_every_cli_surface_an_entry_launches_through_takes_the_check(self) -> None:
-        """A CLI surface takes its workshop row when some workshop entry launches through it —
-        since issue #534 PR-J4-b every entry is one, so every CLI surface an entry names takes
-        it. `defaults` is one since issue #534 PR-J4-a (the diagnostician, a reading workshop
-        leaf), so a claude `defaults` takes the check with no substep entry of its own (review
-        finding 1 of the PR-J4 plan: the probe read `cfg.entries` alone, so a `defaults` on a
-        surface no substep shares launched an argv nothing had certified); a claude surface
-        only substep entries use — beside a codex `defaults` — takes it too (before PR-J4-b
-        such entries could be pure, and their surface took none)."""
+    def test_every_cli_surface_an_entry_launches_through_is_stamped_workshop(self) -> None:
+        """Every CLI surface an entry launches through is recorded with the `workshop` stamp —
+        since issue #534 PR-J4-b every entry is a workshop entry. `defaults` is one since issue
+        #534 PR-J4-a (the diagnostician, a reading workshop leaf), so a claude `defaults` is
+        stamped with no substep entry of its own; a claude surface only substep entries use —
+        beside a codex `defaults` — is stamped too. The TTL re-probe keeps the stamp. The
+        workshop option-set row these surfaces also took went in issue #643."""
         def probe(**kw):
             return {"probe_command": kw.get("agent_command") or "claude", "checks": [],
                     "status": "pass"}
 
         cases = {
-            "claude defaults": ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n",
-                                True),
+            "claude defaults": "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n",
             "claude defaults and a workshop entry": (
-                ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n"
-                 "phases: {generate: {substeps: {generate: {"
-                 "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"), True),
+                "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n"
+                "phases: {generate: {substeps: {generate: {"
+                "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"),
             "claude substep entries beside a codex defaults": (
-                ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
-                 "phases: {generate: {substeps: {generate: {provider: claude_cli}}}}\n"),
-                True),
+                "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
+                "phases: {generate: {substeps: {generate: {provider: claude_cli}}}}\n"),
         }
         with tempfile.TemporaryDirectory() as tmp:
-            for label, (body, workshop) in cases.items():
+            for label, body in cases.items():
                 path = Path(tmp) / f"llm_{len(label)}.yaml"
                 path.write_text(workshop_yaml(body), encoding="utf-8")
                 with self.subTest(case=label), \
                         mock.patch.object(ort, "probe_execution_platform", probe), \
                         mock.patch.object(ort, "_preflight_allows_agent_launch",
-                                          lambda p: True), \
-                        mock.patch.object(ort, "_codex_workshop_flag_set_check",
-                                          lambda cmd, runner: {
-                                              "name": "codex_workshop_flag_set_available",
-                                              "pass": True, "detail": ""}):
-                    providers = ort.probe_all_providers(
-                        config=lc.load_llm_config(path),
-                        runner=self._runner("no options here"))
+                                          lambda p: True):
+                    providers = ort.probe_all_providers(config=lc.load_llm_config(path))
                     row = providers["claude"]
-                    names = [c["name"] for c in row["checks"]]
-                    self.assertEqual("claude_workshop_flag_set_available" in names, workshop)
-                    self.assertEqual(row["launchable"], not workshop)
-                    self.assertEqual(row["surfaces"][0].get("workshop"),
-                                     True if workshop else None)
-                    if workshop:
-                        # The TTL re-probe reconstructs the requirement from the surface.
-                        with mock.patch.object(ort, "_claude_workshop_flag_set_check",
-                                               lambda cmd, runner: {
-                                                   "name": "claude_workshop_flag_set_available",
-                                                   "pass": False, "detail": ""}):
-                            again = ort._reprobe_recorded_providers(providers, None)
-                        self.assertIs(again["claude"]["launchable"], False)
-                        self.assertTrue(again["claude"]["surfaces"][0]["workshop"])
+                    self.assertIs(row["launchable"], True)
+                    self.assertIs(row["surfaces"][0].get("workshop"), True)
+                    again = ort._reprobe_recorded_providers(providers, None)
+                    self.assertTrue(again["claude"]["surfaces"][0]["workshop"])
 
 
 class _WorkshopConfig:

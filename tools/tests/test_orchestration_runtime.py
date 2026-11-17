@@ -608,12 +608,6 @@ _CLAUDE_EMPTY_PROMPT_REFUSAL = (
     "Error: Input must be provided either through stdin or as a prompt argument "
     "when using --print"
 )
-# A subset of the real `claude --help` (CLI 2.1.294): the usage line and the `--restricted`
-# option line, which `claude_restricted_flag_available` reads (issue #453).
-_CLAUDE_HELP_TEXT = (
-    "Usage: claude [options] [command] [prompt]\n"
-    "  --restricted                          Restricted mode: removes the built-in\n"
-)
 
 
 # Subsets of the real `codex exec --help` / `codex exec resume --help`: every flag the
@@ -642,7 +636,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         checks: list[dict[str, object]] = [
             {"name": "codex_version_available", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
@@ -1155,8 +1148,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 # The zero-token stdin-support probe: the CLI's own refusal names its
                 # input channels. See `_probe_claude_backend`.
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             raise AssertionError(args)
 
         result = probe_execution_platform(backend="claude", runner=runner)
@@ -1169,101 +1160,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertEqual(
             {c["name"] for c in result["checks"]} & set(CLAUDE_REQUIRED_LAUNCH_CHECKS),
             set(CLAUDE_REQUIRED_LAUNCH_CHECKS))
-
-    def test_a_claude_help_without_restricted_fails_preflight(self) -> None:
-        """Issue #453: the workshop leaf's argv (`workshop_leaf_flags`; `pure_leaf_flags`, which
-        this row first named, went with the pure leaf in issue #534 PR-J4-b) carries
-        `--restricted`, and a CLI that does not know it refuses the whole argv, so every leaf
-        would die at launch. Preflight refuses
-        it first — as an OPTION LINE: a help naming only `--restricted-mode` (a longer
-        option sharing the prefix), `--restrictedness`, or `--restricted` inside another
-        option's description does not answer for it; a short alias before it does."""
-        from tools.orchestration_runtime import _probe_claude_backend
-
-        def runner_for(help_text: str):  # type: ignore[no-untyped-def]
-            def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-                if args[1:] == ["--version"]:
-                    return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-                if args[1:] == ["-p"]:
-                    return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-                if args[1:] == ["--help"]:
-                    return _FakeCompletedProcess(0, stdout=help_text)
-                raise AssertionError(args)
-            return runner
-
-        for help_text in (_CLAUDE_HELP_TEXT, "Usage: claude\n  -R, --restricted  x\n"):
-            checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
-            self.assertTrue({c["name"]: c for c in checks}
-                            ["claude_restricted_flag_available"]["pass"], help_text)
-        # A failure's first detail line says what is missing (the operator sees that line).
-        checks, _ = _probe_claude_backend("claude", "claude",
-                                          runner_for("Usage: claude [options]\n"))
-        first_line = ({c["name"]: c for c in checks}
-                      ["claude_restricted_flag_available"]["detail"].splitlines()[0])
-        self.assertIn("names no `--restricted` option", first_line)
-        # It names the leaf model there is (round-0 mutation survivor of issue #534 PR-J4-b:
-        # the line said "cannot run a pure leaf" until the pure leaf went).
-        self.assertIn("this CLI cannot run a leaf (issue #453)", first_line)
-        for label, help_text in (
-            ("absent", "Usage: claude [options] [command] [prompt]\n"),
-            ("longer option", "Usage: claude [options]\n  --restricted-mode  x\n"),
-            ("longer word", "Usage: claude [options]\n  --restrictedness  x\n"),
-            # Named inside another option's description, not as an option of its own.
-            ("description mention",
-             "Usage: claude [options]\n  --safe-mode  like --restricted, but broader\n"),
-            # The real help wraps descriptions at column 40, and a wrapped line can BEGIN
-            # with an option name (17 lines do on 2.1.294).
-            ("wrapped description line",
-             "Usage: claude [options]\n  --safe-mode                           Like\n"
-             + " " * 40 + "--restricted, but broader\n"),
-        ):
-            with self.subTest(case=label):
-                checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
-                self.assertFalse({c["name"]: c for c in checks}
-                                 ["claude_restricted_flag_available"]["pass"])
-                result = probe_execution_platform(backend="claude",
-                                                  runner=runner_for(help_text))
-                self.assertEqual(result["status"], "fail")
-                self.assertFalse(result["can_launch_step_agents"])
-
-    def test_probe_execution_platform_claude_fails_when_help_also_unavailable(self) -> None:
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[0] == "claude" and args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["-p"]:
-                # The zero-token stdin-support probe: the CLI's own refusal names its
-                # input channels. See `_probe_claude_backend`.
-                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(1, stderr="error\n")
-            raise AssertionError(args)
-
-        result = probe_execution_platform(backend="claude", runner=runner)
-        self.assertEqual(result["backend"], "claude")
-        self.assertEqual(result["status"], "fail")
-        self.assertFalse(result["can_launch_substep_agents"])
-
-    def test_probe_execution_platform_claude_fails_when_help_exit0_but_empty_stdout(self) -> None:
-        """P2-C: `claude --help` exiting 0 with EMPTY stdout must NOT pass the help probe —
-        guards against a substitute/broken binary named `claude` that returns success with
-        no help text."""
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[0] == "claude" and args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["-p"]:
-                # The zero-token stdin-support probe: the CLI's own refusal names its
-                # input channels. See `_probe_claude_backend`.
-                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout="   \n")  # exit 0, no real output
-            raise AssertionError(args)
-
-        result = probe_execution_platform(backend="claude", runner=runner)
-        self.assertEqual(result["backend"], "claude")
-        self.assertEqual(result["status"], "fail")
-        self.assertFalse(result["can_launch_substep_agents"])
-        by_name = {c["name"]: c["pass"] for c in result["checks"]}
-        self.assertIs(by_name["claude_help_probe_available"], False)
 
     # `test_the_permission_remedy_points_at_the_layer_the_gate_reads` stood here until Z4
     # (issue #171). It pinned that `_CLAUDE_MCP_PERMISSION_REMEDIATION` — the only guidance an
@@ -1324,13 +1220,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertIn("codex_home_writable", by_name)
         self.assertFalse(by_name["codex_home_writable"]["pass"])
 
-    def test_probe_execution_platform_rejects_backend_command_mismatch(self) -> None:
-        with self.assertRaisesRegex(ValueError, "agent_command/backend mismatch"):
-            probe_execution_platform(
-                backend="claude",
-                agent_command="codex",
-            )
-
     def test_probe_execution_platform_uses_backend_default_when_no_override(self) -> None:
         seen = {"command": ""}
 
@@ -1381,9 +1270,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
-        # The pure leaf's isolation-flag row went with it (issue #534 PR-J4-b); the exec
-        # options a leaf needs are the workshop row's (`_codex_workshop_flag_set_check`, run by
-        # `probe_all_providers` on every codex surface).
+        # The pure leaf's isolation-flag row went with it (issue #534 PR-J4-b); the cold exec
+        # options a leaf needs are not probed (issue #643).
         self.assertNotIn("codex_exec_pure_isolation_flags", by_name)
 
     def test_probe_codex_backend_rejects_an_exec_help_without_skip_git_repo_check(self) -> None:
@@ -1394,12 +1282,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         `CODEX_EXEC_RESUME_REQUIRED_FLAGS`. Control: the full fixtures pass it.
 
         The COLD half — `exec --help` without the flag — was the pure isolation-flags row,
-        which went with the pure leaf (issue #534 PR-J4-b); the cold argv's options are the
-        workshop row's, and its dropped-option refusal is pinned in
-        `test_workshop_codex.py::CodexPreflightTests::
-        test_the_row_requires_each_option_the_mode_and_the_url_route`. What this probe still
-        owns on the cold help is that an exec help without the flag does not fail the
-        RESUME row (the two helps are read apart)."""
+        which went with the pure leaf (issue #534 PR-J4-b); the cold argv's options are not
+        probed (issue #643). What this probe still owns on the cold help is that an exec help
+        without the flag does not fail the RESUME row (the two helps are read apart)."""
         from tools.orchestration_runtime import _probe_codex_backend
 
         def _runner(exec_help: str, resume_help: str):  # type: ignore[no-untyped-def]
@@ -1610,13 +1495,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
     def test_claude_required_set_equals_the_emitted_checks(self) -> None:
         """The claude twin of the row above (issue #447, D1): `CLAUDE_REQUIRED_LAUNCH_CHECKS`
-        is what the claude probe emits, so the `--help` liveness check that the deleted
-        `multi_agent_enabled` used to carry is gated by its own name."""
+        is what the claude probe emits."""
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if cmd[-1] == "--help":
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             if cmd[-1] == "-p":
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             raise AssertionError(cmd)
@@ -1686,8 +1568,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if cmd[-1] == "--help":
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             if cmd[-1] == "-p":
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             raise AssertionError(cmd)
@@ -8481,8 +8361,6 @@ class ClaudeGlobalConfigEnvCheckTests(unittest.TestCase):
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[1:] == ["-p"]:
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             raise AssertionError(args)
 
         with tempfile.TemporaryDirectory() as home:
@@ -10968,7 +10846,7 @@ class PreflightOneReasonListTests(unittest.TestCase):
                  "backend must be one of ['claude', 'codex']"),
                 (f"{tag} checks absent", {k: v for k, v in base.items() if k != "checks"},
                  "checks must be a list of capability probe results"),
-                (f"{tag} checks dict", {**base, "checks": {"claude_version_available": True}},
+                (f"{tag} checks dict", {**base, "checks": {"claude_prompt_stdin": True}},
                  "checks must be a list of capability probe results"),
                 (f"{tag} unlaunchable provider",
                  {**base, "providers": {"openai_compatible": {"launchable": False}}},
@@ -10986,14 +10864,6 @@ class PreflightOneReasonListTests(unittest.TestCase):
         out += [
             ("backend unknown", {**claude, "backend": "gemini"},
              "backend must be one of ['claude', 'codex']"),
-            # The deleted `multi_agent_enabled` carried the claude `--help` liveness; a
-            # document asserting it no longer substitutes for the named check.
-            ("claude help probe absent, multi_agent_enabled true",
-             self._with_check(
-                 self._with_check(claude, "claude_help_probe_available", None, drop=True),
-                 "multi_agent_enabled", True),
-             "claude launchable preflight is missing required capabilities: "
-             "claude_help_probe_available"),
         ]
         for tag, base, required in (("codex", codex, CODEX_REQUIRED_LAUNCH_CHECKS),
                                     ("claude", claude, CLAUDE_REQUIRED_LAUNCH_CHECKS)):
@@ -11028,13 +10898,13 @@ class PreflightOneReasonListTests(unittest.TestCase):
             ("codex required check 1", self._with_check(codex, "codex_home_writable", 1),
              "codex launchable preflight is missing required capabilities: codex_home_writable"),
             # Duplicate rows: the LAST row for a name decides (`_codex_check_pass_values`).
-            ("claude help probe rows True then None",
+            ("claude stdin probe rows True then None",
              {**claude, "checks": [*claude["checks"],  # type: ignore[misc]
-                                   {"name": "claude_help_probe_available", "pass": None}]},
+                                   {"name": "claude_prompt_stdin", "pass": None}]},
              "claude launchable preflight is missing required capabilities: "
-             "claude_help_probe_available"),
-            ("claude help probe rows None then True",
-             {**claude, "checks": [{"name": "claude_help_probe_available", "pass": None},
+             "claude_prompt_stdin"),
+            ("claude stdin probe rows None then True",
+             {**claude, "checks": [{"name": "claude_prompt_stdin", "pass": None},
                                    *claude["checks"]]},  # type: ignore[misc]
              None),
         ]
@@ -11157,7 +11027,6 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "sandbox_netns_python", "pass": True},
             {"name": "sandbox_netns_route", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
@@ -22955,20 +22824,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         path.write_text(_workshop_yaml(text), encoding="utf-8")
         return path
 
-    def _stub_workshop_row(self) -> None:
-        """Stub the CLI's workshop `--help` row (`_workshop_flag_set_check`), which
-        `probe_all_providers` and `_reprobe_recorded_providers` run on EVERY CLI surface since
-        issue #534 PR-J4-b: it runs the real CLI (CI has neither `claude` nor `codex`, and
-        these rows name wrapper commands that do not exist), and it is not what these rows
-        are about. Passing, so a row's launchability assertion is decided by the probe it
-        drives and not by this row failing."""
-        patcher = patch.object(ort, "_workshop_flag_set_check",
-                               lambda token, *a, **k: {
-                                   "name": f"{token}_workshop_flag_set_available",
-                                   "pass": True, "detail": "stubbed"})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     _MIXED = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
               "phases:\n  generate:\n    substeps:\n      generate:\n"
               "        provider: openai_compatible\n"
@@ -23172,14 +23027,9 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), self._MIXED)
-            # `defaults` is a reading workshop surface (issue #534 PR-J4-a), so the claude row
-            # also takes the CLI's workshop `--help` probe; CI has no `claude` on PATH.
             with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
-                              return_value=_launchable_preflight_dict(backend="claude")), \
-                 patch.object(ort, "_workshop_flag_set_check",
-                              lambda *a, **k: {"name": "claude_workshop_flag_set_available",
-                                               "pass": True, "detail": "stubbed"}):
+                              return_value=_launchable_preflight_dict(backend="claude")):
                 out = ort.probe_all_providers(llm_config_path=cfg,
                                               opener=lambda *a, **k: object())
         self.assertEqual(set(out), {"claude", "openai_compatible"})
@@ -23203,7 +23053,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertIn("changed between the caller loading it", str(ctx.exception))
 
     def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
@@ -23224,7 +23073,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Hashing the path and then re-reading it to probe approves one version and certifies
         another. Under two wrapper commands on one backend token that is a launch the
         `providers` map never saw, so the two must share one snapshot."""
-        self._stub_workshop_row()
         import tools.llm_config as _lc
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
@@ -23298,7 +23146,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         The override is a no-op in VALUE today (nothing in `run_workflow` overrides the file
         since the run-wide flag trio was removed), so this test supplies one directly — that is
         what keeps the transport from being certified only by a case where it cannot matter."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n")
             seen: list = []
@@ -23319,7 +23166,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         and refreshing it leaves a mixed configuration's other providers treated as fresh
         indefinitely — and `record-launch` then creates durable child state for a provider that
         has since become unavailable."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             payload = _launchable_preflight_dict(backend="claude")
@@ -23352,7 +23198,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Two entries can share a backend token with different commands; the initial probe
         AND-s them. The row is what the TTL re-probe reconstructs from, so recording only the
         first command would silently stop checking the second after the first expiry."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapA\n"
@@ -23372,7 +23217,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(seen, ["wrapA", "wrapB"])
 
     def test_a_row_predating_surfaces_degrades_to_the_one_it_names(self) -> None:
-        self._stub_workshop_row()
         seen: list = []
 
         def _probe(**kw):
@@ -23385,24 +23229,15 @@ class MultiProviderPreflightTests(unittest.TestCase):
                             "checks": [], "launchable": True}}, None)
         self.assertEqual(seen, ["wrapA"])
 
-    def test_a_cli_row_without_the_workshop_stamp_is_reprobed_for_the_workshop_row(
-            self) -> None:
-        """Every CLI surface takes its CLI's workshop row on re-probe, stamped or not (issue
-        #534 PR-J4-b): a recorded `claude_cli` surface WITHOUT the `workshop` stamp — the shape a
-        pre-J4-b pure-only preflight wrote — is re-probed for the flag set, its failure makes the
-        token unlaunchable, and the refreshed surface carries the stamp. No producer at HEAD
-        writes an unstamped CLI surface (`probe_all_providers` stamps every one), so this pins
-        the re-probe's own rule rather than a reachable input (round-0 mutation survivor)."""
-        calls: list = []
-
-        def _flag_row(token, probe_command, runner):  # type: ignore[no-untyped-def]
-            calls.append((token, probe_command))
-            return {"name": f"{token}_workshop_flag_set_available", "pass": False,
-                    "detail": "stubbed: no workshop flag set"}
-
+    def test_a_cli_row_without_the_workshop_stamp_is_restamped_on_reprobe(self) -> None:
+        """A recorded `claude_cli` surface WITHOUT the `workshop` stamp — the shape a pre-J4-b
+        pure-only preflight wrote — comes back from the re-probe carrying the stamp (issue
+        #534 PR-J4-b). No producer at HEAD writes an unstamped CLI surface
+        (`probe_all_providers` stamps every one), so this pins the re-probe's own rule rather
+        than a reachable input. The workshop option-set row it was also re-probed for went in
+        issue #643."""
         with patch.object(ort, "probe_execution_platform",
-                          return_value=_launchable_preflight_dict(backend="claude")), \
-                patch.object(ort, "_workshop_flag_set_check", side_effect=_flag_row):
+                          return_value=_launchable_preflight_dict(backend="claude")):
             fresh = ort._reprobe_recorded_providers(
                 {"claude": {"provider_type": "claude_cli", "probe_command": "wrapA",
                             "checks": [], "launchable": True,
@@ -23410,10 +23245,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                                           "probe_command": "wrapA", "base_url": "",
                                           "api_key_env": ""}]}}, None)
         row = fresh["claude"]
-        self.assertEqual(len(calls), 1, calls)
-        self.assertIn("claude_workshop_flag_set_available",
-                      [c.get("name") for c in row["checks"]])
-        self.assertFalse(row["launchable"])
+        self.assertTrue(row["launchable"])
         self.assertEqual([s.get("workshop") for s in row["surfaces"]], [True])
 
     def test_a_refreshed_probe_persists_the_rows_it_refreshed(self) -> None:
@@ -23430,12 +23262,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             path = repo_root / "workspace/orchestrations/orch_001/preflight.json"
             probed = _launchable_preflight_dict(backend="claude")
             probed["probe_command"] = "oldwrapper"
-            # The re-probe runs every recorded CLI surface's workshop `--help` row too (issue
-            # #534 PR-J4-b), which would run `oldwrapper`; that row is not this one's subject.
-            with patch.object(ort, "probe_execution_platform", return_value=probed), \
-                    patch.object(ort, "_workshop_flag_set_check",
-                                 lambda *a, **k: {"name": "claude_workshop_flag_set_available",
-                                                  "pass": True, "detail": "stubbed"}):
+            with patch.object(ort, "probe_execution_platform", return_value=probed):
                 ort._run_live_probe_and_update(
                     repo_root, "orch_001",
                     json.loads(path.read_text(encoding="utf-8")))
@@ -23447,7 +23274,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     def test_two_entries_under_one_token_are_anded(self) -> None:
         """Same backend behind two commands: the token is launchable only if BOTH are."""
-        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: claude\n"
@@ -25541,12 +25367,7 @@ class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
             return {"backend": kwargs.get("backend"), "checks": [], "probe_command": "",
                     "status": "fail"}
 
-        # Every CLI surface also takes its CLI's workshop `--help` row (issue #534 PR-J4-b),
-        # which runs the real CLI; CI has none, and that row is not this class's subject.
-        with mock.patch.object(ort, "probe_execution_platform", spy), \
-                mock.patch.object(ort, "_workshop_flag_set_check",
-                                  lambda *a, **k: {"name": "claude_workshop_flag_set_available",
-                                                   "pass": True, "detail": "stubbed"}):
+        with mock.patch.object(ort, "probe_execution_platform", spy):
             call()
         return seen
 

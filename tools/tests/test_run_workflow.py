@@ -385,21 +385,20 @@ class RunWorkflowTests(unittest.TestCase):
             "status": "fail", "can_launch_step_agents": False,
             "can_launch_substep_agents": False,
             "checks": [
-                {"name": "claude_version_available", "pass": True, "detail": "2.1.294"},
+                {"name": "sandbox_bwrap_available", "pass": True, "detail": "bwrap 0.11"},
                 {"name": "claude_global_config_env_absent", "pass": False,
                  "detail": "remove the `env` key (ANTHROPIC_MODEL) from /h/.claude.json\n"
                            "the CLI's global config is not a settings file"},
-                {"name": "claude_restricted_flag_available", "pass": False,
-                 "detail": "`--help` names no `--restricted` option\nUsage: claude\n  --other"},
+                {"name": "claude_prompt_stdin", "pass": False,
+                 "detail": "error: unknown option '-p'\nUsage: claude\n  --other"},
                 {"name": "sandbox_bwrap_exec", "pass": None, "detail": "skipped"},
             ]})
         self.assertFalse(ok)
         self.assertIn("claude_global_config_env_absent: remove the `env` key "
                       "(ANTHROPIC_MODEL) from /h/.claude.json", detail)
-        self.assertIn("claude_restricted_flag_available: `--help` names no `--restricted` "
-                      "option", detail)
+        self.assertIn("claude_prompt_stdin: error: unknown option '-p'", detail)
         self.assertNotIn("Usage", detail)          # first detail line only
-        self.assertNotIn("claude_version_available", detail)
+        self.assertNotIn("sandbox_bwrap_available", detail)
         self.assertNotIn("sandbox_bwrap_exec", detail)
         # The failing checks come BEFORE the status fields (the in-run line is cut at 240).
         self.assertLess(detail.index("claude_global_config_env_absent"),

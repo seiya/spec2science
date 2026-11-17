@@ -294,37 +294,36 @@ links on the host and fails in the `workshop leaf`'s sandbox, whose environment 
 
 When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.yaml`; preflight
 `--backend claude`), the launch gate is the conjunction of every check named in
-`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the five
-`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available`,
-`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element),
-`claude_restricted_flag_available` (the `--help` text names `--restricted` as an option, the
-flag that keeps the operator's settings files out of a leaf) and
-`claude_global_config_env_absent` (neither `~/.claude.json` nor the legacy
+`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the two
+`_probe_claude_backend` emits — `claude_prompt_stdin` (the prompt arrives on stdin, never as an
+argv element) and `claude_global_config_env_absent` (neither `~/.claude.json` nor the legacy
 `~/.claude/.config.json` carries an `env` block: the CLI reads one of them as its global config,
 which is not a settings file, `--restricted` does not ignore it, and its `env` block would set a
 leaf's model, endpoint and output ceiling; the failing check's detail names the file — remove its
 `env` key to pass) — plus the three `sandbox_bwrap_*` and the two `sandbox_netns_*`
 checks every CLI backend needs ([issue #453](https://github.com/seiya/spec2science/issues/453) for the
-last two of the five above; the `sandbox_netns_*` pair is [issue #534](https://github.com/seiya/spec2science/issues/534)
+second of the two above; the `sandbox_netns_*` pair is [issue #534](https://github.com/seiya/spec2science/issues/534)
 step 4: `sandbox_netns_python` — `/usr/bin/python3`, the leaf's network relay's interpreter,
 starts isolated inside a `--unshare-net` bwrap — and `sandbox_netns_route` — the real relay, with
 no route out of the namespace and a CONNECT through it reaching a loopback stand-in; no provider
-is contacted. A host without a system `/usr/bin/python3` fails both, with the same `execvp` detail). Authentication is NOT probed: a CLI that is on `PATH`, answers `--version` and
-`--help`, names `--restricted`, and refuses an empty `-p` naming stdin passes preflight and fails
-at the first launch instead. That includes a machine that authenticates through the
+is contacted. A host without a system `/usr/bin/python3` fails both, with the same `execvp` detail). `--version` is run for the recorded
+`agent_version` and does not gate. The CLI's option set is NOT probed
+([issue #643](https://github.com/seiya/spec2science/issues/643), which reversed the `--restricted`
+probe of issue #453 and the workshop option-set probe of issue #534): a CLI that lacks an option
+the leaf argv carries refuses the argv before any request (measured on CLI 2.1.326: exit 1,
+`error: unknown option`), and the first launch on it ends `fail_closed` with
+`leaf_transport_error: leaf_exit=1`, with no repair turn and the CLI's message in the failure
+summary. Authentication is NOT probed: a CLI that refuses an empty `-p` naming stdin passes
+preflight and fails at the first launch instead. That includes a machine that authenticates through the
 settings file — `apiKeyHelper`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in its `env`
 block: `--restricted` ignores the file, so every leaf there answers "Not logged in" (measured,
 issue #453). A claude leaf authenticates through the CLI's own credential store (`/login` in an
 interactive `claude` session writes it).
 
-Every claude surface of a configuration takes one more check on its provider row, because every
-leaf is a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b;
-`docs/ORCHESTRATION.md` "Leaf LLM configuration"): `claude_workshop_flag_set_available` (the
-`--help` text names every option a workshop leaf's argv carries — the explicit tuple
-`CLAUDE_WORKSHOP_REQUIRED_OPTIONS`, which a suite row compares with the argv's options). It is
-AND-ed into that row's `launchable`, and the row's recorded surface says `workshop: true`; the
-TTL re-probe asks it of every CLI surface, a row recorded without the stamp included. A workshop
-leaf runs with a
+Every claude surface of a configuration is recorded on its provider row with `workshop: true`,
+because every leaf is a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534)
+PR-J4-b; `docs/ORCHESTRATION.md` "Leaf LLM configuration"); the TTL re-probe stamps a row
+recorded without it. A workshop leaf runs with a
 private `CLAUDE_CONFIG_DIR` under its lineage home (§operator-private root) over which the
 operator's `~/.claude/.credentials.json` is bound read-write (a leaf's token refresh writes in
 place onto the bound inode and so reaches the host — read off the CLI 2.1.319 binary, not
@@ -352,19 +351,18 @@ operator who set it up will find it no longer checked:
 - **`checks.claude_leaf_tool_roster_classified`** (issue #71), which launched the agentic argv
   once against a loopback stand-in and required the CLI's own tool roster to match the leaf
   allowlist. A `workshop leaf`'s argv names its tool set explicitly (`--tools` with the work-tree
-  file tools, `--strict-mcp-config`), and `claude_workshop_flag_set_available` asks only that the
-  CLI accepts those options; the roster check probed the agentic argv only, which its own text
+  file tools, `--strict-mcp-config`), and a CLI that does not accept one of those options
+  refuses the argv at launch; the roster check probed the agentic argv only, which its own text
   recorded as its limit.
 
 `multi_agent_enabled` and `feature_states.multi_agent` went in
 [issue #447](https://github.com/seiya/spec2science/issues/447) (D1): the conductor launches each leaf
 as its own CLI process and never uses a platform's own subagents. On claude the check was
-`--help` answering, which `claude_help_probe_available` records and now gates by name; the
-skipped `claude_features_list_available` row went with it. The recorded document is now held
+`--help` answering, which no check reads since issue #643; the skipped
+`claude_features_list_available` row went with it. The recorded document is now held
 to every member of `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a claude `preflight.json` written
 before `claude_prompt_stdin` existed (orchestrations from 2026-07-23 to 2026-08-02 on the
-machine this was measured on), or before `claude_restricted_flag_available` and
-`claude_global_config_env_absent` existed (every claude orchestration before issue #453), is refused by every command that reads the stored document —
+machine this was measured on), or before `claude_global_config_env_absent` existed (every claude orchestration before issue #453), is refused by every command that reads the stored document —
 `revoke-artifact`, `reset-phase`, `check-phase-certified`, `set-status pass`. Re-run that
 orchestration's preflight first: `--resume` does it before anything else reads the document.
 
@@ -385,7 +383,7 @@ When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), th
 
 - **The state home must be writable.** `checks.codex_home_writable.pass` resolves `CODEX_HOME`, else the deprecated `SPEC2SCIENCE_HOME`, else `~/.codex`, and requires the directory (or its parent, when it does not exist yet) to be writable. `CODEX_HOME` and `SPEC2SCIENCE_HOME` set to different paths is a refusal rather than a precedence rule.
 
-- **Every `codex_cli` surface takes one more row** ([issue #534](https://github.com/seiya/spec2science/issues/534) step 2 PR-2; on every codex surface since PR-J4-b, when every leaf became a workshop leaf; `docs/ORCHESTRATION.md` §workshop leaf): `codex_workshop_flag_set_available`, AND-ed into that provider row's `launchable` and asked again by the TTL re-probe, as the claude workshop row is (§0-2). It replaced `codex_exec_pure_isolation_flags`, the pure leaf's `--sandbox read-only` check, which PR-J4-b removed from `CODEX_REQUIRED_LAUNCH_CHECKS`. It requires `codex exec --help` to name `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` (`--model`, `--sandbox`, `--config`, `--json`, `--skip-git-repo-check`, `--ignore-rules`) as option lines and to list `workspace-write` among the possible values of `--sandbox`, and `codex mcp add --help` to name `--url` (the streamable-HTTP route the wrapper's endpoint takes). The `--config` keys the workshop argv sets (`leaf_contract.codex_workshop_overrides`) are in no help text; the unbilled CLI rows pin them. Each CLI's workshop surface takes its own CLI's row and not the other's. The reading argv's options are a subset of the producing one's, and its `codex mcp add --help` check for `--url` names a route a reading lineage does not use — stricter than a judging-only surface needs, not a hole. A codex workshop leaf reads `auth.json` through a read-only bind into its lineage's own `CODEX_HOME`.
+- **The cold workshop argv's option set is not probed** ([issue #643](https://github.com/seiya/spec2science/issues/643), which removed the issue #534 row `codex_workshop_flag_set_available`, as §0-2 records for claude). A codex build that lacks an option of the cold argv (`docs/ORCHESTRATION.md` §workshop leaf) refuses it before any request (measured on codex-cli 0.169.0: exit 2, `error: unexpected argument`), and the first launch on it ends `fail_closed` with `leaf_transport_error: leaf_exit=2`, with no repair turn and the CLI's message in the failure summary. The warm argv's options are still certified by `codex_exec_resume` (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`). A codex workshop leaf reads `auth.json` through a read-only bind into its lineage's own `CODEX_HOME`.
 
 - **The prompt-on-stdin contract must hold.** `checks.codex_prompt_stdin.pass` requires `codex exec --help` and `codex exec resume --help` to document the `-` stdin sentinel. A failure means the installed build no longer accepts a prompt on stdin; install one that does, and do not move the prompt back onto argv — see §1-3.
 

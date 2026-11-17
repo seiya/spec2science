@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
@@ -338,121 +337,19 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
 
 
 class CodexPreflightTests(unittest.TestCase):
-    _EXEC_HELP = ("Usage: codex exec\n  -m, --model <MODEL>\n  -c, --config <key=value>\n"
-                  "  -s, --sandbox <SANDBOX_MODE>\n      [possible values: read-only, "
-                  "workspace-write, danger-full-access]\n      --skip-git-repo-check\n"
-                  "      --ignore-rules\n      --json\n")
-    _MCP_HELP = "Usage: codex mcp add\n      --url <URL>\n"
-
-    def _runner(self, exec_help: str, mcp_help: str, rc: int = 0):
-        def run(argv, **kw):
-            text = mcp_help if "mcp" in argv else exec_help
-            return subprocess.CompletedProcess(argv, rc, text, "")
-        return run
-
-    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
-        """A `--help` that cannot run at all is a failed capability row, named, not an
-        exception out of the preflight."""
-        def gone(argv, **kw):
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
-        check = ort._codex_workshop_flag_set_check("/nonexistent/codex", gone)
-        self.assertIs(check["pass"], False)
-        self.assertIn("FileNotFoundError", check["detail"])
-
-    def test_the_row_requires_each_option_the_mode_and_the_url_route(self) -> None:
-        check = ort._codex_workshop_flag_set_check
-        self.assertIs(check("codex", self._runner(self._EXEC_HELP, self._MCP_HELP))["pass"],
-                      True)
-        for option in ort.CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS:
-            with self.subTest(dropped=option):
-                text = "\n".join(ln for ln in self._EXEC_HELP.splitlines()
-                                 if option not in ln)
-                text += f"\n      --other  see {option}\n"
-                result = check("codex", self._runner(text, self._MCP_HELP))
-                self.assertIs(result["pass"], False)
-                self.assertIn(option, result["detail"])
-        result = check("codex", self._runner(
-            self._EXEC_HELP.replace("workspace-write, ", ""), self._MCP_HELP))
-        self.assertIs(result["pass"], False)
-        self.assertIn("workspace-write", result["detail"])
-        # Another option's description naming the mode does not answer for `--sandbox`'s values
-        # (codex-cli 0.164.0's `--approve-for-me` says "the workspace-write sandbox").
-        mentioned = (self._EXEC_HELP.replace("workspace-write, ", "")
-                     + "      --approve-for-me\n          using the workspace-write sandbox\n")
-        self.assertIs(check("codex", self._runner(mentioned, self._MCP_HELP))["pass"], False)
-        # Nor do the possible values of the NEXT option, when `--sandbox` lists none of its own.
-        borrowed = (self._EXEC_HELP.replace(
-            "      [possible values: read-only, workspace-write, danger-full-access]\n", "")
-            + "      --color <COLOR>\n      [possible values: always, workspace-write]\n")
-        self.assertNotIn("possible values: read-only", borrowed)
-        self.assertIs(check("codex", self._runner(borrowed, self._MCP_HELP))["pass"], False)
-        result = check("codex", self._runner(self._EXEC_HELP, "Usage: codex mcp add\n"))
-        self.assertIs(result["pass"], False)
-        self.assertIn("mcp add --url", result["detail"])
-        self.assertIs(check("codex", self._runner(self._EXEC_HELP, self._MCP_HELP, rc=1))
-                      ["pass"], False)
-
-    def test_the_required_options_are_the_cold_argv_s(self) -> None:
-        """Every option the cold workshop argv spells is certified by the row, and every
-        option the warm argv spells by `codex_exec_resume` (the option-set pin)."""
+    def test_the_resume_probe_s_options_are_the_warm_argv_s(self) -> None:
+        """Every option the warm argv spells is certified by `codex_exec_resume` (the
+        option-set pin). The cold half — the workshop option-set row — went in issue #643;
+        the cold argv itself is pinned whole by `test_the_cold_and_warm_argv`."""
         with tempfile.TemporaryDirectory() as tmp:
             c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=_codex_config(Path(tmp)))
             entry = c.entry_for("generate", "generate")
-            cold = wc.Conductor.leaf_command(c, entry, mcp_config_json=_MCP)
             warm = wc.Conductor.leaf_command(c, entry, resume_session_id="tid",
                                              mcp_config_json=_MCP)
-        self.assertEqual(sorted({t for t in cold if t.startswith("--")}),
-                         sorted(ort.CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS))
         self.assertEqual(sorted({t for t in warm if t.startswith("--")}),
                          sorted(ort.CODEX_EXEC_RESUME_REQUIRED_FLAGS))
-        self.assertIn(ort.CODEX_WORKSHOP_SANDBOX_MODE, cold)
-
-    def test_each_cli_s_workshop_surface_takes_its_own_row(self) -> None:
-        def probe(**kw):
-            return {"probe_command": kw.get("agent_command") or kw["backend"], "checks": [],
-                    "status": "pass"}
-
-        seen: list[tuple[str, str]] = []
-
-        def fake(name):
-            def check(cmd, runner):
-                seen.append((name, cmd))
-                return {"name": name, "pass": True, "detail": ""}
-            return check
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "llm.yaml"
-            path.write_text(workshop_yaml(
-                "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: "
-                "{substeps: {generate: {provider: codex_cli, model: gpt-x, max_wrapper_calls: "
-                "3, lineage_timeout_s: 60}}}}\n"), encoding="utf-8")
-            with mock.patch.object(ort, "probe_execution_platform", probe), \
-                    mock.patch.object(ort, "_preflight_allows_agent_launch", lambda p: True), \
-                    mock.patch.object(ort, "_claude_workshop_flag_set_check",
-                                      fake("claude_workshop_flag_set_available")), \
-                    mock.patch.object(ort, "_codex_workshop_flag_set_check",
-                                      fake("codex_workshop_flag_set_available")):
-                providers = ort.probe_all_providers(config=lc.load_llm_config(path))
-                # `defaults` (claude) serves the diagnostician, a reading workshop leaf (issue
-                # #534 PR-J4-a), so its surface takes claude's row and the codex entry codex's.
-                self.assertEqual(sorted(name for name, _ in seen),
-                                 ["claude_workshop_flag_set_available",
-                                  "codex_workshop_flag_set_available"])
-                names = {t: [c["name"] for c in row["checks"]] for t, row in providers.items()}
-                self.assertIn("claude_workshop_flag_set_available", names["claude"])
-                self.assertNotIn("codex_workshop_flag_set_available", names["claude"])
-                self.assertIn("codex_workshop_flag_set_available", names["codex"])
-                self.assertNotIn("claude_workshop_flag_set_available", names["codex"])
-                seen.clear()
-                ort._reprobe_recorded_providers(providers, None)
-                self.assertEqual(sorted(name for name, _ in seen),
-                                 ["claude_workshop_flag_set_available",
-                                  "codex_workshop_flag_set_available"])
-
-    def test_a_backend_with_no_row_fails_it(self) -> None:
-        self.assertIs(ort._workshop_flag_set_check("anthropic_api", "x", None)["pass"], False)
 
 
 class CodexLeafCommandTests(unittest.TestCase):

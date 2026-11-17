@@ -8616,8 +8616,9 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
 # The `multi_agent` feature state, its `multi_agent_enabled` check and the codex
 # `features list` probe that was its only producer went in issue #447 (D1, D4): the conductor
 # spawns independent CLI processes and never uses a platform's own subagents, so the feature
-# said nothing about launchability. On claude the check was `--help` answering, which
-# `claude_help_probe_available` already records and now gates by name.
+# said nothing about launchability. The claude `--version`, `--help` and `--restricted` rows
+# went in issue #643 with the option-set probes of both CLIs: a CLI that cannot run the leaf
+# argv refuses it before any request, and the launch ends `leaf_transport_error`.
 CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_version_available",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
@@ -8627,8 +8628,7 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "sandbox_netns_python", "sandbox_netns_route",
 })
 CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
-    "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
-    "claude_restricted_flag_available", "claude_global_config_env_absent",
+    "claude_prompt_stdin", "claude_global_config_env_absent",
     "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
     "sandbox_netns_python", "sandbox_netns_route",
 })
@@ -8645,7 +8645,7 @@ REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
 # the `exec` help alone would pass on a CLI where the resume argv aborts at parsing, before any
 # `thread.started`, turning every repair turn into a transport death. Keep this in sync with
 # the resume branch of `leaf_command` (a suite row asserts the emitted option set equals this
-# one). The cold argv's options are `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS`.
+# one).
 CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
     "--model", "--json", "--ignore-rules", "--config",
     # The sandbox holds no checkout (issue #227: an empty tmpfs at `repo_root`), and codex
@@ -8847,13 +8847,6 @@ def _reprobe_recorded_providers(
                     "checks": probe.get("checks", []),
                     "launchable": _preflight_allows_agent_launch(probe),
                 }
-                # Unconditional for a CLI surface since issue #534 PR-J4-b (`probe_all_providers`).
-                # A row recorded before it carries no `workshop` stamp; the `--resume` barrier
-                # refuses such an orchestration at start, and this re-probes it if one gets here.
-                check = _workshop_flag_set_check(
-                    str(token), probed["probe_command"], subprocess.run)
-                probed["checks"] = list(probed["checks"]) + [check]
-                probed["launchable"] = bool(probed["launchable"]) and check["pass"] is True
             else:
                 probed = _probe_http_provider({
                     "backend": str(token), "provider": provider_type,
@@ -13779,16 +13772,16 @@ def _probe_claude_backend(
     """A probe specific to the claude backend; returns (checks, agent_version).
 
     `claude features list` is not a CLI subcommand (claude answers it as a chat prompt), so it
-    is not run. The `--help` probe requires (a) exit 0 and (b) help text on stdout, so an
-    empty-output binary named `claude` does not pass.
+    is not run. `--version` is run for the recorded `agent_version` and does not gate. The
+    CLI's option set is not probed (issue #643, reversing issues #453 and #534): a CLI that
+    lacks an option the leaf argv carries refuses it before any request, and the launch ends
+    `fail_closed` / `leaf_transport_error` with the CLI's message in the failure summary.
     """
     # SPLIT, like the codex prober and like `Conductor._provider_command_base`: a configured
     # command may carry flags (`mywrap --flag`), and the leaf is launched with it split. Passing
     # the whole string as argv[0] probes an executable of that literal name, which does not
     # exist — so every wrapper failed preflight before any leaf could run.
     command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
-    if not command_argv:
-        raise ValueError("claude command must be non-empty")
     version_proc = runner([*command_argv, "--version"], text=True, capture_output=True,
                           check=False)
 
@@ -13802,27 +13795,7 @@ def _probe_claude_backend(
                               check=False, input="")
     stdin_probe_text = (stdin_probe_proc.stdout or "") + "\n" + (stdin_probe_proc.stderr or "")
 
-    help_proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
-    help_stdout = help_proc.stdout.strip()
-    # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
-    # weak proxy — any binary named `claude` that exits 0 (even with no output)
-    # would otherwise pass.  Requiring help text on stdout rules out broken or
-    # substitute binaries.
-    help_probe_pass = help_proc.returncode == 0 and bool(help_stdout)
-    help_detail = help_stdout or help_proc.stderr.strip()
-    help_probe_detail = help_detail if help_detail else "(no stdout/stderr from --help)"
-
     checks = [
-        {
-            "name": f"{backend_token}_version_available",
-            "pass": version_proc.returncode == 0,
-            "detail": version_proc.stdout.strip() or version_proc.stderr.strip(),
-        },
-        {
-            "name": f"{backend_token}_help_probe_available",
-            "pass": help_probe_pass,
-            "detail": help_probe_detail,
-        },
         {
             "name": f"{backend_token}_prompt_stdin",
             # The REFUSAL's own wording, and a non-zero exit to prove it refused. A bare
@@ -13835,167 +13808,9 @@ def _probe_claude_backend(
                      and "through stdin" in stdin_probe_text),
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
-        {
-            # `workshop_leaf_flags()` opens with `--restricted`, which keeps the operator's
-            # settings files out of the leaf (issue #453). A CLI that does not know the flag
-            # refuses the whole argv, so every leaf would die as a transport failure; this
-            # moves that to preflight. Matched as an OPTION LINE of the help — the flag at
-            # the start of a line, after an optional short alias — so a longer option
-            # (`--restricted-mode`) or a mention inside another option's description does
-            # not answer for it.
-            "name": f"{backend_token}_restricted_flag_available",
-            "pass": (help_proc.returncode == 0
-                     and _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout) is not None),
-            # The verdict first, so the one line an operator is shown says what is missing.
-            "detail": ("`--help` names `--restricted` as an option"
-                       if _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout)
-                       else "`--help` names no `--restricted` option; this CLI cannot run a "
-                            "leaf (issue #453)") + "\n" + help_probe_detail,
-        },
         _claude_global_config_env_check(backend_token),
     ]
     return checks, version_proc.stdout.strip()
-
-
-# An option line of the help: a short indent (2 on CLI 2.1.294), an optional short alias,
-# then the flag. The indent is BOUNDED because the help wraps descriptions at column 40 and a
-# wrapped line can itself begin with an option name (17 lines do on 2.1.294), so an unbounded
-# indent let a description that merely mentions `--restricted` answer for the option.
-_CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(
-    r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--restricted(?![\w-])")
-
-#: Every option a claude `workshop leaf`'s argv carries (`leaf_contract.workshop_leaf_flags`, the
-#: producing and the reading kind; issue #534). A CLI missing one refuses the whole argv, so
-#: every launch would die as a transport failure; `claude_workshop_flag_set_available` moves
-#: that to preflight. An EXPLICIT tuple since issue #534 PR-J4-b: it was the workshop flags
-#: minus the pure leaf's, whose `pure_leaf_flags` is gone. A suite row derives the argv's
-#: option set and compares it to this one, so a flag added to the launch without being added
-#: here is a red row rather than an unprobed option.
-CLAUDE_WORKSHOP_REQUIRED_OPTIONS: tuple[str, ...] = (
-    "--restricted", "--system-prompt", "--tools", "--mcp-config", "--strict-mcp-config",
-    "--permission-mode", "--permission-prompts", "--allowedTools",
-    "--disable-slash-commands", "--output-format")
-
-
-def _claude_option_line_re(option: str) -> re.Pattern[str]:
-    """An OPTION LINE of `claude --help` naming `option`: the flag at the start of a line,
-    after an optional short alias, and not a longer option's prefix (the
-    `_CLAUDE_RESTRICTED_OPTION_LINE_RE` rule)."""
-    return re.compile(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?" + re.escape(option) + r"(?![\w-])")
-
-
-def _claude_workshop_flag_set_check(
-    command: str | Sequence[str],
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> dict[str, Any]:
-    """`claude_workshop_flag_set_available`: `--help` names every option of
-    `CLAUDE_WORKSHOP_REQUIRED_OPTIONS` as an option line."""
-    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
-    try:
-        proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
-        help_text, rc = proc.stdout or "", proc.returncode
-    except Exception as exc:  # an unavailable CLI is a capability failure, as elsewhere
-        help_text, rc = "", f"{type(exc).__name__}: {exc}"
-    missing = [opt for opt in CLAUDE_WORKSHOP_REQUIRED_OPTIONS
-               if _claude_option_line_re(opt).search(help_text) is None]
-    ok = rc == 0 and not missing
-    return {
-        "name": "claude_workshop_flag_set_available",
-        "pass": ok,
-        "detail": ("`--help` names every workshop-leaf option" if ok else
-                   f"`--help` (exit {rc}) names no option line for {', '.join(missing) or '-'}; "
-                   "this CLI cannot run a workshop leaf (issue #534)"),
-    }
-
-
-#: The `codex exec --help` options a codex `workshop leaf`'s cold argv spells (issue #534 step 2
-#: PR-2; `Conductor.leaf_command`'s workshop branch). The warm argv's are
-#: `CODEX_EXEC_RESUME_REQUIRED_FLAGS`, which `codex_exec_resume` already certifies; the
-#: `--config` overrides both carry (`leaf_contract.codex_workshop_overrides`) are config keys, which
-#: no help text lists, and are pinned by the unbilled CLI rows instead.
-CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS: tuple[str, ...] = (
-    "--model", "--sandbox", "--config", "--json", "--skip-git-repo-check", "--ignore-rules")
-
-#: The sandbox mode the workshop argv names, which `codex exec --help` lists among the values of
-#: `--sandbox`.
-CODEX_WORKSHOP_SANDBOX_MODE = "workspace-write"
-
-
-def _codex_option_line_re(option: str) -> re.Pattern[str]:
-    """An OPTION LINE of a codex `--help` naming `option`, after an optional short alias, and
-    not a longer option's prefix — the claude rule, `_claude_option_line_re`."""
-    return re.compile(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?" + re.escape(option) + r"(?![\w-])")
-
-
-def _codex_option_values(help_text: str, option: str) -> tuple[str, ...]:
-    """The `[possible values: a, b, …]` a codex `--help` lists for `option`, read from that
-    option's own block — its option line up to the next option line — so a value another
-    option's description happens to mention does not answer for it (codex-cli 0.164.0's
-    `--approve-for-me` description names "the workspace-write sandbox")."""
-    match = _codex_option_line_re(option).search(help_text)
-    if match is None:
-        return ()
-    rest = help_text[match.end():]
-    following = re.search(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--[\w-]", rest)
-    block = rest[:following.start()] if following else rest
-    values = re.search(r"\[possible values:([^\]]*)\]", block)
-    return tuple(v.strip() for v in values.group(1).split(",")) if values else ()
-
-
-def _codex_workshop_flag_set_check(
-    command: str | Sequence[str],
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> dict[str, Any]:
-    """`codex_workshop_flag_set_available`: `exec --help` names every option of
-    `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` as an option line and lists `workspace-write` among
-    the possible values of `--sandbox` (`_codex_option_values`), and `mcp add --help` names `--url` — the streamable-HTTP route the wrapper's endpoint
-    takes exists on this CLI (`codex mcp add <name> --url <url>` is the persisted spelling of
-    the per-launch `mcp_servers.<name>.url` override)."""
-    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
-    texts: dict[str, str] = {}
-    rcs: dict[str, Any] = {}
-    for key, tail in (("exec", ["exec", "--help"]), ("mcp add", ["mcp", "add", "--help"])):
-        try:
-            proc = runner([*command_argv, *tail], text=True, capture_output=True, check=False)
-            texts[key], rcs[key] = proc.stdout or "", proc.returncode
-        except Exception as exc:  # an unavailable CLI is a capability failure, as elsewhere
-            texts[key], rcs[key] = "", f"{type(exc).__name__}: {exc}"
-    missing = [f"exec {opt}" for opt in CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS
-               if _codex_option_line_re(opt).search(texts["exec"]) is None]
-    if CODEX_WORKSHOP_SANDBOX_MODE not in _codex_option_values(texts["exec"], "--sandbox"):
-        missing.append(f"exec --sandbox {CODEX_WORKSHOP_SANDBOX_MODE}")
-    if _codex_option_line_re("--url").search(texts["mcp add"]) is None:
-        missing.append("mcp add --url")
-    ok = all(rc == 0 for rc in rcs.values()) and not missing
-    return {
-        "name": "codex_workshop_flag_set_available",
-        "pass": ok,
-        "detail": ("`exec --help` and `mcp add --help` name every workshop-leaf option" if ok
-                   else f"exit {rcs}; no option line for {', '.join(missing) or '-'}; this CLI "
-                        "cannot run a workshop leaf (issue #534)"),
-    }
-
-
-#: The preflight row a `workshop leaf` surface takes, by backend token: the check function's
-#: NAME, resolved at call time, so the one function each row runs is the module attribute.
-WORKSHOP_FLAG_SET_CHECKS: dict[str, str] = {
-    "claude": "_claude_workshop_flag_set_check",
-    "codex": "_codex_workshop_flag_set_check",
-}
-
-
-def _workshop_flag_set_check(
-    backend_token: str, command: str | Sequence[str],
-    runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> dict[str, Any]:
-    """The workshop preflight row of `backend_token`'s CLI (`WORKSHOP_FLAG_SET_CHECKS`); a
-    backend with no row fails it, so a workshop surface is never certified by the other CLI's
-    probe."""
-    name = WORKSHOP_FLAG_SET_CHECKS.get(backend_token)
-    if name is None:
-        return {"name": "workshop_flag_set_available", "pass": False,
-                "detail": f"backend {backend_token!r} runs no workshop leaf"}
-    return globals()[name](command, runner)
 
 
 def _claude_global_config_paths() -> tuple[Path, ...]:
@@ -14228,11 +14043,8 @@ def probe_all_providers(
     cfg = apply_defaults_overrides(
         config, model=model_override, command=command_override)
     providers: dict[str, dict[str, Any]] = {}
-    # Every CLI surface takes its CLI's workshop row (`claude_workshop_flag_set_available` /
-    # `codex_workshop_flag_set_available`): every leaf is a workshop leaf since issue #534
-    # PR-J4-b (`defaults` included — it serves the `escalate` diagnostician), so the row is no
-    # longer conditional on an entry selecting `leaf: workshop`. The recorded surface keeps
-    # its `workshop` stamp, which records that the row was run.
+    # Every CLI surface is a workshop surface since issue #534 PR-J4-b (`defaults` included —
+    # it serves the `escalate` diagnostician); the recorded surface keeps its `workshop` stamp.
     for row in describe_providers(cfg):
         token = row["backend"]
         workshop = row["provider"] in ("claude_cli", "codex_cli")
@@ -14246,10 +14058,6 @@ def probe_all_providers(
                 "checks": probe.get("checks", []),
                 "launchable": _preflight_allows_agent_launch(probe),
             }
-            if workshop:
-                check = _workshop_flag_set_check(token, entry["probe_command"], runner)
-                entry["checks"] = list(entry["checks"]) + [check]
-                entry["launchable"] = bool(entry["launchable"]) and check["pass"] is True
         else:
             entry = _probe_http_provider(row, opener=opener)
         # Every surface is recorded, not just the first. The row is what the TTL re-probe
@@ -14283,33 +14091,20 @@ def probe_execution_platform(
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     backend_token = backend.strip().lower()
-    if backend_token not in SUPPORTED_BACKENDS:
-        raise ValueError(f"unsupported backend: {backend}")
-
     default_command = DEFAULT_BACKEND_COMMANDS[backend_token]
     command = (
         agent_command.strip()
         if isinstance(agent_command, str) and agent_command.strip()
         else default_command
     )
-    for known_backend, known_command in DEFAULT_BACKEND_COMMANDS.items():
-        if command != known_command:
-            continue
-        if known_backend != backend_token:
-            raise ValueError(
-                f"agent_command/backend mismatch: backend={backend_token} requires "
-                f"{DEFAULT_BACKEND_COMMANDS[backend_token]} (or custom command), got {command}"
-            )
-        break
 
     prober = _BACKEND_PROBERS[backend_token]
     checks, agent_version = prober(backend_token, command, runner)
 
     # Every probe check gates, on both backends — a check added to a prober later fails
     # closed by default rather than silently becoming non-gating.
-    # What a claude leaf needs of its host is only that the CLI is there, answers
-    # `--version` and `--help` (naming `--restricted`), takes its prompt on stdin, and finds
-    # no `env` block in its global config (issue #453): a pure leaf loads no
+    # What a claude leaf needs of its host is only that the CLI takes its prompt on stdin
+    # and finds no `env` block in its global config (issue #453): a pure leaf loads no
     # customization (`--safe-mode`), is launched with no MCP configuration and no tools, and
     # runs no hook. The three probes that stood here — the committed leaf configuration, the MCP
     # registry, and the live tool-roster measurement of issue #71 — each measured a surface
