@@ -1,0 +1,349 @@
+# Issue #644 R3 (billed), 2026-11-16..17: every stage run by
+#   python3 tools/run_workflow.py <spec_ref> validate --target <target> --with-deps \
+#     --llm-config docs/examples/llm_claude.example.yaml --stdout-format jsonl --wait-usage-reset
+# Run at main 2b60b8c4 before the stop (s1, s2, s3a) and at main b601eccc after PR #659 (the rest).
+# cost_usd: collect_token_cost_summary (tools/audit_orchestration.py) over each orchestration.
+# A stage cost is the sum of its nodes, rounded per node. Sum of the nodes: 153.65; after PR #659: 98.07 (55.58 before the stop).
+- stage: s1_harness
+  spec: harness_fortran_cpu
+  target: fortran_cpu
+  when: before the stop
+  status: pass
+  cost_usd: 7.62
+  nodes:
+  - node: infrastructure/harness_fortran_cpu@0.11.0
+    orchestration_id: orch_20261116T145533Z_92e5fe1b
+    cost_usd: 7.62
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s2_advdiff
+  spec: advdiff1d_linear
+  target: fortran_cpu
+  when: before the stop
+  status: pass
+  cost_usd: 13.74
+  nodes:
+  - node: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
+    orchestration_id: orch_20261116T151826Z_3fd29665
+    cost_usd: 3.48
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1
+    orchestration_id: orch_20261116T152839Z_c16e2b73
+    cost_usd: 2.58
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_advection_diffusion_time_update_1d_euler1@0.3.1
+    orchestration_id: orch_20261116T153753Z_0607a618
+    cost_usd: 2.12
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/advdiff1d_linear@0.5.3
+    orchestration_id: orch_20261116T151825Z_3f48f6d3
+    cost_usd: 5.56
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s3a_rotating
+  spec: shallow_water2d_rotating
+  target: fortran_cpu
+  when: before the stop; stopped
+  status: fail_closed
+  cost_usd: 34.22
+  nodes:
+  - node: component/dynamics_shallow_water_source_2d_coriolis@0.2.0
+    orchestration_id: orch_20261116T160136Z_9d9a073c
+    cost_usd: 3.21
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_time_update_2d_rk4@0.1.2
+    orchestration_id: orch_20261116T161253Z_f7087d31
+    cost_usd: 4.35
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_flux_2d_rusanov_p0@0.2.1
+    orchestration_id: orch_20261116T162418Z_b8bb1ed1
+    cost_usd: 3.98
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_boundary_2d_periodic_copy@0.2.1
+    orchestration_id: orch_20261116T163532Z_1b6fe65d
+    cost_usd: 2.85
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_time_update_2d_ssprk2@0.4.1
+    orchestration_id: orch_20261116T165925Z_93ea0e2a
+    cost_usd: 3.49
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d@0.5.3
+    orchestration_id: orch_20261116T171002Z_ffa3fcbc
+    cost_usd: 9.74
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d_rotating@0.1.2
+    orchestration_id: orch_20261116T160135Z_eab2f6b3
+    cost_usd: 6.6
+    compile: pass
+    generate: pass
+    build: pass
+    validate: fail
+- stage: s1b_harness
+  spec: harness_fortran_cpu
+  target: fortran_cpu
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 8.0
+  nodes:
+  - node: infrastructure/harness_fortran_cpu@0.11.0
+    orchestration_id: orch_20261117T015426Z_c2549974
+    cost_usd: 8.0
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s2b_advdiff
+  spec: advdiff1d_linear
+  target: fortran_cpu
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 2.86
+  nodes:
+  - node: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
+    orchestration_id: orch_20261117T021950Z_79757c19
+    cost_usd: 0.87
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1
+    orchestration_id: orch_20261117T022057Z_64b7faa8
+    cost_usd: 0.47
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: component/dynamics_advection_diffusion_time_update_1d_euler1@0.3.1
+    orchestration_id: orch_20261117T022152Z_1144c20c
+    cost_usd: 0.43
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: problem/advdiff1d_linear@0.5.3
+    orchestration_id: orch_20261117T021949Z_70428847
+    cost_usd: 1.09
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+- stage: s3b_rotating
+  spec: shallow_water2d_rotating
+  target: fortran_cpu
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 11.23
+  nodes:
+  - node: component/dynamics_shallow_water_source_2d_coriolis@0.2.0
+    orchestration_id: orch_20261117T022436Z_8b16ce3f
+    cost_usd: 0.62
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_time_update_2d_rk4@0.1.2
+    orchestration_id: orch_20261117T022546Z_69ac7987
+    cost_usd: 1.36
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_flux_2d_rusanov_p0@0.2.1
+    orchestration_id: orch_20261117T022708Z_6f31a758
+    cost_usd: 1.15
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_boundary_2d_periodic_copy@0.2.1
+    orchestration_id: orch_20261117T022830Z_dd38a7c9
+    cost_usd: 0.59
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_time_update_2d_ssprk2@0.4.1
+    orchestration_id: orch_20261117T022946Z_d6f7d7d3
+    cost_usd: 0.87
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d@0.5.3
+    orchestration_id: orch_20261117T023103Z_965dc98d
+    cost_usd: 2.37
+    compile: skipped
+    generate: skipped
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d_rotating@0.1.2
+    orchestration_id: orch_20261117T022434Z_3d1a2369
+    cost_usd: 4.27
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s3c_subcycled
+  spec: shallow_water2d_channel_subcycled
+  target: fortran_cpu
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 47.31
+  nodes:
+  - node: component/dynamics_shallow_water_source_2d_tc4_forcing@0.2.0
+    orchestration_id: orch_20261117T024912Z_606dccd9
+    cost_usd: 6.93
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_reconstruction_2d_muscl_mc@0.1.1
+    orchestration_id: orch_20261117T030740Z_caf95748
+    cost_usd: 5.78
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_flux_2d_rusanov@0.1.1
+    orchestration_id: orch_20261117T032341Z_25597b43
+    cost_usd: 4.88
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0
+    orchestration_id: orch_20261117T033617Z_9fcbcf5b
+    cost_usd: 4.76
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d_channel@0.4.2
+    orchestration_id: orch_20261117T035008Z_6443cdfd
+    cost_usd: 15.2
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d_channel_subcycled@0.1.1
+    orchestration_id: orch_20261117T024910Z_0ee80cc3
+    cost_usd: 9.76
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s3d_lu
+  spec: dense_solve_lu
+  target: fortran_cpu
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 2.44
+  nodes:
+  - node: component/dense_solve_lu@0.1.0
+    orchestration_id: orch_20261117T054441Z_4b86b10c
+    cost_usd: 2.44
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s4_netcdf_harness
+  spec: harness_fortran_cpu_netcdf
+  target: fortran_cpu_netcdf
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 9.04
+  nodes:
+  - node: infrastructure/harness_fortran_cpu_netcdf@0.1.0
+    orchestration_id: orch_20261117T055417Z_ab3bf7d6
+    cost_usd: 9.04
+    compile: pass
+    generate: pass
+    build: pass
+    validate: pass
+- stage: s5_netcdf_rotating
+  spec: shallow_water2d_rotating
+  target: fortran_cpu_netcdf
+  when: 'after PR #659'
+  status: pass
+  cost_usd: 17.19
+  nodes:
+  - node: component/dynamics_shallow_water_source_2d_coriolis@0.2.0
+    orchestration_id: orch_20261117T063946Z_da6c8828
+    cost_usd: 1.39
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_time_update_2d_rk4@0.1.2
+    orchestration_id: orch_20261117T064515Z_47506f48
+    cost_usd: 2.46
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_flux_2d_rusanov_p0@0.2.1
+    orchestration_id: orch_20261117T065228Z_50658317
+    cost_usd: 2.04
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_boundary_2d_periodic_copy@0.2.1
+    orchestration_id: orch_20261117T065729Z_90668bb0
+    cost_usd: 1.32
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+  - node: component/dynamics_shallow_water_time_update_2d_ssprk2@0.4.1
+    orchestration_id: orch_20261117T070232Z_e82ed53d
+    cost_usd: 1.71
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d@0.5.3
+    orchestration_id: orch_20261117T070723Z_32fcbc77
+    cost_usd: 4.55
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass
+  - node: problem/shallow_water2d_rotating@0.1.2
+    orchestration_id: orch_20261117T063943Z_f3f49f4b
+    cost_usd: 3.72
+    compile: skipped
+    generate: pass
+    build: pass
+    validate: pass

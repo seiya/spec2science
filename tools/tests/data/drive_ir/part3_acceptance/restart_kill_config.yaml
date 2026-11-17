@@ -1,0 +1,7 @@
+base_case: swr_shear_n064_restart
+inputs:
+  grid.nx: 256
+  grid.ny: 256
+  time.t_end: 0.6
+  restart_points.every: 40
+  history.every: 100
