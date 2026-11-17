@@ -10160,9 +10160,11 @@ end program shallow_water2d_runner
     def test_validate_compile_stage_rejects_a_traversal_case_id(self) -> None:
         # Wiring test: a traversal case_id must be rejected THROUGH the full compile stage
         # (`_validate_case_ids` is called from `_validate_compile_stage_impl`), not only when the
-        # gate is invoked directly. This is the non-M3c path — the minimal tree declares no
-        # infrastructure dep, so the M3c render precondition does not fire. (Spec-input rejects
-        # that shape upstream; the compile gates keep it covered for a hand-crafted IR.)
+        # gate is invoked directly. The tree's node is M3c, so the render precondition
+        # (`runner_ir.case_ids`) refuses the same ids in words of its own; the assertion keys on
+        # the clause only `_validate_case_ids` writes, so dropping its call is red. Since issue
+        # #643 removed the conductor's `read_case_ids` filter this gate is the one bound on an
+        # `infrastructure` node's ids, which no render precondition reads.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -10194,8 +10196,10 @@ end program shallow_water2d_runner
             v = validate_compile_stage(
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
-            self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
-            self.assertTrue(any("'-c1'" in x for x in v), v)
+            gate = [x for x in v if "case.test_case_set has case_id(s)" in x]
+            self.assertEqual(len(gate), 1, v)
+            self.assertIn("'-c1'", gate[0])
+            self.assertIn("'../../evil'", gate[0])
 
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",),
                         quantities: tuple[str, ...] = ("mass_drift_rel",
