@@ -206,10 +206,11 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     "build": (None,),
     # validate wraps the LLM judge in two deterministic conductor-in-process gates,
     # mirroring the compile/generate deterministic-interleave model:
-    #   - pre_judge  (Conductor._pre_judge_inproc):  the pre-spawn dependency-DAG readiness
-    #     check (a --with-deps closure not built+validated in its own pipeline). Runs BEFORE
-    #     execute so a cold judge is never spawned for an incomplete closure. A failure is a
-    #     non-physics integrity blocker -> fail_closed (no judge has run).
+    #   - pre_judge  (Conductor._pre_judge_inproc):  records `pre_judge_meta.json` as `pass`
+    #     and checks nothing. The pre-spawn dependency-DAG readiness check (a --with-deps
+    #     closure not built+validated in its own pipeline) is `run_phase`'s, before any
+    #     substep (`_judge_pre_spawn_dag_block`), so a cold judge is never spawned for an
+    #     incomplete closure; it fails the phase closed (issue #643 PR-5 moved it out).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
     #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
     #     nor an MCP grant. Since Z3 (issue #169) it holds no TOOLS either — it is a pure
@@ -968,8 +969,10 @@ def classify_compile_static_failure(failure_category: str | None) -> RouteDecisi
 # records no failure category (issue #114). Both substeps can fail for a reason their meta does
 # not name — the measured case is a `pre_judge` whose meta says `status: "pass"` but whose
 # deliverable failed the freshness gate in `determine_substep_status` — and naming that failure
-# after the one violation the substep DOES classify (`pre_judge_dag_incomplete`) writes a record
-# that is false, and points the operator at a dependency closure the same record shows complete.
+# after a violation the substep did not record (issue #114's case was `pre_judge_dag_incomplete`,
+# which the substep classified until issue #643 PR-5 moved the DAG check to `run_phase`) writes a
+# record that is false, and points the operator at a dependency closure the same record shows
+# complete.
 VALIDATE_GATE_NO_CATEGORY_SUFFIX = "_failed_without_category"
 # ... and when the meta is absent or unreadable altogether: the substep failed and left no record
 # of why. Distinct from the above so the two are greppable apart (an absent meta usually means the
@@ -994,8 +997,9 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
     since it is a pure function callers may reach with anything. Four outcomes:
 
       - a recorded `failure_category` -> `validate_<category>`, the shape the run_phase branch
-        already used, which is also what preserves the one historic spelling
-        (`pre_judge_dag_incomplete` -> `validate_pre_judge_dag_incomplete`);
+        already used. Only `post_judge` records one today: `pre_judge` writes `pass` and checks
+        nothing since issue #643 PR-5, and `run_phase` names the DAG failure
+        `validate_pre_judge_dag_incomplete` itself, before any substep;
       - a meta whose own `status` is `pass`, with no category
         -> `validate_<substep>_deliverable_not_freshly_written`. This is NOT a vague answer: it
         is the one thing the state can mean. `determine_substep_status` fails a gate substep iff
@@ -1026,9 +1030,10 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
         if str(meta.get("status") or "").strip() == "pass":
             return f"validate_{substep}{VALIDATE_GATE_STALE_DELIVERABLE_SUFFIX}"
         return f"validate_{substep}{VALIDATE_GATE_NO_CATEGORY_SUFFIX}"
-    # `validate_pre_judge_dag_incomplete`, the one historic spelling this function has to
-    # preserve, is what this line already produces for that category — an explicit branch for
-    # it would be an equivalent mutant (round 1 confirmed: deleting one left every test green).
+    # No category needs an explicit branch: `validate_pre_judge_dag_incomplete`, the historic
+    # spelling, is produced by `run_phase` directly since issue #643 PR-5, and was what this
+    # line produced for it before (round 1 of #114 confirmed an explicit branch an equivalent
+    # mutant).
     return f"validate_{category}"
 
 
@@ -1721,7 +1726,8 @@ def build_launch_request(
         req["dependency_ref"] = refs.pipeline_ref
         rundir = refs.run_node_dir()
         if substep == "pre_judge":
-            # Deterministic pre-spawn dependency-DAG readiness gate. The conductor authors
+            # Deterministic substep that records `pass` and checks nothing (the dependency-DAG
+            # readiness gate is `run_phase`'s, before any substep). The conductor authors
             # pre_judge_meta.json (the only freshness-gated deliverable) in-process; no leaf,
             # no must-read, no run evidence yet.
             req["allowed_output_paths"] = [f"{rundir}/pre_judge_meta.json"]
@@ -6068,7 +6074,8 @@ class Conductor:
         pipeline sees it for the run's target: the target's harness added as a direct
         dependency (`orchestration_runtime.with_target_harness`, issue #284). The one call every
         conductor reader of a node's post-Compile dependency SET goes through — `lineage.json`,
-        `binary_meta.dependency_check`, the pre_judge DAG check, the derived `aggregate_verdict`.
+        `binary_meta.dependency_check`, the pre-spawn DAG readiness check
+        (`_judge_pre_spawn_dag_block`), the derived `aggregate_verdict`.
         The launch gate resolved the target's harness before any phase."""
         from tools.orchestration_runtime import with_target_harness
         return with_target_harness(block, self.repo_root, refs.node_key, self.target)
@@ -9050,8 +9057,9 @@ class Conductor:
         asks whether the EVIDENCE supports the verdict. `phase_04_validate.md` — 40 KB of which
         the judge's part is the review contract, and that is the template's job; it also took 12
         commits in seven weeks, and a document edited that often is not a stable leaf input.
-        `pre_judge_meta.json` — a readiness status the conductor has already gated on, from which
-        the judge gains nothing.
+        `pre_judge_meta.json` — a constant `pass` the substep records without checking anything
+        (the readiness gate is `run_phase`'s, before any substep), from which the judge gains
+        nothing.
 
         EVERY read RAISES, as the `generate.verify` sibling's four node artifacts do since issue
         #467 (they degraded to `""` until then). No degradation may travel here: each document
@@ -10356,10 +10364,12 @@ class Conductor:
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
         elif phase == "validate" and substep == "pre_judge":
-            # Deterministic pre-spawn DAG readiness: the conductor-authored pre_judge_meta
-            # records whether every --with-deps closure node is built+validated in its own
-            # pipeline. A not-ready closure is status=fail with rc 0, so the substep fails
-            # here and classify_failure routes it to fail_closed (integrity blocker).
+            # The conductor-authored pre_judge_meta records `pass` unconditionally; the
+            # dependency-DAG readiness check is `run_phase`'s (`_judge_pre_spawn_dag_block`),
+            # before any substep. The substep fails here only when that meta is not a fresh
+            # `pass` (a stale or corrupted run directory); run_phase's skip-write branch then
+            # classifies it from the meta (`classify_validate_gate_failure`), and
+            # `classify_failure` raises if reached for it.
             meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / "pre_judge_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
@@ -14840,7 +14850,7 @@ class Conductor:
         `<kind>/<spec_id>` tokens via `_dependency_expected_node_keys`) and consults the SAME
         cross-pipeline predicate
         (`_closure_node_validated_in_own_pipeline`), so anything blocked here would also
-        fail pre_judge — it never fails a run the post-gate would pass; it only saves the
+        fail that `--stage pre_judge` gate (run by `post_judge`) — it never fails a run the post-gate would pass; it only saves the
         wasted execute+judge cost when the closure is genuinely incomplete. Reading
         `all_nodes` directly (not `_dependency_closure_nodes`) also skips that helper's L6
         diamond guard, which is a Build/Model-B staging concern irrelevant to DAG readiness
@@ -15544,8 +15554,10 @@ class Conductor:
         # warm-resumed judge that then physics-failed left a superseded attempt's
         # post_judge_meta behind), so the shape is no longer reachable; the gate still keys on
         # the index, which is the reading that does not depend on that. Cases:
-        #   - pre_judge (index 0): a --with-deps closure not built+validated. No judge ran, so
-        #     this preserves the historic pre-spawn terminal behavior (no step_result written).
+        #   - pre_judge (index 0): its meta is not a fresh `pass` (it records `pass`
+        #     unconditionally since issue #643 PR-5, so this is a stale or corrupted run
+        #     directory; an incomplete closure fails earlier, in `run_phase`'s pre-spawn check).
+        #     No judge ran, so no step_result is written.
         #   - post_judge (index 3): the `--stage pre_judge` gate failed with a `fail_closed`
         #     disposition — either graded class, integrity or judge-authored conformance, since
         #     issue #176. (An `escalate` disposition does NOT reach here; the `is_escalate`
@@ -15632,7 +15644,8 @@ class Conductor:
             "aggregate_verdict.json": f"{refs.run_node_dir()}/aggregate_verdict.json",
             # G5: the deterministic validate gate metas — post_judge_meta carries the
             # `violations` / `failure_excerpt` / `disposition` that drive a post_judge
-            # `unknown` escalate; pre_judge_meta carries the dependency-DAG readiness result.
+            # `unknown` escalate; pre_judge_meta is the constant `pass` the substep records
+            # (the dependency-DAG readiness check is `run_phase`'s and records no meta).
             "post_judge_meta.json": f"{refs.run_node_dir()}/post_judge_meta.json",
             "pre_judge_meta.json": f"{refs.run_node_dir()}/pre_judge_meta.json",
             "binary_meta.json": f"{refs.binary_dir()}/binary_meta.json",
