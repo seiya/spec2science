@@ -790,7 +790,6 @@ class OracleBuildTest(_OracleFixture):
             self) -> None:
         """A build that reports success and leaves no binary at the imposed path fails as one
         that exited non-zero, and a binary an earlier attempt left there does not stand in."""
-        import tools.workflow_conductor as wc
         from tools.tests.test_workflow_conductor import _build_runtime
         text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
                 "builds:\n  - id: default\n    libraries: []\n")
@@ -818,7 +817,7 @@ class OracleBuildTest(_OracleFixture):
         from tools.execution_sites import Site
         text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
                 "builds:\n  - id: default\n    libraries: []\n")
-        repo, c, refs = self.node(oracle_text=text)
+        _repo, c, refs = self.node(oracle_text=text)
         remote = mock.Mock(spec=Site, is_local=False, site_id="far")
         staged: list[Any] = []
         with mock.patch.object(wc.Conductor, "site", new_callable=mock.PropertyMock,
