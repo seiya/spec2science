@@ -4677,9 +4677,6 @@ class DriveViolationsTest(unittest.TestCase):
             (toy_with(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
                       ["schema"]["variables"].append({"name": "spare", "shape_expr": "[nx]"})),
              "'spare' is bound by no dummy of drive"),
-            (toy_with(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
-                      ["schema"]["variables"][0].update(source="operation")),
-             "variables[0].source: the source vocabulary is retired"),
         ]
         for ir, msg in rows:
             with self.subTest(msg=msg):

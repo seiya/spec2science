@@ -4567,17 +4567,6 @@ def _or_list(refs: list[str]) -> str:
     return " or ".join(repr(r) for r in refs) if refs else "none (drive.loop.n_step is absent)"
 
 
-def _source_key_violations(ir: dict[str, Any]) -> list[str]:
-    """A `state_snapshots` schema variable carrying `source` (the vocabulary retired by D6),
-    refused on EVERY kind — an `infrastructure` node's schema included (review R1-5)."""
-    schema = snapshot_schema(ir)
-    variables = schema.get("variables") if isinstance(schema, dict) else None
-    return [f"state_snapshots.schema.variables[{idx}].source: the source vocabulary is "
-            "retired (D6): what a variable is follows from drive"
-            for idx, entry in enumerate(variables if isinstance(variables, list) else [])
-            if isinstance(entry, dict) and "source" in entry]
-
-
 def _dims_list(dummy: dict[str, Any]) -> list[str] | None:
     """A dummy's `dims` tokens, None when it has none (or a `:` one)."""
     dims = dummy.get("dims")
@@ -4877,10 +4866,9 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     (n)); ``kind`` is the node's `spec_kind` as the catalog answers it (never the IR's own
     `meta.spec_kind`), one of `component`, `infrastructure`, `problem`: the caller runs this on
     no other kind, which `_validate_catalog_spec_kind` refuses. Gates (m) and (o) read `tests.md` and are the validator's. An `infrastructure` IR carries no `drive`; a
-    `problem` or `component` IR must. A schema variable's `source` key is refused on every
-    kind, before the kind decides anything (`_source_key_violations`). Structural findings stop
-    the semantic gates (no cascade). Returns violation strings (empty == valid)."""
-    return _source_key_violations(ir) + _drive_kind_violations(ir, kind=kind)
+    `problem` or `component` IR must. Structural findings stop the semantic gates (no cascade).
+    Returns violation strings (empty == valid)."""
+    return _drive_kind_violations(ir, kind=kind)
 
 
 def _infrastructure_series_violations(ir: dict[str, Any]) -> list[str]:
@@ -4907,7 +4895,7 @@ def _infrastructure_series_violations(ir: dict[str, Any]) -> list[str]:
 
 
 def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
-    """`drive_violations` past the `source` key: the gates (a)-(l) and (n) under ``kind``."""
+    """`drive_violations`: the gates (a)-(l) and (n) under ``kind``."""
     if kind == INFRASTRUCTURE_KIND:
         return (["drive: an infrastructure node carries no drive block (its own runner runs "
                  "its cases)"] if _has_drive(ir) else []) + _infrastructure_series_violations(ir)

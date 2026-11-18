@@ -10241,19 +10241,20 @@ end program shallow_water2d_runner
                                                     step_args=step_args,
                                                     variables=variables), [])
 
-    def test_a_source_key_is_refused_at_the_stage(self) -> None:
-        """Issue #589 (D6): the `source` vocabulary is retired — what a variable is follows from
-        `drive` — so a `schema.variables[]` entry carrying the key is refused through the stage,
-        whatever its value (the four classes the gate once admitted included), once each."""
+    def test_a_source_key_is_read_by_no_gate(self) -> None:
+        """Issue #589 (D6) retired the `source` vocabulary — what a variable is follows from
+        `drive` — and no reader takes the key, so since issue #643 a `schema.variables[]` entry
+        carrying it draws the findings the same entry draws without it."""
+        w = {"name": "w", "shape_expr": "[2,2]"}
+        step_args = ({"name": "w", "rank": 2, "intent": "inout",
+                      "spec": {"type": "real", "kind": "dp"}},)
+        bare = self._scalar_stage([self._REPORT_READ, self._PAIR], variables=(w,),
+                                  step_args=step_args)
         for value in ("operation", "reported", "record", "reference", "kernel", 1, None):
             with self.subTest(source=value):
-                v = self._scalar_stage([self._REPORT_READ, self._PAIR], variables=(
-                    {"name": "w", "shape_expr": "[2,2]", "source": value},),
-                    step_args=({"name": "w", "rank": 2, "intent": "inout",
-                                "spec": {"type": "real", "kind": "dp"}},))
-                hits = [x for x in v if "source: the source vocabulary is retired (D6)" in x]
-                self.assertEqual(len(hits), 1, v)
-                self.assertIn("state_snapshots.schema.variables[5].source", hits[0])
+                self.assertEqual(self._scalar_stage(
+                    [self._REPORT_READ, self._PAIR], variables=({**w, "source": value},),
+                    step_args=step_args), bare)
         self.assertEqual(self._scalar_stage([self._REPORT_READ, self._PAIR]), [])
 
     def test_metrics_basis_is_refused_as_an_artifact_and_as_a_reference(self) -> None:
@@ -26373,29 +26374,6 @@ class DriveGateStageTests(unittest.TestCase):
                 {"artifact": "state_history", "required": True})
         v = _drive_stage("coriolis", component_without_drive)
         self.assertTrue(self._hits(v, "drive is required on a"), v)
-
-    def test_a_source_key_is_refused_on_an_infrastructure_node(self) -> None:
-        """R1-5: the `source` vocabulary is retired on every kind, so the refusal runs before
-        the kind decides anything — an infrastructure node (no `drive`) carrying `source` on a
-        schema variable draws it through the stage, with and without a `drive` block."""
-        cs_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
-        catalog = [dict(spec_kind="infrastructure", spec_id=_CORIOLIS_ID,
-                        controlled_spec_path=cs_ref)]
-
-        def infra_source(ir, keep_drive=False):
-            ir["meta"]["spec_kind"] = "infrastructure"
-            if not keep_drive:
-                del ir["drive"]
-            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
-                "variables"][0]["source"] = "operation"
-        msg = ("<ir>:state_snapshots.schema.variables[0].source: the source vocabulary is "
-               "retired (D6): what a variable is follows from drive")
-        v = _drive_stage("coriolis", infra_source, catalog=catalog)
-        self.assertEqual(self._hits(v, "source vocabulary is retired"), [msg])
-        v = _drive_stage("coriolis", lambda ir: infra_source(ir, keep_drive=True),
-                         catalog=catalog)
-        self.assertEqual(self._hits(v, "source vocabulary is retired"), [msg])
-        self.assertTrue(self._hits(v, "an infrastructure node carries no drive block"), v)
 
     # --- (a)-(h) ------------------------------------------------------------------------------
     def test_a_problem_publishes_and_drives_its_step(self) -> None:   # (a)
