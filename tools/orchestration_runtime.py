@@ -5973,7 +5973,7 @@ def _allowed_output_paths_for_launch(
 
     def _matches_phase_contract(path: str) -> bool:
         # NOTE: `tune` / `promote` step branches below are out-of-scope for the
-        # core 5-phase workflow. They remain to satisfy the optional flows' contract.
+        # core 4-phase workflow. They remain to satisfy the optional flows' contract.
         if step_token == "tune":
             if not tune_prefix or not path.startswith(tune_prefix):
                 return False
