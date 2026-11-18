@@ -15817,53 +15817,6 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
             self.assertEqual(self._run(ex, tmp), [])
 
-    def test_the_stale_ir_guard_matches_names_under_the_target_language_s_key(self) -> None:
-        """Issue #469 PR-3 (a round-1 survivor): an IR transcribing §5.1's `dp` as `DP` is one
-        parameter to a Fortran target and a stale IR to a CUDA C++ one, because the guard takes
-        the TARGET's `bundle_facts.identifier_key` — not a fold of its own."""
-        import tempfile
-        for language, stale in (("fortran", False), ("cuda_cpp", True)):
-            with self.subTest(language=language), tempfile.TemporaryDirectory() as t:
-                tmp = Path(t)
-                ex = self._seed(tmp, source=self._GOOD_SOURCE, language=language)
-                ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
-                ir = json.loads(ir_path.read_text(encoding="utf-8"))
-                self.assertEqual(ir["public_api"]["module_parameters"][0]["name"], "dp")
-                ir["public_api"]["module_parameters"][0]["name"] = "DP"
-                ir_path.write_text(json.dumps(ir), encoding="utf-8")
-                violations = self._run(ex, tmp)
-                self.assertEqual(
-                    any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations),
-                    stale, violations)
-
-    def test_the_stale_ir_guard_covers_signatures_not_only_module_parameters(self) -> None:
-        """m3 from round 1: GREEN over the whole tree, on the branch's own HEADLINE claim.
-
-        Deleting the `_validate_ir_signatures_against_section51` call from the stale-IR guard was
-        invisible because every existing fixture drops BOTH keys, so the module-parameter half alone
-        carried them. The shape that matters is a **pre-PR-2 component IR**: `module_parameters`
-        present, `signatures` ABSENT — because the key was FORBIDDEN on a component before this
-        branch. On a `--resume` into Generate, where `Compile.static` does not re-run, that IR must be
-        terminal with a re-certify remedy; regress it and the leaf gets a source drift it cannot
-        repair and warm-retries until the budget burns."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
-            ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
-            ir = json.loads(ir_path.read_text(encoding="utf-8"))
-            # The pre-PR-2 component shape: parameters yes, signatures no.
-            ir["public_api"] = {"module_parameters": copy.deepcopy(
-                InfrastructurePublicApiGateTests._MODULE_PARAMETERS)}
-            ir_path.write_text(json.dumps(ir), encoding="utf-8")
-            violations = self._run(ex, tmp)
-        self.assertTrue(
-            any(vps.STALE_DEPENDENCY_IR_MARKER in v and "re-certify" in v for v in violations),
-            violations)
-        # Terminal by the violation's TYPE, never by its text.
-        self.assertTrue(
-            any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations), violations)
-
     def test_a_second_declaration_of_a_published_symbol_is_refused(self) -> None:
         """Round 1's first fail-open. `parse_interface_stanzas`' dict is LAST-WINS and its `errors`
         list carries `duplicate signature for symbol`; the source-side caller discarded them while
@@ -16450,54 +16403,6 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                 tmp = Path(t)
                 ex = self._seed(tmp, source="module m\nend module m\n", spec_kind=kind)
                 self.assertTrue(self._run(ex, tmp))
-
-    def test_stale_pre_contract_ir_fails_closed(self) -> None:
-        # A certified IR that predates the public_api.module_parameters contract (public_api present
-        # but no module_parameters key) reaching Generate.static on a --resume — where Compile.static
-        # does NOT re-run — must fail closed with an actionable "re-certify" signal, NOT proceed to a
-        # confusing source-drift error the Generate leaf can never repair. The source here is
-        # otherwise faithful, so only the stale-IR guard can flag it.
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ex = self._seed(tmp, source=self._GOOD_SOURCE)
-            ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
-            ir = json.loads(ir_path.read_text(encoding="utf-8"))
-            # Pre-contract shape: `signatures` present, no `module_parameters` key. Keep the
-            # signatures realistic so ONLY the module-parameter half of the guard can fire — the
-            # sibling test below strips signatures instead.
-            ir["public_api"] = {"signatures": copy.deepcopy(
-                InfrastructurePublicApiGateTests._SIGNATURES)}
-            ir_path.write_text(json.dumps(ir), encoding="utf-8")
-            violations = self._run(ex, tmp)
-            # Carries the sentinel for a human reader. What routes this TERMINAL (fail_closed)
-            # rather than as a futile warm Generate retry is the violation's TYPE, mapped by
-            # `main` to a dedicated exit code; the conductor keys on nothing in this text.
-            self.assertTrue(any(vps.STALE_DEPENDENCY_IR_MARKER in v
-                                and "does not carry the controlled_spec §5.1 surface" in v
-                                and "public_api.module_parameters" in v
-                                and "re-certify" in v for v in violations), violations)
-
-    def test_stale_ir_empty_or_drifted_module_parameters_fails_closed(self) -> None:
-        # The guard must fire not only on an ABSENT key but on any §5.1 mismatch a pre-contract /
-        # corrupt IR can carry through a Compile-skipping resume: an empty list, or drifted values.
-        # Each is unrepairable by re-running Generate, so each must be emitted as the terminal
-        # violation TYPE — checked here through the marker its message carries, since this
-        # helper-level row observes the message rather than the process exit code.
-        for stale_pub in (
-            {"module_parameters": []},                                              # empty list
-            {"module_parameters": [{"name": "dp", "base": "integer",
-                                    "value": "real32"}]},                           # drifted value
-        ):
-            with tempfile.TemporaryDirectory() as t:
-                tmp = Path(t)
-                ex = self._seed(tmp, source=self._GOOD_SOURCE)
-                ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
-                ir = json.loads(ir_path.read_text(encoding="utf-8"))
-                ir["public_api"] = stale_pub
-                ir_path.write_text(json.dumps(ir), encoding="utf-8")
-                violations = self._run(ex, tmp)
-                self.assertTrue(any(vps.STALE_DEPENDENCY_IR_MARKER in v for v in violations),
-                                (stale_pub, violations))
 
     def test_parameter_value_drift_flagged(self) -> None:
         # A drifted `dp = real32` (vs §5.1 `real64`) changes the published ABI but the symbolic
@@ -17594,10 +17499,6 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                     section_51=_structured_section51_from_fortran(section_fortran),
                     signatures=_structured_ir_signatures_from_fortran(section_fortran))
                 violations = [str(v) for v in self.inst._run(execution, tmp)]
-            self.assertFalse(
-                any("stale-dependency-ir" in v for v in violations),
-                ("the fixture must be a node the contract accepts, or the guard under test is "
-                 "never reached", violations))
             return violations
 
         type_only = run(type_only_fortran, wedged)
@@ -24207,27 +24108,6 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
         self.assertIn("host_render.render_runner", proc.stdout, proc.stdout)
         self.assertIn("Re-running Generate cannot change this finding", proc.stdout)
 
-    def test_a_stale_certified_ir_on_an_m3c_node_answers_4_over_5_in_a_real_subprocess(self) -> None:
-        """The co-occurrence `_exit_code_for_violations`'s docstring names since issue #238 — an
-        M3c node with a host-runner finding AND a certified IR the io_contract reader rejects —
-        driven through the real CLI, not a hand-built list (that row is
-        `StaleDependencyIRExitCodeTests.test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`).
-        Both markers are printed; rc 4 wins because the re-certification it names re-renders the
-        runner 5 would have sent the operator to."""
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            pipeline_dir = self._seed(tmp, spec_kind="component")
-            ir_path = tmp / "workspace/ir/x/spec.ir.yaml"
-            doc = json.loads(ir_path.read_text(encoding="utf-8"))
-            doc["io_contract"]["inputs"].append(
-                {"name": "topography_profile", "evidence_ref": "raw/execution_trace.json"})
-            ir_path.write_text(json.dumps(doc), encoding="utf-8")
-            proc = self._run_cli(tmp, pipeline_dir)
-        self.assertIn(vps.HOST_AUTHORED_ARTIFACT_MARKER, proc.stdout, proc.stdout)
-        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
-        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                         (proc.stdout, proc.stderr))
-
     def test_cooccurring_host_and_leaf_violations_answer_the_host_exit_code(self) -> None:
         """Hoisting `return 1` above the isinstance check would degrade this to 1.
 
@@ -24376,15 +24256,12 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     after the marker forged the terminal verdict and burned a billed run. The channel is now the
     process exit code, written by the branch that knows and unwritable by any leaf.
 
-    The rows that exercise the CHANNEL drive the REAL CLI in a REAL subprocess, because it
-    is carried by the violation's Python TYPE: a helper-level assertion would stay green while an
-    unwrapped ``violations.append`` or a list rebuild silently degraded production to exit code 1.
-    Three rows do not: the two about the exit-code CONSTANTS read module attributes (``_help``
-    calls ``main(["--help"])`` in-process), and ``…stays_rc_1_at_compile_stage`` calls
-    ``validate_compile_stage`` in-process, since what it pins is the TYPE of a violation the
-    compile stage returns, not the exit code. Stated because this class's first docstring
-    said "these drive the real CLI" of all of them, which is the same false claim a sibling test
-    in ``test_fortran_structure.py`` had to be renamed for.
+    No gate emits the type since issue #643 PR-4 removed its two `post_generate` emit sites (the
+    §5.1 surface guard and the io_contract wrap; readiness runs the same `--stage compile`
+    validator before any skip of Compile), and the rows that drove them through the real CLI went
+    with them. What stays: an ordinary post_generate finding answers 1 through the real CLI,
+    the compile stage returns the io_contract finding as a plain violation, and the exit-code
+    constants are documented and distinct (``_help`` calls ``main(["--help"])`` in-process).
     """
 
     #: `_GOOD_SOURCE` with the metrics-basis writer's dummy renamed in header and declaration:
@@ -24415,18 +24292,11 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
               source: str | None = None) -> Path:
         """A minimal post_generate tree whose model source is faithful to §5.1 by default.
 
-        ``public_api.module_parameters``: pass None for the pre-contract (stale) shape, or the §5.1
-        values for a healthy IR. ``signatures`` is always seeded faithfully, because issue #153
-        PR-2 put the signature half under the same stale-IR guard — leaving it empty would make the
-        "healthy IR" row stale for the OTHER reason and turn the exit-code precedence row green for
-        the wrong cause. The IR carries a VALID ``io_contract`` (``_HEALTHY_IO_CONTRACT``): before
-        issue #238 it carried none, and the io_contract reader's findings were the ORDINARY half
-        of every row; #238 made those findings the stale-IR class too (their subject is the
-        certified IR), so a missing io_contract now answers rc 4 on its own and would hide the
-        §5.1 guard's TYPE from every subprocess row (round-3 disclosure: ``str(`` at the guard's
-        emit site stayed green in all 18 rows). A row that needs an ORDINARY violation passes
-        ``source=self._DRIFTED_SOURCE`` or corrupts ``source_meta.json``; a row about the
-        io_contract half rewrites the contract through ``_seed_io_contract_ir``.
+        ``public_api.module_parameters``: pass None to omit the key, or the §5.1 values for a
+        healthy IR; ``signatures`` is always seeded faithfully, and the IR carries a VALID
+        ``io_contract`` (``_HEALTHY_IO_CONTRACT``). A row that needs an ORDINARY violation passes
+        ``source=self._DRIFTED_SOURCE``; a row about the io_contract rewrites the contract through
+        ``_seed_io_contract_ir``.
         """
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
@@ -24470,37 +24340,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
              "--source-id", "src_20260415_001"],
             cwd=str(repo_root), capture_output=True, text=True, check=False)
 
-    def test_stale_ir_answers_the_dedicated_exit_code_in_a_real_subprocess(self) -> None:
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            proc = self._run_cli(tmp, self._seed(tmp, module_parameters=None))
-        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                         (proc.stdout, proc.stderr))
-        # The marker stays in the message for a human reader; it carries no decision.
-        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
-        # rc 4 has exactly ONE source here — the §5.1 guard — so its TYPE is what the exit
-        # code observes. A missing io_contract would answer 4 by itself (issue #238) and hide a
-        # guard demoted to a plain str; the fixture carries a valid one for that reason.
-        marked = [line for line in proc.stdout.splitlines()
-                  if vps.STALE_DEPENDENCY_IR_MARKER in line]
-        self.assertEqual(1, len(marked), proc.stdout)
-        self.assertIn("does not carry the controlled_spec", marked[0])
-        # The remedy (issue #238) is `--resume` — readiness refuses the IR and Compile
-        # re-derives it — and it says that `--with-deps` is NOT one: the closure driver skips a
-        # ready member without re-validating its IR. The round-1 wording sent the operator to
-        # `--with-deps` "when the closure must be re-certified too"; pin the FACT, not the token
-        # order (an order pin stayed green on that wording — round-2 correctness F2).
-        guard = [line for line in proc.stdout.splitlines()
-                 if "does not carry the controlled_spec" in line]
-        self.assertEqual(1, len(guard), proc.stdout)
-        self.assertIn("`--resume`", guard[0])
-        self.assertIn("never for a validator rule", guard[0])
-        self.assertNotIn("when the closure must be re-certified", guard[0])
-
     def _seed_io_contract_ir(self, tmp: Path, *, evidence_ref: str,
                              source: str | None = None) -> tuple[Path, str]:
-        """The issue #238 shape: a healthy §5.1 surface (so the pre-existing stale-IR guard
-        does NOT fire) and an `io_contract` input whose `evidence_ref` is `evidence_ref`.
+        """The issue #238 shape: a healthy §5.1 surface and an `io_contract` input whose
+        `evidence_ref` is `evidence_ref`.
         Returns the pipeline dir and the ir_ref (`_seed` has seeded the shape_expr schema)."""
         pipeline_dir = self._seed(
             tmp,
@@ -24521,71 +24364,9 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         ir_path.write_text(json.dumps(doc), encoding="utf-8")
         return pipeline_dir, "workspace/ir/x"
 
-    def test_an_io_contract_finding_on_the_certified_ir_answers_the_stale_ir_exit_code_in_a_real_subprocess(self) -> None:
-        """Issue #238: at `--stage post_generate` the io_contract reader is given nothing but
-        the node's own certified IR, so its findings are the class rc 4 already names — a
-        verdict Compile.static would have given had it run, which no Generate retry can change.
-        A real subprocess, because the channel is the violation's TYPE and any list rebuild
-        between the wrap and `main` degrades it to rc 1 silently."""
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            _seed_shape_expr_schema_into(tmp)
-            pipeline_dir, _ = self._seed_io_contract_ir(
-                tmp, evidence_ref="raw/execution_trace.json")
-            proc = self._run_cli(tmp, pipeline_dir)
-        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                         (proc.stdout, proc.stderr))
-        hits = [line for line in proc.stdout.splitlines()
-                if "names no raw-evidence artifact" in line]
-        self.assertEqual(1, len(hits), proc.stdout)
-        # The original finding text survives (the wrap is a suffix), the marker follows it,
-        # the remedy is `--resume`, and it says `--with-deps` does NOT re-validate a dependency's
-        # IR (pin the fact, not the token order — see the §5.1 row above).
-        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, hits[0])
-        self.assertLess(hits[0].index("names no raw-evidence artifact"),
-                        hits[0].index(vps.STALE_DEPENDENCY_IR_MARKER))
-        self.assertIn("`--resume`", hits[0])
-        self.assertIn("does NOT re-validate", hits[0])
-        self.assertNotIn("when the closure must be re-certified", hits[0])
-        # No §5.1 guard fired: the rc 4 came from the io_contract wrap alone.
-        self.assertNotIn("does not carry the controlled_spec", proc.stdout)
-
-    def test_every_io_contract_finding_on_the_certified_ir_is_wrapped(self) -> None:
-        """The wrap is per FINDING and per CLASS. The incident IR carried three io_contract
-        findings of TWO classes (two `evidence_ref` ones and a `required_evidence[].artifact`
-        one); a wrap that marked only the first (rc 4 either way) would strip the marker and
-        the remedy from the others in `gate_meta.failure_excerpt`, and a wrap keyed on the text
-        of one class (`"evidence_ref" in v`) would leave an IR carrying only the other class
-        on rc 1 — the warm Generate retries #238 was opened on. Both mutants survived earlier
-        rounds because every subprocess row seeded one finding of one class (round-1
-        correctness F5, round-2 security F1). Both classes are seeded here, positionally
-        distinct in the message, and each bullet must carry the marker."""
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            _seed_shape_expr_schema_into(tmp)
-            pipeline_dir, _ = self._seed_io_contract_ir(
-                tmp, evidence_ref="raw/execution_trace.json")
-            ir_path = tmp / "workspace/ir/x/spec.ir.yaml"
-            doc = json.loads(ir_path.read_text(encoding="utf-8"))
-            doc["io_contract"]["raw_requirements"]["required_evidence"].append(
-                {"artifact": "execution_trace.json", "required": True})
-            ir_path.write_text(json.dumps(doc), encoding="utf-8")
-            proc = self._run_cli(tmp, pipeline_dir)
-        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
-        ref_hits = [line for line in proc.stdout.splitlines()
-                    if "names no raw-evidence artifact" in line]
-        enum_hits = [line for line in proc.stdout.splitlines()
-                     if "required_evidence[1].artifact 'execution_trace.json' must be one of" in line]
-        self.assertEqual(1, len(ref_hits), proc.stdout)
-        self.assertEqual(1, len(enum_hits), proc.stdout)
-        # The second class does not carry the first class's token, so a lexical wrap fails here.
-        self.assertNotIn("evidence_ref", enum_hits[0].split(vps.STALE_DEPENDENCY_IR_MARKER)[0])
-        for line in ref_hits + enum_hits:
-            self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, line)
-
     def test_the_same_io_contract_finding_stays_rc_1_at_compile_stage(self) -> None:
-        """Decision pinned in both directions: at `--stage compile` the IR is the artifact
-        under repair, so the same finding is a plain violation (rc 1 → `compile_static_violation`
+        """At `--stage compile` the IR is the artifact under repair, so an io_contract finding
+        is a plain violation (rc 1 → `compile_static_violation`
         → a warm `compile.generate`), never the terminal type."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
@@ -24598,48 +24379,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                          violations)
         self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, hits[0])
 
-    def test_a_healthy_io_contract_adds_no_stale_ir_violation_at_post_generate(self) -> None:
-        """The wrap is applied per FINDING, so an IR the reader accepts contributes nothing:
-        wrapping the reader's success as a violation would terminalize every Generate."""
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            _seed_shape_expr_schema_into(tmp)
-            pipeline_dir, _ = self._seed_io_contract_ir(
-                tmp, evidence_ref="perf.json")
-            proc = self._run_cli(tmp, pipeline_dir)
-        self.assertNotEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                            (proc.stdout, proc.stderr))
-        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
-
-    def test_cooccurring_stale_and_ordinary_violations_answer_the_stale_ir_exit_code(self) -> None:
-        """Hoisting `return 1` above the isinstance check would degrade this to 1.
-
-        An ordinary violation (an unparseable `source_meta.json`, a plain-`str` finding)
-        accompanies the stale IR here — so the terminal code must win. The IR's own io_contract
-        findings no longer serve as the ordinary half (issue #238 made them stale-IR class), and
-        a drifted source cannot either: the §5.1 guard returns before the source is compared.
-        """
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            pipeline_dir = self._seed(tmp, module_parameters=None)
-            (pipeline_dir / "source" / "src_20260415_001" / "source_meta.json").write_text(
-                "{not json", encoding="utf-8")
-            proc = self._run_cli(tmp, pipeline_dir)
-        self.assertTrue(
-            [line for line in proc.stdout.splitlines()
-             if line.startswith("- ") and vps.STALE_DEPENDENCY_IR_MARKER not in line],
-            f"fixture no longer produces an ordinary violation to co-occur: {proc.stdout}")
-        # And exactly one marked bullet, the guard's — the same single-source pin as above.
-        self.assertEqual(1, sum(vps.STALE_DEPENDENCY_IR_MARKER in line
-                                for line in proc.stdout.splitlines()), proc.stdout)
-        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
-
     def test_ordinary_violations_keep_the_generic_failure_exit_code(self) -> None:
         """Wrapping more than the stale-IR violation would route ordinary content failures —
         which a warm Generate retry CAN repair — to a terminal fail_closed. The healthy IR
-        carries a valid io_contract here so the ONLY finding is the drifted source's; with the
-        fixture's default (no io_contract) the IR-subject findings would answer rc 4 by design
-        (issue #238) and this row would observe the wrong thing."""
+        carries a valid io_contract here so the ONLY finding is the drifted source's."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             _seed_shape_expr_schema_into(tmp)
@@ -25155,12 +24898,6 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         v = self._generate(other)
         self.assertTrue(any("procedure 'hx__advance' drifts" in x and "procedure(hx_rhs_1d)" in x
                             for x in v), v)
-
-    def test_stale_ir_without_the_key_is_terminal_at_generate(self) -> None:
-        # A `--resume` into Generate on an IR certified before the carrier existed: the same
-        # guard the signatures / module_parameters halves take (terminal by TYPE).
-        v = self._generate(self._MODEL, public_api=self._public_api(interfaces=_OMIT))
-        self.assertTrue(any(isinstance(x, vps.StaleDependencyIRViolation) for x in v), v)
 
 
 class PrototypeScopeGateTests(unittest.TestCase):

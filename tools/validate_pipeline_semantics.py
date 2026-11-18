@@ -5448,16 +5448,9 @@ def _exit_code_for_violations(violations: list[str]) -> int:
     co-findings lose their warm repair; they are still PRINTED, so they reach
     `gate_meta.failure_excerpt` and the operator.
 
-    The two terminal shapes CAN co-occur on a real node. This paragraph used to say they could
-    not ("a stale-IR violation is raised only on an `infrastructure` node"), which has been false
-    since issue #153 PR-2 put `component` into `_EXACT_PUBLISHED_SURFACE_KINDS`: an M3c physics
-    node is a `component`, so its §5.1 guard (rc 4) and its host-runner wrap (rc 5) could already
-    co-occur. Issue #238 added a second rc 4 source that applies to every `spec_kind` — the
-    io_contract half (`_as_stale_certified_ir`). Either way 4 wins: the re-certification it names
-    re-renders the runner 5 would have sent the operator to. Pinned on a hand-built list here
-    (`test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`) and through the
-    real CLI on an M3c node
-    (`test_a_stale_certified_ir_on_an_m3c_node_answers_4_over_5_in_a_real_subprocess`).
+    No gate constructs a `StaleDependencyIRViolation` since issue #643 PR-4 (see
+    `STALE_DEPENDENCY_IR_EXIT_CODE`), so the 4-over-5 order is pinned on a hand-built list only
+    (`test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`).
 
     6 (no kernel ran on the device, issue #307) comes after both: a stale IR or a wrong
     host-authored file is a cause the operator fixes FIRST, and either can be why the kernels did
@@ -8018,7 +8011,7 @@ def _validate_ir_module_parameters_against_section51(
                 f"'{spec_params[name]}'")
 
 
-# Sentinel embedded in the Generate.static stale-IR violation so a HUMAN reader sees, in the
+# Sentinel embedded in a stale-IR violation so a HUMAN reader sees, in the
 # message itself, why retrying Generate is futile: the leaf cannot mutate the certified IR, so the
 # fix is a re-certification, not a re-author. It carries NO decision — the conductor routes this
 # failure as TERMINAL (fail_closed) on `STALE_DEPENDENCY_IR_EXIT_CODE` and on nothing in the text.
@@ -8031,14 +8024,14 @@ STALE_DEPENDENCY_IR_MARKER = "[stale-dependency-ir]"
 SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE = 3
 
 #: `main`'s exit code when a violation's SUBJECT is the node's own certified IR, which predates
-#: the current contract: a `spec.ir.yaml` that `Compile.static` — skipped on this resume — would
-#: reject today (the §5.1 surface guard, and since issue #238 the io_contract rules at
-#: `--stage post_generate`). The fix is a re-certification (readiness refuses such an IR and
-#: Compile re-derives it on `--resume`), never a re-authored model, so the conductor routes it
-#: TERMINAL. Despite the name, neither emit site is about a DEPENDENCY's IR — and a dependency's
-#: IR is NOT re-validated by readiness (`_verify_dep_stage_detail` is the derivation-key lookup alone, `docs/ORCHESTRATION.md` §13a; it runs no validator), so
-#: `--with-deps` is not a remedy for this code. Distinct from 0/1/2/3, so a caller tells all five
-#: apart without reading the output.
+#: the current contract: a `spec.ir.yaml` that `Compile.static` would reject today. The fix is a
+#: re-certification, never a re-authored model, so the conductor routes it TERMINAL. NO GATE
+#: EMITS IT since issue #643 PR-4: its two emit sites at `--stage post_generate` (the §5.1 surface
+#: guard in `_validate_generated_signatures` and the io_contract wrap, issue #238) re-ran
+#: `Compile.static`'s readers on the certified IR, and readiness (`check-phase-certified`'s
+#: compile clause, `orchestration_runtime._certified_ir_violations`) runs the same validator
+#: before any skip of Compile. The code, its type and the conductor's arms remain. Distinct from
+#: 0/1/2/3, so a caller tells all five apart without reading the output.
 STALE_DEPENDENCY_IR_EXIT_CODE = 4
 
 
@@ -8056,8 +8049,9 @@ class StaleDependencyIRViolation(str):
 
     LIMIT: the channel lives in the object, so REBUILDING the ``violations`` list (``[str(v) for v
     in violations]``, a JSON round-trip, ``sorted`` into new strings) silently drops it back to
-    exit code 1. ``test_stale_ir_answers_the_dedicated_exit_code_in_a_real_subprocess`` drives the
-    real CLI end to end, so such a rebuild fails loudly rather than degrading in production.
+    exit code 1. No gate constructs one since issue #643 PR-4 (see
+    :data:`STALE_DEPENDENCY_IR_EXIT_CODE`), so no real-CLI row drives this type any more; the
+    sibling types' real-CLI rows cover the same channel.
     """
 
 
@@ -8133,30 +8127,6 @@ def _as_host_authored(violation: str, producer: str) -> HostAuthoredArtifactViol
         f"REPOSITORY ({producer}), not by the Generate leaf, which has no write authority over "
         f"it. Re-running Generate cannot change this finding. The defect is in the producer, or "
         f"in the IR it renders from: fix it (or re-compile the IR), then --resume.")
-
-
-def _as_stale_certified_ir(violation: str, ir_path: Path) -> StaleDependencyIRViolation:
-    """Wrap one io_contract finding whose subject is the certified IR, and append the sentence
-    that says what to do (issue #238).
-
-    ATTRIBUTION IS POSITIONAL, NOT LEXICAL: the caller is `_validate_post_generate_stage_impl`,
-    whose io_contract call is given nothing but the node's own certified `spec.ir.yaml` — so
-    every finding it returns is about a file the Generate leaf has no write authority over.
-    Nothing parses the violation string to decide this. The `--stage compile` call of the same
-    reader is deliberately NOT wrapped: there the IR is the artifact under repair and rc 1 →
-    `compile_static_violation` → a warm `compile.generate` is the right route.
-
-    The added text is a SUFFIX, so the leading ``f"{path}: "`` prefix and every existing
-    substring pin on the io_contract messages survive it.
-    """
-    return StaleDependencyIRViolation(
-        f"{violation} — {STALE_DEPENDENCY_IR_MARKER} the subject is the certified IR at {ir_path}, "
-        "which the Generate leaf has no write authority over: Compile.static, skipped on this "
-        "resume, would have rejected it under the current contract. Re-running Generate cannot "
-        "change this finding. `--resume` the run: check-phase-certified refuses an IR the current "
-        "validator rejects and Compile re-derives it. (`--with-deps` does NOT re-validate a "
-        "dependency's certified IR: the closure driver re-runs a member only when its status or "
-        "dependency freshness refuses it.)")
 
 
 def _validate_generated_signatures(
@@ -8271,57 +8241,6 @@ def _validate_generated_signatures(
         violations.append(
             f"{cs_path}: §5.1 canonical interface block {iface_err} — cannot pin the generated "
             "model signatures against it")
-        return
-
-    # Backward-compatibility guard for a stale / pre-contract certified IR. An IR compiled BEFORE the
-    # public_api.module_parameters contract carries no such key; a partially-migrated or corrupt one
-    # can carry an empty/null list or drifted values. On a --resume into Generate, Compile.static does
-    # NOT re-run, so that IR reaches here unvalidated; the Generate leaf now authors the `integer,
-    # parameter` lines from public_api.module_parameters, so any of those shapes would make it emit
-    # none/wrong and this gate would fail below with a confusing source drift that re-running Generate
-    # can never repair. Run the SAME comparison Compile.static uses (IR module_parameters == §5.1 by
-    # normalized name+value): ANY mismatch means the certified IR is stale/corrupt, so fail closed
-    # with the actionable re-certify signal, rather than a warm-retry drift. What makes it TERMINAL is
-    # the violation's TYPE (`StaleDependencyIRViolation`, which `main` maps to a dedicated exit
-    # code) — the marker in the message is for a human reader. This line said "+ the terminal
-    # marker" while the marker still carried the decision.
-    pub = ir.get("public_api")
-    stale_ir_violations: list[str] = []
-    # The parameter NAMES are matched under the target language's case rule, a `bundle_facts`
-    # fact; asked here, where it is first read, so a language whose renderer refuses §5.1 is
-    # reported for that first.
-    bundle = _language_module(
-        language, "bundle_facts", f"{loc}: this {ir_kind} node's signatures cannot be pinned",
-        violations)
-    if bundle is None:
-        return
-    _validate_ir_module_parameters_against_section51(
-        ir_path, ir_kind, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations,
-        signatures=signatures, identifier_key=bundle.identifier_key)
-    # SIGNATURES take the same guard, and issue #153 PR-2 is why. A `component` IR certified before
-    # PR-2 carries no `public_api.signatures` at all — the key was FORBIDDEN then — so on a
-    # `--resume` into Generate, where Compile.static does not re-run, the leaf has no signatures to
-    # publish and cannot obtain them (it is walled off from controlled_spec.md). Without this guard
-    # the stanza comparison below would report a source drift on every attempt and the warm retry
-    # would never converge: the leaf would be told to fix source that is not the problem. The
-    # module-parameter half above has the same shape for the harness; both are terminal by the
-    # violation's TYPE, which `main` maps to a dedicated exit code.
-    _validate_ir_signatures_against_section51(
-        ir_path, ir_kind, pub if isinstance(pub, dict) else {},
-        op_stanzas, type_stanzas, stale_ir_violations, iface_stanzas=proto_stanzas,
-        signatures=signatures)
-    if stale_ir_violations:
-        loc = model_files[0] if model_files else ir_path
-        violations.append(StaleDependencyIRViolation(
-            f"{loc}: {STALE_DEPENDENCY_IR_MARKER} the certified IR at {ir_path} does not carry the "
-            f"controlled_spec §5.1 surface the current contract pins for a {ir_kind} node (absent, "
-            "empty, null, or drifted public_api.signatures / public_api.module_parameters — a "
-            "pre-contract or corrupt IR that Compile.static, skipped on this resume, would have "
-            "rejected) — re-certify the node: `--resume` the run (check-phase-certified refuses an "
-            "IR the current validator rejects and Compile re-derives it) so Compile transcribes "
-            "the §5.1 surface into the IR; a certified IR cannot be repaired by re-running "
-            "Generate, and `--with-deps` re-runs a closure member only when its own status or "
-            "dependency freshness refuses it, never for a validator rule"))
         return
 
     signatures.generated_source_violations(
@@ -8927,18 +8846,6 @@ def _validate_post_generate_stage_impl(
         # Host invariant broken: the conductor passes `--source-id` for the source it just
         # wrote (issue #643, D7).
         raise ValueError(f"{pipeline_dir / 'source'}: no source directory")
-
-    if ir_ref:
-        ir_dir = (repo_root / ir_ref).resolve()
-        derived_path = ir_dir / "spec.ir.yaml"
-        if derived_path.exists():
-            # The subject here is the node's own CERTIFIED IR, not the source under review: a
-            # finding is one Compile.static would have raised had it run, and the Generate leaf
-            # cannot change it. Terminal by TYPE (issue #238 measured four generate launches
-            # spent on it); `--stage compile`'s call of the same reader stays plain.
-            ir_violations: list[str] = []
-            _validate_io_contract_file(repo_root, derived_path, ir_violations)
-            violations.extend(_as_stale_certified_ir(v, derived_path) for v in ir_violations)
 
     execution = _stub_execution(pipeline_dir, node_key)
     _validate_generate_outputs_for_generation(

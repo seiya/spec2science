@@ -1478,9 +1478,11 @@ class PureRenderTests(unittest.TestCase):
         # re-worded its "(an LLM `structural_violation` ...)" parenthetical; round 2 added the
         # deterministic `Validate.execute` reopens and the manual revocation's findings; round 3
         # made that recipe a complete command. READ: same, nothing assigned. Issue #534 PR-J4-d
-        # renamed the module the recipe imports (`tools.leaf_contract`). READ: same.
+        # renamed the module the recipe imports (`tools.leaf_contract`). READ: same. Issue #643
+        # PR-4 dropped the clause naming `stale_dependency_ir` as a gate-side backstop (no gate
+        # emits it now). READ: same, nothing assigned.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #f6a1541ab0e7"),
+         " #f21f81a19857"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
