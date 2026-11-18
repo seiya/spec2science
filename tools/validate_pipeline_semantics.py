@@ -567,16 +567,13 @@ def _versioned_node_key_token(raw: str) -> str:
     the canonical node_key the dependency-surface sidecar is keyed by and the membership gate
     looks an entry up by (`_called_dep_key`). The consistency gate compares `direct_deps` keys
     in this form (issue #661), so a key it accepts is a key the membership gate finds. A token
-    with no `/`, or with an empty kind or spec_id, is returned stripped."""
+    with no `/` is returned stripped."""
     token = raw.strip()
     if "/" not in token:
         return token
     kind, body = token.split("/", 1)
     spec_id, sep, version = body.partition("@")
-    kind, spec_id = kind.strip(), spec_id.strip()
-    if not kind or not spec_id:
-        return token
-    return f"{kind}/{spec_id}" + (f"@{version.strip()}" if sep else "")
+    return f"{kind.strip()}/{spec_id.strip()}" + (f"@{version.strip()}" if sep else "")
 
 
 def _node_safe_to_node_key(node_safe: str) -> str | None:
