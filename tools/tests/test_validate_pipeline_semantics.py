@@ -1349,6 +1349,22 @@ end program shallow_water2d_runner
                         "required_evidence": entries}}})
                     self.assertEqual(expected, _required_raw_evidence(repo_root, execution))
 
+            # Issue #662: the block the conductor reads is `io_contract.raw_requirements`, and no
+            # other. A top-level copy that says otherwise — the legacy flat form, which these
+            # readers used to take in preference — is ignored, in both directions.
+            from tools.validate_pipeline_semantics import _state_snapshot_required
+            nested = [{"artifact": "state_snapshots", "required": True}]
+            decoy = [{"artifact": "state_snapshots", "required": False}]
+            for inner, outer, expected in ((nested, decoy, {"state_snapshots"}),
+                                           (decoy, nested, set())):
+                with self.subTest(nested=inner, top_level=outer):
+                    _write_json(ir_dir / "spec.ir.yaml", {
+                        "io_contract": {"raw_requirements": {"required_evidence": inner}},
+                        "raw_requirements": {"required_evidence": outer}})
+                    self.assertEqual(expected, _required_raw_evidence(repo_root, execution))
+                    self.assertEqual(bool(expected),
+                                     _state_snapshot_required(repo_root, execution))
+
     def _d7_violations(self, repo_root: Path, snapshots: dict[str, dict]) -> list[str]:
         """`_validate_raw_evidence` over a node whose IR declares `x` and `y`, with `snapshots`
         as the capture files, reduced to what the completeness gate (D7) says."""
@@ -8654,19 +8670,19 @@ end program shallow_water2d_runner
                             "raw_variables": ["h"],
                         }
                     ],
-                },
-                "raw_requirements": {
-                    "required_evidence": [
-                        {
-                            "artifact": "state_snapshots",
-                            "required": True,
-                            "schema": {
-                                "variables": [{"name": "h", "shape_expr": "[2,2]"}],
-                                "time_variable": "snapshot_index",
-                                "time_shape_expr": time_shape_expr,
-                            },
-                        }
-                    ]
+                    "raw_requirements": {
+                        "required_evidence": [
+                            {
+                                "artifact": "state_snapshots",
+                                "required": True,
+                                "schema": {
+                                    "variables": [{"name": "h", "shape_expr": "[2,2]"}],
+                                    "time_variable": "snapshot_index",
+                                    "time_shape_expr": time_shape_expr,
+                                },
+                            }
+                        ]
+                    },
                 },
             }
 
@@ -8695,6 +8711,55 @@ end program shallow_water2d_runner
                     any("time_shape_expr" in v and "scalar" in v for v in good_violations),
                     f"scalar must not be flagged, got: {good_violations}",
                 )
+            finally:
+                _active_repo_root_for_schema.reset(token)
+
+    def test_a_top_level_raw_requirements_copy_does_not_hide_the_nested_block(self) -> None:
+        """Issue #662: `Compile.static` reads `io_contract.raw_requirements`, the block the
+        conductor reads, and no other. The flat-form lift ran only when the document had no
+        top-level `raw_requirements`, so a valid top-level copy beside a defective nested block
+        cleared the gate while the conductor read the defect. Each document is driven through
+        `_validate_io_contract_file`; the valid one must produce no finding, or a finding of the
+        defective one could come from somewhere else."""
+        import copy
+        from tools.validate_pipeline_semantics import (
+            _active_repo_root_for_schema,
+            _validate_io_contract_file,
+        )
+
+        snapshots = {"artifact": "state_snapshots", "required": True,
+                     "schema": {"variables": [{"name": "q", "shape_expr": "[nx]"}],
+                                "time_variable": "t"}}
+        valid = {"io_contract": {
+            "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
+            "outputs": [{"name": "metric", "shape_expr": "scalar", "evidence_ref": "perf.json",
+                         "raw_variables": ["q"]}],
+            "raw_requirements": {"required_evidence": [snapshots]}}}
+        defective = copy.deepcopy(valid)
+        defective["io_contract"]["raw_requirements"]["required_evidence"].append(
+            copy.deepcopy(snapshots))
+        masked = copy.deepcopy(defective)
+        masked["raw_requirements"] = copy.deepcopy(valid["io_contract"]["raw_requirements"])
+
+        def findings(doc: dict) -> list[str]:
+            path = repo_root / "spec.ir.yaml"
+            path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            violations: list[str] = []
+            _validate_io_contract_file(repo_root, path, violations)
+            return [v for v in violations if "state_snapshots a second" in v]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            token = _active_repo_root_for_schema.set(repo_root)
+            try:
+                path = repo_root / "spec.ir.yaml"
+                path.write_text(yaml.safe_dump(valid), encoding="utf-8")
+                clean: list[str] = []
+                _validate_io_contract_file(repo_root, path, clean)
+                self.assertEqual(clean, [])
+                self.assertEqual(len(findings(defective)), 1)
+                self.assertEqual(findings(masked), findings(defective))
             finally:
                 _active_repo_root_for_schema.reset(token)
 
@@ -11168,6 +11233,36 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # `time_variable` is deliberately NOT a provenance source — pin that the fix
         # widened the spelling only, not the set of contributing schema keys.
         self.assertNotIn("t", canonical or set())
+
+    def test_snapshot_provenance_reads_the_io_contract_section_alone(self) -> None:
+        """Issue #662: provenance is read from `io_contract` and its `raw_requirements` — the
+        blocks the conductor reads — and from no other spelling. A top-level `raw_requirements`
+        (the legacy flat form, once read in preference to the nested block) and a double-nested
+        `io_contract.io_contract` (once drilled into in place of the real inputs and outputs)
+        each contributed names the conductor never reads; neither contributes one now, and the
+        nested schema's variable is still in the set."""
+        from tools.validate_pipeline_semantics import _extract_spec_var_names
+
+        def spec_vars(doc: dict) -> set[str] | None:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "spec.ir.yaml"
+                path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+                return _extract_spec_var_names(path)
+
+        def snapshots(name: str) -> dict:
+            return {"required_evidence": [{"artifact": "state_snapshots", "schema": {
+                "variables": [{"name": name}], "time_variable": "t"}}]}
+
+        base = {"io_contract": {"inputs": [{"name": "q_in"}], "outputs": [{"name": "q_out"}],
+                                "raw_requirements": snapshots("u")}}
+        self.assertEqual(spec_vars(base), {"q_in", "q_out", "u"})
+        top_level = {**base, "raw_requirements": snapshots("decoy_root")}
+        double = {"io_contract": {**base["io_contract"], "io_contract": {
+            "inputs": [{"name": "decoy_in"}], "outputs": [{"name": "decoy_out"}]}}}
+        for label, doc in (("top-level raw_requirements", top_level),
+                           ("io_contract.io_contract", double)):
+            with self.subTest(decoy=label):
+                self.assertEqual(spec_vars(doc), {"q_in", "q_out", "u"})
 
     def test_the_compile_authoring_rules_reach_the_leaf_that_is_gated_on_them(self) -> None:
         """The rules a `Compile.generate` leaf is gated on are stated where that leaf reads.

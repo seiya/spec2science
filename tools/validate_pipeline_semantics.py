@@ -2196,57 +2196,6 @@ def _validate_pipeline_targets_resolve(
                 "and <target_id> must name a loadable spec/targets/<target_id>.yaml")
 
 
-def _io_contract_for_execution(
-    repo_root: Path, execution: NodeExecution
-) -> dict[str, Any] | None:
-    ir_dir = _ir_dir_for_execution(repo_root, execution)
-    if ir_dir is None:
-        return None
-
-    contract_path = ir_dir / "spec.ir.yaml"
-    if not contract_path.exists():
-        return None
-
-    try:
-        data = _read_yaml(contract_path)
-    except (json.JSONDecodeError, yaml.YAMLError):
-        try:
-            data = _read_json(contract_path)
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(data, dict):
-        return None
-    # Unwrap the io_contract section if the doc uses the new IR nesting:
-    # spec.ir.yaml.io_contract holds inputs / outputs / raw_requirements /
-    # semantic_dependency as siblings.  Tests and
-    # callers that expect derived_contract.json's flat layout will see those
-    # siblings at the top level after this transform.
-    if (
-        isinstance(data.get("io_contract"), dict)
-        and (
-            "inputs" in data["io_contract"]
-            or "outputs" in data["io_contract"]
-            or "raw_requirements" in data["io_contract"]
-        )
-        and "raw_requirements" not in data
-    ):
-        section = data["io_contract"]
-        flattened: dict[str, Any] = {
-            "io_contract": {
-                "inputs": section.get("inputs"),
-                "outputs": section.get("outputs"),
-            },
-        }
-        for key in (
-            "raw_requirements",
-            "semantic_dependency",
-        ):
-            if key in section:
-                flattened[key] = section[key]
-        return flattened
-    return data
-
-
 def _read_yaml(path: Path) -> Any:
     # Decode STRICTLY, and translate the two errors that would otherwise escape into the one the
     # callers already handle (`yaml.YAMLError` -> "invalid json" / a contract violation):
@@ -3589,11 +3538,22 @@ def _shape_matches_expr(shape_expr: str, actual_shape: list[int]) -> bool:
 def _raw_requirements_for_execution(
     repo_root: Path, execution: NodeExecution
 ) -> dict[str, Any] | None:
-    contract = _io_contract_for_execution(repo_root, execution)
-    if not isinstance(contract, dict):
+    """`io_contract.raw_requirements` of the node's `spec.ir.yaml` — the block the conductor
+    reads (`Conductor._required_evidence_artifacts`), and no other: a top-level
+    `raw_requirements` is ignored (issue #662)."""
+    contract_path = _ir_document_path_for_execution(repo_root, execution)
+    if contract_path is None or not contract_path.exists():
         return None
-
-    raw_requirements = contract.get("raw_requirements")
+    try:
+        data = _read_yaml(contract_path)
+    except (json.JSONDecodeError, yaml.YAMLError):
+        try:
+            data = _read_json(contract_path)
+        except json.JSONDecodeError:
+            return None
+    io_contract = data.get("io_contract") if isinstance(data, dict) else None
+    raw_requirements = (
+        io_contract.get("raw_requirements") if isinstance(io_contract, dict) else None)
     if not isinstance(raw_requirements, dict):
         return None
     return raw_requirements
@@ -3712,46 +3672,16 @@ def _validate_io_contract_file(
         violations.append(f"{contract_path}: must be json object")
         return
 
-    # tests.md is referenced from `meta.source_refs.tests`, which the io_contract flattening below
-    # does not carry — resolve it from the document while we still hold it.
+    # tests.md is referenced from `meta.source_refs.tests`, outside the `io_contract` section.
     tests_path = _tests_path_from_ir_document(repo_root, contract)
-    # `algorithm.state_variables` is not carried by the flattening either; keep the declared
-    # names for the snapshot-coverage rule below (Z6, issue #255).
+    # The declared `algorithm.state_variables`, for the snapshot-coverage rule below (Z6, issue
+    # #255).
     declared_state_variables = _algorithm_state_variable_names(contract)
     # `state_history`, `step_series` and `restart_points` are admitted on every IR (issue #644
     # P4b): `drive_violations` (h) pins them to `drive.loop` / `drive.history` /
     # `drive.restart_points` on a node that carries `drive`, and an IR with none is an
     # `infrastructure` node's (a `component` / `problem` IR without `drive` is refused by the
     # same gate), whose own runner commits the records its suite judges.
-
-    # New IR: spec.ir.yaml has the io_contract section nested under
-    # `io_contract:` and contains inputs / outputs / raw_requirements /
-    # semantic_dependency as siblings.  The
-    # original validator was written against derived_contract.json's flat
-    # structure where `io_contract`, `raw_requirements`, etc. were all
-    # top-level keys.  When we see the new nested form, lift the io_contract
-    # section to act as the contract dict, but keep `io_contract.inputs`
-    # path semantics by wrapping inputs/outputs in a synthetic `io_contract`
-    # key.
-    if (
-        isinstance(contract.get("io_contract"), dict)
-        and ("inputs" in contract["io_contract"] or "outputs" in contract["io_contract"])
-        and "raw_requirements" not in contract  # not legacy flat form
-    ):
-        io_section = contract["io_contract"]
-        new_contract: dict[str, Any] = {
-            "io_contract": {
-                "inputs": io_section.get("inputs"),
-                "outputs": io_section.get("outputs"),
-            },
-        }
-        for key in (
-            "raw_requirements",
-            "semantic_dependency",
-        ):
-            if key in io_section:
-                new_contract[key] = io_section[key]
-        contract = new_contract
 
     output_items: list[tuple[int, dict[str, Any]]] = []
     io_contract = contract.get("io_contract")
@@ -3839,7 +3769,12 @@ def _validate_io_contract_file(
                         )
                 output_items.append((idx, item))
 
-    raw_requirements = contract.get("raw_requirements")
+    # The block the conductor reads (`Conductor._required_evidence_artifacts`,
+    # `_author_snapshot_schema`): `io_contract.raw_requirements`, and no other. A top-level
+    # `raw_requirements` is ignored (issue #662: the legacy flat form, read here in preference to
+    # the nested block, let a valid top-level copy hide a defective nested one).
+    raw_requirements = (
+        io_contract.get("raw_requirements") if isinstance(io_contract, dict) else None)
     if not isinstance(raw_requirements, dict):
         violations.append(f"{contract_path}:raw_requirements must be object")
         return
@@ -4111,18 +4046,10 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
             return None
     if not isinstance(data, dict):
         return None
-    # Unwrap the new IR layout where io_contract.{inputs,outputs} live inside
-    # the spec.ir.yaml `io_contract:` section.  When already in legacy flat
-    # form we'll see `inputs`/`outputs` at the root of `io_contract`.
+    # The `io_contract` section the conductor reads, and no other spelling of it: neither a
+    # top-level `raw_requirements` nor a nested `io_contract.io_contract` contributes a name
+    # (issue #662).
     ic = data.get("io_contract")
-    if isinstance(ic, dict) and isinstance(ic.get("io_contract"), dict):
-        # Already double-nested: drill in once more
-        ic = ic["io_contract"]
-    elif isinstance(ic, dict) and "inputs" not in ic and "outputs" not in ic:
-        # io_contract section but inputs/outputs not visible at this level —
-        # try the section itself (the new IR sometimes stores inputs/outputs
-        # as siblings of raw_requirements at the same level)
-        pass
     if not isinstance(ic, dict):
         return None
     names: set[str] = set()
@@ -4145,13 +4072,7 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
     # state_snapshots entries are considered because derived-contract validation enforces
     # schema.variables structure exclusively for that artifact type; schemas on other
     # artifact entries are unchecked and could inject arbitrary names.
-    # raw_requirements may live at the root (legacy derived_contract.json) or
-    # nested under spec.ir.yaml.io_contract.raw_requirements (new IR).
-    rr = data.get("raw_requirements")
-    if not isinstance(rr, dict):
-        io_section = data.get("io_contract")
-        if isinstance(io_section, dict):
-            rr = io_section.get("raw_requirements")
+    rr = ic.get("raw_requirements")
     if isinstance(rr, dict):
         evidence_list = rr.get("required_evidence")
         if isinstance(evidence_list, list):
