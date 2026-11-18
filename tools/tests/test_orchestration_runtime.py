@@ -18482,8 +18482,8 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
     1. `build_launch_request`'s list names `initial/<case_id>.json` and neither of the new two: no
        `history/` sample count is knowable there, and a `series/` file is the deliverable gap's
        (`_snapshot_deliverable_gap`), not freshness's.
-    2. `_matches_phase_contract` admits both anyway, by the `raw/` prefix of its execute branch, so
-       `record_launch` refuses none of it, listed or not.
+    2. `record_launch` does not match a deterministic launch's list against a phase contract
+       (issue #643 PR-3), so it refuses none of it, listed or not.
     3. `phase_required_outputs("validate")` names no raw evidence at all, so `artifact_hashes` pins
        neither, like the final captures beside them: what binds them to a verdict is the
        post-execute gate's read of the run directory."""

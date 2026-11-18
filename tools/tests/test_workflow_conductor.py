@@ -3156,7 +3156,7 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(status, "fail_closed")
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--status"], "fail_closed")
-        # must be an allowlisted FAIL_CLOSED_REASON_CODES value (runtime rejects others)
+        # a FAIL_CLOSED_REASON_CODES value, the vocabulary the operator's RUNBOOK routes by
         self.assertEqual(ss["--reason-code"], "sandbox_enforcement_violation")
 
     def test_reopen_compile_on_ir_then_succeed(self) -> None:

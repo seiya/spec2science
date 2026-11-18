@@ -3455,8 +3455,9 @@ def _resolve_dependency_facts(
     target: TargetProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve, host-side, the on-disk pipeline / run / aggregate_verdict each direct
-    dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
-    gate.
+    dependency of ``<ir_ref>/spec.ir.yaml`` was certified to. It gates no launch; what it decides is
+    the ``post_judge`` aggregate fold below, where a ready dependency with no fact folds as
+    ``blocked``.
 
     Mirrors ``_verify_dep_stage_detail``'s execution-readiness selection EXACTLY so the operations a
     leaf reads come from the artifacts readiness actually accepted: the dependency's SELECTED
@@ -3506,8 +3507,8 @@ def _resolve_dependency_facts(
 
     The dependency ``@version`` is taken from the IR ``direct_deps[].node_key`` (a well-
     formed IR pins the resolved version, consistent with how readiness resolves it from
-    ``deps.yaml`` + catalog). This output decides no gate and no launch, so a rare version
-    drift stales a hint and never mis-authorizes a launch. It has two readers: the leaf's
+    ``deps.yaml`` + catalog). This output decides no launch, so a rare version drift never
+    mis-authorizes one; it stales a hint and folds that dependency as ``blocked``. It has two readers: the leaf's
     ``DEPENDENCIES.md`` (Generate and Validate), and the conductor's ``post_judge`` aggregate fold
     (``Conductor._author_derived_validate_artifacts``). The fold reads each fact's
     ``aggregate_verdict_ref`` to choose a READY dependency's contribution, ``xfail`` or
@@ -6101,12 +6102,11 @@ def pre_orchestration_start(
     return {"status": "pass", "hook": "pre_orchestration_start", **detail}
 
 
-# A per-substep write_root file pin interpolates `run_id` / `source_id` directly into a
-# repo-relative path, so the id is constrained to an explicit allowlist rather than a denylist:
-# only `[A-Za-z0-9_-]` (the superset of the canonical `run_` / `src_` id forms).
-# This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but every other
-# metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a fail-closed guard, not
-# a full format check (the canonical regexes above own the exact `<prefix>_<date>_<seq3>` shape).
+# An id interpolated directly into a repo-relative path is constrained to an explicit
+# allowlist rather than a denylist: only `[A-Za-z0-9_-]` (the superset of the canonical `run_` /
+# `src_` id forms). This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but
+# every other metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a guard, not
+# a format check.
 _SAFE_PATH_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 def _is_safe_path_id(tok: str) -> bool:
@@ -14663,10 +14663,7 @@ def main(argv: list[str] | None = None) -> int:
         "record-agent-run",
         description=(
             "Append one agent run record to agent_runs.jsonl. "
-            "For step/substep roles also writes agent.result.json and agent.summary.txt, "
-            "and validates that output_refs lie within the phase contract outputs "
-            "(they were checked against the capability write_roots too until issue #171 "
-            "PR-2, which deleted the capability document)."
+            "For step/substep roles also writes agent.result.json and agent.summary.txt."
         ),
     )
     run_parser.add_argument("--repo-root", required=True)
@@ -14676,8 +14673,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "JSON object for the agent run record. "
             "Always required: agent_run_id (UUID), agent_role ('orchestration'|'step'|'substep'), "
-            "agent_backend ('claude'|'codex'), status ('running'|'pass'|'fail'|...), "
-            "started_at (ISO8601). "
+            "status ('running'|'pass'|'fail'|...), started_at (ISO8601). "
+            "agent_backend names the provider ('claude'|'codex'|an HTTP provider token). "
             "Required for step/substep: agent_session_id (for Claude Code = agent_run_id), "
             "context_id (unique UUID per run), context_isolated (true), node_key "
             "(<spec_kind>/<spec_id>@<spec_version>). "

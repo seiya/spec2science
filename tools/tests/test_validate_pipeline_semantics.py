@@ -14312,9 +14312,8 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # those two files are the deliverables — is pinned where the host writes them, not as
         # prose a leaf reads.
         # The retired view-only companion must not come back as an instruction under EITHER
-        # spelling: the conductor does not declare it (workflow_conductor.build_launch_request)
-        # and record-launch rejects it (orchestration_runtime._matches_phase_contract), so a leaf
-        # told to author one is told to take a refusal. `algorithm_summary` is checked because
+        # spelling: the conductor does not declare it (workflow_conductor.build_launch_request),
+        # so a leaf told to author one is told to write a file nothing takes. `algorithm_summary` is checked because
         # the runtime-side pin (test_orchestration_runtime) already treats the underscore form as
         # the likely re-introduction spelling — the two halves of this contract must not carry
         # different denylists, which is exactly the gap review found here.

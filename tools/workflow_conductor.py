@@ -1888,8 +1888,7 @@ def build_launch_request(
     # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
     # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
     # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
-    # branch, and `_validate_leaf_launch_request_payload` REFUSES a pure request whose list is
-    # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
+    # branch. So the narrowing above is dead for both verify substeps, which are pure; it
     # survives for a deterministic launch, where `determine_substep_status` reads the list
     # (record-launch no longer matches it against the phase contract, issue #643). The hazard the three layers were defence in depth
     # against — a source rewritten on a verify turn, which would
@@ -10650,7 +10649,9 @@ class Conductor:
                 # least one deliverable (`build_launch_request` lists one for each). With none,
                 # the freshness test is vacuously True and a prior attempt's `pass` meta would
                 # certify this substep — the record-launch refusal of an empty list that used to
-                # state this went in issue #643.
+                # state this went in issue #643. No leaf writes the list, so this defends against
+                # nothing a leaf does: it states the premise where a new deterministic substep
+                # that forgets its deliverable would otherwise certify on a stale meta.
                 raise ValueError(
                     f"determine_substep_status: {phase}.{substep or ''} declares no deliverable "
                     f"besides audit logs ({paths})")

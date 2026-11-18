@@ -175,8 +175,8 @@ Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.r
 | field | required | content |
 |---|---|---|
 | `agent_run_id` | yes | UUID |
-| `agent_role` | yes | `orchestration` / `step` / `substep` — the complete vocabulary, and a value outside it is rejected. All three are subject to the terminal filesystem-diff write audit; there is no longer a role that is recorded but exempt from it |
-| `agent_backend` | yes | `claude` / `codex` |
+| `agent_role` | yes | `orchestration` / `step` / `substep` — the complete vocabulary, and a value outside it is rejected |
+| `agent_backend` | no | the provider token the run was launched with; the conductor always passes it |
 | `status` | yes | `running` / `pass` / `fail` / `blocked` / `timeout` / `cancel` |
 | `started_at` | yes | ISO 8601 |
 | `agent_session_id` | yes for step/substep | in Claude Code, the same value as `agent_run_id` |
