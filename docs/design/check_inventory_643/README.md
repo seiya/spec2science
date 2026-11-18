@@ -46,6 +46,8 @@ U37 was withdrawn (item 10). Every digest move was a re-pin; no derivation versi
 
 **Residual of the removals.** The evaluator no longer re-checks the IR fields the Compile gate refuses (U34). Behind a regressed gate, an IR that breaks one of those rules is not refused a second time: measured in PR-6's review on a real IR, the reads-state rows (PE-060/061), the value rows (PE-066/067), a bind name (PE-043) and three predicate-entry arms (PE-059) then give a `pass` verdict, and the other rows end in an exception or a `fail`. The gate's arms are pinned by their own rows; the operator accepted the residual (2026-11-18).
 
+**PE-021's open item** (`DECISIONS.md` G8). A run whose own captures are missing still ends `unevaluable` when a comparand exists, through the per-case evaluation. With no comparand it now ends `no_comparand`, which is ready; before PR-6 the hash's refusal made it `unevaluable`. No leaf can delete a certified run's captures, and the operator accepted the change (2026-11-18).
+
 **Residual: what step 3 did not take.**
 - The `FINAL.md` §6 unverified sub-arms.
 - The `undecided` rows, among them the launch-record audit frame VP3-001/004/008/013/022/028/029, OR2-B03/B09-B11, OR2-C16..C20/C26/C27, OR4-04 and VP1-36.
