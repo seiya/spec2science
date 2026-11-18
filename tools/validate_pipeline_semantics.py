@@ -5807,12 +5807,9 @@ def _validate_tests_verdict_summary_consistency(
     `require_verdict` is the stage's `require_orchestration`: at `post_execute` the conductor has
     NOT authored verdict.json yet (it clears any stale one at the top of execute and writes the
     deterministic verdict only after this gate returns clean — `workflow_conductor._execute_inproc`),
-    so a missing verdict is the normal state there and must not be flagged. At `pre_judge` / `full`
-    the verdict is authored and its absence is a real defect. (`pre_judge` is `--run-id`-scoped, so
-    it sees only the run under judgment. `full` is the unscoped operator/audit stage: it walks every
-    run dir, so a superseded run that failed structurally at execute — and correctly holds no verdict
-    — is reported there too. Those runs already fail `full` on their missing `semantic_review.json`;
-    no conductor path invokes `full`.)
+    so a missing verdict is the normal state there and must not be flagged. At `pre_judge` the
+    verdict is authored and its absence is a real defect (`pre_judge` is `--run-id`-scoped, so it
+    sees only the run under judgment).
     """
     tests_path = _tests_path_for_execution(repo_root, execution)
     # The ref is LLM-authored: it may name a directory, an over-long path, or an unreadable one.
