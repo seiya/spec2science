@@ -240,7 +240,14 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 A run that goes past `Compile` and whose closure declares an `external library` (`docs/GLOSSARY.md`;
 the declaration is `docs/SPEC.md` requirement 16, the site's `libraries:` entry
 `docs/ORCHESTRATION.md` §Execution sites) is decided by `tools/run_workflow.py` after the checks
-above and before any `phase` of the node runs. A run that stops at `Compile` is not asked:
+above and before any `phase` of the node runs. The libraries of an `oracle` (`docs/SPEC.md` requirement 17) — the
+node's own and every closure member's, each declared for the target's language — are asked with
+the closure's, and a row a library of an oracle alone answers carries `oracle_of`, the spec
+directory of the node that declares it: under `--with-deps` a member that is unavailable by its
+own oracle makes its consumers unavailable, and without it a consumer whose dependency declares
+such an oracle ends `library_unavailable` here. A malformed `oracle.yaml` is refused as
+`oracle_declaration_invalid` (exit code 2), only where it is read: past `Compile`, on a target of
+its language. A run that stops at `Compile` is not asked:
 Compile is target-free. The questions are asked in this order, and the first that answers ends the run:
 
 | outcome | exit | what it means |
@@ -250,6 +257,7 @@ Compile is target-free. The questions are asked in this order, and the first tha
 | `library_unavailable` (`status: library_unavailable`, `reason` `library_language_mismatch` or `library_not_at_site`) | 5 | `library unavailable`: the library is for another language than the target's, or the site does not list it. Nothing of the node is written under `workspace/pipelines/` (under `--with-deps` the members that can run do). Install the library and list it under the site's `libraries:`, or run another target |
 | `library_capability_missing` (`status: fail`) | 2 | the target's compiler declares no `library_flags` or `library_binary` (`docs/BACKEND_BOUNDARY.md`) |
 | `site_library_unresolved` (`status: fail`) | 2 | the site lists the library and its files do not resolve: a link name with no file, a shared object whose load-name file is not beside it, a declared module with no module file under `include` |
+| `oracle_at_remote_site` (`status: fail`) | 2 | an `oracle` that links no library applies and the target maps to a remote site; an oracle is built and run at `local` only. An oracle with a library takes `library_at_remote_site` above |
 
 Exit code 5 is `tools/run_workflow.py`'s own (`LIBRARY_UNAVAILABLE_EXIT`); it is unrelated to the
 static validator's rc 5 of §3-1. Under `--with-deps` every member is asked before any member runs:

@@ -1462,6 +1462,13 @@ class DerivationResolver:
                             missing.append("libraries")
                         else:
                             against["libraries"] = stamped_libraries
+                    if "oracle" in inputs:
+                        # The oracle's library files, off the same stamp (issue #680).
+                        stamped_oracle = _stamped_oracle(recorded, inputs["oracle"])
+                        if stamped_oracle is None:
+                            missing.append("oracle")
+                        else:
+                            against["oracle"] = stamped_oracle
                 diff = missing + differing_inputs(recorded, against)
             rank = (stale_tuple, len(diff) if diff is not None else sys.maxsize)
             if closest is None or rank < closest[0] or (rank == closest[0]
@@ -2317,6 +2324,11 @@ def _comparand_substituted_inputs(doc: Mapping[str, Any], inputs: Mapping[str, A
         if stamped_libraries is None:
             return None
         out["libraries"] = stamped_libraries
+    if "oracle" in inputs:
+        stamped_oracle = _stamped_oracle(recorded, inputs["oracle"])
+        if stamped_oracle is None:
+            return None
+        out["oracle"] = stamped_oracle
     return out
 
 
@@ -2335,6 +2347,65 @@ def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
                 and entry.get("declaration_sha256") == mine.get("declaration_sha256")):
             return None
     return [dict(entry) for entry in stamped]
+
+
+def _stamped_oracle(recorded: Any, computed: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The `oracle` member a stamp's `derivation_inputs` records — each build's libraries with
+    the site's files a key computed without probing lacks (issue #680) — when it holds the same
+    declaration and adapter and the same builds with the same libraries
+    (`_stamped_library_files`); None otherwise, and when it records none."""
+    stamped = recorded.get("oracle") if isinstance(recorded, Mapping) else None
+    if not (isinstance(stamped, Mapping)
+            and stamped.get("declaration") == computed.get("declaration")
+            and stamped.get("source") == computed.get("source")):
+        return None
+    builds, mine = stamped.get("builds"), computed.get("builds") or []
+    if not isinstance(builds, list) or len(builds) != len(mine):
+        return None
+    out: list[dict[str, Any]] = []
+    for entry, own in zip(builds, mine):
+        if not isinstance(entry, Mapping) or entry.get("id") != own.get("id"):
+            return None
+        libraries = _stamped_library_files(entry, own["libraries"])
+        if libraries is None:
+            return None
+        out.append({"id": own["id"], "libraries": libraries})
+    return {**dict(stamped), "builds": out}
+
+
+def _oracle_member(repo_root: Path, node_key: str, resolver: DerivationResolver, *,
+                   probe: bool) -> dict[str, Any] | None:
+    """The build key's `oracle` member (issue #680): None when the node declares no oracle for
+    the target's language (the member is then absent, so no such key moves); else the
+    declaration's and the adapter's hashes and, per build, the content hash of every library
+    file at the site (`oracle.member`). A comparand resolver, and `probe=False`, take the
+    declared form (`oracle.declared_member`); `_comparand_substituted_inputs` fills the files
+    off each candidate's stamp. Only the node's own oracle: a closure member's is in that
+    member's key. A malformed declaration and a library the site cannot serve are
+    unresolvable: the driver refuses each before any phase."""
+    from tools import external_library as xl
+    from tools import oracle as oracle_mod
+    from tools.execution_sites import SitesConfigError
+    from tools.target_profile import TargetProfileError
+    spec = resolver.spec_ref(node_key)
+    if spec is None:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {node_key} resolves to no spec directory, so "
+            f"its oracle cannot be read")
+    try:
+        declared = oracle_mod.load(repo_root, spec, str(resolver.target.toolchain["language"]))
+    except oracle_mod.OracleDeclarationError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: oracle of {node_key}: {exc}") from exc
+    if declared is None:
+        return None
+    if not probe or resolver.comparand:
+        return oracle_mod.declared_member(declared)
+    try:
+        return oracle_mod.member(repo_root, declared, resolver.target)
+    except (xl.LibraryUnusable, SitesConfigError, TargetProfileError, OSError) as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: oracle of {node_key}: {exc}") from exc
 
 
 def _own_library_declarations(repo_root: Path, node_key: str,
@@ -2982,6 +3053,12 @@ def phase_derivation_inputs(
                                               probe=True)
         if libraries is not None:
             build_inputs["libraries"] = libraries
+        # The node's oracle (issue #680): present only when it declares one for the target's
+        # language. Without it a changed adapter or a rebuilt oracle library would leave
+        # standing a certification that states agreement with an oracle no longer declared.
+        oracle_member = _oracle_member(repo_root, node_key, resolver, probe=True)
+        if oracle_member is not None:
+            build_inputs["oracle"] = oracle_member
         return build_inputs
 
     spec = need("spec_ref", spec_ref)
@@ -3021,6 +3098,20 @@ def phase_derivation_inputs(
                 f"closure declares libraries and the Build stamp at {binary} records none "
                 f"that match")
         inputs["libraries"] = recorded
+    # The oracle (issue #680), copied off the Build stamp as the libraries are: an oracle
+    # library swapped under an unchanged oracle binary moves no binary byte.
+    oracle_declared = _oracle_member(repo_root, node_key, resolver, probe=False)
+    if oracle_declared is not None:
+        build_meta = _read_json_or_none(repo_root / binary / "binary_meta.json")
+        stamped = (build_meta or {}).get("derivation_inputs") if isinstance(
+            build_meta, dict) else None
+        oracle_recorded = _stamped_oracle(stamped, oracle_declared)
+        if oracle_recorded is None:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: validate derivation of {node_key}: the "
+                f"node declares an oracle and the Build stamp at {binary} records none that "
+                f"matches")
+        inputs["oracle"] = oracle_recorded
     return inputs
 
 

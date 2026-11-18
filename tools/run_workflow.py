@@ -4853,8 +4853,15 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     (`library_capability_missing`), a site entry whose files do not resolve
     (`site_library_unresolved`), an unreadable `sites.yaml`, or a host without the programs
     the post-build checks run (`missing_required_host_tools`). A closure that does not resolve
-    is left to the gates that report it."""
+    is left to the gates that report it.
+
+    The libraries an `oracle` reaches (issue #680) — the node's own and every closure member's,
+    each declared for the target's language — are decided with the closure's, and an event a
+    library of an oracle alone causes names the oracle's node (`oracle_of`). A malformed
+    declaration is `fail`, `oracle_declaration_invalid`, and an oracle that links no library at
+    a remote site is `fail`, `oracle_at_remote_site`; neither is read on a Compile-only run."""
     from tools import external_library as xl
+    from tools import oracle as oracle_mod
     from tools.execution_sites import SitesConfigError
     ordered, error = _resolve_dependency_closure(repo_root, spec_ref, target_profile)
     if error is not None:
@@ -4871,7 +4878,45 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     except xl.LibraryDeclarationError as exc:
         return {"status": "fail", "reason": "library_declaration_invalid", "detail": str(exc),
                 "spec_ref": spec_ref}
+    # The oracles (issue #680) of the node and of every closure member, each where the target's
+    # language is its own: a member with an oracle cannot be certified without it, and a node
+    # cannot be certified without its members. Read past Compile only, and only on a target of
+    # the oracle's language: no Compile or Generate key carries it.
+    language = str(target_profile.toolchain["language"])
+    oracles: list[Any] = []
+    for ref in (spec_ref, *(n["spec_ref"] for n in ordered)):
+        try:
+            declared = oracle_mod.load(repo_root, ref, language)
+        except oracle_mod.OracleDeclarationError as exc:
+            return {"status": "fail", "reason": oracle_mod.DECLARATION_INVALID,
+                    "detail": str(exc), "spec_ref": spec_ref, "oracle_of": ref}
+        if declared is not None:
+            oracles.append(declared)
+    # The library each oracle reaches and the closure does not, with the oracle that names it.
+    oracle_of: dict[str, str] = {}
+    for declared in oracles:
+        for declaration in declared.library_declarations():
+            if all(d.library_id != declaration.library_id for d in declarations):
+                declarations.append(declaration)
+                oracle_of[declaration.library_id] = declared.spec_ref
     if not declarations:
+        if not oracles:
+            return None
+        # An oracle without a library: the one case the site's locality is asked for it.
+        # Breakage without it: the run would stop at Build after Compile and Generate were
+        # billed.
+        try:
+            site = xl.site_for_target(repo_root, target_profile.target_id)
+        except (SitesConfigError, TargetProfileError) as exc:
+            return {"status": "fail", "reason": "sites_config_invalid", "detail": str(exc),
+                    "spec_ref": spec_ref}
+        if not site.is_local:
+            return {"status": "fail", "reason": oracle_mod.REMOTE_SITE,
+                    "site": site.site_id, "target_id": target_profile.target_id,
+                    "spec_ref": spec_ref, "oracle_of": oracles[0].spec_ref,
+                    "detail": (f"target {target_profile.target_id} runs at site "
+                               f"{site.site_id!r}, and an oracle is built and run at the "
+                               f"local site only")}
         return None
     # The programs first: resolving a shared object runs one of them.
     from tools.host_prerequisites import missing_host_executables
@@ -4894,6 +4939,8 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
         base = {"reason": exc.reason, "library_id": exc.library_id, "site": site,
                 "target_id": target_profile.target_id, "spec_ref": spec_ref,
                 "detail": str(exc)}
+        if exc.library_id in oracle_of:
+            base["oracle_of"] = oracle_of[exc.library_id]
         if exc.reason in xl.UNAVAILABLE_REASONS:
             return {"status": "library_unavailable", **base}
         return {"status": "fail", **base}

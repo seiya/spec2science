@@ -148,6 +148,12 @@ each token (`tools/target_profile.py:target_profile_violations`). Where each axi
 from is `registry.AXES[<axis>].source`; for `parallel` it is the profile's `parallel.backend`
 together with the bundle's `target_lowering_plan.parallelization`.
 
+An `oracle adapter` (`<spec_ref>/oracle/`, `docs/SPEC.md` requirement 17, issue #680) is Project
+data written in a target language, as the existing code it calls is: it is neither a neutral nor
+a backend location, and this rule does not read it. Its declaration names its `language` as an
+opaque token, and `tools/oracle.py`, which reads the declaration, holds no file extension and
+asks the registry nothing.
+
 ## Operations Rules
 - **Adding a backend** requires, in this order: create `tools/backends/<axis>/<backend_id>/`; add
   the `Backend` record to `_BACKENDS` in `tools/backends/registry.py`; place the backend's
