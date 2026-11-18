@@ -200,7 +200,8 @@ is an availability and reproducibility class — the "loss of reproducibility" f
 `--stage post_generate` emit sites of rc 4 — the §5.1 surface guard and the io_contract wrap
 described below — because every route to `Generate` either just ran `Compile.static` on the IR or
 skipped it through readiness, which runs the same validator. Issue #643 PR-5 then removed
-`StaleDependencyIRViolation`, the `STALE_DEPENDENCY_IR_MARKER` exit code and the conductor's arms,
+`StaleDependencyIRViolation`, the `STALE_DEPENDENCY_IR_MARKER` sentinel, the
+`STALE_DEPENDENCY_IR_EXIT_CODE` (4) and the conductor's arms,
 which had no producer left.
 The attribution rule (by what the call site was given) and the readiness bullet stand.
 

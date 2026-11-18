@@ -210,7 +210,8 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     and checks nothing. The pre-spawn dependency-DAG readiness check (a --with-deps
     #     closure not built+validated in its own pipeline) is `run_phase`'s, before any
     #     substep (`_judge_pre_spawn_dag_block`), so a cold judge is never spawned for an
-    #     incomplete closure; it fails the phase closed (issue #643 PR-5 moved it out).
+    #     incomplete closure; it fails the phase closed (issue #643 PR-5 removed the duplicate
+    #     check `_pre_judge_inproc` also ran).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
     #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
     #     nor an MCP grant. Since Z3 (issue #169) it holds no TOOLS either — it is a pure
