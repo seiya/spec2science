@@ -416,21 +416,26 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         # The continuation rule is a FORWARD fold. Stated as a backward search from each newline
         # it rescanned the whole run of skipped lines every time, so a legal continued literal
         # spanning a comment block was quadratic: 8,000 comment lines took 4.6 s to mask, and a
-        # deterministic gate that slow on generated source is a defect of its own. Doubling the
-        # run must roughly double the work, not quadruple it.
+        # deterministic gate that slow on generated source is a defect of its own. Lengthening the
+        # run sixteenfold must raise the work about sixteenfold, not about 256-fold.
+        #
+        # CPU time, not wall time: a wall-clock ratio of 2,000 against 8,000 lines with a bound
+        # of 8 went red once on a loaded CI runner (8.2, linear code). 16x the input puts linear
+        # near 16 and the backward rescan near 200, so a bound of 64 sits about 3x from each.
+        # Measured: linear at most 18.3 over 1,200 trials, idle, sharing a core with three busy
+        # processes, and beside the suite at `-n 24`; the rescan re-seeded, 202 to 260.
         def _mask(n: int) -> float:
             text = "  banner = 'x&\n" + "! note\n" * n + "      &end'\n"
-            start = time.perf_counter()
+            start = time.process_time()
             masked = mask_code_lookalikes(text)
+            elapsed = time.process_time() - start
             self.assertNotIn("end'", masked[masked.index("!"):])
-            return time.perf_counter() - start
+            return elapsed
 
-        _mask(2000)  # warm the interpreter so the first call is not the slow one
-        small = min(_mask(2000) for _ in range(3))
+        _mask(500)  # warm the interpreter so the first call is not the slow one
+        small = min(_mask(500) for _ in range(3))
         large = min(_mask(8000) for _ in range(3))
-        # 4x the input. Linear predicts ~4x; the quadratic form was ~16x. 8x leaves room for a
-        # noisy machine while still failing the shape this pins.
-        self.assertLess(large, small * 8, f"{small=} {large=} — looks superlinear")
+        self.assertLess(large, small * 64, f"{small=} {large=} — looks superlinear")
 
     def test_mask_keeps_delimiters_and_the_continuation_marker(self) -> None:
         self.assertEqual(mask_code_lookalikes("x = 'rate &\n&more' ! note & tail"),
