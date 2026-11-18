@@ -82,7 +82,7 @@ each role below is derived:
 | the `static lint` tool the `Generate.gate` lint check runs through the build-runtime library's `run_linter` | the profile's `toolchain.language` (`registry.linter_for_language`) | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
 | the compiler — both the mandatory `Generate.gate` syntax-only stage and the compiler the build control file pins | the language backend's `bundle_facts.MANDATORY_SYNTAX_COMPILER`; the build control file pins the same program unless the parallel backend declares a compiler wrapper or the profile pins another `toolchain.compiler` (`workflow_conductor.build_compiler`) | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
 | the build system `Build` drives through the build-runtime library's `compile_project` | the profile's `toolchain.build_system` | `Build` — one phase later still |
-| the programs the post-build library checks run over a build's objects, asked only of a run that goes past `Compile` and whose closure declares an `external library` (below, "Refused at startup — external libraries") | the target compiler's `library_binary` `EXECUTABLES`, which its `docs/backends/compiler/<compiler>/TOOLCHAIN.md` names | `Build` |
+| the programs the post-build library checks run over a build's objects, asked only of a run that goes past `Compile` and whose closure declares an `external library`, or whose startup verdict reads an `oracle` that links one — a closure member's on any run past `Compile`, the node's own on a run that reaches `Build` (below, "Refused at startup — external libraries") | the target compiler's `library_binary` `EXECUTABLES`, which its `docs/backends/compiler/<compiler>/TOOLCHAIN.md` names | `Build` |
 | the programs the parallel backend adds: a compiler wrapper, which takes the compiler's place in the build control file and in the syntax-only stage; a launcher and a device trace, which the binary runs under at `Validate.execute` and which are asked only of a run that executes the binary — of the site below, and of this host only when the local site executes the run | the profile's `parallel.backend` | `Validate.execute`, after the build (the wrapper: `Generate.gate`) |
 
 A program that serves several roles is listed once, under its first. Which program each role
@@ -240,11 +240,24 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 A run that goes past `Compile` and whose closure declares an `external library` (`docs/GLOSSARY.md`;
 the declaration is `docs/SPEC.md` requirement 16, the site's `libraries:` entry
 `docs/ORCHESTRATION.md` §Execution sites) is decided by `tools/run_workflow.py` after the checks
-above and before any `phase` of the node runs. A run that stops at `Compile` is not asked:
+above and before any `phase` of the node runs. The same verdict reads the `oracle`s (`docs/SPEC.md` requirement 17),
+each declared for the target's language — every closure member's on a run past `Compile`, since
+members are driven to `Validate`, and the node's own on a run that reaches `Build` — and asks
+their libraries with the closure's. An `oracle_at_remote_site`, `oracle_declaration_invalid`,
+`library_unavailable` or `site_library_unresolved` row that an oracle alone answers carries
+`oracle_of`, the spec directory of the node that declares it, and so does a member's
+`dependency_runs` row: under `--with-deps` a member that is unavailable by its own oracle makes its
+consumers unavailable, and without it a consumer whose dependency declares such an oracle ends
+`library_unavailable` here. A malformed `oracle.yaml` is refused as `oracle_declaration_invalid`
+(exit code 2): one whose `language` cannot be read (no `oracle.yaml` in an `oracle/` directory, a
+document that does not parse, no string `language`) on a target of any language, any other defect
+on a target of its language only. A run that stops at `Compile` is not asked:
 Compile is target-free. The questions are asked in this order, and the first that answers ends the run:
 
 | outcome | exit | what it means |
 |---|---|---|
+| `oracle_declaration_invalid` (`status: fail`) | 2 | an `oracle.yaml` the verdict reads (above) does not have the closed shape of `docs/SPEC.md` requirement 17; the detail names the file and the defect |
+| `oracle_at_remote_site` (`status: fail`) | 2 | an `oracle` applies (above) and the target maps to a remote site; an oracle is built and run at `local` only, whatever it links |
 | `missing_required_host_tools` (`status: fail`) | 2 | this host lacks a program the post-build library checks and the resolution of a shared library run (the role row in the table above) |
 | `library_at_remote_site` (`status: fail`) | 2 | the target maps to a remote site; a closure that declares a library is built and run at `local` only, because the host hashes the files it links |
 | `library_unavailable` (`status: library_unavailable`, `reason` `library_language_mismatch` or `library_not_at_site`) | 5 | `library unavailable`: the library is for another language than the target's, or the site does not list it. Nothing of the node is written under `workspace/pipelines/` (under `--with-deps` the members that can run do). Install the library and list it under the site's `libraries:`, or run another target |

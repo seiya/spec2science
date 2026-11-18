@@ -4853,8 +4853,15 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     (`library_capability_missing`), a site entry whose files do not resolve
     (`site_library_unresolved`), an unreadable `sites.yaml`, or a host without the programs
     the post-build checks run (`missing_required_host_tools`). A closure that does not resolve
-    is left to the gates that report it."""
+    is left to the gates that report it.
+
+    The `oracle`s (issue #680) — every closure member's, and the node's own on a run that reaches
+    Build, each declared for the target's language — are read here: a malformed declaration is
+    `fail`, `oracle_declaration_invalid`, and an applying oracle at a remote site is `fail`,
+    `oracle_at_remote_site`, whatever it links. Their libraries are decided with the closure's,
+    and an event a library of an oracle alone causes names the oracle's node (`oracle_of`)."""
     from tools import external_library as xl
+    from tools import oracle as oracle_mod
     from tools.execution_sites import SitesConfigError
     ordered, error = _resolve_dependency_closure(repo_root, spec_ref, target_profile)
     if error is not None:
@@ -4871,6 +4878,43 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     except xl.LibraryDeclarationError as exc:
         return {"status": "fail", "reason": "library_declaration_invalid", "detail": str(exc),
                 "spec_ref": spec_ref}
+    # The oracles (issue #680), each where the target's language is its own: a member with an
+    # oracle cannot be certified without it, and a node cannot be certified without its members.
+    # A closure member's is read by every run past Compile, since its members are driven to
+    # Validate (`_required_dependency_stages`) and their Build keys carry it; the node's own only
+    # by a run that reaches Build, since no Compile or Generate key carries it.
+    from tools.target_profile import NON_BUILDING_PHASES
+    language = str(target_profile.toolchain["language"])
+    reaches_build = _normalize_phase(until_phase).lower() not in NON_BUILDING_PHASES
+    oracles: list[Any] = []
+    for ref in ((spec_ref,) if reaches_build else ()) + tuple(n["spec_ref"] for n in ordered):
+        try:
+            declared = oracle_mod.load(repo_root, ref, language)
+        except oracle_mod.OracleDeclarationError as exc:
+            return {"status": "fail", "reason": oracle_mod.DECLARATION_INVALID,
+                    "detail": str(exc), "spec_ref": spec_ref, "oracle_of": ref}
+        if declared is not None:
+            oracles.append(declared)
+    if oracles:
+        # An oracle is built and run at the local site only, whatever it links. Breakage
+        # without it, once Build builds the oracle (issue #680's next pull request): the run
+        # would stop at Build after Compile and Generate were billed. `_sites_rejection` has
+        # already loaded this sites.yaml, so it does not raise here.
+        site = xl.site_for_target(repo_root, target_profile.target_id)
+        if not site.is_local:
+            return {"status": "fail", "reason": oracle_mod.REMOTE_SITE,
+                    "site": site.site_id, "target_id": target_profile.target_id,
+                    "spec_ref": spec_ref, "oracle_of": oracles[0].spec_ref,
+                    "detail": (f"target {target_profile.target_id} runs at site "
+                               f"{site.site_id!r}, and the oracle of {oracles[0].spec_ref} is "
+                               f"built and run at the local site only")}
+    # The library each oracle reaches and the closure does not, with the oracle that names it.
+    oracle_of: dict[str, str] = {}
+    for declared in oracles:
+        for declaration in declared.library_declarations():
+            if all(d.library_id != declaration.library_id for d in declarations):
+                declarations.append(declaration)
+                oracle_of[declaration.library_id] = declared.spec_ref
     if not declarations:
         return None
     # The programs first: resolving a shared object runs one of them.
@@ -4879,8 +4923,9 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
         _host_probe_selection(target_profile), [d.library_id for d in declarations])]
     if missing:
         return {"status": "fail", "reason": "missing_required_host_tools",
-                "detail": (f"missing host tools: {','.join(missing)} — the closure declares "
-                           f"external libraries, and the post-build library checks run them "
+                "detail": (f"missing host tools: {','.join(missing)} — the closure or an "
+                           f"oracle declares external libraries, and resolving them and the post-build "
+                           f"library checks run them "
                            f"(see docs/RUNBOOK.md#0-1)"),
                 "missing": missing, "spec_ref": spec_ref, "docs_ref": "docs/RUNBOOK.md#0-1"}
     try:
@@ -4894,6 +4939,8 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
         base = {"reason": exc.reason, "library_id": exc.library_id, "site": site,
                 "target_id": target_profile.target_id, "spec_ref": spec_ref,
                 "detail": str(exc)}
+        if exc.library_id in oracle_of:
+            base["oracle_of"] = oracle_of[exc.library_id]
         if exc.reason in xl.UNAVAILABLE_REASONS:
             return {"status": "library_unavailable", **base}
         return {"status": "fail", **base}
@@ -5703,7 +5750,8 @@ def _run_with_dependency_closure(
                 "node": f"{node['spec_kind']}/{node['spec_id']}@{node['spec_versions'][0]}",
                 "spec_ref": node["spec_ref"], "skipped": False, "status": "library_unavailable",
                 "reason": verdict["reason"], "library_id": verdict["library_id"],
-                "site": verdict["site"]})
+                "site": verdict["site"],
+                **({"oracle_of": verdict["oracle_of"]} if "oracle_of" in verdict else {})})
         else:
             _emit_unlogged_event({**verdict, "dependency_runs": dependency_runs,
                                   "target_spec_ref": target_spec_ref}, stdout_format)

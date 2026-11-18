@@ -146,6 +146,21 @@ releases/
 
     Each list holds distinct non-empty strings, and no other key is admitted (`tools/external_library.py` `load_declaration`). A `libraries:` key inside a `profile spec` is refused as `profile_declares_libraries` at the Compile start of every adopting `spec`: a profile selects components only. The symbol checks of `Build` read the exports of the files the link names resolve to, and of nothing those files load: list a library the declared one loads in turn under `link:` too when a node must neither call nor replace it. The host passes the link names on as opaque tokens; what they mean to a linker is the target compiler's (`docs/BACKEND_BOUNDARY.md`).
 
+17. A `node` may declare an `oracle` (`docs/GLOSSARY.md`): existing code its generated variant is compared with (issue #680). The declaration sits in the `node`'s own directory, beside its three files, as `oracle/oracle.yaml`, with the `oracle adapter` — the person-written source that publishes the `node`'s §5.1 surface and calls the existing code — beside it under any name; a `node` with no `oracle/` directory declares none. It is read before any phase runs (`docs/RUNBOOK.md` §0-1, "Refused at startup — external libraries"): by a run of the `node` that reaches `Build`, and, for a `node` that is a member of another's closure, by every run of that other `node` that goes past `Compile`, since its members are driven to `Validate`. A Compile-only run, and a run of the `node` itself that stops at `Generate`, do not read it. Such a run reads its `language` first, and a declaration of another language than the target's is not read further. A malformed declaration is refused there as `oracle_declaration_invalid`: one whose `language` cannot be read (no `oracle.yaml` in the directory, a document that does not parse, no string `language`) on a target of any language, and any other defect on a target of its language.
+
+    ```yaml
+    oracle_version: 1
+    language: <language>          # the language of the targets the oracle applies to
+    source: <file name>           # the adapter, in the oracle/ directory
+    origin: "<repository, revision, files>"   # optional free text
+    builds:
+      - id: <build id>            # [a-z0-9_]+, unique
+        libraries: [<library_id>, ...]   # external libraries of the same language (requirement 16); may be empty
+        cases: [<case_id>, ...]   # optional; at most one build omits it and takes every other compared case
+    ```
+
+    No other key is admitted (`tools/oracle.py` `load`), and a library of another language than the oracle's is refused. What the rest of this requirement states is the contract the later pull requests of issue #680 implement; until they land, the declaration is read only by the startup verdict (its shape, the site, its libraries) and for the build and validate keys, and nothing builds the adapter or compares it. A build links its `libraries` beside the closure's (requirement 16). The compared cases are the cases the IR's cross-target predicates compare a comparand in; each goes to the build that names it, else to the one build that names none, and a named case the IR does not hold, a case named twice, and a compared case no build takes are refused (`tools/oracle.py` `case_plan`). Every compared case is compared: the declaration has no member that takes a case out of the comparison. The adapter is compiled under the target's flags and conforms to the target's `toolchain.standard`; no gate reads it, because no leaf writes it. An oracle is built and run at the `local` `execution site` only, and a run that reaches `Build` on a target mapped to a remote site is refused as `oracle_at_remote_site` whatever the oracle links.
+
 ### Design Policy
 - A `problem spec` defines the integration scenario and guarantees the consistency of multiple `component`. A `problem spec` may compose other `problem`s: its `__step` calls each member's `__step` and its own direct `component`s, with call intervals and a process switched at run time as `in` arguments. This is the first form of the assembled model's driver.
 - A `component spec` defines the reusable physics-operation contract and guarantees interchangeability and `API` stability.

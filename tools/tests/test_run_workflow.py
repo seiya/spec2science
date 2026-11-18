@@ -6021,6 +6021,20 @@ class DependencyClosureTests(unittest.TestCase):
         (record,) = [r for r in final["dependency_runs"] if r["spec_ref"] == "spec/component/c"]
         self.assertEqual((record["status"], record["skipped"], record["library_id"]),
                          ("library_unavailable", False, "vend"))
+        self.assertNotIn("oracle_of", record)
+
+    def test_a_member_unavailable_by_its_oracle_names_the_oracle_in_its_row(self) -> None:
+        """Issue #680: the member's `dependency_runs` row carries the verdict's `oracle_of`,
+        so the operator is pointed at the oracle and not at the member's deps.yaml."""
+        unavailable = {"status": "library_unavailable", "reason": "library_not_at_site",
+                       "library_id": "vend", "site": "local", "detail": "d",
+                       "oracle_of": "spec/component/c"}
+        _rc, _captured, stdout = self._drive_with_verdicts({
+            "spec/component/c": unavailable, "spec/problem/a": unavailable})
+        final = json.loads(stdout.strip().splitlines()[-1])
+        (record,) = [r for r in final["dependency_runs"] if r["spec_ref"] == "spec/component/c"]
+        self.assertEqual((record["status"], record["oracle_of"]),
+                         ("library_unavailable", "spec/component/c"))
 
     def test_a_target_s_own_configuration_refusal_stops_the_closure_before_any_member(
             self) -> None:
