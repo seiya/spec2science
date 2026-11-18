@@ -22491,6 +22491,28 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(summary["dependency_summary"]["blocked"], 1)
             self.assertEqual(summary["dependency_summary"]["pass"], 1)
 
+    def test_author_derived_a_raising_readiness_probe_propagates(self) -> None:
+        """Issue #643 PR-5 (WC5-41): a raise from the direct dependency's readiness probe is a
+        host defect (readiness reads host-written records), and it propagates — the attempt
+        ends in `_run_deterministic_substep`'s rc 1 transport fail_closed — rather than being
+        folded into a `blocked` aggregate. Neither certifies; no aggregate is written."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[]), \
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, side_effect=OSError("readiness probe")):
+                with self.assertRaisesRegex(OSError, "readiness probe"):
+                    c._author_derived_validate_artifacts(refs)
+            rn = repo / refs.run_node_dir()
+            self.assertFalse((rn / "aggregate_verdict.json").exists())
+
     def test_post_judge_fails_closed_on_a_blocked_aggregate_before_the_gate(self) -> None:
         """Issue #643 PR-3 round 2 (Codex P2): the fold above writes a `blocked` aggregate while
         `validate_meta.json` says `pass`, so post_judge must not certify it. The gate is made to
