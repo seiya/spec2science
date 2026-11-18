@@ -11309,11 +11309,7 @@ class Conductor:
         if checked_flags:
             # The same bound sources, staged again: make compiles the closure FROM the object
             # directory it is handed, and the checked build has its own.
-            checked_bindings = self._stage_dependency_sources(refs, obj_checked, phase="build")
-            if checked_bindings != closure_bindings:
-                raise RuntimeError(
-                    f"checked build staging bound {checked_bindings!r}, and the build bound "
-                    f"{closure_bindings!r}; both stage the attempt's one binding")
+            self._stage_dependency_sources(refs, obj_checked, phase="build")
         from tools.host_execution import LOCAL_SITE, local_platform_record
         from tools.orchestration_runtime import (
             AUDIT_LOG_BASENAMES,
@@ -13140,7 +13136,6 @@ class Conductor:
                               "threads_per_rank": 1, "ranks": 1,
                               "verdict": qc_verdict},
             },
-            "state_agreement_applies": certified["state_agreement"]["status"] != "not_applicable",
             "shapes": shapes,
             "notes": (f"conductor in-process: every execution shape's run_program "
                       f"({', '.join(r['label'] for r in shapes)}) compared with the {preset} "
@@ -13425,18 +13420,6 @@ class Conductor:
                 f"nothing at Build) — make it answer there, then rebuild: run this node as the "
                 f"target with --rederive build,validate")
 
-        # A binary whose Build made no checked binary while the target's compiler declares
-        # checked flags (a Build certified before issue #589 PR-0 cannot reach here: the build
-        # key moved with it) is the host's inconsistency, not the kernel's: refused before
-        # anything runs, rather than run as a missing program and routed to Generate.
-        if checked is not None and not checked_binary.is_file():
-            raise RuntimeError(
-                f"binary {refs.source_binary_id} has no checked binary at "
-                f"{self._rel(bin_dir.parent / 'bin_checked' / exe)}, and target "
-                f"{target.target_id}'s compiler declares checked flags; rebuild it: run "
-                f"this node as the target with "
-                f"--rederive build,validate")
-
         # Attribution only: the library records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
@@ -13445,19 +13428,14 @@ class Conductor:
         # the IR in place and a writer fix must reach a reused IR. Each file is replaced through a
         # temporary name of its own and the directory is never removed, since one IR directory
         # serves every target's pipeline and they run in parallel. Compile.static evaluated every
-        # case, so a refusal here is the host's inconsistency, not the kernel's.
+        # case, so a refusal here is the host's inconsistency, not the kernel's: it raises to the
+        # deterministic substep's transport `fail_closed`.
         from tools.primary_evidence import (
             CASE_INPUTS_DIRNAME,
-            PrimaryEvidenceError,
             write_case_inputs,
         )
 
-        try:
-            case_files = write_case_inputs(_read_yaml(ir_spec) or {}, ir_spec.parent)
-        except PrimaryEvidenceError as exc:
-            raise RuntimeError(
-                f"the case files of {refs.ir_ref} could not be written at Validate.execute: "
-                f"{exc}") from exc
+        case_files = write_case_inputs(_read_yaml(ir_spec) or {}, ir_spec.parent)
 
         # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
         # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3; `_run_raw_dirs`): the capture
@@ -13541,13 +13519,8 @@ class Conductor:
             case files (`write_continuation_inputs`), a copy of the IR beside them and the
             pre-created capture directories."""
             shape_dir = shape_dirs[label]
-            try:
-                files, refused = write_continuation_inputs(
-                    ir, shape_dir, restart_point_reader(shape_dir, target.output_format))
-            except PrimaryEvidenceError as exc:
-                raise RuntimeError(
-                    f"the continuation case files of {refs.ir_ref} could not be written at "
-                    f"Validate.execute: {exc}") from exc
+            files, refused = write_continuation_inputs(
+                ir, shape_dir, restart_point_reader(shape_dir, target.output_format))
             rdir = shape_dir / RESTART_DIRNAME
             for raw_dir in run_raw_dirs:
                 rdir.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
@@ -14028,14 +14001,6 @@ class Conductor:
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
-        # The repo revision THIS run's evidence (and, on the structural-failure branch below,
-        # its `failure_excerpt`) was produced under. The dev `--resume` directive compares it
-        # against the revision at resume time and declines to inject findings that a later
-        # source change may have invalidated (B4). Stamped on the failing run rather than read
-        # from `orchestration_meta.repo_revision`, which is frozen at the orchestration's first
-        # start and would drift permanently once any commit lands mid-run.
-        from tools.orchestration_runtime import _capture_repo_revision
-
         # The test profile the cases were authored under (issue #346): every `tests.md` §8 asks
         # for it in this record, which only the host writes. The value every case declares, and
         # `null` when a case lacks it or two cases disagree. A record: no gate and no verdict
@@ -14055,7 +14020,6 @@ class Conductor:
             "run_id": refs.run_id,
             "node_key": refs.node_key,
             **test_profile,
-            "repo_revision": _capture_repo_revision(self.repo_root),
             "pipeline_id": refs.pipeline_id,
             "source_source_id": refs.source_id,
             "source_binary_id": refs.source_binary_id,
@@ -15342,9 +15306,7 @@ class Conductor:
         # before issue #643's S3 fix it folded as `pass`, which recorded a ready dep's `xfail`
         # as `pass` (ver_defects item 3).
         from tools.validate_pipeline_semantics import (
-            _closure_node_validated_in_own_pipeline,
-            _dependency_expected_node_keys, _normalize_node_key_token,
-            _read_dependency_graph_sidecar)
+            _closure_node_validated_in_own_pipeline, _normalize_node_key_token)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
         if not isinstance(dep, dict):
@@ -15354,11 +15316,7 @@ class Conductor:
         dep = self._pipeline_dependency_block(refs, dep)
         facts_by_token: dict[str, dict[str, Any]] = {}
         for fact in _resolve_dependency_facts(self.repo_root, refs.ir_ref, target=self.target):
-            try:
-                facts_by_token[_normalize_node_key_token(str(fact.get("node_key")))] = fact
-            except Exception:
-                continue
-        dependency_nodes: list[dict[str, Any]] = []
+            facts_by_token[_normalize_node_key_token(str(fact.get("node_key")))] = fact
         dep_counts = {"total": 0, "pass": 0, "xfail": 0, "fail": 0, "blocked": 0}
         blocking_direct_deps: list[str] = []
         not_validated: list[str] = []
@@ -15372,35 +15330,21 @@ class Conductor:
             if not isinstance(node_key, str) or not node_key.strip():
                 continue
             node_key = node_key.strip()
-            try:
-                token = _normalize_node_key_token(node_key)
-                ready = _closure_node_validated_in_own_pipeline(
-                    self.repo_root, token, self.target.target_id)
-            except Exception:
-                ready = False
-                token = None
-            fact = facts_by_token.get(token, {}) if token else {}
+            token = _normalize_node_key_token(node_key)
+            ready = _closure_node_validated_in_own_pipeline(
+                self.repo_root, token, self.target.target_id)
+            fact = facts_by_token.get(token, {})
             if not ready:
                 not_validated.append(node_key)
             elif not fact:
                 ready = False
                 verdict_unresolved.append(node_key)
-            # Display verdict = the dep's selected aggregate (informational; may show a
-            # regression), else pass/unknown per readiness.
+            # The dep's selected aggregate (may show a regression); read for its `xfail` alone.
             agg_ref = fact.get("aggregate_verdict_ref")
             display = ""
             if isinstance(agg_ref, str) and agg_ref.strip():
                 dep_doc = _read_json(self.repo_root / agg_ref) or {}
                 display = str(dep_doc.get("aggregate_verdict") or "").strip().lower()
-            if not display:
-                display = "pass" if ready else "unknown"
-            dependency_nodes.append({
-                "node_key": node_key,
-                "aggregate_verdict": display,
-                "ready": ready,
-                "pipeline_ref": fact.get("pipeline_ref"),
-                "run_id": fact.get("run_id"),
-            })
             dep_counts["total"] += 1
             if not ready:
                 blocking_direct_deps.append(node_key)
@@ -15434,25 +15378,10 @@ class Conductor:
         else:
             aggregate_verdict = fold_inv[worst]
 
-        # dependency_set: the transitive closure node tokens (self excluded), from the
-        # conductor-authored dependency-graph sidecar (`all_nodes` lives there now, not the
-        # IR), matching the readiness check's derivation.
-        dependency_set: list[str] = []
-        try:
-            self_token = _normalize_node_key_token(refs.node_key)
-            graph = self._pipeline_dependency_block(
-                refs, _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {})
-            dependency_set = sorted(
-                t for t in _dependency_expected_node_keys(graph) if t != self_token)
-        except Exception:
-            dependency_set = []
-
         agg_doc: dict[str, Any] = {
             "aggregate_verdict": aggregate_verdict,
             "self_verdict": self_verdict,
             "blocked": blocked,
-            "dependency_set": dependency_set,
-            "dependency_nodes": dependency_nodes,
         }
         if blocked:
             agg_doc["blocked_reason"] = blocked_reason

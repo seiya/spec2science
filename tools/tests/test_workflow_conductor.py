@@ -19468,22 +19468,6 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertIn("`<binary> --cases <spec> <case_id>...`", cause)
             self.assertIn("docs/backends/build_system/make/CONTROL_FILE.md §2", cause)
 
-    def test_execute_inproc_stamps_the_repo_revision(self) -> None:
-        """B4: the revision that produced this run's evidence is recorded beside the excerpt, so
-        the dev resume directive can refuse to inject findings a later source change invalidated.
-        Stamped on the failing RUN (not read from orchestration_meta, which freezes at first
-        start), which is what lets the guard self-correct after a re-run."""
-        import tempfile
-        from unittest import mock
-        rev = {"commit": "c" * 40, "dirty": False}
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch("tools.orchestration_runtime._capture_repo_revision",
-                            return_value=dict(rev)):
-                _o, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL,
-                                            gate_result=(1, "post_execute: bad shape"))
-            self.assertEqual(meta["repo_revision"], rev)
-            self.assertEqual(meta["failure_category"], "post_execute_violation")
-
     def test_execute_inproc_records_snapshot_deliverable_gap(self) -> None:
         # Gates clean and quality_check clean; the IR requires a per-case state snapshot the
         # runner never wrote -> snapshot_deliverable_gap, and the gap message is the excerpt.
@@ -22636,7 +22620,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["aggregate_verdict"], "pass")
             self.assertEqual(agg["self_verdict"], "pass")
             self.assertFalse(agg["blocked"])
-            self.assertEqual(agg["dependency_nodes"], [])
             summary = json.loads((rn / "summary.json").read_text())
             # counts equal the verdict.per_test aggregate (what the gate cross-checks)
             self.assertEqual(summary["counts"],
@@ -22651,34 +22634,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertTrue(vmeta["context_isolated"])
             self.assertIsNone(vmeta["last_fail_reason"])
             self.assertTrue(vmeta["judge_command_ref"].endswith("/semantic_review.json"))
-
-    def test_author_derived_dependency_set_records_the_targets_harness(self) -> None:
-        """`aggregate_verdict.json#dependency_set` is the pipeline closure (issue #284): the
-        sidecar lists no harness since R4-a PR-3, so the record carries it only through
-        `_pipeline_dependency_block` — the verdict-5 reason. Round 1 measured that dropping that
-        call survived every file that exercises the author; a record missing the harness is a
-        false record of what the pipeline was built against."""
-        import tempfile
-        from unittest import mock
-
-        from tools.tests.target_fixtures import FORTRAN_CPU
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            c = self._conductor(repo, target=FORTRAN_CPU)
-            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
-            ir_dir = repo / refs.ir_ref
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "dependency_graph.json").write_text(json.dumps({
-                "node_key": refs.node_key,
-                "all_nodes": [{"node_key": refs.node_key, "topo_level": 0}],
-                "generated_by": "conductor"}), encoding="utf-8")
-            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            autospec=True, return_value=[]):
-                c._author_derived_validate_artifacts(refs)
-            agg = json.loads((repo / refs.run_node_dir() / "aggregate_verdict.json").read_text())
-            self.assertEqual(
-                agg["dependency_set"],
-                [f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}"])
 
     def test_aggregate_verdict_carries_no_cross_target_entry(self) -> None:
         """Issue #383, at the HANDLER: `aggregate_verdict.json` carries no `cross_target`
@@ -22762,11 +22717,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
             self.assertFalse(agg["blocked"])
             self.assertEqual(agg["aggregate_verdict"], "pass")
-            self.assertEqual(agg["dependency_nodes"][0]["node_key"], "component/dep@0.1.0")
-            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "pass")
-            self.assertTrue(agg["dependency_nodes"][0]["ready"])
-            # The target's harness is an immediate dependency too (issue #284).
-            self.assertEqual(agg["dependency_nodes"][1]["node_key"], _HARNESS_NK)
             # Readiness is asked for the RUN's target (issue #284): a dependency validated for
             # another target does not make this one's closure ready.
             self.assertEqual(
@@ -22801,7 +22751,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["aggregate_verdict"], "blocked")
             # The target's harness (issue #284) is not validated here either.
             self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0", _HARNESS_NK])
-            self.assertFalse(agg["dependency_nodes"][0]["ready"])
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["blocked"], 2)
 
@@ -22834,8 +22783,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             # aggregate stays pass (ready dep folds pass; its regressed latest verdict is
             # display-only), never contradicting the pass phase.
             self.assertEqual(agg["aggregate_verdict"], "pass")
-            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "fail")
-            self.assertTrue(agg["dependency_nodes"][0]["ready"])
 
     def test_author_derived_ready_dep_whose_verdict_does_not_resolve_is_not_pass(self) -> None:
         """Issue #643 S3 (ver_defects item 3): readiness (a version- and key-agnostic glob) can
@@ -22866,8 +22813,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0"])
             self.assertIn("certified verdict does not resolve", agg["blocked_reason"])
             self.assertNotIn("not built+validated", agg["blocked_reason"])
-            self.assertFalse(agg["dependency_nodes"][0]["ready"])
-            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "unknown")
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["blocked"], 1)
             self.assertEqual(summary["dependency_summary"]["pass"], 1)
@@ -23446,7 +23391,6 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertEqual([r["label"] for r in doc["shapes"]], ["certified", "threads_2"])
         self.assertEqual([r["threads_per_rank"] for r in doc["shapes"]], [4, 2])
         self.assertTrue(all(r["state_agreement"]["status"] == "agree" for r in doc["shapes"]))
-        self.assertTrue(doc["state_agreement_applies"])
         # The top level is the certified shape's, against a one-thread, one-process candidate.
         self.assertEqual(doc["comparison"]["reference"]["threads_per_rank"], 4)
         self.assertEqual(doc["comparison"]["candidate"]["threads_per_rank"], 1)
@@ -23729,7 +23673,6 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
             self._runs(self._run_dir("run", self.h), self._run_dir("t2", bumped)),
             ir=self._ir(cross=False))
         self.assertEqual(status, "pass")
-        self.assertFalse(doc["state_agreement_applies"])
         self.assertEqual(doc["shapes"][1]["state_agreement"], {"status": "not_applicable"})
 
     def test_a_launcher_shape_must_report_its_ranks_and_grid(self) -> None:

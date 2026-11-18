@@ -422,38 +422,6 @@ class RepairExcerptTests(unittest.TestCase):
         self.assertIn("timeout: exceeded 3600 sec", timed_out)
 
 
-class ExecuteRefusalTests(unittest.TestCase):
-
-    def test_a_binary_with_no_checked_binary_is_a_host_refusal(self) -> None:
-        """A declaring compiler's binary whose `bin_checked/<exe>` is absent is refused before
-        anything runs, as the host's inconsistency (transport), not run as a missing program
-        and routed to Generate (round 1: the refusal had no row)."""
-        from tools.tests.test_workflow_conductor import _record_build_site
-        build_runtime = _build_runtime()
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
-                                   orchestration_agent_run_id="x", llm_config=_cfg("claude"),
-                                   env={})
-            refs = _refs(run_id="run_1", source_binary_id="bin_1")
-            (repo / refs.ir_ref).mkdir(parents=True)
-            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
-            (repo / refs.source_dir() / "src").mkdir(parents=True)
-            (repo / refs.binary_dir() / "bin").mkdir(parents=True)
-            (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
-            _record_build_site(repo, refs)
-            (repo / refs.binary_dir() / "bin_checked" / "spec_x_runner").unlink()
-            ran: list = []
-            with mock.patch.object(build_runtime, "tool_run_program",
-                                   lambda args: ran.append(args) or {"ok": True}), \
-                    self.assertRaises(RuntimeError) as caught:
-                c._execute_inproc(refs, "child-1")
-            self.assertIn("has no checked binary", str(caught.exception))
-            self.assertIn("--rederive build,validate", str(caught.exception))
-            self.assertEqual(ran, [])
-
-
 class RealMakeTests(unittest.TestCase):
     """The composed variables as `make` reads them: the command-line flag string replaces the
     control file's `?=` value whole, and its unexpanded object-directory reference is expanded
