@@ -11,7 +11,7 @@ Define the design direction for scaling the spec-to-code workflow from the curre
 These premises override any implicit assumption in the current implementation:
 
 1. **The existing specs are examples only.** Future specs add increasingly complex logic; the final target is a full atmospheric (weather) model. The certified node graph will grow to hundreds or thousands of nodes.
-2. **No human-written implementation code.** Humans author only `controlled_spec.md` / `tests.md` / `deps.yaml`. Humans do not write Fortran (or any target-language) code, and do not provide reference implementations.
+2. **No human-written implementation code.** Humans author only `controlled_spec.md` / `tests.md` / `deps.yaml`. Humans do not write Fortran (or any target-language) code, and do not provide reference implementations. Amended 2026-11-19 by [issue #680](https://github.com/seiya/spec2science/issues/680) for a node converted from existing code, which may declare that code as an `oracle`; `zero_base_architecture.md` premise 2 states the amendment.
 3. **Per-hardware code variants.** The workflow generates different code, in the programming language optimal for each hardware target, from the same spec. The set of (language, hardware) targets is open-ended.
 
 ## Measured cost baseline (2026-07)
@@ -54,7 +54,7 @@ Under premises 1-2, expected-output tests authored by humans do not scale to com
 1. `property` — conservation (mass/energy/momentum), positivity, symmetry, boundedness invariants stated in the spec and checked deterministically.
 2. `mms` — method of manufactured solutions; the manufactured solution and forcing terms are produced during Compile (LLM or symbolic tooling), giving discretization-order verification without a human oracle.
 3. `convergence` — grid-refinement error-rate checks against the scheme's declared order.
-4. `cross_target` — differential testing between the variants of the same spec on different (language, hardware) targets; each variant is the reference for the others within stated tolerances. This structurally replaces the absent human reference implementation once R4 exists.
+4. `cross_target` — differential testing between the variants of the same spec on different (language, hardware) targets; each variant is the reference for the others within stated tolerances. This structurally replaces the absent human reference implementation once R4 exists. Where a node declares an `oracle` (the amendment of premise 2, once implemented), the human reference is present and is read through the same `cross_target` predicates.
 5. `regression` — numerical comparison against the previously certified version of the same node on spec revision.
 
 Verdict evaluation of all kinds flows through R2. This extension must land **before** the complex-spec influx: retrofitting the test contract across a large node corpus is expensive.
