@@ -669,8 +669,8 @@ def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str
     quantity is `run.n_step` (`zero_step_closure_ref`), and its `<ref>` is the accepted
     counterpart of `loop.n_step` (``state.closure_refs``). The same text on an `xfail` test,
     with another ref (review round 1, R1-9) or under another quantity (review round 3, R3-1),
-    reads no kernel fact and is refused like any other predicate. The schema gate and the
-    evaluator ask it through `fixed_form`."""
+    reads no kernel fact and is refused like any other predicate. The schema gate asks it
+    through `fixed_form`."""
     if not isinstance(state, StateReads) or not state.loop or not isinstance(pred, dict):
         return False
     test_id = pred.get("test_id")
@@ -825,7 +825,7 @@ def predicate_reads_comparand(expr_refs: list[NameRef],
 def _predicate_refs(pred: dict[str, Any]) -> tuple[list[NameRef], dict[str, list[NameRef]]]:
     """`(expr refs, bind name -> refs)` of one predicate; raises `PrimaryEvidenceError` on an
     expression outside the grammar. A `bind` that is not a mapping contributes nothing here:
-    the gate refuses it, and `evaluate_binds` records it on the predicate per case."""
+    the gate refuses it."""
     bind = pred.get("bind")
     bind_refs = ({str(k): expr_names(parse_expr(t)) for k, t in bind.items()}
                  if isinstance(bind, dict) else {})

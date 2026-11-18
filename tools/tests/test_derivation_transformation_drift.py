@@ -2173,7 +2173,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # still ends `unevaluable`. (Measured by diffing `execute_tuple()` against main efbf8454's:
     # those two rows and no other.) The digest `execute-22` shipped with at efbf8454:
     "execute-22@efbf8454": "34e2125490ad2ae1baab7477eb8c8ba3be17f3dfea1a1d893f31851f35133f91",
-    "execute-22": "18d8afdfeb1949357857111dd2c3ad2f50f77b3b96184af4c6350b6be3395a23",
+    "execute-22": "d7c1ebdcc341ea6b8b1a63e1504345cd0200e54e6013388c6d6abffb72b9a7c1",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2441,7 +2441,7 @@ PINNED_VERDICT: dict[str, str] = {
     # against main efbf8454's: that row and no other.) The digest `verdict-20` shipped with at
     # efbf8454:
     "verdict-20@efbf8454": "2e7a0a471203d54aabb53bd3cae9c4166ab37833eb108e9cf889fd51dfb6f211",
-    "verdict-20": "f057072238c9708a495683c2de210638eb5040d718d8f26c93a77d6cf918ef18",
+    "verdict-20": "abd38786cebd1c5c4145d292c73c303a0446b5d4cc10d756fec17bc1cd710e2a",
 }
 
 
