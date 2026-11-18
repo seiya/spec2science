@@ -2610,7 +2610,7 @@ class RegistryConsistencyTests(unittest.TestCase):
     _OTHER_CAPABILITY_CONTRACT: ClassVar[dict[tuple[str, str], tuple[str, ...]]] = {
         ("build_system", "control_file"): (
             "CONTROL_FILE_BASENAME", "CONTROL_FILE_BASENAMES", "BUILDS_IN_SOURCE",
-            "QUALITY_CHECK_PRESETS", "render_node", "render_from_graph",
+            "render_node", "render_from_graph",
             "classify_build_failure", "validate_src_dir", "validate_test_no_relink",
             "validate_test_invokes_cases", "object_name"),
         # Issue #424 PR-2: what the in-process Build / Validate.execute bodies, the server's

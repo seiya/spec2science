@@ -51,13 +51,6 @@ CONTROL_FILE_BASENAMES: tuple[str, ...] = ("GNUmakefile", "makefile", "Makefile"
 #: (`orchestration_runtime._builds_in_source`).
 BUILDS_IN_SOURCE = True
 
-#: The `run_quality_checks` presets that run this build system's test target, each mapped to the
-#: target it requires the control file to declare. No gate reads it (the post-execute gate's rule
-#: on the quality-check command went in issue #643, its remaining checks in issue #674);
-#: `tools/tests/test_build_system_make.py` holds its keys equal to those of
-#: `execute.QUALITY_CHECK_COMMANDS`, the argv each preset runs.
-QUALITY_CHECK_PRESETS: dict[str, str] = {"make_test": "test", "make_check": "check"}
-
 
 #: The suffix of an object the control file's rules compile a source to.
 OBJECT_SUFFIX = ".o"

@@ -26,9 +26,7 @@ from typing import Any
 #: (`orchestration_runtime.phase_derivation_inputs`, `run_policy.preset`).
 QUALITY_CHECK_PRESET = "make_test"
 
-#: The argv of each `run_quality_checks` preset this build system serves. The keys are
-#: `control_file.QUALITY_CHECK_PRESETS`' (the target each requires the control file to declare);
-#: `tools/tests/test_build_system_make.py` holds the two equal.
+#: The argv of each `run_quality_checks` preset this build system serves.
 QUALITY_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
     "make_test": ("make", "test"),
     "make_check": ("make", "check"),

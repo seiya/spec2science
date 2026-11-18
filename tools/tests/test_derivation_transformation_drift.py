@@ -1498,14 +1498,14 @@ PINNED_RENDER: dict[str, str] = {
     # `render-22` shipped with at efbf8454:
     "render-22@efbf8454": "f2f0743a57a193a72c37f1f247cd75adb999a9d86d7367629d302213d12fe3e6",
     # render-22 re-pinned in place by issue #674, behaviour-preserving:
-    # `tools/backends/build_system/make/control_file.py`'s comment on `QUALITY_CHECK_PRESETS` no
-    # longer names `_validate_quality_check_commands`, which this issue deletes, and `targets()`,
-    # the Makefile target reader that validator check once used and no non-test code called, is
-    # deleted; no rendered control file changes. (Measured by diffing `render_tuple()` against
+    # `tools/backends/build_system/make/control_file.py` loses `QUALITY_CHECK_PRESETS` (each
+    # preset's target, which the deleted validator reader required the control file to declare)
+    # and `targets()` (the Makefile target reader that check once used); no non-test code read
+    # either, and no rendered control file changes. (Measured by diffing `render_tuple()` against
     # main 8adea1c4's: that row and no other.) The digest
     # `render-22` shipped with at 8adea1c4:
     "render-22@8adea1c4": "6d0a0b63e7fe4d33bd54891b80abd16841e7af1d8d73a59b2fb1696dd8fb9df4",
-    "render-22": "04f38389ebab57b72a8ae508dd9573cf2ff521e10c53379d6941301fcc8f4e7a",
+    "render-22": "422e604a67722e068a2d0f17ef53a2dd0654e9217356517327171744d87d712f",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1781,7 +1781,7 @@ PINNED_BUILD: dict[str, str] = {
     # execute-22's; no build command changes. (Measured by diffing `build_tuple()` against main
     # 8adea1c4's: those three rows and no other.) The digest `build-5` shipped with at 8adea1c4:
     "build-5@8adea1c4": "84ee4b2a0e88983c82e36261b2f35dd1ed53b126a0d70c54510fbb84970c1457",
-    "build-5": "bf1a67e1b9af9a01ac83ca46b13e1abb9e194c011c722dfb4246fe753c0e15b5",
+    "build-5": "dc63f773028a82aa385bc2f57d00dd629a1f8d3c4e4277d0c4548329917c9e0c",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2212,7 +2212,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # `execute_tuple()` against main 8adea1c4's: those four rows and no other.) The digest
     # `execute-22` shipped with at 8adea1c4:
     "execute-22@8adea1c4": "b1f87278a22c0ebf72c53d58677822a6d703ecfc0a162769777b6def2c20a238",
-    "execute-22": "ddf9bc5dc2780bea2b7f828e3b7fed51a23792d0f5003dc59c30cfba8a9c4ab7",
+    "execute-22": "f19d8f104647ba4700748081bf5102f9836deb57ea4873953ad39e024ac941a4",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

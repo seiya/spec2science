@@ -27,16 +27,9 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
         self.assertIs(registry.capability_module("build_system", "make", "build_execute"),
                       execute)
 
-    def test_the_quality_check_presets_are_the_control_files(self) -> None:
-        # The argv table and the control-file target table name ONE preset set, with one target
-        # each: `phase_04_validate.md` lists the presets from the control file's table, and the
-        # library runs them from this one.
-        self.assertEqual(set(execute.QUALITY_CHECK_COMMANDS),
-                         set(control_file.QUALITY_CHECK_PRESETS))
-        for preset, (executable, target) in execute.QUALITY_CHECK_COMMANDS.items():
-            with self.subTest(preset=preset):
-                self.assertEqual(executable, "make")
-                self.assertEqual(target, control_file.QUALITY_CHECK_PRESETS[preset])
+    def test_the_quality_check_presets(self) -> None:
+        self.assertEqual(execute.QUALITY_CHECK_COMMANDS,
+                         {"make_test": ("make", "test"), "make_check": ("make", "check")})
         self.assertIn(execute.QUALITY_CHECK_PRESET, execute.QUALITY_CHECK_COMMANDS)
         self.assertEqual(execute.QUALITY_CHECK_PRESET, "make_test")
 
