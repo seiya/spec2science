@@ -86,7 +86,7 @@ def oracle_dir(repo_root: str | Path, spec_ref: str) -> Path:
 
 def _distinct_strings(value: Any, what: str, *, nonempty: bool) -> tuple[str, ...]:
     if (not isinstance(value, list) or (nonempty and not value)
-            or not all(isinstance(v, str) and v.strip() == v and v for v in value)
+            or not all(isinstance(v, str) and v for v in value)
             or len(set(value)) != len(value)):
         raise OracleDeclarationError(
             f"{what} must be a list of distinct non-empty strings"
@@ -131,8 +131,8 @@ def load(repo_root: str | Path, spec_ref: str, language: str) -> Oracle | None:
             raise OracleDeclarationError(
                 f"oracle_version must be {ORACLE_DECLARATION_VERSION}, got {version!r}")
         source = doc["source"]
-        if (not isinstance(source, str) or source in ("", ".", "..", DECLARATION_FILE)
-                or "/" in source or "\\" in source or not (directory / source).is_file()):
+        if (not isinstance(source, str) or "/" in source or source == DECLARATION_FILE
+                or not (directory / source).is_file()):
             raise OracleDeclarationError(
                 f"source must name a file in {directory} other than {DECLARATION_FILE}, "
                 f"got {source!r}")
