@@ -663,9 +663,10 @@ class PureCompileProfileContextTests(_Fixture):
 
     def test_an_undecodable_profile_spec_fails_the_assembly(self) -> None:
         """Issue #643 PR-5 (WC2-75): a profile spec that exists and does not decode is not
-        inlined as a placeholder; the read error propagates, and the caller names it
-        `pure_context_assembly_failed`. (A missing one never gets here: the Compile derivation
-        hashes it at phase start.)"""
+        inlined as a placeholder: the builder raises the read error (`UnicodeDecodeError`),
+        which is all this row asserts. The caller's `except Exception` turning it into
+        `pure_context_assembly_failed` is not asserted here. (A missing one never gets here:
+        the Compile derivation hashes it at phase start.)"""
         (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").write_bytes(b"\xff\xfe")
         c = self.conductor()
         with self.assertRaises(UnicodeDecodeError):
