@@ -7275,7 +7275,7 @@ def _validate_orchestration_hierarchy(
                          for execution in executions})
 
     # Phase-4 D2: scope the cross-orchestration integrity scan to the CURRENT
-    # orchestration when its id is supplied (pre_judge passes --orchestration-id).
+    # orchestration (pre_judge passes --orchestration-id).
     # The conductor runs one orchestration per node (run_workflow `_run_node`), so
     # workspace/orchestrations/ accumulates the current run, its dependency runs,
     # AND debris from prior/crashed unrelated runs. The per-orchestration internal
@@ -7284,31 +7284,30 @@ def _validate_orchestration_hierarchy(
     # dangling edge previously failed a healthy run (a fresh run inherited foreign
     # debris). Dependencies are validated by their OWN pre_judge + the conductor's
     # workflow_launch_check readiness gate, so they need not be re-policed here.
-    # When the id is absent (legacy callers / --stage full) the scan covers all
-    # orchestrations, preserving prior behavior.
-    if current_orchestration_id is not None:
-        scoped = [d for d in orchestration_dirs if d.name == current_orchestration_id]
-        if not scoped:
-            violations.append(
-                f"{orchestrations_root}/{current_orchestration_id}: current "
-                "orchestration directory not found"
-            )
-            return
-        orchestration_dirs = scoped
-        # Restrict coverage to the node(s) this orchestration actually produced, so
-        # scoping to one dir does not spuriously flag a dependency node's steps as
-        # missing (their step_results live in the dependency's own orchestration).
-        # Intersect UNCONDITIONALLY — even when this orchestration has no steps dir
-        # (own_node_safes empty): leaving node_safes unnarrowed would retain the other
-        # executions' nodes and demand their step_results of this single scoped dir,
-        # defeating the scoping. An orchestration genuinely missing its steps still
-        # fails closed via the per-orchestration "steps_root: missing" check below.
-        own_steps_root = scoped[0] / "steps"
-        own_node_safes = (
-            {p.name for p in own_steps_root.iterdir() if p.is_dir()}
-            if own_steps_root.is_dir() else set()
+    # There is no unscoped form since issue #643 removed `--stage full`, its only
+    # caller: an absent id names no directory and is refused just below.
+    scoped = [d for d in orchestration_dirs if d.name == current_orchestration_id]
+    if not scoped:
+        violations.append(
+            f"{orchestrations_root}/{current_orchestration_id}: current "
+            "orchestration directory not found"
         )
-        node_safes = sorted(set(node_safes) & own_node_safes)
+        return
+    orchestration_dirs = scoped
+    # Restrict coverage to the node(s) this orchestration actually produced, so
+    # scoping to one dir does not spuriously flag a dependency node's steps as
+    # missing (their step_results live in the dependency's own orchestration).
+    # Intersect UNCONDITIONALLY — even when this orchestration has no steps dir
+    # (own_node_safes empty): leaving node_safes unnarrowed would retain the other
+    # executions' nodes and demand their step_results of this single scoped dir,
+    # defeating the scoping. An orchestration genuinely missing its steps still
+    # fails closed via the per-orchestration "steps_root: missing" check below.
+    own_steps_root = scoped[0] / "steps"
+    own_node_safes = (
+        {p.name for p in own_steps_root.iterdir() if p.is_dir()}
+        if own_steps_root.is_dir() else set()
+    )
+    node_safes = sorted(set(node_safes) & own_node_safes)
 
     step_coverage = {
         (node_safe, step): False
@@ -11397,16 +11396,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--stage",
         choices=(
-            "full",
             "compile",
             "post_generate",
             "post_build",
             "post_execute",
             "pre_judge",
         ),
-        default="full",
+        required=True,
         help=(
-            "full: default end-to-end validation (requires execution artifacts). "
             "compile: validate IR directory only (spec.ir.yaml structure invariants). "
             "post_generate / post_build: validate one pipeline source tree (requires --pipeline-root). "
             "post_execute: full validation with LLM review and orchestration optional. "
@@ -11469,46 +11466,11 @@ def main(argv: list[str] | None = None) -> int:
             "pre_judge: scopes the cross-orchestration integrity scan to this single "
             "orchestration so an unrelated crashed/prior orchestration's debris (a "
             "dangling agent_graph edge) cannot fail a healthy run. Dependencies are "
-            "validated by their own pre_judge + the launch-check readiness gate. When "
-            "omitted, the scan covers all orchestrations (legacy behavior)."
-        ),
-    )
-    parser.add_argument(
-        "--allow-missing-llm-review",
-        action="store_true",
-        help="Allow missing semantic_review.json for legacy pipelines.",
-    )
-    parser.add_argument(
-        "--allow-missing-orchestration",
-        action="store_true",
-        help="Allow missing orchestration artifacts for legacy pipelines.",
-    )
-    parser.add_argument(
-        "--legacy-mode",
-        action="store_true",
-        help=(
-            "Allow legacy compatibility options. "
-            "Without this flag, --allow-missing-* options are rejected."
+            "validated by their own pre_judge + the launch-check readiness gate. The scan "
+            "covers this orchestration only, so pre_judge needs it."
         ),
     )
     args = parser.parse_args(argv)
-
-    if (args.allow_missing_llm_review or args.allow_missing_orchestration) and not args.legacy_mode:
-        print(
-            "pipeline semantic validation: FAIL\n"
-            "- --allow-missing-llm-review/--allow-missing-orchestration require --legacy-mode"
-        )
-        return 1
-
-    if args.stage == "pre_judge" and (
-        args.allow_missing_llm_review or args.allow_missing_orchestration
-    ):
-        print(
-            "pipeline semantic validation: FAIL\n"
-            "- --stage pre_judge is incompatible with --allow-missing-llm-review "
-            "and --allow-missing-orchestration"
-        )
-        return 1
 
     repo_root = Path(args.repo_root).resolve()
 
@@ -11586,7 +11548,7 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     # authors it after this gate returns clean (`_execute_inproc`).
                     require_verdict=False,
                 )
-            elif args.stage == "pre_judge":
+            else:  # pre_judge: the parser's `choices` bound the stage
                 violations = validate(
                     repo_root=repo_root,
                     workspace_root=args.workspace_root,
@@ -11604,18 +11566,6 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                         if args.orchestration_id and args.orchestration_id.strip()
                         else None
                     ),
-                )
-            else:
-                violations = validate(
-                    repo_root=repo_root,
-                    workspace_root=args.workspace_root,
-                    pipeline_roots=pipeline_roots,
-                    require_llm_review=not args.allow_missing_llm_review,
-                    require_orchestration=not args.allow_missing_orchestration,
-                    # NOT `not args.allow_missing_orchestration`: that flag waives the
-                    # ORCHESTRATION artifacts, and coupling the verdict to it would let
-                    # `--allow-missing-orchestration` silently switch off the verdict/summary pin.
-                    require_verdict=True,
                 )
     except backend_registry.BackendFrontendUnavailable as exc:
         # A DEDICATED EXIT CODE, because this failure is the OPERATOR's and no edit to any source

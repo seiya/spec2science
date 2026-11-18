@@ -10097,17 +10097,17 @@ def _validate_orchestration_completion_for_pass(
 _STEP_META_FILENAME = STAGE_META_FILENAME_BY_STEP
 
 STEP_REQUIRED_VALIDATION_STAGES: dict[str, frozenset[str]] = {
-    "compile": frozenset({"compile", "full"}),
+    "compile": frozenset({"compile"}),
     # Generate accepts only `post_generate` (the validator stage that
-    # checks generation outputs) and `full`. `post_build` is Build's
+    # checks generation outputs). `post_build` is Build's
     # responsibility — its semantics are "validation after the build
     # artifact exists" and applying it to a Generate terminal status
     # would conflate phase boundaries. No production code or test
     # exercises `generate + post_build`; the previous permissive set was
     # a tolerance with no legitimate use case.
-    "generate": frozenset({"post_generate", "full"}),
-    "build": frozenset({"post_build", "full"}),
-    "validate": frozenset({"post_execute", "pre_judge", "full"}),
+    "generate": frozenset({"post_generate"}),
+    "build": frozenset({"post_build"}),
+    "validate": frozenset({"post_execute", "pre_judge"}),
 }
 
 _RETRY_DECISION_REQUIRED_KEYS: tuple[str, ...] = (

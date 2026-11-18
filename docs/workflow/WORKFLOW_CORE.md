@@ -297,7 +297,7 @@ The contract details per phase use the files under [phases/](phases/) as the can
 - The workflow completion condition is that, for the `all_nodes` set of the `dependency_graph.json` sidecar, `workspace/ir/<node_key_safe>/<ir_id>/` and `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/` exist, and the `node_key` and `dependency_ref` of `lineage.json` match.
 - The workflow completion declaration is permitted only when the `dependency workflow` coverage check, the `trial_meta` integrity check, and the non-detection of `copy_based_artifact_reuse` are simultaneously satisfied.
 - The workflow completion declaration is permitted only when, simultaneously, there is no embedding of a dependency `node` implementation in the `src/` of an upper `node`.
-- `CI` treats the execution result of `python3 tools/validate_workspace_root.py` and `python3 tools/validate_pipeline_semantics.py` (`--stage full` or omitted) as a `pass` condition.
+- The conductor runs `python3 tools/validate_pipeline_semantics.py` once per gate, each time with an explicit `--stage` (`ORCHESTRATION.md`). `CI` runs the test suite and does not run the validators.
 
 ## Reference documents
 - `ORCHESTRATION.md`

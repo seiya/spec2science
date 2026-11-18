@@ -8205,7 +8205,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("orchestrations" in v and "missing" in v for v in violations)
@@ -8242,7 +8242,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertEqual([], violations)
 
@@ -8329,7 +8329,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("context_isolated must be true for step" in v for v in violations)
@@ -8384,7 +8384,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("missing agent_summary_ref for step" in v for v in violations)
@@ -8439,7 +8439,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("missing launch_prompt_ref for step" in v for v in violations)
@@ -8488,7 +8488,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("child agent identifier missing from launch response" in v for v in violations)
@@ -8546,7 +8546,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("child agent identifier must equal agent_runs agent_session_id" in v for v in violations)
@@ -8595,7 +8595,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("agent.summary.txt must include status and output_refs or failure reason" in v for v in violations)
@@ -8655,7 +8655,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("launch_reply must not be generic launched-only text" in v for v in violations)
@@ -9417,7 +9417,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(any("missing step_result.json" in v and "problem__shallow_water2d__0.3.0/compile" in v for v in violations))
 
@@ -9470,7 +9470,7 @@ end program shallow_water2d_runner
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("child_agent_run_id not found in agent_runs.jsonl" in v for v in violations)
@@ -9489,7 +9489,7 @@ end program shallow_water2d_runner
         reparent_removed_child_to: str | None = None,
         divert_removed_child_to_invalid: bool = False,
         seed_foreign_crashed: bool = False,
-        current_orchestration_id: str | None = None,
+        current_orchestration_id: str = "orch_test_001",
     ) -> list[str]:
         """Build the minimal execution + orchestration tree, optionally drop
         ``removed_arid`` from agent_runs.jsonl (leaving its agent_graph edge
@@ -9660,7 +9660,7 @@ end program shallow_water2d_runner
             before = validate(
                 repo_root=repo,
                 workspace_root="workspace",
-                require_orchestration=True,
+                require_orchestration=True, current_orchestration_id="orch_test_001",
             )
             self.assertTrue(
                 any("missing parent_agent_run_id" in v for v in before), before
@@ -9691,7 +9691,7 @@ end program shallow_water2d_runner
                     node_states["validate"] = state
                 _write_json(state_path, doc)
                 return validate(repo_root=repo_root, workspace_root="workspace",
-                                require_orchestration=True)
+                                require_orchestration=True, current_orchestration_id="orch_test_001")
 
             # The tree with its validate step_result deleted: refused as missing ...
             self._violations_with_removed_child(repo_root, remove_validate_step_result=True)
@@ -9898,24 +9898,6 @@ end program shallow_water2d_runner
             self.assertTrue(
                 any("substep must not be parent role" in v for v in violations),
                 msg=f"substep-parent edge must still fail closed; got: {violations}",
-            )
-
-    def test_pre_judge_unscoped_scan_fails_on_foreign_crashed_orchestration(self) -> None:
-        """Phase-4 D2 (legacy/unscoped behavior): without --orchestration-id the
-        cross-orchestration integrity scan covers ALL orchestrations, so an unrelated
-        crashed orchestration's dangling agent_graph edge fails a healthy run."""
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                seed_foreign_crashed=True,
-                current_orchestration_id=None,
-            )
-            self.assertTrue(
-                any("orch_foreign_001" in v for v in violations),
-                msg=(
-                    "unscoped scan must surface the foreign orchestration's debris; "
-                    f"got: {violations}"
-                ),
             )
 
     def test_pre_judge_scoped_ignores_foreign_crashed_orchestration(self) -> None:
@@ -15419,7 +15401,8 @@ class OrchestrationHierarchySweepTest(unittest.TestCase):
         """No name is exempt from the hierarchy sweep. The `_global/` hook-refusal sink was,
         until issue #445 deleted the exclusion with the leaf hook layer that wrote it
         (`docs/ORCHESTRATION.md` §38); a directory of that name is now debris like any other,
-        and is flagged rather than skipped."""
+        and is flagged rather than skipped. (The sweep is scoped to the orchestration being
+        judged since issue #643 removed its unscoped form, so each name is named as that one.)"""
         from tools.validate_pipeline_semantics import _validate_orchestration_hierarchy
         for name in ("orch_debris", "_global"):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
@@ -15428,7 +15411,7 @@ class OrchestrationHierarchySweepTest(unittest.TestCase):
                 violations: list = []
                 _validate_orchestration_hierarchy(
                     workspace_path=workspace, executions=[], violations=violations,
-                    current_orchestration_id=None)
+                    current_orchestration_id=name)
                 self.assertTrue(
                     any(name in str(v) and "orchestration_meta.json" in str(v)
                         for v in violations), violations)
@@ -25641,31 +25624,15 @@ class IrFixtureShapeTests(unittest.TestCase):
             tests_md.write_text("### 1-1. `t1`\n", encoding="utf-8")
 
             at_execute = self._validate_stage_via_cli(repo_root, ["--stage", "post_execute"])
-            at_full = self._validate_stage_via_cli(
-                repo_root,
-                ["--stage", "full", "--legacy-mode", "--allow-missing-llm-review"],
-            )
-            # `--allow-missing-orchestration` waives the ORCHESTRATION artifacts. Coupling the
-            # verdict to it (require_verdict = not allow_missing_orchestration) silently switched
-            # the verdict/summary pin off, which is a fail-open the flag never promised.
-            at_full_no_orch = self._validate_stage_via_cli(
-                repo_root,
-                [
-                    "--stage", "full", "--legacy-mode",
-                    "--allow-missing-llm-review", "--allow-missing-orchestration",
-                ],
-            )
+            at_pre_judge = self._validate_stage_via_cli(
+                repo_root, ["--stage", "pre_judge", "--orchestration-id", "orch_test_001"])
         self.assertFalse(
             [v for v in at_execute if "verdict.json: missing" in v],
             "post_execute must not demand a verdict the conductor has not authored yet",
         )
         self.assertTrue(
-            [v for v in at_full if "verdict.json: missing" in v],
+            [v for v in at_pre_judge if "verdict.json: missing" in v],
             "every other stage must demand the verdict",
-        )
-        self.assertTrue(
-            [v for v in at_full_no_orch if "verdict.json: missing" in v],
-            "--allow-missing-orchestration must not waive the verdict pin",
         )
 
     def test_unresolvable_tests_ref_fails_compile(self) -> None:
@@ -26062,7 +26029,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
 
     def _pure_violations(self, repo_root: Path) -> list[str]:
         violations = validate(repo_root=repo_root, workspace_root="workspace",
-                              require_orchestration=True)
+                              require_orchestration=True, current_orchestration_id="orch_test_001")
         return [v for v in violations
                 if "pure launch" in v or "pure-launch mismatch" in v]
 
@@ -26134,7 +26101,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         return sorted(
             v.replace(str(repo_root), "<root>")
             for v in validate(repo_root=repo_root, workspace_root="workspace",
-                              require_orchestration=True))
+                              require_orchestration=True, current_orchestration_id="orch_test_001"))
 
     def test_a_cli_pure_launch_still_needs_one(self) -> None:
         """The control: the exemption is not "a missing profile is fine" — for a CLI workshop
@@ -26277,7 +26244,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
 
     def _workshop_violations(self, repo_root: Path) -> list[str]:
         return [v for v in validate(repo_root=repo_root, workspace_root="workspace",
-                                    require_orchestration=True)
+                                    require_orchestration=True, current_orchestration_id="orch_test_001")
                 if "workshop" in v or "pure launch" in v or "pure-launch mismatch" in v
                 or "launch-prompt template markers" in v]
 
@@ -26478,7 +26445,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self._patch_row(repo_root, output_refs=[])
                 self.assertFalse(
                     [v for v in validate(repo_root=repo_root, workspace_root="workspace",
-                                         require_orchestration=True)
+                                         require_orchestration=True, current_orchestration_id="orch_test_001")
                      if "output_refs of exactly []" in v], label)
                 runs = self._orch_root(repo_root) / "agent_runs.jsonl"
                 lines = []
@@ -26499,7 +26466,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 # row a real pin — the mutated workspace must produce this violation, so a
                 # deletion that silences the arm shows up either way.
                 violations = validate(repo_root=repo_root, workspace_root="workspace",
-                                      require_orchestration=True)
+                                      require_orchestration=True, current_orchestration_id="orch_test_001")
                 self.assertTrue(
                     any("output_refs of exactly []" in v for v in violations), violations)
 
