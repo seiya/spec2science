@@ -1199,6 +1199,9 @@ PINNED: dict[str, str] = {
     # The digest `leaf-102` shipped with at 66d77304:
     "leaf-102@66d77304": "1e1ed2d2a0ba7a8edb9ff0eeb10f20bb3ba40b76289e29de7b9e8fe6721d672c",
     "leaf-102": "d3d04e10aae747c7504be1869be9382a04c71a691495ed941de67e3e1acd54ab",
+    # leaf-103 (issue #643 PR-3): `DEPENDENCIES.md` loses the signature-drift WARNING (OR1-89,
+    # the canary that compared a dependency IR's signature pin with its certified source).
+    "leaf-103": "93a44709f0cda2557be538346c28a2a0363522e137522bb1e9b51db713dcad9e",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1282,7 +1285,13 @@ PINNED_READER: dict[str, str] = {
     # at this version (66d77304's selection, 2026-11-16).
     # The digest `generate-verify-13` shipped with at 66d77304:
     "generate-verify-13@66d77304": "41866eabfa416adfeb181089a9ae30aee87d7f24a1fe2d33c8cc2310a377a7b1",
-    "generate-verify-13": "b89bd69867dee9b1eb9226940bda45544ecfda28af7b8344273b8484809fbbd7",
+    # generate-verify-13 re-pinned in place by issue #643 PR-3 (operator decision 2026-11-18), behaviour-
+    # preserving: the dependency-facts render loses the signature-drift WARNING (OR1-89). The
+    # canary never fired in 1027 recorded orchestrations (`docs/design/check_inventory_643/
+    # verify/ver_f2.md`, OR1-89), so no judgment certified at this version read the removed text.
+    # The digest `generate-verify-13` shipped with at 03643f31:
+    "generate-verify-13@03643f31": "b89bd69867dee9b1eb9226940bda45544ecfda28af7b8344273b8484809fbbd7",
+    "generate-verify-13": "642a136dcaba042b1dfae6b2e526759861f878a18d95afab9b8ca9397240ae1d",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
@@ -1294,7 +1303,13 @@ PINNED_READER: dict[str, str] = {
     # certified at this version (66d77304's selection, 2026-11-16).
     # The digest `validate-judge-11` shipped with at 66d77304:
     "validate-judge-11@66d77304": "1c26307a9240b000ec273f875c2c10c7579bbc3df6c3c55d28fa418b54025f7a",
-    "validate-judge-11": "d18893adaec0cf760b8207e71364d79a5b372afd1c5fcd88bec9af601f475ee1",
+    # validate-judge-11 re-pinned in place by issue #643 PR-3 (operator decision 2026-11-18), behaviour-
+    # preserving: the dependency-facts render loses the signature-drift WARNING (OR1-89). The
+    # canary never fired in 1027 recorded orchestrations (`docs/design/check_inventory_643/
+    # verify/ver_f2.md`, OR1-89), so no judgment certified at this version read the removed text.
+    # The digest `validate-judge-11` shipped with at 03643f31:
+    "validate-judge-11@03643f31": "d18893adaec0cf760b8207e71364d79a5b372afd1c5fcd88bec9af601f475ee1",
+    "validate-judge-11": "d7f7da4b9db26a1d4c8982769f04fe14e6dcd758079e8a630d09e188278b0ee3",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
