@@ -39,8 +39,9 @@ becomes content; other ValueErrors keep propagating).
 ## Side effects of dropping into a content failure
 
 An early return skips the post-processing the normal path always performs. In PR #51 it returned
-without writing `write_syntax_evidence` (the host-side certificate), and recorded a stage shape
-the certificate reader refuses (`fail` with no command_id).
+without writing `write_syntax_evidence` (the host-side certificate; it and its reader went in
+issue #643 PR-6), and recorded a stage shape the certificate reader refused (`fail` with no
+command_id).
 
 - Does it return **the same keys** as the normal path's return
 - Does it write the artifacts the normal path writes (certificates, logs), or can you explain why

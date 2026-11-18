@@ -710,8 +710,8 @@ instead would have reddened the OLD spelling just as readily. The mutation disti
 SPELLINGS. It said nothing about whether either spelling observes the subject.
 
 **What the subject actually was.** `_gate_syntax_check` authors no verdict at all — its only
-writes are a temp-dir canary source and, further down, the persistent `syntax_evidence/<id>.json`
-certificate, both below the raise on that path. `gate_meta.json` is written by `_gate_inproc`,
+writes were a temp-dir canary source and, further down, the persistent `syntax_evidence/<id>.json`
+certificate (retired in issue #643 PR-6), both below the raise on that path. `gate_meta.json` is written by `_gate_inproc`,
 one frame up. So the respelled assertion was as unfalsifiable as the one it replaced. Mutating
 the REAL writer — `_gate_inproc` made to write `gate_meta.json` unconditionally — reddens exactly
 two rows in `DeterministicGateTest`, neither of them this one, which is where the property was
