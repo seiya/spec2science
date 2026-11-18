@@ -21355,7 +21355,7 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._COUNTED, plan=_OMIT), [])
 
     def test_an_unreadable_bundle_passes(self) -> None:
-        # Fail-open: the bundle tamper gate reports an unreadable bundle; the floor states no
+        # Fail-open: the host writes the bundle from the accepted document; the floor states no
         # obligation it cannot read.
         from unittest import mock
         with mock.patch.object(vps, "_read_json", side_effect=json.JSONDecodeError("x", "", 0)):

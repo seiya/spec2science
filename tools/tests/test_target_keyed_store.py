@@ -21,8 +21,8 @@ What each class pins:
 - `EveryStageRefusesAnUnresolvableTargetTests` — the resolve check is wired into post_generate,
   post_build and the execution stages.
 - `LoaderRefusesAStoreIdTests` — the loader and the shape check refuse a store-id-shaped id.
-- `ValidatorToolchainReadsTests` — the m3c language and the tamper gate's build-graph
-  toolchain are the target's, driven with an IR that contradicts it.
+- `ValidatorToolchainReadsTests` — the m3c language is the target's, driven with an IR that
+  contradicts it.
 - `WorkspaceLayoutTargetLayerTests` — `validate_workspace_root` accepts the target layer and
   checks the pipeline ids beneath it.
 
@@ -40,7 +40,6 @@ import json
 import tempfile
 import unittest
 
-from tools.tests.orchestration_fixtures import ensure_spec_entry
 from pathlib import Path
 
 import tools.orchestration_runtime as ort
@@ -547,31 +546,6 @@ class ValidatorToolchainReadsTests(unittest.TestCase):
             execution = vps._stub_execution(pipe, _NK)
             self.assertEqual(vps._execution_m3c_language(repo, execution),
                              FORTRAN_CPU.toolchain["language"])
-
-    def test_the_gate_build_graph_toolchain_is_the_targets(self) -> None:
-        import tools.validate_pipeline_semantics as vps
-        from tools.tests.target_fixtures import profile_with
-        target = profile_with(toolchain={"standard": "f2018", "compiler": "xfc"},
-                              parallel={"backend": "serial"})
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            # The pipeline closure starts with the target's harness (issue #284), resolved in
-            # the catalog; a stale IR toolchain section moves nothing.
-            ensure_spec_entry(repo, f"infrastructure/{target.harness['infrastructure_id']}@0.7.0")
-            self._pipeline_with_ir(repo, {"impl_defaults": {
-                "toolchain": {"language": "c", "standard": "c99", "build_system": "cmake"},
-                "target": {"backend": "openmp"}}})
-            toolchain, closure, _edges = vps._pure_gate_build_graph_inputs(
-                repo, f"workspace/ir/{_SAFE}/spec-x_20260101_001", _NK, target)
-            # The gate's closure is the PIPELINE closure (issue #284): the target's harness,
-            # which the IR's sidecar no longer lists, is its first member — the same list the
-            # conductor stages and the generate key hashes (`pipeline_closure_nodes`).
-            self.assertEqual(
-                closure[:1], (f"infrastructure/{target.harness['infrastructure_id']}@0.7.0",))
-            self.assertEqual(toolchain, {
-                "language": target.toolchain["language"], "standard": "f2018",
-                "build_system": target.toolchain["build_system"], "backend": "serial",
-                "compiler": "xfc"})
 
 
 class WorkspaceLayoutTargetLayerTests(unittest.TestCase):

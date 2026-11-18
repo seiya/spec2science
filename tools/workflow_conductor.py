@@ -5936,8 +5936,8 @@ class Conductor:
         holds (`.claude/skills/spec2science-enforcement-change`, surface 11). The two are pinned
         equal for a pure node anyway by `_leaf_ir_document_violations`, so this costs nothing
         and cannot be turned off from inside a document. `validate_pipeline_semantics
-        ._ir_bundle_shape` is the twin the deterministic tamper gate asks the same question of;
-        a parity test pins the two."""
+        ._ir_bundle_shape` is its twin (its one caller, the post_generate bundle re-check, went
+        in issue #643 PR-4); a parity test pins the two."""
         from tools.codegen_bundle import LANGUAGES as BUNDLE_LANGUAGES
         if not self._conductor_authors_makefile(refs):
             return None
@@ -6326,8 +6326,7 @@ class Conductor:
         every requirement is unsatisfied.
 
         The resolution itself lives in the runtime (`harness_node_key_for`), because the
-        generate derivation inputs, the pipeline closure and the tamper gate name the same
-        harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
+        generate derivation inputs and the pipeline closure name the same harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
         catalog edited under the run) raises RuntimeError — a build precondition every caller
         already routes to a fail-closed transport outcome, never a content retry."""
         from tools.orchestration_runtime import harness_node_key_for
@@ -6542,9 +6541,8 @@ class Conductor:
         no repository write authority, so a corrupted bundle can only propagate as content here — these layers are what
         catch it before any file is written.
 
-        The layers themselves live in `codegen_bundle.pure_bundle_contract_violation` (the SINGLE
-        source shared with the deterministic post-generate tamper gate, so the two cannot drift);
-        this method only assembles the conductor-side inputs (the resolved harness capabilities,
+        The layers themselves live in `codegen_bundle.pure_bundle_contract_violation`; this
+        method only assembles the conductor-side inputs (the resolved harness capabilities,
         the build-graph derivation) and delegates."""
         from tools.codegen_bundle import pure_bundle_contract_violation
         return pure_bundle_contract_violation(
@@ -6599,14 +6597,9 @@ class Conductor:
         # absorbed member is rejected (a v1 single-node unit has none, but the check is honest).
         sidecar = _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {}
         edges: dict[str, list[str]] = {}
-        for entry in (sidecar.get("all_nodes") or []) if isinstance(sidecar, dict) else []:
-            if not isinstance(entry, dict):
-                continue
-            nk = entry.get("node_key")
-            deps = [d.get("node_key") if isinstance(d, dict) else d
-                    for d in (entry.get("direct_deps") or [])]
-            if isinstance(nk, str):
-                edges[nk] = [d for d in deps if isinstance(d, str)]
+        for entry in sidecar.get("all_nodes") or []:
+            edges[entry["node_key"]] = [d.get("node_key") if isinstance(d, dict) else d
+                                        for d in (entry.get("direct_deps") or [])]
         # The host glue is exactly what the host RENDERS: the runner on an `m3c` node, nothing
         # on a `harness` one (where the runner is bundle content). Asked of the one predicate
         # that decides the render (`_conductor_authors_runner`), so the graph can never declare
@@ -6679,27 +6672,15 @@ class Conductor:
         (`_write_runner`, at phase start)."""
         src_dir = self.repo_root / refs.source_dir() / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
-        src_root = src_dir.resolve()
         written: list[str] = []
-        for entry in doc.get("files") or []:
-            if not isinstance(entry, dict):
-                continue
-            logical = str(entry.get("logical_path") or "")
-            content = entry.get("content")
-            if not logical or not isinstance(content, str):
-                continue
+        # `doc` passed the host acceptance contract (`_leaf_bundle_violations`, whose
+        # `validate_bundle` layer refuses a non-object entry, an empty or escaping
+        # `logical_path` and a non-string content) before this is called.
+        for entry in doc["files"]:
+            logical = entry["logical_path"]
             target = src_dir / logical
-            # Defense-in-depth containment: `validate_bundle`'s `logical_path_violations`
-            # already rejected any absolute / `..` / non-normalized path before this doc was
-            # accepted, so a path escaping src/ here means a validator bypass — fail closed
-            # loudly rather than writing outside the source tree. (Belt-and-suspenders over the
-            # gated pass path; never fires on a validated bundle.)
-            if not target.resolve().is_relative_to(src_root):
-                raise RuntimeError(
-                    f"pure bundle file {logical!r} resolves outside the source tree "
-                    f"({target.resolve()} not under {src_root}) — refusing to write")
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_text(entry["content"], encoding="utf-8")
             written.append(f"{refs.source_dir()}/src/{logical}")
         # The accepted bundle, host-authored at the source root (leaf-non-writable), for
         # provenance and as the verify persona's input (M-D). Not a leaf deliverable.

@@ -2992,8 +2992,8 @@ class PureContractLayersTests(unittest.TestCase):
 
 class BundleShapeAdmissibilityTest(unittest.TestCase):
     """`pure_bundle_contract_violation`'s `shape` argument: which file shape a node's bundle
-    is judged against. Both callers (the producer's in-conversation gate and the
-    deterministic tamper gate) pass the same value, resolved by the twin readers."""
+    is judged against. Its caller, the producer's in-conversation gate, passes the value
+    `Conductor._bundle_shape` resolves."""
 
     _MODEL = "module harness_fortran_cpu_model\n! allow(C003)\nend module harness_fortran_cpu_model\n"
 

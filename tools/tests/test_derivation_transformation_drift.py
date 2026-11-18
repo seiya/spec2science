@@ -1443,7 +1443,16 @@ PINNED_RENDER: dict[str, str] = {
     # to 3 then corrected `_write_makefile`'s docstring.) The digest
     # `render-22` shipped with at 31dfcbf1:
     "render-22@31dfcbf1": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
-    "render-22": "bf48dafee8de7bd5f9068f80d7d175d39bed916e5c8a4140d9785b5734abdf8c",
+    # render-22 re-pinned in place by issue #643 PR-4, behaviour-preserving:
+    # `_write_leaf_bundle_artifacts` loses its skip of a non-object `files[]` entry, an empty
+    # `logical_path` or a non-string `content`, and its refusal of a path resolving outside
+    # `src/`. Its one caller runs after the producer's acceptance (`validate_bundle`'s
+    # `_files_schema_violations` and `logical_path_violations`), which refuses each of those
+    # shapes, so every bundle a leaf could have certified writes the same files. (Measured by
+    # diffing `render_tuple()` against main cfde9a2e's: that row and no other.) The digest
+    # `render-22` shipped with at cfde9a2e:
+    "render-22@cfde9a2e": "bf48dafee8de7bd5f9068f80d7d175d39bed916e5c8a4140d9785b5734abdf8c",
+    "render-22": "4c38f647a74aaf2fca89b29a433f15f9ab43ea3d4877e28f6e874fd7a6b16936",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

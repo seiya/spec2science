@@ -1518,9 +1518,9 @@ def _ir_bundle_shape(ir: dict[str, Any], node_key: str,
                      toolchain: tuple[str, str]) -> str | None:
     """The CodegenBundle SHAPE of a node, or ``None`` when it has none.
 
-    The deterministic tamper gate's twin of ``workflow_conductor.Conductor._bundle_shape``: the
-    gate re-runs the producer's acceptance contract, and that contract's file-shape layer is
-    selected by this answer, so the two must give the same one. A parity test pins them.
+    The twin of ``workflow_conductor.Conductor._bundle_shape``. Its one production caller, the
+    post_generate re-check of the producer's acceptance contract, went in issue #643 PR-4; a
+    parity test pins the two readers.
 
     ``m3c`` is exactly ``_m3c_language(ir, *toolchain) is not None`` — the predicate that already
     mirrors ``_conductor_authors_runner``. ``harness`` is an ``infrastructure`` node whose toolchain the
@@ -1893,7 +1893,7 @@ def _validate_parallel_presence_floor(
     Fail-open in the ambiguous source shapes: whole-array sources (zero counted loops) pass, a
     target whose parallel backend states no floor for its pair passes (a backend with no package
     of its own, `none`, states none), a source tree with no readable ``codegen_bundle.json``
-    passes (the bundle tamper gate reports that), a source the language backend reads as already
+    passes (the host writes it from the document the producer accepted), a source the language backend reads as already
     parallel or unclassifiable passes (`counted_loops` answers 0 — its docstring lists the
     shapes), and only `component/` / `problem/` nodes are in scope at all. The plan is NOT one of
     those directions: an absent or model-less plan applies the floor.
@@ -1930,7 +1930,7 @@ def _validate_parallel_presence_floor(
     try:
         bundle = _read_json(src_dir.parent / "codegen_bundle.json")
     except (OSError, json.JSONDecodeError):
-        return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
+        return  # no bundle (the host writes it from the accepted document)
     if not isinstance(bundle, dict):
         return
     # The launch-configuration half (issue #512, the CUDA backend's): asked of every leaf source,
@@ -8894,212 +8894,6 @@ def _latest_source_id(pipeline_dir: Path) -> str | None:
     return latest_name
 
 
-def _pure_gate_build_graph_inputs(
-    repo_root: Path, ir_ref: str | None, node_key: str, target: TargetProfile,
-) -> tuple[dict[str, str], tuple[str, ...], dict[str, list[str]]]:
-    """(toolchain, dependency_closure, dependency_edges) for the tamper gate's assembly check.
-
-    Mirrors `workflow_conductor._read_toolchain` + `_dependency_closure_nodes` +
-    `_build_leaf_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
-    the gate assembles is the graph the producer's acceptance built. The toolchain is the
-    pipeline's target's (issue #284), the profile the conductor read it from; the closure is
-    `orchestration_runtime.pipeline_closure_nodes`, the one definition the conductor's staging
-    reads too (the sidecar's closure plus the target's harness). The L6 spec_id-clash raise of
-    `_dependency_closure_nodes` is not replicated: at gate time the closure is identical to the
-    accepted production closure (same sidecar, same target), so it cannot introduce a new clash
-    — only a tampered bundle's own files can collide, which `derive_build_graph` itself detects.
-    Raises `TargetProfileError` when the target's harness does not resolve."""
-    from tools.orchestration_runtime import pipeline_closure_nodes
-    tc = target.toolchain
-    toolchain = {
-        "language": str(tc["language"]),
-        "standard": str(tc["standard"]),
-        "build_system": str(tc["build_system"]),
-        "backend": target.parallel_backend,
-    }
-    if tc.get("compiler"):
-        toolchain["compiler"] = str(tc["compiler"])
-    sidecar = _read_dependency_graph_sidecar(repo_root, ir_ref) or {}
-    all_nodes = sidecar.get("all_nodes") if isinstance(sidecar, dict) else None
-    edges: dict[str, list[str]] = {}
-    for entry in all_nodes or []:
-        if not (isinstance(entry, dict) and isinstance(entry.get("node_key"), str)):
-            continue
-        nk = entry["node_key"].strip()
-        deps = [d.get("node_key") if isinstance(d, dict) else d
-                for d in (entry.get("direct_deps") or [])]
-        edges[nk] = [d for d in deps if isinstance(d, str)]
-    closure = pipeline_closure_nodes(repo_root, str(ir_ref or ""), node_key, target)
-    return toolchain, tuple(closure), edges
-
-
-def _validate_post_generate_bundle(
-    repo_root: Path, gen_dir: Path, node_key: str, ir_ref: str | None, violations: list[str]
-) -> None:
-    """Z2 pure producer (M-C): when the source dir carries a host-written `codegen_bundle.json`,
-    re-check the bundle the host accepted against the same contract at the deterministic
-    post_generate gate — proof-of-work independent of the producer's own in-conversation
-    validation, and a tamper check that the staged source is exactly what the bundle declared.
-
-    Fires ONLY when `codegen_bundle.json` exists (the legacy leaf-authored source tree has none),
-    so it is inert on every legacy node. Re-runs the FULL host acceptance contract
-    (`codegen_bundle.pure_bundle_contract_violation`: schema + single-node shape + harness
-    capability negotiation + the M3c model names + assembly-graph collisions) — the SAME
-    layers the producer
-    accepted, reconstructed from the IR + dependency sidecar — so a post-write edit that stays
-    schema-valid (e.g. swapping in an unsupported `capability_requirements`) cannot slip past a
-    validator that only re-ran `validate_bundle`.
-    Then verifies every declared `files[]` entry exists on disk with byte-identical content (a
-    post-write mutation is a violation), with no UNDECLARED source staged beyond the host glue.
-    WHICH glue that is follows the node's bundle shape (`_ir_bundle_shape`): on `m3c` it is the
-    host-rendered runner glue, and on `harness` there is NONE — that file is declared bundle
-    content there, so the carve-out is closed and an undeclared one is a violation."""
-    bundle_path = gen_dir / "codegen_bundle.json"
-    if not bundle_path.exists():
-        return
-    from tools.codegen_bundle import (
-        pure_bundle_contract_violation, harness_provided_capabilities, derive_build_graph,
-        published_operations_from_ir)
-    try:
-        doc = _read_json(bundle_path)
-    except json.JSONDecodeError:
-        violations.append(f"{bundle_path}: invalid json")
-        return
-    if not isinstance(doc, dict):
-        violations.append(f"{bundle_path}: must be a JSON object")
-        return
-    spec_id = node_key.split("/", 1)[1].split("@", 1)[0] if "/" in node_key else ""
-    # Reconstruct the acceptance inputs (harness capabilities, the IR snapshot variables, build
-    # graph) from the IR + dependency sidecar so the tamper gate re-runs the producer's FULL
-    # contract, not just schema re-validation.
-    ir = _read_yaml(repo_root / ir_ref / "spec.ir.yaml") if ir_ref else {}
-    if not isinstance(ir, dict):
-        ir = {}
-    # The target the pipeline was built for (issue #284): `<pipeline>/source/<source_id>`.
-    target = _pipeline_target(repo_root, gen_dir.parent.parent)
-    if target is None:
-        violations.append(
-            f"{bundle_path}: the pipeline's target does not resolve, so the host acceptance "
-            "contract cannot be re-checked against the toolchain it was accepted under")
-        return
-    shape = _ir_bundle_shape(
-        ir, node_key, (target.toolchain["build_system"], target.toolchain["language"]))
-    # The harness a bundle negotiates against: on `harness` the node ITSELF (a harness declares
-    # the execution model it implements), otherwise the harness the pipeline's TARGET names
-    # (issue #284) — `orchestration_runtime.harness_node_key_for`, the one resolution the
-    # conductor's `_leaf_harness_node_key` delegates to as well.
-    from tools.orchestration_runtime import harness_node_key_for
-    from tools.target_profile import TargetProfileError
-    try:
-        harness_nk: str = (node_key if shape == "harness"
-                           else harness_node_key_for(repo_root, node_key, target))
-        toolchain, closure, edges = _pure_gate_build_graph_inputs(
-            repo_root, ir_ref, node_key, target)
-    except TargetProfileError as exc:
-        violations.append(
-            f"{bundle_path}: the harness of target {target.target_id} does not resolve "
-            f"({exc.detail}), so the host acceptance contract cannot be re-checked")
-        return
-    provided = harness_provided_capabilities(harness_nk)
-    # The file names and source extensions are the target language's (`bundle_facts`). A
-    # language without them is refused — but AFTER the contract re-check below, which refuses
-    # such a node on its own terms first (no shape, or a language the bundle contract does not
-    # admit); asked earlier, this refusal would stand in front of that one and leave it unpinned.
-    language_refusals: list[str] = []
-    bundle = _language_module(
-        str(toolchain.get("language") or ""), "bundle_facts", bundle_path, language_refusals)
-    runner_basename = bundle.runner_basename(spec_id) if bundle is not None else ""
-    # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
-    # content rather than something the host renders. Mirrors `_build_leaf_bundle_graph`.
-    host_glue: tuple[str, ...] = (() if shape == "harness" or bundle is None
-                                  else (runner_basename,))
-
-    def _build_graph(d: Any) -> Any:
-        return derive_build_graph(
-            d, dependency_closure=closure, toolchain=toolchain,
-            host_glue_sources=host_glue,
-            dependency_edges=edges or None)
-
-    contract = pure_bundle_contract_violation(
-        doc, node_key=node_key, spec_id=spec_id,
-        shape=(shape or ""), language=str(toolchain.get("language") or ""),
-        runner_basename=runner_basename,
-        harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
-        ir_published_operations=published_operations_from_ir(ir))
-    if contract is not None:
-        violations.append(
-            f"{bundle_path}: host acceptance contract re-check failed ({contract[0]}): "
-            f"{contract[1]}")
-        return
-    # DEFENSIVE and NOT PINNED (a round-0 sweep reported it surviving): the contract re-check
-    # above already refuses a node whose language the bundle contract does not admit, and the
-    # bundle contract admits exactly the languages that declare `bundle_facts`, so no input
-    # reaches here with `bundle` None today. Kept because the undeclared-source check below
-    # cannot run without the language's file facts.
-    if bundle is None:
-        violations.extend(language_refusals)
-        return
-    files = [e for e in (doc.get("files") or []) if isinstance(e, dict)]
-    src_dir = gen_dir / "src"
-    src_root = src_dir.resolve()
-    declared: set[str] = set()
-    for entry in files:
-        logical = str(entry.get("logical_path") or "")
-        content = entry.get("content")
-        if not logical or not isinstance(content, str):
-            continue
-        declared.add(logical.casefold())
-        disk = src_dir / logical
-        # `validate_bundle` above already rejected any `..` / absolute logical_path (this
-        # returns on its violations), so `disk` is inside src/; the containment check is
-        # belt-and-suspenders against a validator bypass on a tampered bundle.
-        if not disk.resolve().is_relative_to(src_root):
-            violations.append(f"{disk}: logical_path escapes the source tree")
-            continue
-        if not disk.exists():
-            violations.append(f"{disk}: declared by codegen_bundle but not staged")
-            continue
-        try:
-            # Byte comparison (not read_text): avoids a UnicodeDecodeError crash on a tampered
-            # binary file (UnicodeDecodeError is a ValueError, NOT an OSError) and sidesteps
-            # read_text's universal-newline translation, which would false-flag a CRLF file.
-            if disk.read_bytes() != content.encode("utf-8"):
-                violations.append(
-                    f"{disk}: staged content differs from codegen_bundle.files[] (post-write tamper)")
-        except OSError as exc:
-            violations.append(f"{disk}: unreadable ({exc})")
-    # No UNDECLARED source (a file carrying one of the target language's `bundle_facts`
-    # source extensions) beyond the host-rendered glue THIS shape has — one file on `m3c`,
-    # NONE on `harness`, where the runner is declared bundle content. Match the suffix
-    # case-INSENSITIVELY: a case-sensitive glob misses an uppercase `extra.F90` on a
-    # case-sensitive filesystem, which would let an undeclared source slip past this provenance
-    # check while the rest of the gate treats suffixes case-insensitively.
-    # Derived from the shape's glue set so this carve-out cannot name a file the assembly does
-    # not build. NOT PINNED, and deliberately so: on `harness` the set is empty, but the contract
-    # layer above has already required the runner to be DECLARED (it returns on any violation),
-    # so a staged runner is in `declared` either way and no input distinguishes `{}` from
-    # `{<spec_id>_runner}` here. A round-0 mutation sweep reported the line as a survivor and a
-    # reproduction was attempted along that route and failed; it stays because it is the honest
-    # derivation and the alternative is a second place that says what the host renders.
-    allowed_extra = {name.casefold() for name in host_glue}
-    if src_dir.is_dir():
-        source_extensions = tuple(e.lower() for e in bundle.SOURCE_EXTENSIONS)
-        source_paths = [p for p in src_dir.rglob("*")
-                        if p.is_file() and p.suffix.lower() in source_extensions]
-        for path in sorted(source_paths):
-            try:
-                rel = str(path.relative_to(src_dir)).replace("\\", "/").casefold()
-            except ValueError:
-                # rglob followed a symlink out of the tree — an undeclared escape, flag it.
-                violations.append(f"{path}: staged file escapes the source tree")
-                continue
-            if rel not in declared and rel not in allowed_extra:
-                violations.append(
-                    f"{path}: undeclared {'/'.join(bundle.SOURCE_EXTENSIONS)} staged (not in "
-                    "codegen_bundle.files[] nor the "
-                    f"host-rendered glue {sorted(host_glue) or '(none on this shape)'})")
-
-
 def validate_post_generate_stage(
     repo_root: Path,
     workspace_root: str,
@@ -9152,9 +8946,6 @@ def _validate_post_generate_stage_impl(
     )
 
     gen_dir = pipeline_dir / "source" / gen_id
-    # Z2 pure producer: re-validate + tamper-check a host-written CodegenBundle (inert when
-    # absent, i.e. on every legacy node).
-    _validate_post_generate_bundle(repo_root, gen_dir, node_key, ir_ref, violations)
     meta_path = gen_dir / "source_meta.json"
     if meta_path.exists():
         try:

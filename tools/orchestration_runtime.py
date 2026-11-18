@@ -2189,8 +2189,8 @@ def harness_node_key_for(repo_root: Path, node_key: str, target: TargetProfile) 
     dependency until R4-a PR-3). `infrastructure` is read off the NODE_KEY — the host's identity
     for the node — never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's
     context assembly, runner render and acceptance layer (`_leaf_harness_node_key` delegates
-    here), the generate derivation inputs, the pipeline closure (`pipeline_closure_nodes`) and
-    the deterministic tamper gate. Raises `TargetProfileError` when the target's harness does
+    here), the generate derivation inputs and the pipeline closure (`pipeline_closure_nodes`).
+    Raises `TargetProfileError` when the target's harness does
     not resolve in the catalog (the launch gate refused that before the run started)."""
     if node_key.split("/", 1)[0].strip() == "infrastructure":
         return node_key
@@ -2251,8 +2251,7 @@ def pipeline_closure_nodes(
     lists (an IR compiled before PR-3, which no derivation key selects) is not listed twice.
 
     ONE definition for every reader of the pipeline closure: the generate and build keys'
-    `closure[]`, the conductor's staging and control-file order (`_dependency_closure_nodes`),
-    and the tamper gate's build graph (`validate_pipeline_semantics._pure_gate_build_graph_inputs`)."""
+    `closure[]` and the conductor's staging and control-file order (`_dependency_closure_nodes`)."""
     graph = _read_json_or_none(repo_root / ir_ref / "dependency_graph.json")
     closure = _closure_nodes_from_graph(graph, node_key)
     harness_nk = harness_node_key_for(repo_root, node_key, target)

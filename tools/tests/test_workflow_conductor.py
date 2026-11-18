@@ -16641,10 +16641,10 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertFalse(c._leaf_substep(refs, "generate", "generate"))
 
     def test_the_two_bundle_shape_readers_agree(self) -> None:
-        """`Conductor._bundle_shape` and `validate_pipeline_semantics._ir_bundle_shape` select
-        the file-shape layer of ONE acceptance contract — the producer's in-conversation gate
-        and the deterministic tamper gate — so a divergence certifies a bundle the producer
-        would have refused, or refuses one it accepted."""
+        """`Conductor._bundle_shape` and `validate_pipeline_semantics._ir_bundle_shape` answer
+        one shape for one node. (The validator's twin selected the file-shape layer of the
+        post_generate re-check of the producer's acceptance until issue #643 PR-4 removed it;
+        `test_every_catalog_node_has_a_bundle_shape` still asks the twin.)"""
         import tools.validate_pipeline_semantics as vps
         from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
