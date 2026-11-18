@@ -680,7 +680,6 @@ class OracleBuildTest(_OracleFixture):
             self.assertEqual(build["binary_ref"],
                              f"binary/bin_1/bin_oracle/{build['id']}/spec_x_runner")
             self.assertEqual(build["libraries"], xl.identity(own))
-            self.assertEqual(build["library_dirs"], list(xl.library_dirs(own)))
             self.assertIsNotNone(build["command_id"])
             inc, link = xl.make_values("gfortran", own)
             self.assertEqual(self.libs(call), [f"LIBINC={inc}", f"LIBS={link}"])
@@ -719,12 +718,9 @@ class OracleBuildTest(_OracleFixture):
         self.assertEqual(self.libs(call), [f"LIBINC={inc}", f"LIBS={link}"])
         binary = repo / refs.binary_dir() / "bin_oracle" / "default" / "spec_x_runner"
         self.assertEqual(self.output(binary).split(), ["3.00", "3.00"])
-        # The record's libraries are the build's own (the key member's); its loader path
-        # every library it linked.
+        # The record's libraries are the build's own (the key member's), not the closure's.
         build = self.meta(repo, refs)["oracle"]["builds"][0]
         self.assertEqual(build["libraries"], xl.identity(self.resolved(("vend",))))
-        self.assertEqual(build["library_dirs"],
-                         list(xl.library_dirs(self.resolved(("foo", "vend")))))
 
     def test_the_certified_and_checked_builds_are_not_handed_the_oracle_s_libraries(
             self) -> None:

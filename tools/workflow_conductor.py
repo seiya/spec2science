@@ -11533,10 +11533,9 @@ class Conductor:
                 "id": build.build_id,
                 "binary_ref": f"binary/{refs.binary_id}/bin_oracle/{build.build_id}/{exe}",
                 "command_id": result.get("command_id"),
-                # This build's own libraries, as the key's member holds them; the run's loader
-                # path takes every library it linked (`library_dirs`).
+                # This build's own libraries, as the key's member holds them (each with its
+                # `lib_dirs`); the closure's are the binary's own `library_dirs`.
                 "libraries": xl.identity(own),
-                "library_dirs": list(xl.library_dirs(libraries)),
             })
         return {"declaration_sha256": oracle.declaration_sha256,
                 "source_sha256": oracle.source_sha256, "origin": oracle.origin,
