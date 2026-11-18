@@ -840,15 +840,12 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual((d.action, d.target_phase, d.repair_strategy),
                          ("retry", "generate", "reuse"))
         self.assertEqual(d.reason, "gate_syntax_error+lint_findings")
-        # The node's own stale certified IR is TERMINAL — the leaf cannot repair it, so no warm
-        # retry, and it DOMINATES a co-occurring warm category (reachability note: static runs
-        # only when lint+syntax passed, so this multi-category input cannot arise in practice —
-        # the test defends the classifier's totality).
-        d = wc.classify_gate_failure(["stale_dependency_ir"])
+        # A TERMINAL category DOMINATES a co-occurring warm category (reachability note: static
+        # runs only when lint+syntax passed, so this multi-category input cannot arise in
+        # practice — the test defends the classifier's totality). The stale-certified-IR
+        # category this row drove until issue #643 PR-5 left with its exit code.
+        d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
         self.assertEqual(d.action, "fail_closed")
-        d = wc.classify_gate_failure(["lint_findings", "stale_dependency_ir"])
-        self.assertEqual(d.action, "fail_closed")
-        self.assertIn("stale_dependency_ir", wc.GATE_FAILURE_TERMINAL)
         # An absent Fortran structure front end is terminal for the same reason and a different
         # owner: the machine running the gate lacks `tree-sitter` / `tree-sitter-fortran`, so no
         # source the leaf can author makes the three `problem` gates readable again.
@@ -3251,46 +3248,6 @@ class ConductRoutingTest(unittest.TestCase):
             "gate_host_rendered_lint_findings")
         self.assertEqual(
             wc.classify_gate_failure(["host_rendered_lint_findings"]).action, "fail_closed")
-
-    def test_ir_subject_static_finding_terminalizes_without_a_second_generate_launch(
-            self) -> None:
-        """ISSUE #238's ACCEPTANCE CRITERION, stated as a launch count — the #112 row above
-        for the other unwritable subject.
-
-        The measured incident (`orch_20260916T081200Z_5139f6c9`) spent FOUR `generate.generate`
-        launches on an io_contract finding whose subject was the node's own certified IR
-        (`evidence_ref 'raw/execution_trace.json'`, retired by PR #236 after the IR was
-        certified), and ended `generate exceeded 3`. The leaf has no write authority over the
-        IR, so no launch after the first could converge. Readiness now refuses such an IR before
-        Generate is reached (`_ir_certification`'s validator clause); this row pins the gate-side
-        BACKSTOP: when the finding does reach `generate.gate`, the validator answers rc 4
-        (`stale_dependency_ir`), and the node fails closed on the first attempt — exactly ONE
-        launch, no `reopen-phase`, no repair findings threaded."""
-        c = self._conductor()
-
-        def status_fn(phase, substep, n):
-            return "fail" if (phase == "generate" and substep == "gate") else "pass"
-
-        c.status_fn = status_fn
-        c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "fail_closed", reason="gate_stale_dependency_ir")
-        status = c.conduct(self._refs(), "generate")
-        self.assertNotEqual(status, "pass")
-        self.assertEqual([], [cap for s, cap in c.calls if s == "reopen-phase"])
-        gen_launches = [cap["--request-json"] for s, cap in c.calls
-                        if s == "record-launch"
-                        and cap.get("--request-json", {}).get("step") == "generate"
-                        and cap["--request-json"].get("substep") == "generate"]
-        self.assertEqual(len(gen_launches), 1)
-        self.assertNotIn("repair_findings", gen_launches[0])
-        gen_writes = [cap for s, cap in c.calls
-                      if s == "write-step-result" and cap["--step"] == "generate"]
-        self.assertEqual(len(gen_writes), 1)
-        # The reason the classifier actually produces for this category is the one used above.
-        self.assertEqual(
-            wc.classify_gate_failure(["stale_dependency_ir"]).reason, "gate_stale_dependency_ir")
-        self.assertEqual(
-            wc.classify_gate_failure(["stale_dependency_ir"]).action, "fail_closed")
 
     def test_structural_execute_failure_warm_reopens_generate_cross_phase(self) -> None:
         # B1 end to end (prod): a structural validate.execute failure cross-phase revokes
@@ -18870,7 +18827,7 @@ class DeterministicBuildTest(unittest.TestCase):
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             self._seed_trial_meta(repo, refs, status="fail",
-                                  failure_category="stale_dependency_ir",
+                                  failure_category="static_frontend_unavailable",
                                   failure_excerpt="[execute fail]\nboom")
             for category in sorted(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL):
                 self.assertIsNone(

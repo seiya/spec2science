@@ -309,11 +309,9 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 
 # Gate categories that are TERMINAL (fail_closed), NOT a warm Generate.generate retry: the
 # failing condition is one the Generate leaf cannot repair by re-authoring its source, so retrying is
-# futile. `stale_dependency_ir` — the node's OWN certified IR predating the current contract (the
-# §5.1 carrier surface, or since issue #238 an io_contract rule) reached Generate.gate on a resume
-# that skipped Compile; the fix is a re-certification, not a re-author. Since #238 readiness
-# (`_ir_certification`) refuses such an IR before Generate is reached, so this category is the
-# gate-side backstop; `--resume` re-derives the IR through Compile.
+# futile. (`stale_dependency_ir`, the node's own certified IR predating the current contract,
+# left with its exit code in issue #643 PR-5: readiness (`_ir_certification`) refuses such an IR
+# before Generate is reached.)
 # `static_frontend_unavailable` — the Fortran structure front end (`tools/backends/language/fortran/structure.py`,
 # tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
 # have nothing to read; no source the leaf can author changes that, and a warm retry would spend
@@ -338,7 +336,7 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `lint_finding_unattributed` — the gate could not place a finding on either side of that
 # partition. Assuming the leaf is how this whole class hides, so it fails closed instead.
 GATE_FAILURE_TERMINAL: frozenset[str] = frozenset(
-    {"stale_dependency_ir", "static_frontend_unavailable",
+    {"static_frontend_unavailable",
      "host_rendered_lint_findings", "host_authored_artifact_violation",
      "lint_finding_unattributed"}
 )
@@ -355,7 +353,6 @@ _GATE_CATEGORY_CANON_ORDER: tuple[str, ...] = (
     "lint_finding_unattributed",
     "workspace_root_violation",
     "post_generate_violation",
-    "stale_dependency_ir",
     "static_frontend_unavailable",
     "host_authored_artifact_violation",
 )
@@ -549,11 +546,11 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 }
 
 # Validate.execute STRUCTURAL failure categories that are TERMINAL (fail_closed), NOT any warm
-# route out of the table above. Both name a condition NO leaf can repair by re-authoring source:
+# route out of the table above. Each names a condition NO leaf can repair by re-authoring source:
 # `static_frontend_unavailable` is an uninstalled structure front end on the machine running
-# the gate (see `GATE_FAILURE_TERMINAL` above), `stale_dependency_ir` a certified IR the leaf
-# does not own. `_execute_inproc` records
-# them from the post_execute validator's dedicated exit codes (3 / 4), which no leaf can write.
+# the gate (see `GATE_FAILURE_TERMINAL` above). `_execute_inproc` records
+# each from the post_execute validator's dedicated exit codes (3 / 5 / 6), which no leaf can
+# write. (`stale_dependency_ir`, exit code 4, left in issue #643 PR-5.)
 #
 # DELIBERATELY A SEPARATE SET FROM `GATE_FAILURE_TERMINAL`, not an alias of it: that one is the
 # Generate.gate subsystem's contract and this one is Validate.execute's, and the two are free to
@@ -590,7 +587,7 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `--rederive generate` for it. `Generate.gate`'s presence floor does not stop either before the
 # run — it asks only that a kernel exist; verify G6 is the one rule there, for the first. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
-    {"stale_dependency_ir", "static_frontend_unavailable",
+    {"static_frontend_unavailable",
      "host_authored_artifact_violation", "device_kernels_absent"}
 )
 
@@ -942,7 +939,8 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
       - empty (a FAIL with no parseable category) -> escalate("gate_fail_no_category")
       - any TERMINAL category present             -> fail_closed (dominates a co-occurring warm
                                                      category; the leaf cannot re-author its way
-                                                     out of its node's stale certified IR)
+                                                     out of a machine or host-authored-file
+                                                     condition)
       - any UNKNOWN category present              -> escalate (a novel category the tables do not
                                                      cover; the diagnostician decides)
       - all categories known + non-terminal       -> retry ("generate", "reuse")
@@ -954,9 +952,8 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
         return RouteDecision("escalate", reason="gate_fail_no_category")
     reason = "gate_" + "+".join(ordered)
     if any(c in GATE_FAILURE_TERMINAL for c in ordered):
-        # No warm retry: the node's own stale certified IR (or any terminal category) is not
-        # repairable by re-authoring source. Fail closed so the operator re-certifies instead of
-        # exhausting Generate retries. Terminal dominates any co-occurring warm category.
+        # No warm retry: a terminal category is not repairable by re-authoring source. Fail
+        # closed so the operator fixes the condition instead of exhausting Generate retries. Terminal dominates any co-occurring warm category.
         return RouteDecision("fail_closed", reason=reason)
     unknown = [c for c in ordered if c not in GATE_FAILURE_ROUTING]
     if unknown:
@@ -16431,12 +16428,12 @@ class Conductor:
                 # The trial_meta read is hoisted ABOVE the counter because the TERMINAL
                 # categories (`VALIDATE_EXECUTE_FAILURE_TERMINAL`) have to be answered before
                 # anything counts or escalates. A machine problem (no front end, a device none of
-                # whose kernels ran) or a stale certified IR is not evidence that the IR is
+                # whose kernels ran) or a host-authored file is not evidence that the IR is
                 # the wrong side of an IR-rooted mismatch, so counting it toward C2 would let two
                 # of them reopen Compile — rebuilding the IR and everything downstream over a
                 # condition no regeneration touches. It is not repairable by any leaf either, so
                 # neither the warm table below nor a cold restart applies: fail closed and let
-                # the operator fix the machine (or re-certify) and `--resume`.
+                # the operator fix the machine (or the producer) and `--resume`.
                 trial = _read_json(self.repo_root / refs.run_node_dir() / "trial_meta.json") or {}
                 category = trial.get("failure_category") if trial.get("status") == "fail" else None
                 if str(category or "") in VALIDATE_EXECUTE_FAILURE_TERMINAL:
