@@ -668,7 +668,7 @@ class PureVerifySubstepTests(unittest.TestCase):
                 repo = Path(tmp)
                 refs = _verify_node(repo)
                 c = _reviewer_conductor(repo, [], llm_config=_cfg(
-                    "codex", agent_model="gpt-5.6-sol"))
+                    "codex", agent_model="gpt-6.1-sol"))
                 # The homes OUTSIDE /tmp, as production's are: a codex reading lineage whose
                 # home a codex shell can write is refused (`_codex_shell_writable_root`).
                 homes = tempfile.TemporaryDirectory(dir="/var/tmp")
@@ -686,7 +686,7 @@ class PureVerifySubstepTests(unittest.TestCase):
                     (c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
                 row = [cap["--agent-run-json"] for sub, cap in c.calls
                        if sub == "finalize-child" and "--agent-run-json" in cap][-1]
-                self.assertEqual(vmeta["per_attempt"][0]["model"], "gpt-5.6-sol", label)
+                self.assertEqual(vmeta["per_attempt"][0]["model"], "gpt-6.1-sol", label)
                 self.assertEqual(vmeta["per_attempt"][0]["model_provenance"],
                                  "codex_launch_pinned", label)
                 self.assertEqual(vmeta["per_attempt"][0]["model"], row["agent_model"], label)

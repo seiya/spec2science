@@ -17,8 +17,8 @@
 #       generate:
 #         provider: anthropic_api
 #         api_key_env: ANTHROPIC_API_KEY
-#         model: claude-opus-5
-#         effort: high
+#         model: claude-opus-5-5
+#         effort: medium
 #         max_output_tokens: 32768
 #         max_wrapper_calls: 30      # host-operation calls per lineage (cold launch + repairs)
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -29,8 +29,8 @@
 #       judge:
 #         provider: anthropic_api
 #         api_key_env: ANTHROPIC_API_KEY
-#         model: claude-opus-5
-#         effort: high
+#         model: claude-opus-5-5
+#         effort: medium
 #         max_output_tokens: 32768
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
@@ -78,8 +78,9 @@
 #               (`low` | `medium` | `high` | `xhigh` | `max`, the levels of the provider's
 #               effort page, https://platform.claude.com/docs/en/build-with-claude/effort). A
 #               word outside that list is refused at load (`llm_config_invalid_field`). The
-#               DEFAULT is the MODEL's: `high` on `claude-opus-5` and `claude-sonnet-5`,
-#               `medium` on Claude Opus 5.5 and Claude Haiku 5.5. An absent `effort` sends no
+#               DEFAULT is the MODEL's: `medium` on `claude-opus-5-5` and `claude-haiku-5-5`,
+#               `high` on `claude-sonnet-5-5` (and on the earlier `claude-opus-5` and
+#               `claude-sonnet-5`). An absent `effort` sends no
 #               `output_config` and leaves that default in force. Not every model takes every
 #               level: one the named model lacks is refused by the endpoint as a client error
 #               (an HTTP 4xx other than 408 / 429; the pages state no code for it) on the first
@@ -130,19 +131,22 @@ phases:
       generate:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-opus-5
-        # `high` is the API default of `claude-opus-5` and `claude-sonnet-5`, so this line runs
-        # exactly as omitting it would ("Setting `effort` explicitly to the model's default is
-        # equivalent to omitting it", the provider's thinking page); it is written so the level
-        # is read here rather than looked up. The default is the MODEL's, so a changed slug can
-        # change what this line means (Claude Opus 5.5 defaults to `medium`): restate it from
-        # the new model's effort page. The four entries below follow this one. Overriding the
-        # default needs quality evidence on the model that will run; no run recorded here is that.
+        model: claude-opus-5-5
+        # `medium` is the API default of `claude-opus-5-5` (and `high` that of
+        # `claude-sonnet-5-5`, the `compile.verify` entry below), so this line runs exactly as
+        # omitting it would ("Setting `effort` explicitly to the model's default is equivalent to
+        # omitting it", the provider's thinking page); it is written so the level is read here
+        # rather than looked up. The default is the MODEL's, so a changed slug can change what
+        # this line means: restate it from the new model's effort page. Every entry below takes
+        # its own model's default the same way. Overriding the default needs quality evidence on
+        # the model that will run; no run recorded here is that. The issue #560 measurements at
+        # `compile.verify` were recorded on the earlier `claude-opus-5` / `claude-sonnet-5` at
+        # their default `high`.
         # Each entry states its own because `effort` is provider-scoped: the `defaults` level
         # above is a `claude_cli` word and is dropped at the switch to this provider, so a
         # level written only there reaches none of these entries (`docs/ORCHESTRATION.md`
         # §Leaf LLM configuration, "Resolution order").
-        effort: high
+        effort: medium
         # Bounds ONE reply, and a reply that writes `spec.ir.yaml` carries what it writes whole.
         # The artifact, over a NAMED population: the 7 `shallow_water2d` IRs under the live
         # `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the archived
@@ -163,7 +167,7 @@ phases:
       verify:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-sonnet-5
+        model: claude-sonnet-5-5
         effort: high
         # Bounds ONE reply, and on a reading leaf most of a reply is thinking. Issue #560's
         # table, from `orch_20261028T235119Z_492e5092` (main 25c6ce26; the small node
@@ -200,8 +204,8 @@ phases:
       generate:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-opus-5
-        effort: high
+        model: claude-opus-5-5
+        effort: medium
         max_output_tokens: 32768
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -209,8 +213,8 @@ phases:
       verify:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-opus-5
-        effort: high
+        model: claude-opus-5-5
+        effort: medium
         # The reading kind is one shape, so this cap moves with `compile.verify`'s (see the
         # measurements there): this lineage stayed under 16384, with 14,965 of its 15,868
         # output tokens thinking. No `timeout_s` here, so each request takes the module
@@ -236,8 +240,8 @@ phases:
       judge:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
-        model: claude-opus-5
-        effort: high
+        model: claude-opus-5-5
+        effort: medium
         # The artifact is a decision and a findings array, so this is headroom rather than a
         # size, and most of a reply is thinking: the same cap as the two verify leaves, the
         # bundle writer's budget, for the reason given at `compile.verify`. No `timeout_s`
