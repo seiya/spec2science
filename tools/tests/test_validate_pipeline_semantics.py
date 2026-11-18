@@ -1364,6 +1364,13 @@ end program shallow_water2d_runner
                     self.assertEqual(expected, _required_raw_evidence(repo_root, execution))
                     self.assertEqual(bool(expected),
                                      _state_snapshot_required(repo_root, execution))
+            # ... and a top-level block alone is not read either (round 1: a fallback to it when
+            # the nested block is absent survived the rows above).
+            with self.subTest(top_level_only=nested):
+                _write_json(ir_dir / "spec.ir.yaml", {
+                    "io_contract": {}, "raw_requirements": {"required_evidence": nested}})
+                self.assertEqual(set(), _required_raw_evidence(repo_root, execution))
+                self.assertFalse(_state_snapshot_required(repo_root, execution))
 
     def _d7_violations(self, repo_root: Path, snapshots: dict[str, dict]) -> list[str]:
         """`_validate_raw_evidence` over a node whose IR declares `x` and `y`, with `snapshots`
@@ -8760,6 +8767,13 @@ end program shallow_water2d_runner
                 self.assertEqual(clean, [])
                 self.assertEqual(len(findings(defective)), 1)
                 self.assertEqual(findings(masked), findings(defective))
+                # A top-level block with no nested one is not read: the document has none.
+                top_only = copy.deepcopy(valid)
+                top_only["raw_requirements"] = top_only["io_contract"].pop("raw_requirements")
+                path.write_text(yaml.safe_dump(top_only), encoding="utf-8")
+                found: list[str] = []
+                _validate_io_contract_file(repo_root, path, found)
+                self.assertTrue(any("raw_requirements must be object" in v for v in found), found)
             finally:
                 _active_repo_root_for_schema.reset(token)
 
@@ -11263,6 +11277,10 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                            ("io_contract.io_contract", double)):
             with self.subTest(decoy=label):
                 self.assertEqual(spec_vars(doc), {"q_in", "q_out", "u"})
+        # A top-level block with no nested one contributes nothing either.
+        top_only = {"io_contract": {"inputs": [{"name": "q_in"}], "outputs": [{"name": "q_out"}]},
+                    "raw_requirements": snapshots("u")}
+        self.assertEqual(spec_vars(top_only), {"q_in", "q_out"})
 
     def test_the_compile_authoring_rules_reach_the_leaf_that_is_gated_on_them(self) -> None:
         """The rules a `Compile.generate` leaf is gated on are stated where that leaf reads.
