@@ -24745,7 +24745,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:0bbdc48b47688e41":
+        "tools/prompt_templates/workshop_compile_generate.txt:50f0e0d3701d2505":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -24776,7 +24776,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "transcribing the tests document's `history:` / `restart_points:` lines, issue #644 "
             "P4b — rule 3 unchanged, rule 5 unchanged; re-keyed again 2026-11-16 when rule 5's "
             "sentence on a harness self-test's captures took the other capture groups and "
-            "their evidence entries, the harness side of P4b — rule 3 unchanged)",
+            "their evidence entries, the harness side of P4b — rule 3 unchanged; re-keyed "
+            "2026-11-18 when rule 5 dropped \"a `source` key is refused\", issue #643 PR-6 — "
+            "rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "
