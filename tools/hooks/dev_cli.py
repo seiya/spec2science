@@ -7,7 +7,7 @@ a hook. There was a second, leaf-facing entrypoint (`tools/hooks/cli.py`, regist
 with the agentic leaf — a `pure-function leaf` makes no tool call, so no hook can fire on
 its behalf and none needs to.
 
-**This module imports the standard library and its two rule modules, and nothing else.
+**This module imports the standard library and its one rule module, and nothing else.
 Keep it that way.** The operator's session runs the working-tree copy of its own hook, so
 anything this file imports can refuse the operator out of the session they are editing in
 — measured 2026-08-26, when a half-applied edit to the leaf entrypoint made every tool
@@ -16,11 +16,9 @@ is the whole reason this file encodes the backends' block protocol itself instea
 importing a shared adapter; `tools/tests/test_hooks_dev_cli.py` pins its output so the
 encodings cannot drift from what each CLI expects.
 
-What it enforces is two stdlib-only rule modules and nothing else.
-`tools/hooks/operator_safety.py` guards the operator's own checkout (the validator's
-verify-bypass flags). `tools/hooks/dev_session_hygiene.py` guards
-the session's own process table: an agent session must not wait by sleeping. They stay
-separate modules because they answer different questions, not for tidiness.
+What it enforces is one stdlib-only rule module and nothing else:
+`tools/hooks/dev_session_hygiene.py` guards the session's own process table — an agent
+session must not wait by sleeping.
 """
 
 from __future__ import annotations
@@ -31,7 +29,6 @@ import sys
 from typing import Any
 
 from tools.hooks.dev_session_hygiene import polling_wait_violation
-from tools.hooks.operator_safety import operator_safety_violation
 
 # The event spellings that carry a command. Both backends' names, normalized the way
 # `tools/hooks/common.py::normalize_hook_event_name` did before issue #171 PR-2 deleted that
@@ -96,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Anything unparseable is ALLOWED, and deliberately so: this hook guards the
-    # operator's own checkout against two commands, and refusing a session because its
+    # session's process table against one wait pattern, and refusing a session because its
     # payload had an unexpected shape is the failure mode this module exists to avoid.
     # The leaf entrypoint fails closed; this one does not.
     try:
@@ -108,9 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         if event not in _PRE_COMMAND_EVENTS and event not in _PERMISSION_REQUEST_EVENTS:
             return 0
         command = _extract_command(payload)
-        # Order is not load-bearing — both refuse — but the checkout-guarding rule is asked
-        # first so a command that trips both reports the more serious cause.
-        violation = operator_safety_violation(command) or polling_wait_violation(command)
+        violation = polling_wait_violation(command)
         if violation is None:
             return 0
         reason = violation[0]

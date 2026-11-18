@@ -132,7 +132,6 @@ def _normalize_rel_posix(path_token: str) -> str:
 TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 # Phases that run via substep agents (the orchestration agent aggregates and is the
 # step_result executor). Build is the only no-substep phase (step agent is the executor).
-# Mirrors SUBSTEP_WORKFLOW_STEPS in tools/validate_pipeline_semantics.py.
 SUBSTEP_AWARE_STEPS = frozenset({"compile", "generate", "validate"})
 # Idempotency target of `set-status`. A status once in this set rejects both a same-value and an
 # other-terminal transition, except for the permitted promotion (fail -> fail_closed). Appending the
@@ -2190,8 +2189,8 @@ def harness_node_key_for(repo_root: Path, node_key: str, target: TargetProfile) 
     dependency until R4-a PR-3). `infrastructure` is read off the NODE_KEY — the host's identity
     for the node — never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's
     context assembly, runner render and acceptance layer (`_leaf_harness_node_key` delegates
-    here), the generate derivation inputs, the pipeline closure (`pipeline_closure_nodes`) and
-    the deterministic tamper gate. Raises `TargetProfileError` when the target's harness does
+    here), the generate derivation inputs and the pipeline closure (`pipeline_closure_nodes`).
+    Raises `TargetProfileError` when the target's harness does
     not resolve in the catalog (the launch gate refused that before the run started)."""
     if node_key.split("/", 1)[0].strip() == "infrastructure":
         return node_key
@@ -2252,8 +2251,7 @@ def pipeline_closure_nodes(
     lists (an IR compiled before PR-3, which no derivation key selects) is not listed twice.
 
     ONE definition for every reader of the pipeline closure: the generate and build keys'
-    `closure[]`, the conductor's staging and control-file order (`_dependency_closure_nodes`),
-    and the tamper gate's build graph (`validate_pipeline_semantics._pure_gate_build_graph_inputs`)."""
+    `closure[]` and the conductor's staging and control-file order (`_dependency_closure_nodes`)."""
     graph = _read_json_or_none(repo_root / ir_ref / "dependency_graph.json")
     closure = _closure_nodes_from_graph(graph, node_key)
     harness_nk = harness_node_key_for(repo_root, node_key, target)
@@ -10097,17 +10095,17 @@ def _validate_orchestration_completion_for_pass(
 _STEP_META_FILENAME = STAGE_META_FILENAME_BY_STEP
 
 STEP_REQUIRED_VALIDATION_STAGES: dict[str, frozenset[str]] = {
-    "compile": frozenset({"compile", "full"}),
+    "compile": frozenset({"compile"}),
     # Generate accepts only `post_generate` (the validator stage that
-    # checks generation outputs) and `full`. `post_build` is Build's
+    # checks generation outputs). `post_build` is Build's
     # responsibility — its semantics are "validation after the build
     # artifact exists" and applying it to a Generate terminal status
     # would conflate phase boundaries. No production code or test
     # exercises `generate + post_build`; the previous permissive set was
     # a tolerance with no legitimate use case.
-    "generate": frozenset({"post_generate", "full"}),
-    "build": frozenset({"post_build", "full"}),
-    "validate": frozenset({"post_execute", "pre_judge", "full"}),
+    "generate": frozenset({"post_generate"}),
+    "build": frozenset({"post_build"}),
+    "validate": frozenset({"post_execute", "pre_judge"}),
 }
 
 _RETRY_DECISION_REQUIRED_KEYS: tuple[str, ...] = (
@@ -10127,10 +10125,8 @@ def _validate_step_meta_payload(meta_data: dict[str, Any], *, step_token: str, m
             f"{meta_filename} missing required keys: {missing_keys} "
             f"(phase={step_token} substep=verify ref={meta_ref})"
         )
-    # Value types come from the one canonical definition (tools/meta_contracts), shared with
-    # both validator sweeps, so this write gate and the read gates cannot drift apart. The
-    # first violation in canonical key order is raised; the clause text is byte-identical to
-    # the sweeps' so a finding reads the same wherever it surfaces.
+    # Value types come from the one canonical definition (tools/meta_contracts). The first
+    # violation in canonical key order is raised.
     violations = stage_meta_type_violations(meta_data, step_token=step_token)
     if violations:
         raise ValueError(f"{meta_filename} {violations[0]}: {meta_ref}")

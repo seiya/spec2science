@@ -682,14 +682,15 @@ class FortranCpuNetcdfCaptureGroupTests(_CaptureGroupRows, unittest.TestCase):
     def test_the_post_execute_gate_takes_the_fanout_case_s_records(self) -> None:
         """`_validate_raw_evidence` over the clean run of three cases (the fanout case's
         `history` record of a non-restart variable and its restart point among them) finds
-        nothing but the stub quality check's three lines: a harness following §3 is not
+        nothing: a harness following §3 is not
         refused at its own Validate."""
         from tools.tests.test_netcdf_capture_store import _post_execute
         doc = copy.deepcopy(self.clean[-1].ir)
         doc["case"]["test_case_set"].append({"case_id": PLAIN, "inputs": {}})
         got = _post_execute(self, self.clean[-1].run_dir, doc, "netcdf")
-        self.assertEqual([line for line in got if "quality_check.json" not in line], [])
-        self.assertEqual(len(got), 3, got)
+        # (The stub quality check's own lines went with issue #643: the gate no longer re-reads
+        # the conductor's quality_check.json.)
+        self.assertEqual(got, [])
 
     def test_the_fanout_predicate_passes_the_compile_stage_gates(self) -> None:
         """As `CaptureGroupDocumentTests` holds the capture-group case's: a gate that came to

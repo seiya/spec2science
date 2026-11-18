@@ -489,21 +489,6 @@ class PureBundleViolationsTests(unittest.TestCase):
         cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_assembly_collision")
 
-    def test_accepted_bundle_also_passes_the_real_post_generate_gate(self) -> None:
-        # Codex P1, the regression that matters: this layer accepting a bundle that the
-        # deterministic post-generate gate then rejects reopens the phase — the failure it exists
-        # to prevent. Drive the REAL gate over the same document, not a restatement of it.
-        c, refs = self._c_refs()
-        bundle = _valid_bundle()
-        self.assertIsNone(c._leaf_bundle_violations(refs, bundle))
-        gen = c.repo_root / refs.source_dir()
-        (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
-        for entry in bundle["files"]:
-            (gen / "src" / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
-        v: list[str] = []
-        vps._validate_post_generate_bundle(c.repo_root, gen, _NODE, refs.ir_ref, v)
-        self.assertEqual(v, [])
-
 
 class PureContextRunnerInjectionTests(unittest.TestCase):
     """The producer is shown the host-rendered driver that will call its model, as a document,
@@ -2588,82 +2573,26 @@ class PureColdRepairPromptTests(unittest.TestCase):
 # ======================================================================================
 # post_generate bundle re-validation
 # ======================================================================================
-class PurePostGenerateBundleTests(unittest.TestCase):
-    def _gen_dir(self, tmp):
-        repo = Path(tmp)
-        # The tamper gate now re-runs the FULL acceptance contract, so it reads the IR + sidecar
-        # for capability negotiation / state vars / assembly graph — write them (returns ir_ref).
-        refs = _write_node(repo)
-        # A source directory of the node's pipeline, under its target (issue #284): the gate
-        # reads the toolchain it re-checks against off that store coordinate.
-        gen = repo / refs.source_dir()
-        (gen / "src").mkdir(parents=True, exist_ok=True)
-        bundle = _valid_bundle()
-        (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
-        for entry in bundle["files"]:
-            (gen / "src" / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
-        # The real rendered runner, not a `program p` stub: the gate holds the tree to what the
-        # host renders.
-        (gen / "src" / f"{_SPEC_ID}_runner.f90").write_text(_runner_text(), encoding="utf-8")
-        return repo, gen, refs.ir_ref
-
-    def test_clean_bundle_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-            self.assertEqual(v, [])
-
-    def test_an_undeclared_source_is_refused_and_the_host_runner_is_the_only_exception(
-            self) -> None:
-        """The provenance gate's carve-out, pinned in BOTH directions.
-
-        `allowed_extra` decides which undeclared `.f90` this gate tolerates, and it is exactly
-        one file: the runner the host renders. A mutation sweep found that widening it left the
-        whole validator suite green — so the one function that now owns the runner's name
-        (`bundle_facts.runner_basename`) was the sole guard of a provenance check with no witness.
-
-        Two rows in one, because a carve-out needs both: the exception is ACCEPTED (the clean
-        bundle rows above already fail if it is not), and everything else is REFUSED. A pin on
-        the refusal alone would survive widening the set to two names."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            (gen / "src" / "smuggled.f90").write_text(
-                "module smuggled\nend module smuggled\n", encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-        self.assertTrue([x for x in v if "smuggled.f90" in x and "undeclared" in x], v)
-        # The host-rendered runner is present in the same tree and must NOT be reported: it is
-        # the carve-out, and a widened set is caught by the row below rather than here. Filter
-        # on the violation's SUBJECT (the path before the first colon), not on the whole line:
-        # the message NAMES the glue set it admitted, so a substring test over the line matches
-        # every undeclared-source violation and pins nothing (it did, until issue #169 made the
-        # set shape-dependent and the row went red for the right reason).
-        subjects = [x.split(":", 1)[0] for x in v]
-        self.assertEqual([], [x for x in subjects if x.endswith(f"{_SPEC_ID}_runner.f90")], v)
-        # The refusal NAMES the glue it admitted, so the operator reading it can tell an
-        # undeclared source from a carve-out that did not fire. The name is derived from
-        # the target language's `bundle_facts.runner_basename`, the one function that says what
-        # the host renders.
-        clause = next(x for x in v if "smuggled.f90" in x)
-        self.assertIn(_fortran_runner_basename(_SPEC_ID), clause)
-
+class PureBundleHostGlueTests(unittest.TestCase):
     def test_the_build_graph_is_told_which_source_is_host_glue(self) -> None:
         """`host_glue_sources` is what makes the runner's object name a KNOWN one.
 
         A census reviewer found it unwitnessed: with the wrong name passed, a bundle declaring a
         file at the runner's own logical path stops earning the `bundle_assembly_collision`
-        refusal — the contract-boundary capture — and falls through to a weaker tamper
-        violation. The node is still refused, so what is lost is the REASON, which is what an
-        operator and a repair leaf act on.
+        refusal — the contract-boundary capture. What is lost is the REASON, which is what a
+        repair leaf acts on.
 
-        Driven through the real gate with a bundle that collides, rather than by reading the
-        argument."""
+        Driven through the producer's acceptance (`_leaf_bundle_violations`, whose build graph
+        takes `_leaf_bundle_graph_inputs`' glue) with a bundle that collides, rather than by
+        reading the argument. Until issue #643 PR-4 it was driven through the post_generate
+        re-check of the same contract, which that PR removed."""
         with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = _conductor(repo)
             spec_id = vps._spec_id_from_node_key(_NODE)
             assert spec_id is not None
-            bundle = json.loads((gen / "codegen_bundle.json").read_text())
+            bundle = _valid_bundle()
             # A declared file whose logical path IS the host glue: the assembly graph must see
             # the collision.
             bundle["files"].append({
@@ -2672,78 +2601,9 @@ class PurePostGenerateBundleTests(unittest.TestCase):
                 "content": "module zzz_collide\nend module zzz_collide\n",
                 "modules": ["zzz_collide"],
             })
-            (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-        self.assertTrue([x for x in v if "collision" in x],
-                        f"the assembly collision must be the reported reason: {v}")
-
-    def test_the_carve_out_admits_exactly_the_host_rendered_runner_name(self) -> None:
-        """The carve-out is a SET OF ONE, derived from the node's `spec_id`.
-
-        Pinned against the function that derives it rather than against the literal, so a rename
-        moves both together; and pinned as EQUALITY, because a superset is what the mutation
-        that survived actually produced."""
-        spec_id = vps._spec_id_from_node_key(_NODE)
-        self.assertIsNotNone(spec_id)
-        expected = _fortran_runner_basename(spec_id)
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            # A file whose name differs from the carve-out by one character must be refused.
-            near_miss = expected.replace("_runner.f90", "_runners.f90")
-            (gen / "src" / near_miss).write_text(
-                "module x\nend module x\n", encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-        self.assertTrue([x for x in v if near_miss in x and "undeclared" in x], v)
-        self.assertEqual([], [x for x in v if f"/{expected}" in x], v)
-
-    def test_absent_bundle_is_inert(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            gen = repo / "src" / _SPEC_ID
-            gen.mkdir(parents=True)
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, None, v)
-            self.assertEqual(v, [])
-
-    def test_tampered_content_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            (gen / "src" / f"{_SPEC_ID}_model.f90").write_text("tampered\n", encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-            self.assertTrue(any("tamper" in s for s in v), v)
-
-    def test_undeclared_f90_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            (gen / "src" / "sneaky.f90").write_text("module sneaky\nend module\n", encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-            self.assertTrue(any("undeclared" in s for s in v), v)
-
-    def test_undeclared_uppercase_F90_flagged(self) -> None:
-        # Codex P2 (finding 2): an uppercase .F90 suffix must be caught too — a case-sensitive
-        # rglob("*.f90") would miss it and let the undeclared source bypass the provenance check.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            (gen / "src" / "sneaky.F90").write_text("module sneaky\nend module\n", encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-            self.assertTrue(any("undeclared" in s for s in v), v)
-
-    def test_capability_tamper_flagged(self) -> None:
-        # Codex P2 (finding 1): a schema-VALID but unsupported capability swap leaves every source
-        # byte unchanged; the gate must still reject it via the reused capability negotiation.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, gen, ir_ref = self._gen_dir(tmp)
-            bundle = _valid_bundle()
-            bundle["capability_requirements"] = ["batched_cases@1"]  # schema-valid, unsupported
-            (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
-            v: list[str] = []
-            vps._validate_post_generate_bundle(repo, gen, _NODE, ir_ref, v)
-            self.assertTrue(any("bundle_capability_unsatisfied" in s for s in v), v)
+            result = c._leaf_bundle_violations(refs, bundle)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "bundle_assembly_collision", result)
 
 
 # ======================================================================================
@@ -3328,41 +3188,17 @@ class PureHarnessShapeTests(unittest.TestCase):
         self.assertIs(spec.build_context.__func__,
                       wc.Conductor._build_leaf_harness_verify_context)
 
-    def test_the_tamper_gate_admits_no_undeclared_source_on_this_shape(self) -> None:
-        """C8: the `m3c` carve-out for the host-rendered runner is CLOSED here — the runner is
-        declared bundle content, so an undeclared source beside it is a provenance violation."""
-        doc = _harness_bundle()
-        gen = self.repo / self.refs.source_dir()
-        src = gen / "src"
-        src.mkdir(parents=True, exist_ok=True)
-        for entry in doc["files"]:
-            (src / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
-        (gen / "codegen_bundle.json").write_text(json.dumps(doc), encoding="utf-8")
-        v: list[str] = []
-        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v)
-        self.assertEqual(v, [])
-        # The runner is DECLARED, so removing it from files[] makes the staged file undeclared.
-        doc2 = _harness_bundle()
-        doc2["files"] = [e for e in doc2["files"] if e["role"] != "runner"]
-        (gen / "codegen_bundle.json").write_text(json.dumps(doc2), encoding="utf-8")
-        v2: list[str] = []
-        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v2)
-        self.assertTrue([x for x in v2 if "bundle_shape_unsupported" in x], v2)
-
-    def test_the_tamper_gate_refuses_a_bundle_on_a_shapeless_node(self) -> None:
-        """`shape=(shape or "")` is the gate's fail-CLOSED default, and a round-2 sweep found it
-        unpinned: `shape=(shape or "m3c")` survived every test file.
-
-        The mutation direction is fail-OPEN, and the node it matters on is exactly the node
-        whose Generate falls through to the AGENTIC leaf — which holds filesystem tools and can
-        therefore stage a `codegen_bundle.json` of its own. This refusal is the only thing
-        between that document and an acceptance layer applying another shape's rules to it."""
+    def test_both_shape_readers_answer_none_on_a_shapeless_node(self) -> None:
+        """A toolchain the neutral core writes no control file for has no bundle shape, and
+        the conductor's reader and the validator's twin both say so. (The post_generate
+        re-check that took the twin's answer, and its fail-closed `shape or ""` default, went
+        in issue #643 PR-4; the producer fails such a node closed before any bundle exists,
+        `node_has_no_bundle_shape`.)"""
         import yaml
         ir_path = self.repo / self.refs.ir_ref / "spec.ir.yaml"
         ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
         # A toolchain the neutral core writes no control file for — the TARGET's (issue #284),
-        # declared in the fixture repository, which both the fake and the gate read: both
-        # readers answer None.
+        # declared in the fixture repository, which both readers read: both answer None.
         from tools.tests.target_fixtures import install_target_profile, profile_with
         other = profile_with(toolchain={"language": "zz_lang"})
         install_target_profile(self.repo, other)
@@ -3371,19 +3207,8 @@ class PureHarnessShapeTests(unittest.TestCase):
             ir, self.refs.node_key,
             (other.toolchain["build_system"], other.toolchain["language"])))
 
-        doc = _harness_bundle()
-        gen = self.repo / self.refs.source_dir()
-        src = gen / "src"
-        src.mkdir(parents=True, exist_ok=True)
-        for entry in doc["files"]:
-            (src / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
-        (gen / "codegen_bundle.json").write_text(json.dumps(doc), encoding="utf-8")
-        v: list[str] = []
-        vps._validate_post_generate_bundle(self.repo, gen, _HARNESS, self.refs.ir_ref, v)
-        self.assertTrue([x for x in v if "unknown bundle shape ''" in x], v)
-
     def test_the_two_gates_resolve_the_same_shape_and_glue(self) -> None:
-        """The producer's acceptance and the tamper gate must judge one bundle by one shape."""
+        """The conductor's shape reader and the validator's twin answer one shape."""
         import yaml
         ir = yaml.safe_load(
             (self.repo / self.refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
@@ -3391,7 +3216,6 @@ class PureHarnessShapeTests(unittest.TestCase):
         self.assertEqual(self.c._bundle_shape(self.refs),
                          vps._ir_bundle_shape(ir, self.refs.node_key,
                                               (tc["build_system"], tc["language"])))
-
 
 
 class CudaCppHarnessTests(unittest.TestCase):

@@ -22,12 +22,10 @@ NOT reach are in the record rather than here: `git log` at the Z4 PR-1 commit th
 the episode files under `.claude/skills/spec2science-enforcement-change/references/`.
 
 ## The DEV layer
-- `.claude/settings.json` and `.codex/hooks.json` register `tools/hooks/dev_cli.py`. It applies two
-  stdlib-only rule modules and nothing else: `tools/hooks/operator_safety.py` (the validator's
-  verify-bypass flags — the operator's own checkout) and
-  `tools/hooks/dev_session_hygiene.py` (an agent session must not wait by sleeping — the session's
-  own process table).
-- **`dev_cli.py` imports the standard library and those two modules, deliberately, and encodes each
+- `.claude/settings.json` and `.codex/hooks.json` register `tools/hooks/dev_cli.py`. It applies one
+  stdlib-only rule module and nothing else: `tools/hooks/dev_session_hygiene.py` (an agent session
+  must not wait by sleeping — the session's own process table).
+- **`dev_cli.py` imports the standard library and that module, deliberately, and encodes each
   backend's block protocol itself.** The operator's session runs the WORKING-TREE copy of its own
   hook, so anything it imports can refuse the operator out of the session they are editing in. That
   happened once, on 2026-08-26, from a half-applied edit to the (now deleted) leaf entrypoint, and
@@ -38,7 +36,7 @@ the episode files under `.claude/skills/spec2science-enforcement-change/referenc
   reason on stderr. Both encodings live in `dev_cli.py` and are pinned by its test.
 - The `matcher` of a Claude hook entry is a **regular expression matched in full** — measured on CLI
   2.1.235: `Bash` and `Bash|Write` and `.*` all match, a prefix that is not the whole tool name does
-  not. A matcher that matches nothing is silently inert — both operator rules stop firing and the
+  not. A matcher that matches nothing is silently inert — the rule stops firing and the
   suite stays green — so every committed dev entry is checked against the tool names its backend
   sends a command under by
   `test_hooks_dev_cli.DevMatcherActuallyMatchesTheToolThatCarriesACommand`. That check is this

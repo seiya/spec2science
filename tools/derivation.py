@@ -69,9 +69,9 @@ SELECTION_POLICY_VERSION = 1
 #: IR examples — "inlined" into the pure prompt until issue #534 PR-J4-b, seed files of the
 #: workshop leaf's tree since; the `impl_defaults` schema was the fourth until R4-a PR-3, issue
 #: #284, which deleted it with the IR section). Pinned separately from `LEAF_PROMPT_CONTRACT_VERSION` because a
-#: bump of that one has two side effects this one must not have (it stops `_resolve_exemplar_source`
-#: offering earlier-version exemplars and refuses `--resume` across it — the reason the prompt
-#: drift test refuses to pin these four); a bump HERE costs exactly one re-derivation of every
+#: bump of that one has a side effect this one must not have (it stops `_resolve_exemplar_source`
+#: offering earlier-version exemplars — the reason the prompt drift test refuses to pin these
+#: four; a `--resume` across it is no longer refused, issue #643); a bump HERE costs exactly one re-derivation of every
 #: node's Compile, and nothing downstream whose IR comes out byte-identical.
 COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-38"
 

@@ -27,8 +27,7 @@ from collections.abc import Sequence
 from typing import Any, NamedTuple
 
 # The leaf prompt-contract version stamped into every launch request, `bundle_meta.json` and
-# its twins, and hashed into the compile / generate / validate derivation keys
-# (`tools/derivation.py`), so a contract change is an observable event (A7). Bumped when any
+# its twins, so a contract change is an observable event (A7). Bumped when any
 # text a leaf reads changes — a workshop template, a fragment, a document slice, a tool-surface
 # row, a system prompt — in a way that affects leaf behaviour; the drift pin
 # (`tools/tests/test_leaf_prompt_contract_drift.py`) names what it hashes. ONE counter since

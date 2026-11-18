@@ -21,8 +21,8 @@ What each class pins:
 - `EveryStageRefusesAnUnresolvableTargetTests` — the resolve check is wired into post_generate,
   post_build and the execution stages.
 - `LoaderRefusesAStoreIdTests` — the loader and the shape check refuse a store-id-shaped id.
-- `ValidatorToolchainReadsTests` — the m3c language and the tamper gate's build-graph
-  toolchain are the target's, driven with an IR that contradicts it.
+- `ValidatorToolchainReadsTests` — the m3c language is the target's, driven with an IR that
+  contradicts it.
 - `WorkspaceLayoutTargetLayerTests` — `validate_workspace_root` accepts the target layer and
   checks the pipeline ids beneath it.
 
@@ -40,7 +40,6 @@ import json
 import tempfile
 import unittest
 
-from tools.tests.orchestration_fixtures import ensure_spec_entry
 from pathlib import Path
 
 import tools.orchestration_runtime as ort
@@ -401,7 +400,9 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
 
 
 class ValidatorReadsTheTargetTests(unittest.TestCase):
-    def test_a_stage_pipeline_root_must_carry_a_target(self) -> None:
+    def test_the_validator_reads_the_per_target_pipeline_tree(self) -> None:
+        # (The refusal of a `--pipeline-root` without a target segment went in issue #643: the
+        # conductor composes that argument from its refs.)
         import tools.validate_pipeline_semantics as vps
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -409,13 +410,7 @@ class ValidatorReadsTheTargetTests(unittest.TestCase):
             legacy = repo / f"workspace/pipelines/{_SAFE}/spec-x_20260101_001"
             good.mkdir(parents=True)
             legacy.mkdir(parents=True)
-            self.assertEqual(
-                vps._resolve_pipeline_dir_for_stage(repo, "workspace", str(good)),
-                good.resolve())
-            with self.assertRaises(ValueError):
-                vps._resolve_pipeline_dir_for_stage(repo, "workspace", str(legacy))
-            with self.assertRaises(ValueError):
-                vps._resolve_pipeline_roots(repo, "workspace", [str(legacy)])
+            self.assertEqual(vps._resolve_pipeline_roots(repo, [str(good)]), [good.resolve()])
             # The whole-workspace sweep reads the per-target tree only.
             self.assertEqual(vps._pipeline_targets(repo / "workspace", None), [good])
 
@@ -439,9 +434,15 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
 
     _REFUSAL = "the target this pipeline was built for does not resolve"
 
+    _SOURCE_ID = "src_20260101_001"
+
     def _undeclared_pipeline(self, repo: Path) -> str:
+        """The pipeline with what the conductor writes before either stage runs — the lineage
+        and the source directory — without which the stage raises (issue #643, D7)."""
         ref = pipe_ref(_SAFE, "spec-x_20260101_001", "not_declared")
-        (repo / ref).mkdir(parents=True)
+        (repo / ref / "source" / self._SOURCE_ID / "src").mkdir(parents=True)
+        (repo / ref / "lineage.json").write_text(
+            json.dumps({"node_key": "component/spec_x@0.1.0"}), encoding="utf-8")
         return ref
 
     def test_post_generate(self) -> None:
@@ -449,7 +450,8 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             ref = self._undeclared_pipeline(repo)
-            violations = vps._validate_post_generate_stage_impl(repo, "workspace", ref, None)
+            violations = vps._validate_post_generate_stage_impl(
+                repo, "workspace", ref, self._SOURCE_ID)
             self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
 
     def test_post_build(self) -> None:
@@ -457,7 +459,8 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             ref = self._undeclared_pipeline(repo)
-            violations = vps._validate_post_build_stage_impl(repo, "workspace", ref, None)
+            violations = vps._validate_post_build_stage_impl(
+                repo, "workspace", ref, self._SOURCE_ID)
             self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
 
     def test_the_execution_stages(self) -> None:
@@ -543,31 +546,6 @@ class ValidatorToolchainReadsTests(unittest.TestCase):
             execution = vps._stub_execution(pipe, _NK)
             self.assertEqual(vps._execution_m3c_language(repo, execution),
                              FORTRAN_CPU.toolchain["language"])
-
-    def test_the_gate_build_graph_toolchain_is_the_targets(self) -> None:
-        import tools.validate_pipeline_semantics as vps
-        from tools.tests.target_fixtures import profile_with
-        target = profile_with(toolchain={"standard": "f2018", "compiler": "xfc"},
-                              parallel={"backend": "serial"})
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            # The pipeline closure starts with the target's harness (issue #284), resolved in
-            # the catalog; a stale IR toolchain section moves nothing.
-            ensure_spec_entry(repo, f"infrastructure/{target.harness['infrastructure_id']}@0.7.0")
-            self._pipeline_with_ir(repo, {"impl_defaults": {
-                "toolchain": {"language": "c", "standard": "c99", "build_system": "cmake"},
-                "target": {"backend": "openmp"}}})
-            toolchain, closure, _edges = vps._pure_gate_build_graph_inputs(
-                repo, f"workspace/ir/{_SAFE}/spec-x_20260101_001", _NK, target)
-            # The gate's closure is the PIPELINE closure (issue #284): the target's harness,
-            # which the IR's sidecar no longer lists, is its first member — the same list the
-            # conductor stages and the generate key hashes (`pipeline_closure_nodes`).
-            self.assertEqual(
-                closure[:1], (f"infrastructure/{target.harness['infrastructure_id']}@0.7.0",))
-            self.assertEqual(toolchain, {
-                "language": target.toolchain["language"], "standard": "f2018",
-                "build_system": target.toolchain["build_system"], "backend": "serial",
-                "compiler": "xfc"})
 
 
 class WorkspaceLayoutTargetLayerTests(unittest.TestCase):

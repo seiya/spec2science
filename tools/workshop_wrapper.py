@@ -179,8 +179,6 @@ class WrapperContext:
     declared_fail: Callable[[dict[str, Any]], str | None] | None = None
     #: (ir object) -> the IR text the host would write: `Conductor._leaf_ir_yaml`.
     ir_yaml: Callable[[dict[str, Any]], str] | None = None
-    #: (ir_meta text) the pending `ir_meta.json` the host would write beside it.
-    ir_meta_text: str = ""
     #: `(name, text)` of the host's sidecars the validators read beside the IR
     #: (`dependency_graph.json`, `dependency_surface.json`), copied from `<ir_ref>`.
     sidecar_texts: tuple[tuple[str, str], ...] = ()
@@ -672,7 +670,6 @@ def _check_ir(ctx: WrapperContext) -> dict[str, Any]:
         return _result(True, declared_fail=declared)
     scratch = _fresh_dir(ctx.paths.home / "check")
     (scratch / "spec.ir.yaml").write_text(ctx.ir_yaml(doc["ir"]), encoding="utf-8")
-    (scratch / "ir_meta.json").write_text(ctx.ir_meta_text, encoding="utf-8")
     for name, text in ctx.sidecar_texts:
         (scratch / name).write_text(text, encoding="utf-8")
     violations = [str(v) for v in ctx.validate_ir_dir(ctx.repo_root, scratch)]

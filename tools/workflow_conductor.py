@@ -812,7 +812,7 @@ COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 #                     host-authored artifact defect (verdict.json / the post_judge-derived
 #                     aggregate_verdict.json / summary.json / validate_meta.json). Re-running the
 #                     judge cannot fix these. Sources: _validate_orchestration_hierarchy
-#                     (agent_graph.json / step_result.json / an orchestrations/ root), the
+#                     (agent_graph.json / an orchestrations/ root), the
 #                     cross-pipeline DAG check (lineage.json / the literal DAG messages), and the
 #                     host-authored verdict/derived artifacts.
 #   - unknown       : anything else (incl. execute-authored evidence) -> `escalate`. G5 wired the
@@ -826,7 +826,7 @@ _POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
 _POST_JUDGE_UNRECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "agent_graph.json", "step_result.json", "lineage.json", "verdict.json",
     "aggregate_verdict.json", "summary.json", "validate_meta.json",
-    # `_validate_orchestration_hierarchy` leads six integrity lines with the bare root, which the
+    # `_validate_orchestration_hierarchy` leads two integrity lines with the bare root, which the
     # `"orchestrations/"` test below does not match. A leaf-chosen leading token is a bundle
     # `logical_path`, which the extension allowlist confines to a source suffix.
     "orchestrations",
@@ -5936,8 +5936,8 @@ class Conductor:
         holds (`.claude/skills/spec2science-enforcement-change`, surface 11). The two are pinned
         equal for a pure node anyway by `_leaf_ir_document_violations`, so this costs nothing
         and cannot be turned off from inside a document. `validate_pipeline_semantics
-        ._ir_bundle_shape` is the twin the deterministic tamper gate asks the same question of;
-        a parity test pins the two."""
+        ._ir_bundle_shape` is its twin (its one caller, the post_generate bundle re-check, went
+        in issue #643 PR-4); a parity test pins the two."""
         from tools.codegen_bundle import LANGUAGES as BUNDLE_LANGUAGES
         if not self._conductor_authors_makefile(refs):
             return None
@@ -6326,8 +6326,7 @@ class Conductor:
         every requirement is unsatisfied.
 
         The resolution itself lives in the runtime (`harness_node_key_for`), because the
-        generate derivation inputs, the pipeline closure and the tamper gate name the same
-        harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
+        generate derivation inputs and the pipeline closure name the same harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
         catalog edited under the run) raises RuntimeError — a build precondition every caller
         already routes to a fail-closed transport outcome, never a content retry."""
         from tools.orchestration_runtime import harness_node_key_for
@@ -6542,9 +6541,8 @@ class Conductor:
         no repository write authority, so a corrupted bundle can only propagate as content here — these layers are what
         catch it before any file is written.
 
-        The layers themselves live in `codegen_bundle.pure_bundle_contract_violation` (the SINGLE
-        source shared with the deterministic post-generate tamper gate, so the two cannot drift);
-        this method only assembles the conductor-side inputs (the resolved harness capabilities,
+        The layers themselves live in `codegen_bundle.pure_bundle_contract_violation`; this
+        method only assembles the conductor-side inputs (the resolved harness capabilities,
         the build-graph derivation) and delegates."""
         from tools.codegen_bundle import pure_bundle_contract_violation
         return pure_bundle_contract_violation(
@@ -6599,14 +6597,9 @@ class Conductor:
         # absorbed member is rejected (a v1 single-node unit has none, but the check is honest).
         sidecar = _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {}
         edges: dict[str, list[str]] = {}
-        for entry in (sidecar.get("all_nodes") or []) if isinstance(sidecar, dict) else []:
-            if not isinstance(entry, dict):
-                continue
-            nk = entry.get("node_key")
-            deps = [d.get("node_key") if isinstance(d, dict) else d
-                    for d in (entry.get("direct_deps") or [])]
-            if isinstance(nk, str):
-                edges[nk] = [d for d in deps if isinstance(d, str)]
+        for entry in sidecar.get("all_nodes") or []:
+            edges[entry["node_key"]] = [d.get("node_key") if isinstance(d, dict) else d
+                                        for d in (entry.get("direct_deps") or [])]
         # The host glue is exactly what the host RENDERS: the runner on an `m3c` node, nothing
         # on a `harness` one (where the runner is bundle content). Asked of the one predicate
         # that decides the render (`_conductor_authors_runner`), so the graph can never declare
@@ -6679,27 +6672,15 @@ class Conductor:
         (`_write_runner`, at phase start)."""
         src_dir = self.repo_root / refs.source_dir() / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
-        src_root = src_dir.resolve()
         written: list[str] = []
-        for entry in doc.get("files") or []:
-            if not isinstance(entry, dict):
-                continue
-            logical = str(entry.get("logical_path") or "")
-            content = entry.get("content")
-            if not logical or not isinstance(content, str):
-                continue
+        # `doc` passed the host acceptance contract (`_leaf_bundle_violations`, whose
+        # `validate_bundle` layer refuses a non-object entry, an empty or escaping
+        # `logical_path` and a non-string content) before this is called.
+        for entry in doc["files"]:
+            logical = entry["logical_path"]
             target = src_dir / logical
-            # Defense-in-depth containment: `validate_bundle`'s `logical_path_violations`
-            # already rejected any absolute / `..` / non-normalized path before this doc was
-            # accepted, so a path escaping src/ here means a validator bypass — fail closed
-            # loudly rather than writing outside the source tree. (Belt-and-suspenders over the
-            # gated pass path; never fires on a validated bundle.)
-            if not target.resolve().is_relative_to(src_root):
-                raise RuntimeError(
-                    f"pure bundle file {logical!r} resolves outside the source tree "
-                    f"({target.resolve()} not under {src_root}) — refusing to write")
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_text(entry["content"], encoding="utf-8")
             written.append(f"{refs.source_dir()}/src/{logical}")
         # The accepted bundle, host-authored at the source root (leaf-non-writable), for
         # provenance and as the verify persona's input (M-D). Not a leaf deliverable.
@@ -7248,9 +7229,11 @@ class Conductor:
         ir_dir.mkdir(parents=True, exist_ok=True)
         ir_root = ir_dir.resolve()
         target = ir_dir / "spec.ir.yaml"
-        # Defense-in-depth containment, mirroring `_write_leaf_bundle_artifacts`: every path here
-        # is host-composed from `refs`, so an escape means a caller handed this method refs it did
-        # not derive — fail closed loudly rather than writing outside the IR directory.
+        # Defense-in-depth containment: every path here is host-composed from `refs`, so an
+        # escape means a caller handed this method refs it did not derive — fail closed loudly
+        # rather than writing outside the IR directory. (`_write_leaf_bundle_artifacts` carried
+        # the same refusal until issue #643 PR-4, WC2-68: the producer's acceptance,
+        # `logical_path_violations`, refuses its leaf-authored paths before it runs.)
         if not target.resolve().is_relative_to(ir_root):
             raise RuntimeError(
                 f"pure IR artifact {target.resolve()} resolves outside {ir_root} — "
@@ -7299,8 +7282,7 @@ class Conductor:
     def _ir_meta_text(self, refs: NodeRefs, *, verification_status: str,
                       last_fail_reason: str | None, issue_severity: str | None,
                       attempts: int) -> str:
-        """The text `_write_ir_meta` writes, also what a `compile.generate` workshop lineage's
-        `check_ir` places beside its scratch IR (`_freeze_ir_check_context`)."""
+        """The text `_write_ir_meta` writes."""
         meta: dict[str, Any] = {
             "ir_id": refs.ir_id,
             "node_key": refs.node_key,
@@ -10445,49 +10427,6 @@ class Conductor:
         except Exception:
             return None
 
-    def _stage_meta_contract_findings(self, refs: NodeRefs, phase: str) -> list[str]:
-        """Contract findings against the phase's verify meta (compile -> ir_meta.json,
-        generate -> source_meta.json): missing required keys + value-type violations, from the
-        one canonical definition (tools/meta_contracts) the runtime write gate and the
-        validator sweeps also use.
-
-        This is the WRITE-POINT detector for a defect class that is otherwise UNREPAIRABLE:
-        the runtime's `_validate_step_meta_payload` only runs for a PASS step_result, so a
-        FAILED verify leaf could persist a schema-violating meta (e.g. `last_fail_reason` as a
-        structured incident dict) unchecked — and since a Generate reopen rotates a fresh
-        source dir and deletes nothing, the violation is immutable and no repair loop
-        converges on it (E2E #4). Detecting it while the authoring leaf's session is still
-        resumable is what makes it fixable at all.
-
-        Stateless by construction: the meta is re-read and re-checked on demand, so no new
-        persisted artifact is introduced and the findings cannot go stale. A missing or
-        non-dict meta returns [] — that is an ordinary verify failure (or a leaf that wrote
-        nothing), handled by the normal severity/freshness gates, not this class.
-        """
-        from tools.meta_contracts import (
-            STAGE_META_FILENAME_BY_STEP,
-            missing_required_meta_keys,
-            stage_meta_type_violations,
-        )
-
-        if phase not in STAGE_META_FILENAME_BY_STEP:
-            return []
-        meta_filename = STAGE_META_FILENAME_BY_STEP[phase]
-        # Same meta-path synthesis as classify_failure / _read_repair_findings.
-        meta_dir = refs.ir_ref if phase == "compile" else refs.source_dir()
-        meta = _read_json(self.repo_root / meta_dir / meta_filename)
-        if not isinstance(meta, dict):
-            return []
-        findings = [
-            f"{meta_filename} missing required key {k!r}"
-            for k in missing_required_meta_keys(meta, step_token=phase)
-        ]
-        findings += [
-            f"{meta_filename} {clause}"
-            for clause in stage_meta_type_violations(meta, step_token=phase)
-        ]
-        return findings
-
     def _launch_instant(self, child_arid: str) -> float:
         """The freshness gate's reference instant, read from the clock that STAMPS FILES.
 
@@ -11250,8 +11189,8 @@ class Conductor:
         (issue #534 step 2), computed in the main thread: the one operation `check_ir`, bound
         to what the host's own path runs on the snapshot — the IR assembly, the producer's
         document contract (`_leaf_ir_document_violations`), the declaration reader, the IR
-        serializer `_write_leaf_ir_artifacts` writes with, the pending `ir_meta.json` it writes
-        beside it, the `<ir_ref>` sidecars as they stand now, and the `Compile.static`
+        serializer `_write_leaf_ir_artifacts` writes with, the `<ir_ref>` sidecars as they
+        stand now, and the `Compile.static`
         validators (`validate_pipeline_semantics.validate_compile_ir_dir`). An absent sidecar
         is not copied, so the validators report it as the gate would. `closure_file_names` is
         unused (a compile lineage stages no closure)."""
@@ -11281,9 +11220,6 @@ class Conductor:
             assemble=assemble_ir_document,
             declared_fail=self._leaf_ir_declared_fail,
             ir_yaml=self._leaf_ir_yaml,
-            ir_meta_text=self._ir_meta_text(refs, verification_status="pending",
-                                            last_fail_reason=None, issue_severity=None,
-                                            attempts=1),
             sidecar_texts=tuple(sidecars),
             validate_ir_dir=validate_compile_ir_dir,
             seed_texts=tuple(sorted((seed_texts or {}).items())),
@@ -12729,7 +12665,8 @@ class Conductor:
                 status = "fail"
                 # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
                 # re-authoring its source. `stale_dependency_ir` is the node's own certified IR,
-                # which the leaf does not own; `static_frontend_unavailable` is an absent parser on the
+                # which the leaf does not own (no gate emits its rc 4 since issue #643 PR-4; the
+                # arm remains); `static_frontend_unavailable` is an absent parser on the
                 # machine running the gate, without which the Fortran gates read NOTHING.
                 # classify_gate_failure fail_closes any union verdict carrying either
                 # (GATE_FAILURE_TERMINAL).
@@ -12775,10 +12712,10 @@ class Conductor:
         own (so verify is now a semantic pass holding no gate — the spec-cross-reference invariants
         V1/V3/V5 — reached only on a deterministically-clean IR). Runs, in the same order/idiom
         as the post_build gate in _build_inproc, two gates: validate_workspace_root.py (bare),
-        then validate_pipeline_semantics --stage compile. Well-formedness of spec.ir.yaml and
-        ir_meta.json is the --stage compile validator's own first finding (`invalid yaml` /
-        `must be mapping` / `ir_meta.json: must be json object`), so it needs no separate
-        well-formedness gate ahead of it (issue #180). A
+        then validate_pipeline_semantics --stage compile. Well-formedness of spec.ir.yaml is the
+        --stage compile validator's own first finding (`invalid yaml` / `must be mapping`), so it
+        needs no separate well-formedness gate ahead of it (issue #180); ir_meta.json is
+        host-written and the stage does not read it (issue #643). A
         violation is a CONTENT failure (status=fail + failure_category, rc 0) routed by
         classify_compile_static_failure back to compile.generate via a warm-resume reopen; only
         an unexpected error surfaces as a transport fail_closed (caught in
@@ -15594,14 +15531,9 @@ class Conductor:
         {status, violations, disposition}.
 
         Scoped to this run (`--pipeline-root`/`--run-id`) so historically-broken sibling
-        pipelines cannot fail an otherwise-conformant node. `--in-flight-agent-run-id` names
-        BOTH the judge substep (recorded+returned) AND this post_judge substep's own arid:
-        post_judge's agent_graph edge is written by record_launch but its agent_runs.jsonl
-        row is appended only after this body returns, so its own edge is dangling RIGHT NOW
-        and must be declared in-flight or `_validate_orchestration_hierarchy` flags it (the
-        gate's in-flight filter accepts substep ∈ {judge, post_judge}). The judge arid is
-        declared too (harmless: it is already recorded, so it is a no-op that documents the
-        live judge region).
+        pipelines cannot fail an otherwise-conformant node. (No arid is declared in-flight any
+        more: the launch-record audit stopped reading `agent_graph.json` edges in issue #643, so
+        this substep's own still-dangling edge is not a finding.)
 
         disposition: recoverable and unrecoverable alike -> fail_closed; unknown -> escalate
         (run_phase turns it into an escalate RouteDecision in prod; dev keeps fail_closed).
@@ -15637,13 +15569,9 @@ class Conductor:
             })
             return {"returncode": 0, "stdout": "",
                     "stderr": f"[post_judge aggregate blocked] {agg.get('blocked_reason')}"}
-        judge_arid = getattr(self, "_pending_judge_arid", {}).get(refs.node_key, "")
         cmd = ["python3", "tools/validate_pipeline_semantics.py", "--stage", "pre_judge",
                "--orchestration-id", self.orchestration_id,
-               "--pipeline-root", refs.pipeline_ref, "--run-id", str(refs.run_id),
-               "--in-flight-agent-run-id", child_arid]
-        if judge_arid:
-            cmd += ["--in-flight-agent-run-id", judge_arid]
+               "--pipeline-root", refs.pipeline_ref, "--run-id", str(refs.run_id)]
         try:
             gate = subprocess.run(
                 cmd, cwd=self.repo_root, env=self.env, text=True,
@@ -15676,10 +15604,10 @@ class Conductor:
         # conformance finding — over what is really a machine problem or a stale certified IR.
         # Neither is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
         #
-        # rc 4 and rc 5 are UNREACHABLE from this stage today (both have a single emit /
-        # construction site, reached only from post_generate); they are wired so that the day a
-        # pre_judge gate reports one, it fails closed rather than being graded by the bullet
-        # rules. rc 3 IS
+        # rc 4 and rc 5 are UNREACHABLE from this stage today: no gate emits rc 4 since issue
+        # #643 PR-4 (the arm remains), and rc 5 has a single construction site, reached only
+        # from post_generate. Both are wired so that the day a pre_judge gate reports one, it
+        # fails closed rather than being graded by the bullet rules. rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
         # rc 6 (issue #307) is answered by a gate this stage runs too, over the same trace the
         # post_execute stage already passed, so it is reached only if the two stages disagree.
@@ -15910,11 +15838,6 @@ class Conductor:
                       elapsed_seconds=round(time.monotonic() - substep_started, 2))
             outcomes.append(oc)
             if phase == "validate" and substep == "judge":
-                # post_judge (the next substep) runs `--stage pre_judge` and must declare the
-                # judge's arid in-flight; stash it before post_judge is dispatched.
-                if not hasattr(self, "_pending_judge_arid"):
-                    self._pending_judge_arid: dict[str, str] = {}
-                self._pending_judge_arid[refs.node_key] = oc.agent_run_id
                 # G6: track judge attempts for validate_meta.attempt_count (best-effort; not
                 # gate-validated). One judge launch per phase attempt; nothing re-runs it
                 # within the attempt since issue #176.
@@ -16682,16 +16605,6 @@ class Conductor:
         # compile / generate: verify severity gate. A failed phase with no
         # recorded severity (e.g. the producing substep itself failed) is
         # unclassifiable -> escalate to the diagnostician rather than guessing.
-        #
-        # A meta that violates the stage-meta contract is read FIRST and never routed by
-        # severity: its fields are not trustworthy inputs to a decision table (the same posture
-        # as `{phase}_fail_unclassified`). Reaching here is the FIRST response to the
-        # violation: issue #176 deleted the mini-loop that used to spend a repair budget ahead
-        # of it, so a contract-violating meta escalates on the attempt that authored it
-        # (`test_schema_violating_meta_escalates_without_a_repair_turn`). It covers a malformed
-        # meta from the PRODUCING substep as well as from `verify`.
-        if self._stage_meta_contract_findings(refs, phase):
-            return RouteDecision("escalate", reason=f"{phase}_fail_meta_schema")
         meta_path = (refs.ir_ref + "/ir_meta.json") if phase == "compile" else (refs.source_dir() + "/source_meta.json")
         meta = _read_json(self.repo_root / meta_path) or {}
         sev = meta.get("last_fail_severity") or meta.get("issue_severity")

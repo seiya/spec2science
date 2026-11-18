@@ -297,7 +297,7 @@ model certified before the block was imposed had: each launched with a literal b
 still launches one kernel with a literal passes the floor, because a launch's configuration is an
 expression a pattern over the source does not evaluate, and that launch is G6's. What the run
 records is the block size the harness reports (`perf.json#parallelism.block_size`), which the
-`post_execute` gate compares with each shape's; it says the harness read the variable, not that
+quality check compares with each shape's; it says the harness read the variable, not that
 every kernel used it.
 
 ## Legality and gate guards

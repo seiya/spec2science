@@ -1664,9 +1664,8 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
 def published_operations_from_ir(ir: Mapping[str, Any]) -> list[str] | None:
     """The IR's ``public_api.published_operations`` operation_id names (L1c input), or ``None``
     when the IR carries no ``public_api`` pin (a legacy pre-L1 IR — the L1c layer is then inert).
-    A present-but-empty ``published_operations`` returns ``[]`` (authoritative empty). Single-
-    sourced so the conductor's in-conversation gate and the post-generate tamper gate extract the
-    surface identically before handing it to ``pure_bundle_contract_violation``."""
+    A present-but-empty ``published_operations`` returns ``[]`` (authoritative empty). The
+    conductor's in-conversation gate hands it to ``pure_bundle_contract_violation``."""
     if not isinstance(ir, collections.abc.Mapping):
         return None
     pub = ir.get("public_api")
@@ -1713,10 +1712,10 @@ def pure_bundle_contract_violation(
 ) -> tuple[str, str] | None:
     """The full Z2 pure-CodegenBundle host acceptance contract as `(category, findings)`, or None.
 
-    The SINGLE source of the acceptance layers shared by the producer's in-conversation gate
-    (`Conductor._leaf_bundle_violations`) and the deterministic post-generate tamper gate
-    (`validate_pipeline_semantics._validate_post_generate_bundle`), so a bundle the producer
-    would reject can never be certified by the independent re-check (and the two cannot drift).
+    The SINGLE source of the acceptance layers, run by the producer's in-conversation gate
+    (`Conductor._leaf_bundle_violations`) before the host writes any file of the bundle. (A
+    post_generate re-check of the same layers over the host-written bundle went in issue #643
+    PR-4: both sides of that comparison were host writes of one accepted document.)
 
     `shape` (one of `BUNDLE_SHAPES`) selects the file-shape layer and nothing else — every other
     layer runs identically for both. An unknown value is REFUSED rather than defaulted: the shape

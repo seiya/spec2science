@@ -24,7 +24,6 @@ from tools.validate_pipeline_semantics import (
     _tests_md_definition_blocks,
     _parse_test_expected_outcomes_from_tests_md,
     _parse_test_quantities_from_tests_md,
-    _tests_md_reported_lines,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -194,8 +193,7 @@ def flag_rule_findings(sid: str, controlled_spec: str, tests_path: Path) -> list
 
 def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
     """Every `tests.md` naming a retired token, or that the Compile gate refuses: a test with no
-    `quantities` line, with two, or with a non-name entry; a `reported` line anywhere (issue #589
-    retired the class); and a suite whose CATALOG `spec_kind` is `problem` with no `history:` line
+    `quantities` line, with two, or with a non-name entry; and a suite whose CATALOG `spec_kind` is `problem` with no `history:` line
     (a problem runs a time loop, issue #589 gate (m); a component's line — rk4's — is admitted and
     pinned by gate (m) alone). The gate refuses those only after the leaf has spent its cost. This
     pins the statements' presence, not what they mean."""
@@ -219,8 +217,6 @@ def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
         outcomes = _parse_test_expected_outcomes_from_tests_md(root / tp)
         out.extend(f"{sid}: {problem}" for problem in (outcomes[1] if outcomes else
                                                        ["tests.md is unreadable"]))
-        out.extend(f"{sid}: tests.md line {n} is a retired `reported:` line"
-                   for n, _line in _tests_md_reported_lines(root / tp) or [])
         if e.get("spec_kind") == "problem" and not any(
                 TEST_HISTORY_LINE.match(line.strip()) for line in tests.splitlines()):
             out.append(f"{sid}: a problem's tests.md carries no `history:` line")
@@ -594,10 +590,6 @@ class SpecCorpusVersionTest(unittest.TestCase):
             for spelling in ("checks.<id>", "checks.Zero.status"):
                 self.assertIn("retired checks.<id>", run(good + spelling + "\n")[0])
             self.assertEqual(len(run(f"- `test_id`: `a`\n{outcome}- `test_id`: `b`\n{outcome}")), 2)
-            # a `reported:` line is retired (issue #589), once per line, either spelling
-            self.assertEqual(len(run(good + "  - `reported`: `x`\nreported: y\n")), 2)
-            self.assertIn("retired `reported:` line", run(good + "  - `reported`: `x`\n")[0])
-            self.assertEqual(run(good + "  - the operation reported: nothing\n"), [])
             self.assertIn("defines no test", run("nothing\n")[0])
             self.assertEqual(suites_unmigrated([{"spec_id": "p", "spec_kind": "profile"}], root), [])
             # a problem (its CATALOG kind) needs a `history:` line; a component does not, and

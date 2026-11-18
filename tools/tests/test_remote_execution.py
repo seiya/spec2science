@@ -343,11 +343,11 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(qc_entry["command"], ["sh", "-c", "echo qc-ran; ls ../run"])
 
     def test_the_post_execute_gate_accepts_the_entries_it_binds(self) -> None:
-        """The real post-execute gate functions over the two entries this executor wrote, in a
-        synthetic tree where the shipped runner IS the node's build `bin/` file and the shipped
-        control file IS its source `src/` one: no violation. The run entry with its site `command`
-        put back (`site.remote_command`) is refused. (The quality-check entry's `cwd` rule went in
-        issue #643: its argv is a preset and its control file host-rendered.)"""
+        """The real post-execute gate function over the quality-check entry this executor
+        wrote, in a synthetic tree where the shipped control file IS the node's source `src/`
+        one: no violation. (The run entry's binding to the build's `bin/` and the quality-check
+        entry's `cwd` rule went in issue #643: the host composes both argvs and writes the
+        entries.)"""
         import tools.validate_pipeline_semantics as vps
 
         repo = self.h.root / "repo"
@@ -386,25 +386,11 @@ class EndToEndTests(unittest.TestCase):
         execution = vps.NodeExecution(node_key="n", node_dir=node_dir, exec_dir=node_dir,
                                       pipeline_dir=pipeline)
 
-        def violations() -> list[str]:
-            found: list[str] = []
-            vps._validate_run_program_inputs(repo, execution, found)
-            vps._validate_quality_check_commands(repo, execution, found)
-            return found
-
+        found: list[str] = []
         with mock.patch.object(vps, "_target_toolchain_from_pipeline_dir", autospec=True,
                                return_value=("make", "fortran")):
-            self.assertEqual(violations(), [])
-            for log, key, site_key, refusal in (
-                    (run_log, "command", "remote_command", "Mixed-build attribution"),):
-                with self.subTest(key=key):
-                    kept = log.read_text()
-                    entry = json.loads(kept)
-                    entry[key] = entry["site"][site_key]
-                    log.write_text(json.dumps(entry) + "\n")
-                    (found,) = violations()
-                    self.assertIn(refusal, found)
-                    log.write_text(kept)
+            vps._validate_quality_check_commands(repo, execution, found)
+        self.assertEqual(found, [])
 
     def test_the_entry_has_the_local_servers_shape_plus_site(self) -> None:
         """The local server's entry keys, read by running the server once, plus `site`."""

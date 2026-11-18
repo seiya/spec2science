@@ -2,8 +2,7 @@
 """Unit tests for tools/meta_contracts.stage_meta_type_violations.
 
 The checker is the single canonical definition of the stage-meta VALUE-TYPE contract,
-shared by the runtime write gate (`_validate_step_meta_payload`) and both validator
-sweeps (`_validate_source_meta_json_files` / `_validate_ir_meta_json`). It returns bare
+read by the runtime write gate (`_validate_step_meta_payload`). It returns bare
 clauses; the byte-exact clause text is part of the contract (callers prefix it with their
 own path idiom, and existing tests substring-match the clauses).
 """

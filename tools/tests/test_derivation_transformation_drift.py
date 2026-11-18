@@ -951,7 +951,18 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-37 (issue #644 P4b): a stride per sampled variable (`drive.history`), restart points as their own records (`drive.restart_points`), grammar 7.
     "compile-docs-37": "700bc87fbd7537c9efea8c65d19da08b2314f9a71d4bd7072655b3b8ab6dc74d",
     # compile-docs-38 (issue #644 P4b, the harness side): the capture-group case of the harness suites, the evidence entries and `restart_point.*` on an `infrastructure` IR, the `zero_extent` line, and §1 to §4 and §6 of the controlled spec seeded to the harness producer.
-    "compile-docs-38": "efb48b2c006df4d8a7a3440ac86a9942a143a2b4eebbb2a066c0fd81b6e905a1",
+    # compile-docs-38 re-pinned in place by issue #643 PR-4, behaviour-preserving (operator
+    # decision 2026-11-18, no bump): `phase_01_compile.md` stops saying the Compile gate refuses a
+    # `tests.md` carrying a `reported:` line (the detector went, VP1-102; `docs/TESTS.md` says the
+    # line is retired and not read) and stops listing `ir_meta.json: must be json object` among
+    # the `--stage compile` reports (`_validate_ir_meta_json` went, VP1-53). Both checks were
+    # already gone from the code, so the text now describes the gate that runs: every IR the
+    # previous text certified is still valid, no IR is authored differently, and no Compile
+    # re-derives. (Measured by diffing the drift members against main cfde9a2e: the
+    # `phase_contract_document` member alone.) The digest `compile-docs-38` shipped with at
+    # cfde9a2e:
+    "compile-docs-38@cfde9a2e": "efb48b2c006df4d8a7a3440ac86a9942a143a2b4eebbb2a066c0fd81b6e905a1",
+    "compile-docs-38": "b11a65b6977d3a7ab8d4886e9b8fb1e9eb9fdf7c2ef7de44a2ed31c14ce05b26",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1443,7 +1454,16 @@ PINNED_RENDER: dict[str, str] = {
     # to 3 then corrected `_write_makefile`'s docstring.) The digest
     # `render-22` shipped with at 31dfcbf1:
     "render-22@31dfcbf1": "24e8b24edcacb42c932c25e944822abdee12db048bda707c926bc001a2191094",
-    "render-22": "bf48dafee8de7bd5f9068f80d7d175d39bed916e5c8a4140d9785b5734abdf8c",
+    # render-22 re-pinned in place by issue #643 PR-4, behaviour-preserving:
+    # `_write_leaf_bundle_artifacts` loses its skip of a non-object `files[]` entry, an empty
+    # `logical_path` or a non-string `content`, and its refusal of a path resolving outside
+    # `src/`. Its one caller runs after the producer's acceptance (`validate_bundle`'s
+    # `_files_schema_violations` and `logical_path_violations`), which refuses each of those
+    # shapes, so every bundle a leaf could have certified writes the same files. (Measured by
+    # diffing `render_tuple()` against main cfde9a2e's: that row and no other.) The digest
+    # `render-22` shipped with at cfde9a2e:
+    "render-22@cfde9a2e": "bf48dafee8de7bd5f9068f80d7d175d39bed916e5c8a4140d9785b5734abdf8c",
+    "render-22": "4c38f647a74aaf2fca89b29a433f15f9ab43ea3d4877e28f6e874fd7a6b16936",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

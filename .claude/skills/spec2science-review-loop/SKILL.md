@@ -26,7 +26,7 @@ and find that merge with `git log --oneline --merges --ancestry-path <the commit
 when the label carries no pull request number, which is the case for `L118`, `L128` and `L174`. That is how these were checked: `L118` is [the duplicate `_split_top_level_commas`](https://github.com/seiya/spec2science/issues/181#issuecomment-5559628555),
 `L128` [the `&`-continuation blindness](https://github.com/seiya/spec2science/issues/181#issuecomment-5559628999),
 `L174` [the tree-sitter front-end swap](https://github.com/seiya/spec2science/issues/181#issuecomment-5559629951),
-`TODO:269` [the `STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/spec2science/pull/88#issuecomment-5560285483)
+`TODO:269` [the `STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/spec2science/pull/88#issuecomment-5560285483) (no gate emits that exit code since issue #643 PR-4)
 and `TODO:414` [the development-documentation branch](https://github.com/seiya/spec2science/pull/90#issuecomment-5559633234).
 `L200`, which `PR #57`'s title names, is [the `agent_role` work](https://github.com/seiya/spec2science/pull/57#issuecomment-5559631060).
 

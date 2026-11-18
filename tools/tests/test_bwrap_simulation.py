@@ -1945,7 +1945,7 @@ class WorkshopLeafCliTests(unittest.TestCase):
             seed_names=(), lineage_deadline=time.time() + 600,
             ops=workshop_wrapper.IR_CHECK_OPS, violations=lambda doc: None,
             assemble=workshop_tree.assemble_ir_document, declared_fail=lambda doc: None,
-            ir_yaml=lambda ir: yaml.safe_dump(ir), ir_meta_text="{}\n",
+            ir_yaml=lambda ir: yaml.safe_dump(ir),
             validate_ir_dir=validate)
         server = workshop_mcp.WrapperMcpServer(ctx).start()
         self.addCleanup(server.stop)

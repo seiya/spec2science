@@ -271,7 +271,7 @@ A pre-existing `step_result.json` means this (node, phase) is on a LATER ATTEMPT
 | `substep_agent_run_ids` | yes | list[str]. A phase that has substeps includes the UUID of all substeps without omission |
 | `failed_substeps` | optional | list[str] |
 | `retry_decisions` | optional | list[object]. Each item: `{issue_severity, repair_strategy, repair_target_agent_run_id, new_agent_run_id, repair_reason}` |
-| `validation_stage` | yes for a terminal status of compile/generate/build/validate | one of `compile` / `post_generate` / `post_build` / `post_execute` / `pre_judge` / `full` (with per-step allowed values) |
+| `validation_stage` | yes for a terminal status of compile/generate/build/validate | one of `compile` / `post_generate` / `post_build` / `post_execute` / `pre_judge` (with per-step allowed values) |
 | `derivation` | yes for `status=pass` | `{derivation_key: "sha256:<hex>", derivation_inputs: object, transformation: list[str]}` — the record `orchestration_runtime.phase_derivation` computed at phase start ([issue #250](https://github.com/seiya/spec2science/issues/250)); stamped into the certifying meta, see the certification-stamp paragraph above. Carried on a non-pass result too, as the failed attempt's record |
 
 ---

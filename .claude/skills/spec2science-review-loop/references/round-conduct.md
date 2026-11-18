@@ -50,7 +50,8 @@ because they are where a rule gets COPIED.
 Twice in that loop the message was wrong, both times while splitting one commit per finding — so
 the folded-commit framing above never fired. The mechanism is dull, and both instances are
 checkable at the commits named. Round 2: `tools/tests/test_pure_leaf_producer.py` carried the
-repair-lift rows AND the tamper gate's fail-closed-default row; `git add` on that path put both
+repair-lift rows AND the tamper gate's fail-closed-default row (that gate, the `post_generate`
+re-check of the bundle, was removed in issue #643 PR-4); `git add` on that path put both
 in `6531bc1`, whose message describes only the first, while `6439198`'s message claims the second
 (`git show 6531bc1 -- tools/tests/test_pure_leaf_producer.py | grep -c shapeless_node` -> 1).
 Round 3, wider: `test_pure_leaf_verify.py`, `tools/workflow_conductor.py` and
@@ -157,7 +158,8 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
       word is not matched, so `pkill -f`, `grep` and `ps | grep` over it — the commands you run
       while CLEANING UP after this accident — still work. That carve-out is the point: a rule
       that blocks its own cleanup gets turned off. It keeps the same known over-refusal
-      `operator_safety.py` records, and demonstrated it immediately by refusing two commands of
+      `operator_safety.py` recorded (that module was deleted in issue #643 PR-4; the over-refusal
+      is stated now in `dev_session_hygiene.py`'s own docstring), and demonstrated it immediately by refusing two commands of
       the very commit that introduced it.
     - What replaced the prompt wording is in `SKILL.md` §Running a round: forbid the MECHANISM by
       name, require the foreground with a bounded `timeout`, forbid running the whole suite in

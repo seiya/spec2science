@@ -196,6 +196,13 @@ is an availability and reproducibility class — the "loss of reproducibility" f
 
 ## A finding whose subject is the certified IR is the rc 4 class whatever rule fired (2026-09-16, issue #238)
 
+**Since issue #643 PR-4 the gate half of this episode is history.** That PR removed both
+`--stage post_generate` emit sites of rc 4 — the §5.1 surface guard and the io_contract wrap
+described below — because every route to `Generate` either just ran `Compile.static` on the IR or
+skipped it through readiness, which runs the same validator. No gate emits rc 4 now;
+`StaleDependencyIRViolation`, the exit code and the conductor's arms remain without a producer.
+The attribution rule (by what the call site was given) and the readiness bullet stand.
+
 §The decision says what the leaf can fix is a content failure and what the IR caused is a
 transport fail_closed. Issue #238 is the case where the routing was decided per RULE rather than
 per SUBJECT: `--stage post_generate` re-reads the node's own certified `spec.ir.yaml` through the
@@ -207,16 +214,17 @@ that was never the cause (`orch_20260916T081200Z_5139f6c9`).
 
 - **Attribute by what the call site was GIVEN, not by which rule the reader applied.** The
   post_generate io_contract call is handed nothing but the certified IR, so every finding it returns
-  has the same subject as the §5.1 guard's; it takes the same TYPE (`_as_stale_certified_ir`, a
-  suffix wrap, positional attribution as `HostAuthoredArtifactViolation` documents it). No new exit
+  has the same subject as the §5.1 guard's; it took the same TYPE (`_as_stale_certified_ir`, a
+  suffix wrap, removed in issue #643 PR-4; positional attribution as `HostAuthoredArtifactViolation` documents it). No new exit
   code, no new category: the `terminal-set` drift guard and all three gate readers were untouched.
 - **The `--stage compile` call of the same reader stays plain.** There the IR IS the artifact under
   repair, and rc 1 → `compile_static_violation` → warm `compile.generate` is right. Wrapping by
   reader instead of by call site would have terminalized Compile's own repair loop.
 - **The earliest reliable detection was readiness, not the gate** (§"Once attribution is decided,
   decide when it should surface"). `_ir_certification` now runs `validate_compile_stage` LAST, on an
-  otherwise-certified IR, and refuses `ir_rejected_by_current_validator:…`; the gate's rc 4 is the
-  backstop for a rule change landing inside one run. The compile-reopen arm the `GATE_FAILURE_TERMINAL`
+  otherwise-certified IR, and refuses `ir_rejected_by_current_validator:…`; the gate's rc 4 was the
+  backstop for a rule change landing inside one run until issue #643 PR-4 removed it, so readiness
+  is now the only reader. The compile-reopen arm the `GATE_FAILURE_TERMINAL`
   comment defers was again not built: with the readiness clause it is reachable only inside that
   window, and `dev`'s F1 guard turns any cross-phase reopen into revoke-then-`fail_closed` anyway.
 - **The readiness clause is an evaluator** (§above): a raise from the validator is a refusal

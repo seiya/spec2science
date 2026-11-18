@@ -864,41 +864,21 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                              dict.fromkeys(("row", "edge"), False))
 
 class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
-    """`_write_leaf_bundle_artifacts` refuses a `logical_path` that escapes `src/`.
+    """A `logical_path` that escapes `src/` never reaches `_write_leaf_bundle_artifacts`.
 
-    FOUND BY THE ROUND-2 SECURITY REVIEW as a surviving mutant: `if False and not
-    target.resolve().is_relative_to(src_root)` left the suite green. The check is
-    belt-and-suspenders over `validate_bundle`'s `logical_path_violations`, which rejects an
-    absolute or `..`-bearing path before a document is accepted — the reviewer confirmed that
-    grammar admits no traversal — so this only fires on a validator bypass. That is exactly why
-    it is worth a case: it is the last thing between a bypass and a write outside the source
-    tree, and nothing drove it.
-
-    Driven through the REAL method with a hand-built document, deliberately skipping
-    `validate_bundle`: the point is what this function does when the thing upstream of it did
-    not happen.
+    The writer held a containment refusal of its own until issue #643 PR-4; it was a second
+    copy of `validate_bundle`'s `logical_path_violations`, which refuses an absolute or
+    `..`-bearing path before the producer accepts a document, and the writer's only caller runs
+    after that acceptance. This class pins the copy that stays, and the writer's ordinary path.
     """
 
     def test_a_traversing_logical_path_is_refused_before_the_write(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            c = _PureFakeConductor(
-                repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
-                llm_config=_config_on("claude_cli", repo))
-            refs = wc.NodeRefs(target_id=_TARGET_ID,
-                node_key="component/x@0.1.0", spec_path="spec/component/x",
-                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
-                run_id="run_1", source_binary_id="bin_1")
-            escape = "../../../../escaped.f90"
-            doc = {"files": [{"logical_path": escape, "content": "module m\nend module\n"}]}
-            with self.assertRaises(RuntimeError) as caught:
-                c._write_leaf_bundle_artifacts(refs, doc, {})
-            self.assertIn("resolves outside the source tree", str(caught.exception))
-            self.assertIn(escape, str(caught.exception))
-            # Refused BEFORE the write, not after: nothing landed anywhere under the repo.
-            strays = [p for p in repo.rglob("escaped.f90")]
-            self.assertEqual(strays, [], strays)
+        import tools.codegen_bundle as cb
+        escape = "../../../../escaped.f90"
+        self.assertTrue(cb.logical_path_violations(escape, language="fortran"))
+        # ... and the files[] walker composes it, under the entry's own prefix.
+        self.assertTrue([v for v in cb._files_schema_violations([{"logical_path": escape}])
+                         if v.startswith("files[0].logical_path must not contain")])
 
     def test_an_ordinary_nested_path_still_writes(self) -> None:
         """The control, so the refusal above is known not to be refusing everything."""
