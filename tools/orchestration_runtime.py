@@ -9294,8 +9294,6 @@ def resume_orchestration(
             {
                 "ts": _utc_now_iso(),
                 "event": "resume_cleared_stale_active_child",
-                "from": "child_running",
-                "to": "not_started",
                 "note": "stale active_child markers cleared for checkpoint resume",
                 "cleared_active_child_arids": cleared_active_child,
             },

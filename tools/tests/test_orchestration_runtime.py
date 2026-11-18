@@ -2964,6 +2964,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             cleared = [e for e in log_events if e.get("event") == "resume_cleared_stale_active_child"]
             self.assertEqual(len(cleared), 1)
             self.assertEqual(cleared[0].get("cleared_active_child_arids"), [child])
+            # The node step is not reset on resume (issue #643 PR-5), so the row names no
+            # `child_running` -> `not_started` transition.
+            self.assertNotIn("from", cleared[0])
+            self.assertNotIn("to", cleared[0])
 
     def test_resume_prunes_orphan_agent_graph_edge(self) -> None:
         """The abandoned child's agent_graph edge (written by record_launch before the
