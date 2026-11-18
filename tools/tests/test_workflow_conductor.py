@@ -14670,12 +14670,12 @@ class WriteDependencySurfaceErrorsPropagateTest(unittest.TestCase):
 
     _NK = "component/top@0.1.0"
 
-    def _conductor(self, repo: Path) -> "_TargetedConductor":
+    def _conductor(self, repo: Path) -> _TargetedConductor:
         return _TargetedConductor(repo_root=repo, orchestration_id="o",
                                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                                   env={}, target_profile=_TP)
 
-    def _refs(self) -> "wc.NodeRefs":
+    def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID, node_key=self._NK,
                            spec_path="spec/component/top", ir_id="i", pipeline_id="p")
 
