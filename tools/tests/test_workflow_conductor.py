@@ -20124,7 +20124,7 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertEqual(meta["status"], "pass")
             self.assertEqual(meta["preset"], "fortitude")
             self.assertIsNone(meta["failure_category"])
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.lint
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
             self.assertEqual(ev["status"], "pass")
             self.assertEqual(ev["run_linter"][0]["command_id"], "cid")
             self.assertTrue(
@@ -20146,7 +20146,7 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "lint_findings")
             self.assertIn("S001", meta["failure_excerpt"])
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.lint
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
             self.assertEqual(ev["status"], "fail")
 
     def test_gate_lint_check_refuses_an_invocation_that_judged_nothing(self) -> None:
@@ -20197,7 +20197,7 @@ class DeterministicLintTest(unittest.TestCase):
             }
             with self._patch_linter(lambda args: mixed):
                 out = c._gate_lint_check(refs, "child-1")
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.lint
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
             self.assertEqual(ev["preset"], "mixed")
             self.assertEqual({e["preset"] for e in ev["run_linter"]}, {"fortitude", "cppcheck"})
 
@@ -20228,7 +20228,7 @@ class DeterministicLintTest(unittest.TestCase):
             }
             with self._patch_linter(lambda args: composite):
                 out = c._gate_lint_check(refs, "child-1")
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.lint
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
             self.assertEqual(ev["preset"], "zz_comp")
             self.assertEqual([e["preset"] for e in ev["run_linter"]], ["cppcheck", "fortitude"])
             self.assertEqual([e["command_id"] for e in ev["run_linter"]], ["c1", "f1"])
@@ -20429,7 +20429,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             meta = out
             self.assertEqual(meta["status"], "pass")
             self.assertIsNone(meta["failure_category"])
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.syntax
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             self.assertEqual(ev["status"], "pass")
             self.assertEqual(ev["stages"][0]["compiler"], "gfortran")
             self.assertEqual(ev["stages"][0]["status"], "pass")
@@ -20593,7 +20593,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "syntax_error")
             self.assertIn("IMPLICIT NONE", meta["failure_excerpt"])
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.syntax
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             self.assertEqual(ev["status"], "fail")
             self.assertEqual(ev["stages"][0]["status"], "fail")
 
@@ -20757,7 +20757,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(out["status"], "pass")
             meta = out
             self.assertEqual(meta["status"], "pass")
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.syntax
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             by_compiler = {s["compiler"]: s for s in ev["stages"]}
             # gfortran is forced to run first (the mandatory gate) even though the env
             # var listed frt first.
@@ -21071,7 +21071,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             def _argv(a: dict) -> dict:
                 return {k: v for k, v in a.items() if k != "project_dir"}
             self.assertEqual(_argv(alone_args[0]), _argv(stage_args[0]))
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.syntax
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             self.assertEqual(ev["status"], "pass")
             self.assertEqual([s["compiler"] for s in ev["stages"]], ["gfortran", "gfortran"])
             self.assertNotIn("scope", ev["stages"][0])
@@ -21110,7 +21110,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertIn("model-alone check fail", out["failure_excerpt"])
             self.assertIn("internal_module", out["failure_excerpt"])
             self.assertIn("spec_x_private.mod", out["failure_excerpt"])
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.syntax
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             self.assertEqual(ev["status"], "fail")
             alone = [s for s in ev["stages"] if s.get("scope") == "model_alone"]
             self.assertEqual(len(alone), 1)
@@ -21444,7 +21444,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             with self._patch_syntax(fake):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
-            ev = out  # the section `_gate_inproc` records as gate_meta.checkers.syntax
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             by_compiler = {s["compiler"]: s for s in ev["stages"]}
             self.assertEqual(by_compiler["gfortran"]["status"], "pass")
             self.assertEqual(by_compiler["frtxx"]["status"], "skipped")
