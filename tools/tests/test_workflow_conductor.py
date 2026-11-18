@@ -14662,6 +14662,55 @@ class WriteDependencySurfaceTest(unittest.TestCase):
                  "published_operations": [], "source": "unresolved"}])
 
 
+class WriteDependencySurfaceErrorsPropagateTest(unittest.TestCase):
+    """Issue #643 PR-5: `_write_dependency_surface` no longer swallows a graph-read error
+    (once `[]` and no sidecar) or a `LibraryDeclarationError` (once an empty library list).
+    Both now escape to `run_phase` as a host error. Driven on a real Conductor subclass that
+    does not override the method (`_FakeConductor` does)."""
+
+    _NK = "component/top@0.1.0"
+
+    def _conductor(self, repo: Path) -> "_TargetedConductor":
+        return _TargetedConductor(repo_root=repo, orchestration_id="o",
+                                  orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                                  env={}, target_profile=_TP)
+
+    def _refs(self) -> "wc.NodeRefs":
+        return wc.NodeRefs(target_id=_TARGET_ID, node_key=self._NK,
+                           spec_path="spec/component/top", ir_id="i", pipeline_id="p")
+
+    def test_an_unreadable_graph_propagates(self) -> None:
+        for name, graph_text in (("absent", None), ("undecodable", "{not json")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                if graph_text is not None:
+                    (repo / refs.ir_ref).mkdir(parents=True)
+                    (repo / refs.ir_ref / "dependency_graph.json").write_text(graph_text)
+                with self.assertRaises((OSError, ValueError)):
+                    self._conductor(repo)._write_dependency_surface(refs)
+                self.assertFalse((repo / refs.ir_ref / "dependency_surface.json").exists())
+
+    def test_a_library_declaration_error_propagates(self) -> None:
+        from tools import external_library as xl
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            (repo / refs.ir_ref).mkdir(parents=True)
+            (repo / refs.ir_ref / "dependency_graph.json").write_text("{}")
+            spec = repo / refs.spec_path
+            spec.mkdir(parents=True)
+            # A declared library with no declaration file under the scratch repository.
+            (spec / "deps.yaml").write_text(
+                "dependencies:\n  components: []\n  profiles: []\n"
+                "  libraries:\n    - {library_id: absent}\n")
+            with mock.patch.object(wc_runtime, "_resolve_component_dep_surface",
+                                   return_value=[]), \
+                    self.assertRaises(xl.LibraryDeclarationError):
+                self._conductor(repo)._write_dependency_surface(refs)
+            self.assertFalse((repo / refs.ir_ref / "dependency_surface.json").exists())
+
+
 class WriteLineageTest(unittest.TestCase):
     """P2: lineage.json is authored host-side by the conductor (it lives at the pipeline
     root, which must stay non-writable to the sandboxed leaf)."""
