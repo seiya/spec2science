@@ -11646,8 +11646,7 @@ class Conductor:
             # NO terminal-exit-code branch here, unlike the post_generate / post_execute /
             # pre_judge gates. The post_build stage runs only the three build-control-file rules
             # over `src/`, which read source through the regex/logical-line helpers and never
-            # through the structure front end, and it does not reach the stale-IR emit site at
-            # all — so neither rc 3 nor rc 4 can arrive. Every non-zero code here is a
+            # through the structure front end — so rc 3 cannot arrive. Every non-zero code here is a
             # control-file violation the leaf repairs by re-authoring: Generate, cold
             # (`BUILD_FAILURE_ROUTING` routes `validate_post_build_violation` to `restart`).
             if gate.returncode != 0:
@@ -12652,16 +12651,15 @@ class Conductor:
                 from tools.validate_pipeline_semantics import (
                     SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                     HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-                    STALE_DEPENDENCY_IR_EXIT_CODE,
                 )
                 status = "fail"
-                # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
-                # re-authoring its source. `stale_dependency_ir` is the node's own certified IR,
-                # which the leaf does not own (no gate emits its rc 4 since issue #643 PR-4; the
-                # arm remains); `static_frontend_unavailable` is an absent parser on the
-                # machine running the gate, without which the Fortran gates read NOTHING.
+                # TERMINAL conditions the leaf cannot repair by re-authoring its source:
+                # `static_frontend_unavailable` is an absent parser on the machine running the
+                # gate, without which the Fortran gates read NOTHING; `host_authored_artifact_
+                # violation` is a finding about a file this repository authors.
                 # classify_gate_failure fail_closes any union verdict carrying either
-                # (GATE_FAILURE_TERMINAL).
+                # (GATE_FAILURE_TERMINAL). (rc 4, a stale certified IR, went with issue #643
+                # PR-5; no gate emitted it after PR-4.)
                 #
                 # BOTH ARE CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
                 # answer this finding took five versions to reach. Most violations interpolate a
@@ -12679,8 +12677,6 @@ class Conductor:
                 # the gate's output to decide anything.
                 if pg.returncode == SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE:
                     failure_category = "static_frontend_unavailable"
-                elif pg.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
-                    failure_category = "stale_dependency_ir"
                 elif pg.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                     failure_category = "host_authored_artifact_violation"
                 else:
@@ -12734,10 +12730,9 @@ class Conductor:
                 capture_output=True, check=False)
             # NO terminal-exit-code branch here either, for a second reason on top of the
             # post_build one. `--stage compile` reads §5.1 and the IR through the regex-only
-            # signature helpers, never the structure front end, and the stale-IR emit site is
-            # not on its call graph — so neither rc 3 nor rc 4 arrives. And the routing would be
-            # wrong even if one did: at Compile the IR IS the artifact under repair, so a stale
-            # or drifted IR is exactly what a warm Compile retry is for, not a terminal verdict.
+            # signature helpers, never the structure front end — so rc 3 does not arrive. And a
+            # stale or drifted IR is exactly what a warm Compile retry is for: at Compile the IR
+            # IS the artifact under repair.
             if proc.returncode != 0:
                 status = "fail"
                 failure_category = "compile_static_violation"
@@ -14153,27 +14148,24 @@ class Conductor:
             # (cold-restart) kind.
             #
             # PRECEDENCE IS ROUTING-LOAD-BEARING at the top and report-quality only below it. The
-            # four leading branches read the post_execute validator's DEDICATED EXIT CODES, which
+            # three leading branches read the post_execute validator's DEDICATED EXIT CODES, which
             # say the failure is not the leaf's to repair: rc 3 is an uninstalled structure front
-            # end (a machine problem — the gates that need it read nothing), rc 4 a stale
-            # certified IR, rc 5 a file this repository authors, rc 6 a traced run none of whose
-            # kernels ran (below). All must dominate a co-occurring `quality_check`/snapshot symptom, because those
+            # end (a machine problem — the gates that need it read nothing), rc 5 a file this
+            # repository authors, rc 6 a traced run none of whose kernels ran (below). All must
+            # dominate a co-occurring `quality_check`/snapshot symptom, because those
             # symptoms are downstream of the same unrepairable condition and routing them warm
             # spends the leaf's budget re-authoring source that was never the cause. Below them
             # the three warm categories route identically: a gate report is the most specific,
             # a snapshot gap next, quality_check last.
             #
-            # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
-            # the same remedy. The stale-IR violation has two emit sites, both on the
-            # post_generate path only — `_validate_generated_signatures` (via
-            # `_validate_generate_outputs_for_generation`) and the io_contract wrap in
-            # `_validate_post_generate_stage_impl` (issue #238); the
-            # host-authored wrap has one construction site, in that same post_generate caller —
-            # post_execute reaches the runner gates through `_validate_runner_outputs`, which is
-            # a different caller and does not wrap (issue #112). Both are wired here anyway so
-            # that the day this stage reports one, it fails closed rather than arriving as a warm
-            # retry the leaf cannot converge on. rc 3 IS reachable: the front-end error is raised
-            # from the `problem` model gates that post_execute runs.
+            # rc 5 is UNREACHABLE from this stage today: the host-authored wrap has one
+            # construction site, in the post_generate caller — post_execute reaches the runner
+            # gates through `_validate_runner_outputs`, which is a different caller and does not
+            # wrap (issue #112). It is wired here anyway so that the day this stage reports one,
+            # it fails closed rather than arriving as a warm retry the leaf cannot converge on.
+            # rc 3 IS reachable: the front-end error is raised from the `problem` model gates
+            # that post_execute runs. (rc 4, a stale certified IR, went with issue #643 PR-5; no
+            # gate emitted it after PR-4.)
             #
             # rc 6 IS reachable, and is this stage's own: the traced run executed none of the
             # kernels the node defines (`_validate_device_kernel_execution`, issue #307).
@@ -14181,12 +14173,9 @@ class Conductor:
                 DEVICE_KERNELS_ABSENT_EXIT_CODE,
                 SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                 HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-                STALE_DEPENDENCY_IR_EXIT_CODE,
             )
             if gate.returncode == SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE:
                 failure_category = "static_frontend_unavailable"
-            elif gate.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
-                failure_category = "stale_dependency_ir"
             elif gate.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                 failure_category = "host_authored_artifact_violation"
             elif gate.returncode == DEVICE_KERNELS_ABSENT_EXIT_CODE:
@@ -15460,11 +15449,11 @@ class Conductor:
         `recoverable` used to warm-resume the judge in place; that mini-loop was deleted by
         issue #176 (no run ever reached it), so both graded classes terminalize.
 
-        Four exit codes are answered BEFORE the bullets are read at all, because they say the
+        Three exit codes are answered BEFORE the bullets are read at all, because they say the
         gate never reached a verdict about this run's conformance: rc 3 (the structure front end
-        is not installed), rc 4 (a stale certified IR), rc 5 (a file this repository authors)
-        and rc 6 (a traced run none of whose kernels executed, issue #307). Their bullets
-        describe a machine, IR, producer or device condition, and the severity rules classify by
+        is not installed), rc 5 (a file this repository authors) and rc 6 (a traced run none of
+        whose kernels executed, issue #307). Their bullets describe a machine, producer or
+        device condition, and the severity rules classify by
         artifact PATH — so left to the bullet path they would be classified as if they were
         conformance findings. All write `disposition: "fail_closed"` with
         their own `failure_category`, the same shape as the OSError launch-failure branch."""
@@ -15521,13 +15510,13 @@ class Conductor:
         # TERMINAL EXIT CODES FIRST, and on the CODE rather than on any bullet: the bullets carry
         # leaf-chosen paths, and the severity rules below classify by path prefix, so a bullet
         # naming a judge-authored artifact would be graded `recoverable` — a judge-authored
-        # conformance finding — over what is really a machine problem or a stale certified IR.
-        # Neither is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
+        # conformance finding — over what is really a machine, producer or device problem.
+        # None is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
         #
-        # rc 4 and rc 5 are UNREACHABLE from this stage today: no gate emits rc 4 since issue
-        # #643 PR-4 (the arm remains), and rc 5 has a single construction site, reached only
-        # from post_generate. Both are wired so that the day a pre_judge gate reports one, it
-        # fails closed rather than being graded by the bullet rules. rc 3 IS
+        # rc 5 is UNREACHABLE from this stage today: it has a single construction site, reached
+        # only from post_generate. It is wired so that the day a pre_judge gate reports one, it
+        # fails closed rather than being graded by the bullet rules. (rc 4, a stale certified
+        # IR, went with issue #643 PR-5; no gate emitted it after PR-4.) rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
         # rc 6 (issue #307) is answered by a gate this stage runs too, over the same trace the
         # post_execute stage already passed, so it is reached only if the two stages disagree.
@@ -15535,11 +15524,9 @@ class Conductor:
             DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-            STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         terminal_category = {
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
-            STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
             HOST_AUTHORED_ARTIFACT_EXIT_CODE: "host_authored_artifact_violation",
             DEVICE_KERNELS_ABSENT_EXIT_CODE: "device_kernels_absent",
         }.get(gate.returncode)

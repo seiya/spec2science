@@ -19197,21 +19197,26 @@ class DeterministicBuildTest(unittest.TestCase):
         # The post_execute validator answers dedicated exit codes for the two conditions no leaf
         # can repair by re-authoring source. `_execute_inproc` classifies on those codes, so the
         # gate's TEXT never decides. rc 3 is reachable here (the `problem` model gates raise the
-        # front-end error); rc 4 and rc 5 are not reachable from post_execute today — both are
-        # wired so the day a post_execute gate reports one it fails closed rather than arriving
-        # warm. rc 5 (issue #112) is a violation whose subject is a file this repository authors.
+        # front-end error); rc 5 is not reachable from post_execute today — it is wired so the
+        # day a post_execute gate reports one it fails closed rather than arriving warm. rc 5
+        # (issue #112) is a violation whose subject is a file this repository authors.
         # rc 6 (issue #307) is reachable here and nowhere earlier: the traced run executed none
-        # of the kernels the node defines.
+        # of the kernels the node defines. rc 4 (a stale certified IR) left the validator in
+        # issue #643 PR-5 and takes the generic category, as any unlisted code does.
         import tempfile
         from tools.validate_pipeline_semantics import (
             DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-            STALE_DEPENDENCY_IR_EXIT_CODE,
         )
+        with tempfile.TemporaryDirectory() as td:
+            _out, meta = self._b1_execute(
+                Path(td), self._B1_IR_MINIMAL,
+                gate_result=(4, "pipeline semantic validation: FAIL\n- boom"))
+        self.assertEqual(meta["failure_category"], "post_execute_violation")
+        self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING)
         for rc, expected in ((SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
-                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                               "host_authored_artifact_violation"),
                              (DEVICE_KERNELS_ABSENT_EXIT_CODE, "device_kernels_absent")):
@@ -19243,13 +19248,10 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_execute_inproc_forged_marker_at_rc_1_stays_a_warm_violation(self) -> None:
         # post_execute never had a text scan, and this pins that it did not grow one alongside
-        # the exit-code branches. Both markers are replayed inside an ordinary rc-1 gate report,
-        # in the interpolated-path shape a leaf controls.
+        # the exit-code branches. The marker is replayed inside an ordinary rc-1 gate report, in
+        # the interpolated-path shape a leaf controls.
         import tempfile
-        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
         payloads = (
-            f"pipeline semantic validation: FAIL\n- src/{STALE_DEPENDENCY_IR_MARKER}_model.f90: "
-            "declared state_variables missing in snapshot files",
             "pipeline semantic validation: FAIL\n- src/[fortran-structure-unavailable]_model.f90:"
             " declared state_variables missing in snapshot files",
         )
@@ -21864,16 +21866,11 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
                              payload)
 
-    def test_gate_static_check_maps_the_stale_ir_exit_code_to_a_terminal_category(self) -> None:
-        # The twin of the front-end mapping above, and for the same reason: the classification
-        # channel is the validator's EXIT CODE, imported from the module that sets it. The output
-        # text here still carries the human-facing marker, so a mapping that quietly went back to
-        # scanning it would pass this row — which is why the forgery row below exists too.
+    def test_gate_static_check_routes_a_retired_exit_code_as_an_ordinary_violation(self) -> None:
+        # Exit code 4 (a stale certified IR) left the validator in issue #643 PR-5, and with it
+        # this function's arm: a 4 is now an unlisted non-zero code, which takes the generic
+        # category and its warm route, as any other code without an arm does.
         import tempfile
-        from tools.validate_pipeline_semantics import (
-            STALE_DEPENDENCY_IR_EXIT_CODE,
-            STALE_DEPENDENCY_IR_MARKER,
-        )
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -21886,18 +21883,14 @@ class DeterministicStaticTest(unittest.TestCase):
                     return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
                 if script.endswith("validate_pipeline_semantics.py"):
                     return wc.subprocess.CompletedProcess(
-                        cmd, STALE_DEPENDENCY_IR_EXIT_CODE,
-                        "pipeline semantic validation: FAIL\n"
-                        f"- x_model.f90: {STALE_DEPENDENCY_IR_MARKER} the certified IR does not "
-                        "carry the controlled_spec §5.1 module parameters", "")
+                        cmd, 4, "pipeline semantic validation: FAIL\n- x_model.f90: boom", "")
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
                 out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["failure_category"], "stale_dependency_ir")
-        self.assertEqual("fail_closed",
-                         wc.classify_gate_failure([out["failure_category"]]).action)
+        self.assertEqual(out["failure_category"], "post_generate_violation")
+        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
 
     def test_gate_static_check_maps_the_host_authored_exit_code_to_a_terminal_category(
             self) -> None:
@@ -21941,8 +21934,8 @@ class DeterministicStaticTest(unittest.TestCase):
     def test_no_gate_output_text_can_forge_the_host_authored_classification(self) -> None:
         """The marker in a LEAF-CHOSEN path must not terminalize an ordinary content failure.
 
-        The twin of the stale-IR forgery row below, and the reason is identical: a violation
-        interpolates a path the leaf wrote, so a model source named after the marker would let a
+        The twin of the front-end marker's forgery row above, and the reason is identical: a
+        violation interpolates a path the leaf wrote, so a model source named after the marker would let a
         leaf convert its own warm-repairable finding into a dead run. rc 1 is the whole answer."""
         import tempfile
         from tools.validate_pipeline_semantics import HOST_AUTHORED_ARTIFACT_MARKER
@@ -21967,45 +21960,6 @@ class DeterministicStaticTest(unittest.TestCase):
                 out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["failure_category"], "post_generate_violation")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
-
-    def test_no_gate_output_text_can_forge_the_stale_ir_classification(self) -> None:
-        # THE DEFECT THIS BRANCH REPAIRS. The gate used to classify on `[stale-dependency-ir]`
-        # appearing anywhere in the validator's stdout, and a violation interpolates a path the
-        # LEAF chose — so naming a model source after the marker turned an ordinary, warm-
-        # retryable naming slip into a terminal verdict that killed a billed run. The four
-        # payloads are the front-end marker's full defeat history replayed against this marker
-        # (bare, after a newline, after a newline + `- `, and quoted at the start of a line), all
-        # at rc 1. With the classification keyed on the code the TEXT cannot matter, so this is an
-        # assertion about the channel and not another sample of the prose.
-        import tempfile
-        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER as marker
-        payloads = (
-            f"- src: model source {marker}_model.f90 present but must be named spec_x_model.f90",
-            f"- src: model source x\n{marker}_model.f90 present but must be named spec_x",
-            f"- src: model source x\n- {marker}_model.f90 present but must be named spec_x",
-            f"- {marker} a violation that merely quotes the marker at the start of a line",
-        )
-        for payload in payloads:
-            with tempfile.TemporaryDirectory() as td:
-                repo = Path(td)
-                refs = self._refs()
-                self._seed(repo, refs)
-                c = self._conductor(repo)
-
-                def run(cmd, _payload=payload, **kwargs):
-                    script = next((x for x in cmd if x.endswith(".py")), "")
-                    if script.endswith("validate_workspace_root.py"):
-                        return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
-                    if script.endswith("validate_pipeline_semantics.py"):
-                        return wc.subprocess.CompletedProcess(
-                            cmd, 1, f"pipeline semantic validation: FAIL\n{_payload}", "")
-                    raise AssertionError(f"unexpected subprocess: {cmd}")
-
-                with self._patch_run(run):
-                    out = c._gate_static_check(refs, "child-1")
-            self.assertEqual("post_generate_violation", out["failure_category"], payload)
-            self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
-                             payload)
 
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile
@@ -22953,9 +22907,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     def test_post_judge_terminal_exit_codes_fail_closed_before_bullet_classification(self) -> None:
         # The severity rules classify a violation by its artifact PATH, and here every bullet
         # names `semantic_review.json` — the recoverable shape, i.e. the judge's own artifact. Left
-        # to the bullet path, an uninstalled front end or a stale certified IR would spend the
-        # operator a terminal reason naming a conformance finding instead of the machine or IR
-        # condition that actually stopped the run. (Before issue #176 it ALSO cost the judge's
+        # to the bullet path, an uninstalled front end would spend the operator a terminal reason
+        # naming a conformance finding instead of the machine condition that actually stopped the
+        # run. (Before issue #176 it ALSO cost the judge's
         # warm-resume budget; no budget is spent now — the graded classes terminalize at once.)
         # The exit code
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
@@ -22964,14 +22918,12 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-            STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         recoverable_bullet = ("pipeline semantic validation: FAIL\n"
                               "- workspace/runs/n/semantic_review.json: review_method must be "
                               "llm_semantic_review\n")
         for rc, expected in ((SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
-                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                               "host_authored_artifact_violation"),
                              (DEVICE_KERNELS_ABSENT_EXIT_CODE, "device_kernels_absent")):
@@ -22990,10 +22942,22 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(meta["disposition"], "fail_closed", rc)
             # The violations are still recorded, for observation only.
             self.assertTrue(any("review_method" in v for v in meta["violations"]), rc)
+        # rc 4 (a stale certified IR) left the validator in issue #643 PR-5: an unlisted code
+        # reaches the bullet classification like rc 1.
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
+            c = self._conductor(repo)
+            with self._patch_run(lambda cmd, **k: wc.subprocess.CompletedProcess(
+                    cmd, 4, recoverable_bullet, "")):
+                c._post_judge_inproc(refs, "child-post")
+            meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+        self.assertEqual(meta["failure_category"], "pre_judge_violation")
+        self.assertEqual(meta["disposition"], "fail_closed")
 
     def test_post_judge_forged_marker_bullet_at_rc_1_keeps_bullet_classification(self) -> None:
         # pre_judge never had a text scan, and this pins that it did not grow one alongside the
-        # exit-code branches. Both markers are replayed inside an ordinary rc-1 bullet, which a
+        # exit-code branches. The marker is replayed inside an ordinary rc-1 bullet, which a
         # scan-anywhere would turn into fail_closed — stranding a violation the judge can
         # actually repair. The marker rides in the MESSAGE rather than in the path, because the
         # severity rules key on the artifact path prefix: a forged FILENAME lands the bullet in
@@ -23002,8 +22966,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         # `recoverable` classification's disposition since issue #176; `escalate` is still what
         # the forged filename would produce, so the row still separates the two.
         import tempfile
-        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
-        for marker in (STALE_DEPENDENCY_IR_MARKER, "[fortran-structure-unavailable]"):
+        for marker in ("[fortran-structure-unavailable]",):
             out = ("pipeline semantic validation: FAIL\n"
                    "- workspace/runs/n/semantic_review.json: review_method must be "
                    f"llm_semantic_review (found {marker}_review)\n")
