@@ -11551,10 +11551,6 @@ class Conductor:
             "status": "pass" if ok else "fail",
             "validation_stage": "post_build",
             "source_source_id": refs.source_id,
-            # The ir_id the linked source was generated from (a compile reopen re-numbers ir_id
-            # under the SAME pipeline, so this binds this binary to its exact origin IR — read by
-            # `_write_runner` to pin a consumer's harness runner against the same-lineage IR).
-            "source_ir_id": refs.ir_id,
             "build_system": build_system,
             # The target the binary was built for, and the compiler the build control file names
             # (the target profile's pin, else the host default; under a parallel backend's compiler
@@ -14922,8 +14918,8 @@ class Conductor:
         pipeline directory. `refs` must name what the next phase builds against and where
         it writes, so every id the certification resolved is taken — `ir_id` and
         `pipeline_id` included — and the reservation records follow (`reserve_root`; the
-        reservation is where this run WRITES, `_stamp_certification` reads `source_ir_id`
-        from it, and `_revocable_stage_meta_path` resolves a revocation through it)."""
+        reservation is where this run WRITES, and `_revocable_stage_meta_path` resolves a
+        revocation through it)."""
         ir_id = cert.get("ir_id") or (str(cert["ir_ref"]).rsplit("/", 1)[-1]
                                       if cert.get("ir_ref") else None)
         if ir_id and str(ir_id) != refs.ir_id:

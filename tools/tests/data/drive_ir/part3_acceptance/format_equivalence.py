@@ -181,8 +181,14 @@ def main() -> int:
               file=sys.stderr)
         return 1
     stamp = _stamp(args.binary_meta)
-    ir_path = (REPO / "workspace" / "ir" / stamp["node_key"].replace("/", "__").replace("@", "__")
-               / stamp["source_ir_id"] / "spec.ir.yaml")
+    # The certified IR the source was generated from: the one whose output hash the source's
+    # generate key binds (`binary_meta.source_ir_id` is no longer written, issue #643 PR-5).
+    source_meta = _stamp(args.binary_meta.parents[2] / "source" / stamp["source_source_id"]
+                         / "source_meta.json")
+    ir_root = REPO / "workspace" / "ir" / stamp["node_key"].replace("/", "__").replace("@", "__")
+    ir_path = next(m.parent for m in sorted(ir_root.glob("*/ir_meta.json"))
+                   if _stamp(m).get("output_hash") == source_meta["derivation_inputs"]["ir"]
+                   ) / "spec.ir.yaml"
     ir = yaml.safe_load(ir_path.read_text(encoding="utf-8"))
     case_ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"])
     print(f"IR {ir_path.relative_to(REPO)}; {len(case_ids)} cases")

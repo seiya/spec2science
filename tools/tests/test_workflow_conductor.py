@@ -8181,7 +8181,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             c._write_ir_meta(refs, verification_status="pass", last_fail_reason=None,
                              issue_severity=None, attempts=1)
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="compile",
+                root, step="compile",
                 required_outputs=wc.phase_required_outputs(refs, "compile"),
                 derivation=c._phase_derivation(refs, "compile"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile", target=_TP)
@@ -8196,7 +8196,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 refs, {"verification_status": "pass", "issue_severity": None,
                        "last_fail_reason": None}, attempts=1)
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="generate",
+                root, step="generate",
                 required_outputs=wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"),
                 derivation=c._phase_derivation(refs, "generate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate", target=_TP)
@@ -8224,7 +8224,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             # check that the stamp puts in what the predicate reads.
             ort._strip_certification_keys(root / refs.binary_dir() / "binary_meta.json")
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="build",
+                root, step="build",
                 required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe),
                 derivation=c._phase_derivation(refs, "build"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build", target=_TP)
@@ -8267,7 +8267,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 "pipeline_id": refs.pipeline_id, "verification_status": "pass",
                 "attempt_count": 1}), encoding="utf-8")
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="validate",
+                root, step="validate",
                 required_outputs=wc.phase_required_outputs(refs, "validate"),
                 derivation=c._phase_derivation(refs, "validate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate", target=_TP)
@@ -17300,11 +17300,10 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertIn("closure_bindings", meta["dependency_check"])
             self.assertEqual(meta["dependency_check"]["closure_bindings"], [])
 
-    def test_build_inproc_stamps_source_ir_id(self) -> None:
-        # binary_meta.json records the origin ir_id (refs.ir_id) alongside source_source_id
-        # (refs.source_id). `_write_runner` binds the harness pin to source_ir_id, so a wrong
-        # constant here (e.g. source_id) would silently break the binding — distinct ir_id vs
-        # source_id values catch a swap.
+    def test_build_inproc_records_source_source_id(self) -> None:
+        # binary_meta.json records the source it was built from (refs.source_id); distinct
+        # ir_id vs source_id values catch a swap. `source_ir_id` is no longer written
+        # (issue #643 PR-5).
         import tempfile
         from unittest import mock
         build_runtime = _build_runtime()
@@ -17329,7 +17328,6 @@ class DeterministicBuildTest(unittest.TestCase):
                 c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
-            self.assertEqual(meta["source_ir_id"], "ir_20260707_007")
             self.assertEqual(meta["source_source_id"], "src_20260707_003")
 
     def test_execute_inproc_injects_spec_and_cases_env(self) -> None:

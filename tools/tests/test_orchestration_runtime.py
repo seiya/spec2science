@@ -279,10 +279,9 @@ def _seed_generate_pass_outputs(repo_root: Path, meta_ref: str) -> list[str]:
     by the caller, which owns its content) plus the compile reservation, and return the
     `required_outputs` a PASSING generate step_result must declare.
 
-    Two reasons a bare `[meta_ref]` no longer stands in for a real generate: the
-    certification stamp refuses a phase that declares no hashable deliverable besides its
-    own meta, and it records `source_ir_id` from the orchestration's compile RESERVATION,
-    so a generate with no reserved IR cannot be certified to one."""
+    A bare `[meta_ref]` no longer stands in for a real generate: the certification stamp
+    refuses a phase that declares no hashable deliverable besides its own meta. The compile
+    reservation is the one a real run holds by the time Generate passes."""
     src_dir = (repo_root / meta_ref).parent / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "shallow_water2d_model.f90").write_text("module m\nend module m\n", encoding="utf-8")
@@ -338,9 +337,7 @@ def _seed_build_pass_outputs(repo_root: Path, *, binary_id: str = "bin_20260101_
     deliverable) into `binary_meta.json` before writing the result, and refuses a pass that
     declares no meta or whose declared deliverable is absent — so a fixture that names a
     binary it never wrote no longer stands in for a real build."""
-    # The compile reservation the certification stamp reads `source_ir_id` from — a build
-    # binds to the IR its source was generated from, and the reservation is what this
-    # orchestration is holding that to.
+    # The compile reservation a real build runs under.
     res = (repo_root / "workspace" / "orchestrations" / "orch_001" / "reservations"
            / "problem__shallow_water2d__0.3.0")
     res.mkdir(parents=True, exist_ok=True)
@@ -6867,8 +6864,8 @@ _CERT_PIPE_REF = f"workspace/pipelines/{_CERT_SAFE}/{_TARGET_ID}/spec-x_20260101
 def _setup_certifiable_generate(repo_root: Path, *, verification_status: str = "pass") -> None:
     """An orchestration positioned exactly where `write_step_result` is called for a passing
     generate phase: preflight launchable, the phase at `child_finished`, a recorded producing
-    substep publishing the source deliverables, and the compile reservation the certification
-    stamp reads `source_ir_id` from."""
+    substep publishing the source deliverables, and the compile reservation a real run
+    holds."""
     oid = "o1"
     init_orchestration(repo_root=repo_root, orchestration_id=oid)
     _mark_dependencies_ready(repo_root, oid)
@@ -8378,7 +8375,7 @@ class CertificationStampTests(unittest.TestCase):
             "p/binary/b1/binary_meta.json")
         self.assertEqual(refs, ["p/binary/b1/bin/exe"])
 
-    def test_write_step_result_pass_stamps_artifact_hashes_and_source_ir_id(self) -> None:
+    def test_write_step_result_pass_stamps_artifact_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _setup_certifiable_generate(repo)
@@ -8398,8 +8395,6 @@ class CertificationStampTests(unittest.TestCase):
             self.assertEqual(list(doc["artifact_hashes"]), [model_ref])
             self.assertEqual(doc["artifact_hashes"][model_ref],
                              _compute_sha256(repo / model_ref))
-            # The IR binding comes from the RESERVATION, never from the leaf-authored meta.
-            self.assertEqual(doc["source_ir_id"], "spec-x_20260101_001")
             # The audit log is excluded from the stamp (Validate.execute appends to it).
             self.assertNotIn(log_ref, doc["artifact_hashes"])
 
@@ -8432,7 +8427,6 @@ class CertificationStampTests(unittest.TestCase):
             model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
             forged = json.loads((repo / meta_ref).read_text("utf-8"))
             forged["artifact_hashes"] = {model_ref: _compute_sha256(repo / model_ref)}
-            forged["source_ir_id"] = "spec-x_20260101_001"
             (repo / meta_ref).write_text(json.dumps(forged), encoding="utf-8")
             write_step_result(
                 repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
@@ -8444,7 +8438,6 @@ class CertificationStampTests(unittest.TestCase):
             )
             doc = json.loads((repo / meta_ref).read_text("utf-8"))
             self.assertNotIn("artifact_hashes", doc)
-            self.assertNotIn("source_ir_id", doc)
             # Everything else the leaf recorded is preserved — this strips a claim, not a file.
             self.assertEqual(doc["verification_status"], "fail")
             self.assertEqual(doc["source_id"], "src_c_001")
@@ -8465,7 +8458,7 @@ class CertificationStampTests(unittest.TestCase):
             outs = [refs["aggregate_verdict"], f"{node_dir}/verdict.json",
                     f"{node_dir}/summary.json", f"{node_dir}/semantic_review.json", meta_ref]
             doc = ort._stamp_certification(
-                repo, "o1", node_key="component/spec_x@0.1.0", step="validate",
+                repo, step="validate",
                 required_outputs=outs, derivation=_DERIVATION_RECORD)
             self.assertIsNotNone(doc)
             self.assertEqual(sorted(doc["artifact_hashes"]), sorted(outs[:-1]))
@@ -8510,24 +8503,6 @@ class CertificationStampTests(unittest.TestCase):
             result_path = (repo / "workspace/orchestrations/o1/steps"
                            / "component__spec_x__0.1.0/generate/orch_run_001/step_result.json")
             self.assertFalse(result_path.exists())
-
-    def test_write_step_result_pass_refuses_a_generate_without_a_compile_reservation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _setup_certifiable_generate(repo)
-            (repo / "workspace/orchestrations/o1/reservations/component__spec_x__0.1.0"
-             / "compile.json").unlink()
-            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
-            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
-            with self.assertRaisesRegex(RuntimeError, "no compile reservation"):
-                write_step_result(
-                    repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
-                    agent_run_id="orch_run_001",
-                    payload={"status": "pass", "validation_stage": "post_generate",
-                             "derivation": _DERIVATION_RECORD,
-                             "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
-                             "substep_agent_run_ids": ["substep_gen_verify_001"]},
-                )
 
 
 class CompletionVouchAttemptModelTests(unittest.TestCase):
@@ -22766,7 +22741,7 @@ class DerivationInputsTests(unittest.TestCase):
                     self.assertEqual(rec["transformation"],
                                      list(tools_derivation.transformation_versions()[step]))
             doc = ort._stamp_certification(
-                repo, "o1", node_key=self._NK, step="compile",
+                repo, step="compile",
                 required_outputs=[f"{refs['ir_ref']}/spec.ir.yaml", refs["ir_meta"]],
                 derivation=record)
             self.assertEqual(doc["derivation_key"], record["derivation_key"])
@@ -22810,7 +22785,7 @@ class DerivationRecordStampTests(unittest.TestCase):
             doc = json.loads((repo / meta_ref).read_text("utf-8"))
             doc.update({"artifact_hashes": {"x": "sha256:" + "0" * 64}, "output_hash": "sha256:" + "1" * 64,
                         "derivation_key": "sha256:" + "2" * 64, "derivation_inputs": {},
-                        "derivation_transformation": ["t"], "source_ir_id": "leafwrote"})
+                        "derivation_transformation": ["t"]})
             (repo / meta_ref).write_text(json.dumps(doc), "utf-8")
             write_step_result(
                 repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
@@ -22820,7 +22795,7 @@ class DerivationRecordStampTests(unittest.TestCase):
                          "substep_agent_run_ids": ["substep_gen_verify_001"]})
             stripped = json.loads((repo / meta_ref).read_text("utf-8"))
             for key in ("artifact_hashes", "output_hash", "derivation_key", "derivation_inputs",
-                        "derivation_transformation", "source_ir_id"):
+                        "derivation_transformation"):
                 self.assertNotIn(key, stripped)
             self.assertEqual(stripped["verification_status"], "fail")
 

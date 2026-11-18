@@ -1882,16 +1882,14 @@ def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -
 
 def _stamp_certification(
     repo_root: Path,
-    orchestration_id: str,
     *,
-    node_key: str,
     step: str,
     required_outputs: Sequence[str],
     derivation: Any,
 ) -> dict[str, Any] | None:
-    """Write `artifact_hashes`, `output_hash`, the derivation record (`derivation_key`,
-    `derivation_inputs`, `derivation_transformation`) and, for generate and build,
-    `source_ir_id` into the phase's stage meta. Returns the stamped document, or `None` for a
+    """Write `artifact_hashes`, `output_hash` and the derivation record (`derivation_key`,
+    `derivation_inputs`, `derivation_transformation`) into the phase's stage meta. Returns the
+    stamped document, or `None` for a
     step outside `CERTIFYING_META_FILENAME_BY_STEP` (every phase is in it since issue #250).
 
     `derivation` is the record the conductor computed at PHASE START (`phase_derivation`,
@@ -1954,27 +1952,6 @@ def _stamp_certification(
     doc["derivation_inputs"] = derivation["derivation_inputs"]
     doc["derivation_transformation"] = list(derivation["transformation"])
 
-    if step_token in {"generate", "build"}:
-        # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
-        # `source_ir_id` (host-written by `_build_inproc`), but that write happens INSIDE the
-        # build child's window, so the child-window strip erases it — restoring it here is
-        # what keeps a successfully built binary bound (without this, every build reads
-        # `binary_not_bound` and Build/Validate could never be skipped again).
-        #
-        # Taken from the RESERVATION, not from the meta or the leaf: the reservation is what
-        # this orchestration is holding the compile phase to, so an artifact can never claim
-        # a lineage the run did not reserve.
-        node_safe = _node_key_to_safe(node_key.strip())
-        reserved_ir_id = _reserved_id(
-            _orchestration_root(repo_root, orchestration_id) / "reservations" / node_safe,
-            "compile")
-        if reserved_ir_id is None:
-            raise RuntimeError(
-                f"certification stamp: {step_token} cannot record source_ir_id — no compile "
-                f"reservation for {node_key}"
-            )
-        doc["source_ir_id"] = reserved_ir_id
-
     _write_json(meta_path, doc)
     return doc
 
@@ -2021,8 +1998,8 @@ def _strip_certification(
     ref when something was removed, else `None`.
 
     The stamp is host-written and always was; on the deleted agentic path the stage meta also
-    sat inside the verify leaf's write_root, so a leaf could put `artifact_hashes` /
-    `source_ir_id` there itself. That half is gone with the leaf's write authority (Z4, issue
+    sat inside the verify leaf's write_root, so a leaf could put `artifact_hashes` there
+    itself. That half is gone with the leaf's write authority (Z4, issue
     #171 — a pure leaf authors no file), and the function is not: the HOST stamps the keys
     before it knows the phase's outcome, so a phase that ends NON-pass would otherwise leave a
     meta claiming a certification no host ever issued, and the skip decision reads exactly
@@ -2055,7 +2032,7 @@ def _strip_certification(
 #: Every key `_stamp_certification` writes; `_strip_certification_keys` removes exactly these.
 _CERTIFICATION_STAMP_KEYS: tuple[str, ...] = (
     "artifact_hashes", "output_hash", "derivation_key", "derivation_inputs",
-    "derivation_transformation", "source_ir_id")
+    "derivation_transformation")
 
 
 def _strip_certification_keys(meta_path: Path) -> bool:
@@ -13506,8 +13483,6 @@ def write_step_result(
     if str(result.get("status", "")).strip().lower() == "pass":
         _stamp_certification(
             repo_root,
-            orchestration_id,
-            node_key=node_key,
             step=step_token,
             required_outputs=_declared_outputs,
             derivation=result.get("derivation"),
@@ -13587,9 +13562,9 @@ def revoke_artifact(
     bookkeeping, and a COLD re-run reads none of it; the revocation is what `check-phase-certified`
     consults, so it is what carries the decision into every later run.
 
-    Downstream phases need no revocation of their own: each binds to the id of the phase above
-    it (`source_ir_id` / `source_source_id` / `trial_meta.source_binary_id`), so a re-derived
-    phase leaves them unbound. A phase whose meta was never written is a `noop` — there is
+    Downstream phases need no revocation of their own: each binds the output hash of the phase
+    above it in its derivation key, so a re-derived phase whose output differs moves their
+    keys. A phase whose meta was never written is a `noop` — there is
     nothing to revoke, which is not an error. (Validate certified no meta until issue #250
     PR-1 gave it `validate_meta.json`; every phase certifies one now.)
 
