@@ -880,10 +880,16 @@ def _validate_raw_evidence(
 
             if state_snapshot_required:
                 if not schema_path.exists():
-                    # Host invariant broken: the conductor writes snapshot_schema.json from the
-                    # IR's `state_snapshots` entry (`_author_snapshot_schema`) whenever the run
-                    # requires snapshots; no leaf writes it (issue #643, D7: a raise, not a
-                    # silent skip of the per-record shape checks below).
+                    # The conductor writes snapshot_schema.json from the IR's `state_snapshots`
+                    # entry (`_author_snapshot_schema`); no leaf writes it (issue #643, D7: a
+                    # raise, not a silent skip of the per-record shape checks below). It is NOT
+                    # a pure host invariant: an IR that spells the entry's `artifact` by an
+                    # alias this reader admits (`raw/state_snapshots`,
+                    # `_normalize_raw_evidence_artifact`) reaches here, because
+                    # `_author_snapshot_schema` matches only the bare `state_snapshots` and
+                    # writes nothing (no `artifact` of the IR corpus is an alias spelling,
+                    # measured 2026-11-18). The run fails either way: the raise exits rc 1 and
+                    # routes as `post_execute_violation`.
                     raise ValueError(f"{schema_path}: not written for a run that requires "
                                      f"state_snapshots")
                 else:
@@ -5674,7 +5680,12 @@ def _validate_quality_check_commands(
                 matched is None or matched.get("tool_name") != "run_quality_checks"):
             # The conductor wrote this entry from the record build_runtime logged for the
             # quality check; without it the `ok` member below cannot be read, and a silent skip
-            # would pass a quality check that exited non-zero (issue #643, D7 and D2).
+            # would pass a quality check that exited non-zero (issue #643, D7 and D2). A
+            # leaf-built program reaches this: the quality check runs the leaf's control-file
+            # `test` target, which can append an unterminated line to `src/command_log.jsonl`,
+            # so the host's record is glued onto it and `_find_command_log_record` finds none.
+            # The run fails either way (rc 1, `post_execute_violation`), and the failure is
+            # charged to the leaf's Generate repair.
             raise ValueError(
                 f"{trial_meta_path}:run_quality_checks command_id={command_id!r} names no "
                 f"run_quality_checks record in {log_ref!r}")

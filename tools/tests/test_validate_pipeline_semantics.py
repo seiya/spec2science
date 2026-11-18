@@ -27642,5 +27642,91 @@ class RestartRequiredGateTests(unittest.TestCase):
         self.assertFalse([v for v in found if "(q)" in v], found)
 
 
+
+class HostInvariantRaiseTests(unittest.TestCase):
+    """The raises issue #643 PR-4 put where a removed refusal left a silent skip (D7), and the
+    `TargetProfileError` `_with_pipeline_harness` no longer catches (VP2-53). Each row drives a
+    public stage function on the shared execution fixture with ONE host-written fact taken away,
+    and asserts the raise's type and a stable part of its message. Witnessed: replacing each
+    raise with the silent skip it replaced turns its row red."""
+
+    _PIPE = ("workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
+             "shallow-water2d_20260415_001")
+
+    def _tree(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo_root = Path(tmp.name)
+        _seed_shape_expr_schema_into(repo_root)
+        _create_minimal_execution_tree(
+            repo_root,
+            dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text="module shallow_water2d_model\nend module shallow_water2d_model\n",
+            runner_text="program shallow_water2d_runner\nend program shallow_water2d_runner\n",
+            run_command=["./simulate"],
+        )
+        return repo_root
+
+    def test_post_generate_raises_on_a_lineage_without_node_key(self) -> None:
+        repo_root = self._tree()
+        lineage = repo_root / self._PIPE / "lineage.json"
+        data = copy.deepcopy(json.loads(lineage.read_text(encoding="utf-8")))
+        del data["node_key"]
+        _write_json(lineage, data)
+        with self.assertRaisesRegex(ValueError, r"lineage\.json: no node_key"):
+            validate_post_generate_stage(repo_root, "workspace", self._PIPE, "src_20260415_001")
+
+    def test_post_generate_raises_on_no_source_id(self) -> None:
+        repo_root = self._tree()
+        shutil.rmtree(repo_root / self._PIPE / "source")
+        with self.assertRaisesRegex(ValueError, r"source: no source directory$"):
+            validate_post_generate_stage(repo_root, "workspace", self._PIPE, None)
+
+    def test_post_build_raises_on_no_source_id_or_no_src_dir(self) -> None:
+        repo_root = self._tree()
+        # the source the fixture wrote passes, so the raises below are about the id alone
+        self.assertEqual(
+            validate_post_build_stage(repo_root, "workspace", self._PIPE, "src_20260415_001"), [])
+        with self.assertRaisesRegex(ValueError, r"source: no source directory 'src_absent'"):
+            validate_post_build_stage(repo_root, "workspace", self._PIPE, "src_absent")
+        shutil.rmtree(repo_root / self._PIPE / "source")
+        with self.assertRaisesRegex(ValueError, r"source: no source directory None"):
+            validate_post_build_stage(repo_root, "workspace", self._PIPE, None)
+
+    def test_post_execute_raises_on_an_absent_snapshot_schema_the_run_requires(self) -> None:
+        repo_root = self._tree()
+        schemas = list((repo_root / self._PIPE).rglob("snapshot_schema.json"))
+        self.assertEqual(len(schemas), 1, schemas)
+        schemas[0].unlink()
+        with self.assertRaisesRegex(
+                ValueError, r"snapshot_schema\.json: not written for a run that requires "
+                            r"state_snapshots"):
+            validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_post_execute_raises_on_a_quality_check_entry_naming_no_record(self) -> None:
+        repo_root = self._tree()
+        trial_meta = next((repo_root / self._PIPE).rglob("trial_meta.json"))
+        data = copy.deepcopy(json.loads(trial_meta.read_text(encoding="utf-8")))
+        log_ref = data["source_command_ref"]["run_threads_1"]["command_log_ref"]
+        data["source_command_ref"]["run_quality_checks"] = {
+            "tool_name": "run_quality_checks", "command_id": "cmd_qc_absent",
+            "command_log_ref": log_ref}
+        _write_json(trial_meta, data)
+        with self.assertRaisesRegex(
+                ValueError, r"run_quality_checks command_id='cmd_qc_absent' names no "
+                            r"run_quality_checks record"):
+            validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_an_unresolvable_harness_propagates_out_of_validate(self) -> None:
+        from tools.target_profile import TargetProfileError
+        repo_root = self._tree()
+        catalog = repo_root / "spec" / "registry" / "spec_catalog.yaml"
+        data = copy.deepcopy(yaml.safe_load(catalog.read_text(encoding="utf-8")))
+        data["specs"] = [e for e in data["specs"] if e.get("spec_kind") != "infrastructure"]
+        catalog.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        with self.assertRaisesRegex(TargetProfileError, r"matches no `infrastructure` version"):
+            validate(repo_root=repo_root, workspace_root="workspace")
+
+
 if __name__ == "__main__":
     unittest.main()
