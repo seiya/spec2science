@@ -20401,8 +20401,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
         The authorship predicates are NOT stubbed — issue #112's subject is which files the host
         authors, and a test that mocked that answer would pin the probe arithmetic while leaving
         the oracle unwitnessed. What the caller does stub is dependency STAGING, which needs a
-        certified harness on disk and is covered by its own rows; the syntax attribution's
-        question is about the node's own `src/`, not about the closure."""
+        certified harness on disk and is covered by its own rows; these rows' question is about
+        the node's own `src/`, not about the closure."""
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
@@ -20419,21 +20419,16 @@ class DeterministicSyntaxTest(unittest.TestCase):
         for name in ("adv1d_model.f90", "adv1d_helper.f90", "adv1d_runner.f90"):
             (src / name).write_text(f"! {name}\n", encoding="utf-8")
 
-    def _attributing_syntax(self, leaf_probe_ok: bool):
-        """A compiler stand-in: the main stage fails, and the leaf-only probe answers as told.
+    def _failing_whole_stage_syntax(self):
+        """A compiler stand-in: the main stage fails at a runner line, and the canary and the
+        dependency-closure probes pass.
 
         The probe directories are told apart by `project_dir`, which is how the real code tells
         them apart, so the stub answers the same question the compiler would."""
         def _fn(args):
             pd = str(args.get("project_dir", ""))
-            if pd.endswith("_leaf_probe"):
-                return {"ok": leaf_probe_ok, "return_code": 0 if leaf_probe_ok else 1,
-                        "command_id": "leaf-probe", "compiler": args["compiler"],
-                        "compiler_version": "GNU Fortran 13", "skipped": False,
-                        "stderr": "" if leaf_probe_ok else "Error: leaf-side diagnostic"}
             if pd.endswith(("_canary", "_deps_probe")):
-                # Both attribution probes that run BEFORE the leaf one must pass, or the gate
-                # raises there and the leaf probe is never reached.
+                # Both attribution probes must pass, or the gate raises there.
                 return {"ok": True, "return_code": 0, "command_id": "pre-probe",
                         "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
                         "skipped": False}
@@ -20443,35 +20438,14 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     "stderr": "adv1d_runner.f90:12: Error: whole-run diagnostic"}
         return _fn
 
-    def test_gate_syntax_check_records_a_leaf_attribution_without_changing_the_route(
-            self) -> None:
-        """The leaf's own files fail on their own: `attribution` says so, routing is unchanged."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
-            # closure (every physics node's closure holds its target's harness, issue #284).
-            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-            with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=False)):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["attribution"], "leaf")
-        self.assertEqual(out["failure_category"], "syntax_error")
-        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
-
-    def test_gate_syntax_check_records_an_unattributed_interaction_and_still_warm_retries(
+    def test_a_runner_line_diagnostic_still_warm_retries_with_the_whole_excerpt(
             self) -> None:
         """THE DELIBERATE RESIDUAL OF ISSUE #112, pinned so it cannot change by accident.
 
-        The leaf's files pass alone while the whole staged set fails, so the failure needs the
-        host-rendered runner. That does NOT mean the host is at fault: the runner `use`s the
-        leaf-authored model, so the diagnostic can be the leaf having missed a published
-        signature — repairable by exactly this warm retry. Unlike the lint checker, a compiler cannot
-        partition the files, so the gate records what it saw and keeps the retry.
+        A diagnostic printed at a line of the host-rendered runner does NOT mean the host is at
+        fault: the runner `use`s the leaf-authored model, so the diagnostic can be the leaf
+        having missed a published signature — repairable by exactly this warm retry. Unlike the
+        lint checker, a compiler cannot partition the files, so the gate keeps the retry.
 
         The excerpt must stay the WHOLE-RUN output: an interaction diagnostic is printed at a
         runner line and is precisely what the leaf needs in order to fix its own ABI. Narrowing
@@ -20483,44 +20457,18 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # Nothing staged AND nothing to stage: the row is about the node's own src/, not the
             # closure (every physics node's closure holds its target's harness, issue #284).
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-            with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=True)):
+            with self._patch_syntax(self._failing_whole_stage_syntax()):
                 out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unattributed_interaction")
         self.assertEqual(out["failure_category"], "syntax_error")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
         self.assertIn("whole-run diagnostic", out["failure_excerpt"])
 
-    def test_gate_syntax_check_needs_no_probe_when_the_host_authors_nothing(self) -> None:
-        """A node with no host-authored source: the answer is `leaf` without a probe run.
-
-        Spending a compiler run to learn what the authorship predicates already say would be
-        the same waste, one layer down."""
-        import tempfile
-        seen: list[str] = []
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()          # the plain fixture: no infra dep, no host-rendered file
-            self._seed(repo, refs)
-            c = self._conductor(repo)
-            base = self._attributing_syntax(leaf_probe_ok=True)
-
-            def _fn(args):
-                seen.append(str(args.get("project_dir", "")))
-                return base(args)
-
-            with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "leaf")
-        self.assertEqual([], [d for d in seen if d.endswith("_leaf_probe")])
-
     def test_gate_syntax_check_attributes_a_refused_source_name_to_the_leaf(self) -> None:
-        """The early return for a source NAME the tool refuses already knows the answer.
-
-        The leaf authored that name and can rename it, so the section must carry the same
-        `attribution` shape as every other return rather than omitting the key."""
+        """The early return for a source NAME the tool refuses: the leaf authored that name and
+        can rename it, so it is the leaf's content failure (`syntax_error`)."""
         import tempfile
         SyntaxSourceNameError = _build_runtime().SyntaxSourceNameError
         with tempfile.TemporaryDirectory() as td:
@@ -20529,7 +20477,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # Nothing staged AND nothing to stage: the row is about the node's own src/, not the
             # closure (every physics node's closure holds its target's harness, issue #284).
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
 
@@ -20539,7 +20487,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
             with self._patch_syntax(_raise):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
 
     def test_gate_syntax_check_refuses_a_nested_source_through_the_real_tool(self) -> None:
@@ -20563,150 +20510,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
             out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
         self.assertIn("build/x.f90", out["failure_excerpt"])
         self.assertIn("move every source file to the top level", out["failure_excerpt"])
         self.assertEqual(wc.classify_gate_failure([out["failure_category"]]).action, "retry")
-
-    def test_the_syntax_leaf_probe_is_isolated_and_carries_the_staged_closure(self) -> None:
-        """Two decisions of the syntax probe, both unwitnessed until a census asked.
-
-        The probe directory is RESET (its lint twin's row exists; this one had only a comment),
-        and the staged dependency closure is COPIED INTO IT. Both produce the same false record
-        when they break: the probe fails for a reason that is not the leaf's source — residue, or
-        a module the closure was supposed to supply — and `attribution` is written `"leaf"` where
-        the truth is `unattributed_interaction`. This arm routes nothing, so a wrong value is
-        silent by construction, and it is the field TODO says a later change will decide on.
-
-        Asserted on the DIRECTORY CONTENTS the probe was handed, because that is where both
-        decisions land."""
-        import tempfile
-        seen: dict[str, set[str]] = {}
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            stale = (repo / "workspace" / "tmp" / "child-1" / "syntax"
-                     / "gfortran_leaf_probe")
-            stale.mkdir(parents=True)
-            (stale / "stale_broken.f90").write_text("! residue\n", encoding="utf-8")
-            dep = repo / "deps" / "harness_mod.f90"
-            dep.parent.mkdir(parents=True, exist_ok=True)
-            dep.write_text("module harness_mod\nend module harness_mod\n", encoding="utf-8")
-            c = self._conductor(repo)
-            # Stage one dependency the way the real closure would, so the copy has something to
-            # carry; the staging itself has its own rows.
-            c._stage_dependency_sources = (  # type: ignore[assignment]
-                lambda r, d, **kw: (__import__("shutil").copy2(dep, d / dep.name), ["harness"])[1])
-            base = self._attributing_syntax(leaf_probe_ok=True)
-
-            def _fn(args):
-                pd = Path(str(args.get("project_dir", "")))
-                if pd.name.endswith("_leaf_probe"):
-                    seen["leaf"] = {p.name for p in pd.iterdir() if p.is_file()}
-                return base(args)
-
-            with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unattributed_interaction")
-        self.assertNotIn("stale_broken.f90", seen["leaf"])
-        self.assertIn("harness_mod.f90", seen["leaf"])
-        # The host-rendered runner is the file the probe exists to leave out.
-        self.assertNotIn("adv1d_runner.f90", seen["leaf"])
-
-    def test_the_syntax_leaf_probe_carries_the_host_headers_the_leaf_includes(self) -> None:
-        """A host-rendered HEADER is context the leaf's sources include, not a subject of the
-        probe (issue #289, R4-b PR-6): the `cuda_cpp` checks source includes the checks header
-        and the model its published-surface header, so a probe without them fails for a reason
-        that is not the leaf's source and records `leaf` falsely. Asserted on the directory the
-        probe was handed; the host-rendered runner still stays out."""
-        import tempfile
-        from unittest import mock
-        seen: dict[str, set[str]] = {}
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            src = repo / refs.source_dir() / "src"
-            (src / "adv1d_host.cuh").write_text("// host\n", encoding="utf-8")
-            (src / "adv1d_leaf.cuh").write_text("// not host\n", encoding="utf-8")
-            c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-            base = self._attributing_syntax(leaf_probe_ok=True)
-
-            def _fn(args):
-                pd = Path(str(args.get("project_dir", "")))
-                if pd.name.endswith("_leaf_probe"):
-                    seen["leaf"] = {p.name for p in pd.iterdir() if p.is_file()}
-                return base(args)
-
-            from tools.backends.language.fortran import syntax as fortran_syntax
-            with self._patch_syntax(_fn), mock.patch.object(
-                    fortran_syntax, "STAGED_SUFFIXES",
-                    (*fortran_syntax.STAGED_SUFFIXES, ".cuh")), mock.patch.object(
-                    wc.Conductor, "_host_rendered_src_names",
-                    return_value=frozenset({"adv1d_runner.f90", "adv1d_host.cuh",
-                                            "Makefile"})):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unattributed_interaction")
-        self.assertIn("adv1d_host.cuh", seen["leaf"])
-        self.assertNotIn("adv1d_leaf.cuh", seen["leaf"])  # not host: the probe copies no more
-        self.assertNotIn("adv1d_runner.f90", seen["leaf"])
-        self.assertNotIn("Makefile", seen["leaf"])
-
-    def test_a_skipped_leaf_probe_records_unprobed_rather_than_blaming_the_leaf(self) -> None:
-        """`unprobed` is a distinct answer from `leaf`, and only one of them is true.
-
-        A stage the tool declined to run said nothing about whose source is at fault. Recording
-        `leaf` there is a false record in the one field this arm produces."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
-            # closure (every physics node's closure holds its target's harness, issue #284).
-            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-
-            def _fn(args):
-                pd = str(args.get("project_dir", ""))
-                if pd.endswith("_leaf_probe"):
-                    return {"skipped": True, "reason": "no adapter on this host"}
-                if pd.endswith(("_canary", "_deps_probe")):
-                    return {"ok": True, "return_code": 0, "command_id": "c",
-                            "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
-                            "skipped": False}
-                return {"ok": False, "return_code": 1, "command_id": "sid",
-                        "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
-                        "skipped": False, "stderr": "adv1d_runner.f90:12: Error: boom"}
-
-            with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unprobed")
-        self.assertEqual(out["failure_category"], "syntax_error")
-
-    def test_every_syntax_section_carries_an_attribution_key(self) -> None:
-        """The key is part of the section's shape, not something only the failure paths add.
-
-        `gate_meta.json` is read by an operator and by the resume path; a key that appears only
-        sometimes reads as a missing measurement rather than as `None`."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            self._seed(repo, refs)
-            c = self._conductor(repo)
-            with self._patch_syntax(lambda args: {
-                    "ok": True, "return_code": 0, "command_id": "sid",
-                    "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
-                    "skipped": False}):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertIn("attribution", out)
-        self.assertIsNone(out["attribution"])
 
     def test_gate_syntax_check_compile_error_is_content_fail(self) -> None:
         import tempfile
@@ -21212,7 +21019,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(kinds, ["stage", "model_alone"])
             self.assertEqual(out["status"], "pass")
-            self.assertIsNone(out["attribution"])
             self.assertTrue(alone_args[0]["command_log_path"].endswith("/src/command_log.jsonl"))
             # The consumer's build is what the probe stands for, so its argv is the stage's: only
             # the directory differs (the log path is the same canonical one).
@@ -21257,7 +21063,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             self.assertEqual(out["failure_category"], "syntax_error")
-            self.assertEqual(out["attribution"], "leaf")
             self.assertIn("model-alone check fail", out["failure_excerpt"])
             self.assertIn("internal_module", out["failure_excerpt"])
             self.assertIn("spec_x_private.mod", out["failure_excerpt"])
@@ -22012,7 +21817,6 @@ class DeterministicGateTest(unittest.TestCase):
             meta = json.loads((repo / refs.source_dir() / "gate_meta.json").read_text())
             self.assertEqual(meta["gate_status"], "fail")
             self.assertEqual(meta["failure_categories"], ["syntax_error"])
-            self.assertEqual(meta["checkers"]["syntax"]["attribution"], "leaf")
             self.assertLess(meta["failure_excerpt"].index("[syntax]"),
                             meta["failure_excerpt"].index("model-alone check fail"))
             self.assertEqual(meta["checkers"]["static"]["status"], "skipped")

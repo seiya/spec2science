@@ -11885,10 +11885,6 @@ class Conductor:
         failure_excerpt: str | None = None
         skipped_reason: str | None = None
         stages: list[dict[str, Any]] = []
-        # OBSERVATION ONLY — which side of src/ the compiler findings are on. Recorded in
-        # gate_meta so the residual issue #112 leaves open on this checker is measured instead of
-        # asserted; nothing routes on it (see the comment at the probe below for why).
-        attribution: str | None = None
 
         node_sources = sorted(
             p for p in src_dir.iterdir()
@@ -11984,8 +11980,8 @@ class Conductor:
                                command_log_path: str | None = None) -> dict[str, Any]:
                     """Re-run THIS stage's adapter+flags over an isolated source set.
 
-                    The three attribution runs below (canary, dependency closure, leaf files)
-                    pass no `command_log_path`, so their log stays in the throwaway dir: they
+                    The two attribution runs below (canary, dependency closure) pass no
+                    `command_log_path`, so their log stays in the throwaway dir: they
                     certify nothing, and keeping them out of the node's canonical
                     <src>/command_log.jsonl keeps that log the record of the gate proper. The
                     model-alone probe passes the canonical log, because it CERTIFIES — its stage
@@ -12050,9 +12046,6 @@ class Conductor:
                         "language": language,
                         "stages": stages,
                         "skipped_reason": None,
-                        # A refused source NAME is the leaf's own output, so this early return
-                        # already knows the attribution without running a probe.
-                        "attribution": "leaf",
                         "failure_category": "syntax_error",
                         "failure_excerpt": str(exc),
                     }
@@ -12129,7 +12122,6 @@ class Conductor:
                         if not alone_ok:
                             ok = False
                             failure_category = "syntax_error"
-                            attribution = "leaf"
                             alone_excerpt = ((alone.get("stdout", "") or "")
                                              + (alone.get("stderr", "") or ""))
                             block = (
@@ -12257,78 +12249,17 @@ class Conductor:
                                 f"Staged: "
                                 f"{', '.join(b['model_source_ref'] for b in staged_deps)}\n"
                                 + "\n".join(probe_excerpt.splitlines()[-40:]))
-                    # Attribution step 3 — WHICH SIDE of src/ is the finding on (issue #112)?
-                    # The two probes above answer "not the invocation" and "not the dependency
-                    # closure"; this one asks whether the leaf's OWN files fail on their own,
-                    # over the same argv, with the same staged closure.
-                    #
-                    # WHY THE ANSWER IS ONLY RECORDED, NOT ROUTED ON. The host-rendered runner
-                    # `use`s the leaf-authored model, so a diagnostic printed at a line
-                    # inside the runner can be caused by the LEAF having missed a published
-                    # signature — real, common, and repairable by exactly the warm retry this gate
-                    # already performs. "The leaf's files pass alone" therefore does NOT mean the
-                    # host is at fault; it means alone-vs-interaction cannot be told apart here,
-                    # and terminalizing would convert a leaf-fixable defect into a permanent
-                    # fail_closed. That is the same mistake the dependency-probe comment above
-                    # warns about, and it is why issue #112's "an unattributable finding fails
-                    # closed" is deliberately NOT applied to this checker: the lint checker
-                    # partitions files, which a compiler cannot, so only lint can decide it.
-                    #
-                    # The residual — a finding caused by the runner ALONE — is held at the
-                    # source instead: the language backend's own renderer test compiles AND lints
-                    # the rendered runner under this gate's exact flags and rule set (named in
-                    # `phase_02_generate.md`, which owns that pointer). What this probe adds is
-                    # that the
-                    # residual is now MEASURED on every failure rather than assumed, and the
-                    # count is what a later change would decide on.
-                    #
-                    # The excerpt is deliberately NOT narrowed to the leaf probe's output (the
-                    # lint checker does narrow its own): an interaction diagnostic is printed at
-                    # a runner line and is exactly what the leaf needs in order to fix its ABI.
-                    if attribution is None:
-                        leaf_only = [p for p in node_sources
-                                     if p.name not in self._host_rendered_src_names(refs)]
-                        if len(leaf_only) == len(node_sources):
-                            attribution = "leaf"
-                        else:
-                            leaf_dir = (self.repo_root / "workspace" / "tmp" / child_arid
-                                        / "syntax" / f"{compiler}_leaf_probe")
-                            # Reset, for the reason its LINT twin does (`_attribute_lint_findings`)
-                            # — `workspace/tmp/<agent_run_id>/` is a flat namespace with a
-                            # documented collision risk, and a residue here makes the probe fail,
-                            # which records `attribution="leaf"` where the truth is
-                            # `unattributed_interaction`. This arm routes nothing, so the cost is
-                            # a FALSE RECORD rather than a wrong verdict — but the record is what
-                            # a later change to this arm would decide on, so it has to be true.
-                            # The two probes were added by one change and only one got the reset;
-                            # a review round found the twin.
-                            if leaf_dir.exists():
-                                shutil.rmtree(leaf_dir)
-                            leaf_dir.mkdir(parents=True, exist_ok=True)
-                            for p in leaf_only:
-                                shutil.copy2(p, leaf_dir / p.name)
-                            for p in dep_files:
-                                shutil.copy2(p, leaf_dir / p.name)
-                            # The host files the leaf's sources INCLUDE — a staged file of a
-                            # suffix the compiler is not handed (a host-rendered header) — are
-                            # CONTEXT, as in the lint partition (`_attribute_lint_findings`):
-                            # without them the leaf's own files fail to compile alone, and the
-                            # record says `leaf` where the truth may be
-                            # `unattributed_interaction` (issue #289, R4-b PR-6: the checks
-                            # header and the node's published-surface header).
-                            host_names = self._host_rendered_src_names(refs)
-                            for p in src_dir.iterdir():
-                                if (p.is_file() and p.name in host_names
-                                        and p.suffix.lower() not in suffixes
-                                        and p.suffix.lower() in staged_suffixes):
-                                    shutil.copy2(p, leaf_dir / p.name)
-                            leaf_probe = _sub_check(leaf_dir)
-                            if leaf_probe.get("skipped"):
-                                attribution = "unprobed"
-                            elif not leaf_probe.get("ok"):
-                                attribution = "leaf"
-                            else:
-                                attribution = "unattributed_interaction"
+                    # Which side of src/ the finding is on is NOT decided here (issue #112): the
+                    # host-rendered runner `use`s the leaf-authored model, so a diagnostic
+                    # printed at a runner line can be the LEAF having missed a published
+                    # signature, repairable by exactly the warm retry this gate performs. The
+                    # lint checker partitions files, which a compiler cannot. The residual — a
+                    # finding caused by the runner ALONE — is held at the source: the language
+                    # backend's renderer test compiles and lints the rendered runner under this
+                    # gate's flags and rule set. (A leaf-only probe that RECORDED the answer,
+                    # `attribution`, routed nothing and went in issue #643.) The excerpt is not
+                    # narrowed: an interaction diagnostic printed at a runner line is exactly
+                    # what the leaf needs in order to fix its ABI.
                     ok = False
                     failure_category = "syntax_error"
                     tail = "\n".join(excerpt.splitlines()[-80:])
@@ -12356,7 +12287,6 @@ class Conductor:
             "language": language,
             "stages": stages,
             "skipped_reason": skipped_reason,
-            "attribution": attribution,
             "failure_category": failure_category,
             "failure_excerpt": failure_excerpt,
         }
