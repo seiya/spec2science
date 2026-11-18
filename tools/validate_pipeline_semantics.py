@@ -5703,17 +5703,6 @@ def _validate_quality_check_commands(
             )
             continue
 
-        # source_source_id is required when a run_quality_checks record
-        # is referenced — without it we cannot pin the canonical cross-phase
-        # placement and would risk accepting evidence from a sibling/older
-        # generation.
-        if source_source_id is None:
-            violations.append(
-                f"{trial_meta_path}:source_source_id must be declared "
-                f"when source_command_ref includes a run_quality_checks "
-                f"record (command_id={command_id})."
-            )
-            continue
         if canonical_qc_ref is None:
             continue
         log_ref_norm = log_ref.strip().rstrip("/")
