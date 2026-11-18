@@ -38,8 +38,9 @@
 # WHY `medium`. It is `default_reasoning_level` of gpt-6.1-sol, as it was of every gpt-5.6
 # model, and the earlier gpt-5.5 defaulted to `xhigh`: the vendor lowered the default as the
 # model got better. A sample should not override that without evidence about the model it will
-# run on. gpt-6.1-terra defaults to `low`; its one entry below (`compile.verify`) keeps `medium`
-# so that the economy there is the model tier alone, as stated below.
+# run on. The one exception is gpt-6.1-terra, which defaults to `low`: its one entry below
+# (`compile.verify`) is held at `medium` so that the economy there is the model tier alone, as
+# stated below, rather than a lower effort that no measurement backs.
 #
 # The measured table in `llm_claude.example.yaml` is NOT that evidence: it was recorded almost
 # entirely on Opus 4.8, and a re-run rate belongs to the (model, effort, task) triple. What it does

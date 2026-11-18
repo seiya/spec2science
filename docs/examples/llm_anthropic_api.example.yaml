@@ -216,10 +216,11 @@ phases:
         model: claude-opus-5-5
         effort: medium
         # The reading kind is one shape, so this cap moves with `compile.verify`'s (see the
-        # measurements there): this lineage stayed under 16384, with 14,965 of its 15,868
-        # output tokens thinking. No `timeout_s` here, so each request takes the module
+        # measurements there): in that run this lineage, on `claude-opus-5`, stayed under 16384,
+        # with 14,965 of its 15,868 output tokens thinking. No `timeout_s` here, so each request takes the module
         # default of 900 s (`DEFAULT_HTTP_TIMEOUT_SECONDS`, `tools/llm_http_leaf.py`): in the
-        # same run this model's reading replies of 2,000 tokens or more ran 71-79 tokens/s
+        # same run `claude-opus-5` (at `high`; this entry's model was not measured) answered
+        # reading replies of 2,000 tokens or more at 71-79 tokens/s
         # request-to-response (8,607 tokens in 115.3 s here; 4,461 in 62.7 s on
         # `validate.judge`), so a 32768-token reply is about 415-460 s, inside 900 with room.
         max_output_tokens: 32768
@@ -246,6 +247,7 @@ phases:
         # size, and most of a reply is thinking: the same cap as the two verify leaves, the
         # bundle writer's budget, for the reason given at `compile.verify`. No `timeout_s`
         # here either: the 900 s default holds a 32768-token reply at the rate measured on
-        # `generate.verify` (the same model; this lineage's largest reply was 4,461 tokens).
+        # `generate.verify` (`claude-opus-5` at `high`, as there; this lineage's largest reply was
+        # 4,461 tokens).
         max_output_tokens: 32768
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
