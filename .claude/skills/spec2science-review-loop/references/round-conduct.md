@@ -389,6 +389,26 @@ one of those commits, so the defect is invisible until a reviewer checks claims 
 then the branch was pushed, and the corrections went into the PR body. The rule in SKILL.md
 moves the check to the moment of resolution, when the message can still be edited.
 
+## Clean picks keep the agent's measurements (issue #643 PR-5, PR #672, 2026-11-18)
+
+PR-5 was implemented by three parallel agents (A, B, C) in worktrees and integrated by
+cherry-picking A, B and C in turn. No pick conflicted, and the rule above did not fire.
+Round 3's claim-check reviewer (D1) and next-maintainer reviewer (D2) found four false or
+unresolvable records anyway, all written correctly on the agent's own branch:
+
+- B's fixture commit said "Green on unmodified code: 7745 passed (-n 8)". At the integrated
+  commit the suite collects 7738 (A's commits, picked first, had deleted tests), and A's four
+  digests were red there by design until the integrator's re-pin commit.
+- Two of C's commits said the transformation digests "stay green". Each commit's own edit moved
+  no pin, but at the integrated commits the other groups' members were red.
+- A round-2 fix commit, written by the integrator, cited "U19 (fa7446f6)": the hash of B's
+  commit on B's branch. The pick gave it `f505125f`, and `fa7446f6` exists in no clone.
+- An A commit cited `pr5_rows.md`, the session's scratch extract of the inventory, as its ground.
+
+The suite was green at the head and every claim about behaviour held; only per-commit reading
+finds these, and by then the branch was pushed, so the corrections went into the PR body. The
+rule in SKILL.md puts the instruction in the implementer brief and the check at pick time.
+
 ## A billed run during the loop (issue #316 PR-4, PR #322, 2026-09-28)
 
 The adoption run (`advdiff1d_linear validate --with-deps` on `fortran_cpu_mpi`) was launched
