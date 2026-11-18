@@ -54,7 +54,7 @@ Under premises 1-2, expected-output tests authored by humans do not scale to com
 1. `property` — conservation (mass/energy/momentum), positivity, symmetry, boundedness invariants stated in the spec and checked deterministically.
 2. `mms` — method of manufactured solutions; the manufactured solution and forcing terms are produced during Compile (LLM or symbolic tooling), giving discretization-order verification without a human oracle.
 3. `convergence` — grid-refinement error-rate checks against the scheme's declared order.
-4. `cross_target` — differential testing between the variants of the same spec on different (language, hardware) targets; each variant is the reference for the others within stated tolerances. This structurally replaces the absent human reference implementation once R4 exists.
+4. `cross_target` — differential testing between the variants of the same spec on different (language, hardware) targets; each variant is the reference for the others within stated tolerances. This structurally replaces the absent human reference implementation once R4 exists. Where a node declares an `oracle` (the amendment of premise 2, once implemented), the human reference is present and is read through the same `cross_target` predicates.
 5. `regression` — numerical comparison against the previously certified version of the same node on spec revision.
 
 Verdict evaluation of all kinds flows through R2. This extension must land **before** the complex-spec influx: retrofitting the test contract across a large node corpus is expensive.
