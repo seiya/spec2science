@@ -15277,8 +15277,8 @@ class Conductor:
             self_verdict = "pass"
 
         # Direct-dependency `blocked` rule. A dep counts as ready only when BOTH answers say
-        # so: the readiness predicate the pre_judge substep and the `--stage pre_judge` gate
-        # use (`_closure_node_validated_in_own_pipeline` — any binary-bound verdict in its own
+        # so: the readiness predicate the pre-launch DAG guard (`run_phase`) and the
+        # `--stage pre_judge` gate use (`_closure_node_validated_in_own_pipeline` — any binary-bound verdict in its own
         # pipeline is pass/xfail, version- and key-agnostic), AND its certified Validate output
         # resolves through `DerivationResolver.select` (`_resolve_dependency_facts`), which is
         # where its contribution (`xfail` or `pass`) is read. A dep that regressed to a newer
@@ -15293,7 +15293,7 @@ class Conductor:
         if not isinstance(dep, dict):
             dep = {}
         # The immediate dependencies include the target's harness (issue #284), which the
-        # pre_judge DAG check has just required validated for this target.
+        # pre-launch DAG guard (`run_phase`) has required validated for this target.
         dep = self._pipeline_dependency_block(refs, dep)
         facts_by_token: dict[str, dict[str, Any]] = {}
         for fact in _resolve_dependency_facts(self.repo_root, refs.ir_ref, target=self.target):
@@ -15342,7 +15342,7 @@ class Conductor:
         # aggregate_verdict: `blocked` when any immediate dep is not ready; else the transitive
         # fold (precedence blocked > fail > xfail > pass) over {self_verdict} + ready-dep
         # contributions. On the post_judge path the judge passed (self_verdict ∈ {pass,xfail})
-        # and the pre_judge gate found every dep ready, so this is ∈ {pass,xfail} unless a
+        # and the pre-launch DAG guard found every dep ready, so this is ∈ {pass,xfail} unless a
         # dep's certified verdict no longer resolves through `select`.
         blocked = bool(blocking_direct_deps)
         blocked_reason: str | None = None
@@ -15459,8 +15459,8 @@ class Conductor:
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
         self._author_derived_validate_artifacts(refs)
         # A `blocked` aggregate is an integrity blocker (`phase_04_validate.md`): the node is not
-        # certifiable in this run. On this path the pre_judge substep has already required every
-        # immediate dependency ready, so the fold blocks only when a dependency it admitted no
+        # certifiable in this run. On this path the pre-launch DAG guard (`run_phase`) has already
+        # required every immediate dependency ready, so the fold blocks only when a dependency it admitted no
         # longer resolves through `DerivationResolver.select` (revoked or re-keyed since). Without
         # this the run would certify the node with that aggregate, and later runs would adopt it.
         agg = _read_json(self.repo_root / refs.run_node_dir() / "aggregate_verdict.json") or {}
