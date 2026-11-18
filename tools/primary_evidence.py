@@ -854,9 +854,7 @@ def cross_target_predicates(ir: dict[str, Any]) -> list[dict[str, Any]]:
 class ComparandEvidence(NamedTuple):
     """One comparand of a cross-target agreement: another target's eligible run of the same
     node over the same IR. `run_dir` is the run node directory (absolute) the captures are
-    read from; `evidence` is `comparand_evidence_sha256(run_dir, output_format)` at selection
-    time — a record of which bytes the agreement read, not an input of any key.
-    `output_format` is the format the COMPARAND's target writes its captures in
+    read from. `output_format` is the format the COMPARAND's target writes its captures in
     (`TargetProfile.output_format`): its run directory is read through that format's store,
     whatever the reading run's own format is. It is how the directory is read, not part of
     the record (`detail`)."""
@@ -864,12 +862,11 @@ class ComparandEvidence(NamedTuple):
     pipeline_ref: str
     run_id: str
     run_dir: Path
-    evidence: str
     output_format: str
 
     def detail(self) -> dict[str, str]:
         return {"target_id": self.target_id, "pipeline_ref": self.pipeline_ref,
-                "run_id": self.run_id, "evidence": self.evidence}
+                "run_id": self.run_id}
 
 
 class ComparandResolution(NamedTuple):
@@ -900,7 +897,7 @@ class CrossTargetAgreement(NamedTuple):
     why (`ComparandResolution.absent`), `disagreeing` the target ids a comparison failed
     against (`physics` — a value or a state shape that disagrees), `records` the cross-target
     records `evaluate_primary_predicates(..., cross_target_only=True)` returned,
-    `own_run` `{pipeline_ref, run_id, evidence}` of this target's run, and `error` what made the
+    `own_run` `{pipeline_ref, run_id}` of this target's run, and `error` what made the
     comparison `unevaluable` (an exception, or a `structural` record), else None."""
     status: str
     comparands: list[dict[str, str]]
@@ -915,26 +912,6 @@ class CrossTargetAgreement(NamedTuple):
                 "absent": list(self.absent), "disagreeing": list(self.disagreeing),
                 "records": list(self.records), "own_run": self.own_run, "error": self.error}
 
-
-def comparand_evidence_sha256(run_dir: Path, output_format: str) -> str:
-    """The identity of a comparand run's captures: sha256 over every capture file the store of
-    ``output_format`` (the format of the target that wrote ``run_dir``) finds under the run's
-    capture directory (`capture_store.capture_paths`: at any depth, the snapshot schema
-    excluded), in order of the path relative to that directory, each contributing
-    `<path>\\0<byte length>\\0<bytes>`. Raises `PrimaryEvidenceError` when there is no capture
-    at all."""
-    import hashlib
-    sdir = capture_store.snapshot_dir(run_dir)
-    files = sorted((p.relative_to(sdir).as_posix(), p)
-                   for p in capture_store.capture_paths(output_format, run_dir))
-    if not files:
-        raise PrimaryEvidenceError(f"{sdir}: no state snapshot capture to bind as a comparand")
-    h = hashlib.sha256()
-    for rel, path in files:
-        data = path.read_bytes()
-        h.update(rel.encode("utf-8") + b"\0" + str(len(data)).encode("ascii") + b"\0")
-        h.update(data)
-    return "sha256:" + h.hexdigest()
 
 
 # ----------------------------------------------------------------------------- environment
@@ -5389,8 +5366,7 @@ def main(argv: list[str] | None = None) -> int:
             theirs = written_as(None, run_path)
             comparands.append(ComparandEvidence(
                 target_id=target_id.strip(), pipeline_ref="", run_id=run_path.parent.name,
-                run_dir=run_path, evidence=comparand_evidence_sha256(run_path, theirs),
-                output_format=theirs))
+                run_dir=run_path, output_format=theirs))
         records = evaluate_primary_predicates(ir, args.run, output_format=output_format,
                                               comparands=comparands)
     except PrimaryEvidenceError as exc:

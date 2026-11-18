@@ -406,16 +406,16 @@ class ReaderParityTests(unittest.TestCase):
         self.assertEqual(got, pe.evaluate_primary_predicates(ir, js, output_format="json"))
         self.assertTrue(got and all(r["satisfied"] for r in got), got)
 
-    def test_a_comparand_is_hashed_and_read_in_its_own_format(self) -> None:
+    def test_a_comparand_is_read_in_its_own_format(self) -> None:
         from tools import primary_evidence as pe
         from tools.tests import test_primary_evidence as tpe
         js, nc, _ir = _twin_runs(self)
         ir = tpe._ir([tpe.MASS, tpe.CROSS])
-        digest = pe.comparand_evidence_sha256(nc, "netcdf")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(nc, "json")
+        # the json store finds no capture in a netcdf run directory
+        self.assertTrue(cs.capture_paths("netcdf", nc))
+        self.assertEqual(cs.capture_paths("json", nc), [])
         comparand = pe.ComparandEvidence(target_id="t2", pipeline_ref="p", run_id="r",
-                                         run_dir=nc, evidence=digest, output_format="netcdf")
+                                         run_dir=nc, output_format="netcdf")
         records = pe.evaluate_primary_predicates(ir, js, output_format="json",
                                                  comparands=[comparand])
         self.assertTrue(records and all(r["satisfied"] for r in records), records)

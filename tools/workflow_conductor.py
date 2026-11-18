@@ -12604,7 +12604,6 @@ class Conductor:
         from tools.primary_evidence import (
             ComparandEvidence,
             PrimaryEvidenceError,
-            comparand_evidence_sha256,
             cross_target_predicates,
             evaluate_primary_predicates,
         )
@@ -12614,7 +12613,6 @@ class Conductor:
             # Both directories are this run's, so both are read in the target's own format.
             comparand = ComparandEvidence(
                 target_id=label, pipeline_ref="", run_id="", run_dir=shape_dir,
-                evidence=comparand_evidence_sha256(shape_dir, output_format),
                 output_format=output_format)
             records = evaluate_primary_predicates(
                 ir, reference_dir, output_format=output_format, comparands=[comparand],

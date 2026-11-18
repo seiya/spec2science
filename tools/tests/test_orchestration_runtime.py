@@ -25497,7 +25497,7 @@ class ResolveComparandsTests(unittest.TestCase):
     `self_verdict` of fail (a verdict-8 run that failed only a cross-target record included),
     another or no IR, a judge that did not pass, a post-judge gate that did not pass, a revoked
     meta. Also pinned: B's build not certified, B's IR not this run's, a target that does not
-    load and an eligible run with no capture (`CrossTargetUnevaluable`), and the validate key
+    load (`CrossTargetUnevaluable`), an eligible run with no capture (selected), and the validate key
     carrying no comparand member — a legacy stamp that does reads as a mismatch on it."""
 
     NODE = "component/spec_x@0.1.0"
@@ -25586,7 +25586,6 @@ class ResolveComparandsTests(unittest.TestCase):
         path.write_text(json.dumps({**doc, "ir_hash": self._ir_hash()}))
 
     def test_the_latest_eligible_run_of_the_other_target_is_selected(self) -> None:
-        from tools.primary_evidence import comparand_evidence_sha256
         b = self._seed_b()
         self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
         newest = self._run(b, "run_20260102_002", capture='{"u": [3.0, 4.0]}',
@@ -25595,7 +25594,6 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual((comp.target_id, comp.run_id, comp.pipeline_ref),
                          (self.b.target_id, "run_20260102_002", b["pipeline_ref"]))
         self.assertEqual(comp.run_dir, newest)
-        self.assertEqual(comp.evidence, comparand_evidence_sha256(newest, "json"))
 
     def test_a_comparand_run_is_read_in_the_format_its_own_target_writes(self) -> None:
         # Kills: reading the other target's run through the ASKING target's format (issue #644
@@ -25610,13 +25608,9 @@ class ResolveComparandsTests(unittest.TestCase):
             prof = real_load(repo_root, tid)
             return dataclasses.replace(prof, doc={**prof.doc, "output": {"format": "theirs"}})
 
-        asked: list[str] = []
-        with mock.patch.object(ort, "load_target_profile", side_effect=load), \
-                mock.patch("tools.primary_evidence.comparand_evidence_sha256",
-                           side_effect=lambda _d, fmt: asked.append(fmt) or "sha"):
+        with mock.patch.object(ort, "load_target_profile", side_effect=load):
             [comp] = self._resolve()
-        self.assertEqual((asked, comp.output_format, _TP.output_format),
-                         (["theirs"], "theirs", "json"))
+        self.assertEqual((comp.output_format, _TP.output_format), ("theirs", "json"))
 
     def test_each_eligibility_clause_excludes_the_newest_run(self) -> None:
         good = {"self_verdict": "pass"}
@@ -25928,13 +25922,16 @@ class ResolveComparandsTests(unittest.TestCase):
                                     "comparand: the declared targets do not list"):
             self._resolve()
 
-    def test_an_eligible_run_with_no_capture_is_unresolvable(self) -> None:
+    def test_an_eligible_run_with_no_capture_is_selected(self) -> None:
+        """Issue #643 (PE-021): the selection reads no capture; the evaluation finds none (a
+        `structural` record, `unevaluable`: `test_an_unevaluable_comparison_is_not_ready_and_
+        never_raises`)."""
         b = self._seed_b()
         node = self._run(b, "run_20260102_001",
                          verdict={"self_verdict": "pass"})
         shutil.rmtree(node / "raw")
-        with self.assertRaisesRegex(ort.CrossTargetUnevaluable, "no state snapshot"):
-            self._resolve()
+        [comp] = self._resolve()
+        self.assertEqual(comp.run_dir, node)
 
     def test_the_validate_key_has_no_comparand_member(self) -> None:
         """Issue #383: another target's eligible run — appearing, then its captures moving —
@@ -26167,11 +26164,12 @@ class CrossTargetAgreementTests(unittest.TestCase):
 
         rows = (("a declared target that does not load", broken_profile, "broken_t"),
                 ("a comparand run without captures", comparand_without_captures,
-                 "no state snapshot"),
+                 "structural:cross_target_state_agreement: capture file a.json is absent"),
                 ("a non-numeric comparand capture", non_numeric_comparand,
                  "structural:cross_target_state_agreement: a.json: variable 'u' is not a "
                  "rectangular numeric array"),
-                ("own captures removed", own_captures_removed, "no state snapshot"),
+                ("own captures removed", own_captures_removed,
+                 "structural:cross_target_state_agreement: capture file a.json is absent"),
                 ("the IR does not read", ir_unreadable, "PyYAML missing"),
                 ("the evaluator raises", evaluator_raises, "ZeroDivisionError"))
         for label, breaker, cause in rows:

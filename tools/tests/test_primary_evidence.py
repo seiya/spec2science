@@ -2234,7 +2234,6 @@ CROSS = {"test_id": "t_mass", "quantity": "cross_target_state_agreement",
 def _comparand(run: _RunDir, target_id: str) -> pe.ComparandEvidence:
     return pe.ComparandEvidence(target_id=target_id, pipeline_ref=f"p/{target_id}",
                                 run_id="run_20260928_001", run_dir=run.root,
-                                evidence=pe.comparand_evidence_sha256(run.root, "json"),
                                 output_format="json")
 
 
@@ -2278,55 +2277,6 @@ class CrossTargetGrammarTest(unittest.TestCase):
         self.assertEqual(pe.cross_target_predicates(_ir([MASS, HMIN])), [])
 
 
-class ComparandEvidenceHashTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.run = _RunDir()
-        self.addCleanup(self.run.cleanup)
-        self.run.write_state("a", _field(1), _field(2))
-
-    def test_hash_is_over_the_captures_only(self) -> None:
-        h0 = pe.comparand_evidence_sha256(self.run.root, "json")
-        self.assertTrue(h0.startswith("sha256:"))
-        self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
-        # the host-authored schema file is not a capture
-        (self.run.sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text('{"x": 1}')
-        self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
-        # a byte of a final capture, of an initial capture, and a file's NAME each move it
-        final = self.run.sdir / "a.json"
-        final.write_text(final.read_text() + " ")
-        h1 = pe.comparand_evidence_sha256(self.run.root, "json")
-        self.assertNotEqual(h1, h0)
-        init = self.run.sdir / "initial" / "a.json"
-        init.write_text(init.read_text() + " ")
-        h2 = pe.comparand_evidence_sha256(self.run.root, "json")
-        self.assertNotEqual(h2, h1)
-        final.rename(self.run.sdir / "b.json")
-        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h2)
-
-    def test_file_boundaries_are_framed(self) -> None:
-        """Two captures `a.json` = `1` and `b.json` = `2` concatenate, unframed, to the same
-        bytes as ONE capture `a.json` = `1b.json2`; the hash keeps the file sets apart."""
-        other = _RunDir()
-        self.addCleanup(other.cleanup)
-        for run in (self.run, other):
-            for path in run.sdir.rglob("*.json"):
-                path.unlink()
-        (self.run.sdir / "a.json").write_text("1")
-        (self.run.sdir / "b.json").write_text("2")
-        (other.sdir / "a.json").write_text("1b.json2")
-        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root, "json"),
-                            pe.comparand_evidence_sha256(other.root, "json"))
-
-    def test_no_capture_raises(self) -> None:
-        for path in (self.run.sdir / "a.json", self.run.sdir / "initial" / "a.json"):
-            path.unlink()
-        (self.run.sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text("{}")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(self.run.root, "json")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(self.run.root / "missing", "json")
-
-
 class CrossTargetEvaluationTest(unittest.TestCase):
     """`evaluate_primary_predicates(comparands=...)`: 2 comparands × 2 cases, a disagreement
     with one of them, a comparand capture that is absent, no comparand at all."""
@@ -2354,7 +2304,7 @@ class CrossTargetEvaluationTest(unittest.TestCase):
                          [("gpu", "a"), ("gpu", "b"), ("mpi", "a"), ("mpi", "b")])
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu", "mpi"])
         self.assertEqual(set(cross["comparands"][0]),
-                         {"target_id", "pipeline_ref", "run_id", "evidence"})
+                         {"target_id", "pipeline_ref", "run_id"})
         self.assertEqual(cross["grammar_version"], pe.GRAMMAR_VERSION)
         # an ordinary predicate is evaluated once, untagged, and lists no comparand
         self.assertEqual(mass["comparands"], [])
@@ -2574,8 +2524,6 @@ class CrossTargetCliTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         cross = json.loads(out.getvalue())[1]
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
-        self.assertEqual(cross["comparands"][0]["evidence"],
-                         pe.comparand_evidence_sha256(runs["gpu"].root, "json"))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
                                       "--target", "fortran_cpu"]), 0)

@@ -2676,14 +2676,9 @@ def resolve_comparands(
     run's is built, and it never leaves this function.
 
     Raises `CrossTargetUnevaluable` when the declared targets cannot be listed or one of them
-    does not load (a broken profile must not quietly drop a reference), and when an eligible
-    run holds no capture to hash."""
-    from tools.primary_evidence import (
-        ComparandEvidence,
-        ComparandResolution,
-        PrimaryEvidenceError,
-        comparand_evidence_sha256,
-    )
+    does not load (a broken profile must not quietly drop a reference). An eligible run holding
+    no capture is the evaluation's to find (a `structural` record, `unevaluable`)."""
+    from tools.primary_evidence import ComparandEvidence, ComparandResolution
     from tools.target_profile import list_target_ids
     node_key = node_key.strip()
     try:
@@ -2745,14 +2740,9 @@ def resolve_comparands(
         _rkey, run_id, node_dir = best
         # The comparand's run is read through the store of ITS target's output format
         # (issue #644), whatever format the asking target writes.
-        try:
-            evidence = comparand_evidence_sha256(node_dir, other.output_format)
-        except PrimaryEvidenceError as exc:
-            raise CrossTargetUnevaluable(
-                f"comparand: {tid} run {run_id} of {node_key}: {exc}") from exc
         out.append(ComparandEvidence(
             target_id=tid, pipeline_ref=str(build.pipeline_ref), run_id=run_id,
-            run_dir=node_dir, evidence=evidence, output_format=other.output_format))
+            run_dir=node_dir, output_format=other.output_format))
     return ComparandResolution(comparands=out, absent=absent)
 
 
@@ -2779,16 +2769,15 @@ def cross_target_agreement(
     captures) → its IR → `cross_target_predicates` (none: `not_applicable`) →
     `resolve_comparands` over the IR hash the selection's key carries (none: `no_comparand`,
     with `absent`) → `evaluate_primary_predicates(..., cross_target_only=True)`. A `physics`
-    record against a target is `disagree` naming it; a `structural` record, and any exception
-    (a target that does not load, a comparand run without captures, this run's own captures
-    gone, an IR that does not read), is `unevaluable` — not ready, with the cause. A Validate
+    record against a target is `disagree` naming it; a `structural` record (a comparand run
+    without captures, this run's own captures gone), and any exception (a target that does not
+    load, an IR that does not read), is `unevaluable` — not ready, with the cause. A Validate
     that is not certified is `unevaluable` too; the callers ask only after it is.
 
     Recursion-free: `resolve_comparands` selects other targets up to Build only, and no key
     reads a dependency's Validate."""
     from tools.primary_evidence import (
         CrossTargetAgreement,
-        comparand_evidence_sha256,
         cross_target_predicates,
         evaluate_primary_predicates,
     )
@@ -2823,8 +2812,7 @@ def cross_target_agreement(
             repo_root, node_key=node_key, ir_hash=ir_hash, target=resolver.target,
             spec_refs={node_key: spec} if spec else None)
         own_format = resolver.target.output_format
-        own_run = {"pipeline_ref": str(sel.pipeline_ref), "run_id": str(sel.run_id),
-                   "evidence": comparand_evidence_sha256(run_dir, own_format)}
+        own_run = {"pipeline_ref": str(sel.pipeline_ref), "run_id": str(sel.run_id)}
         comparands = [c.detail() for c in resolution.comparands]
         absent = list(resolution.absent)
         if not resolution.comparands:
