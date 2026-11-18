@@ -47,9 +47,9 @@ follow-through is the part worth copying.** The channel is the violation's TYPE
 (`StaleDependencyIRViolation(str)`, wrapped at what was then the single emit site — issue #238 added a second, `_as_stale_certified_ir`, on the same channel) mapped by `main()` to a
 dedicated exit code: a `str` subclass keeps the message byte-identical, so no existing message
 pin moved. (Issue #643 PR-4 removed both emit sites, which re-ran `Compile.static`'s readers at
-`--stage post_generate`; readiness runs the same validator. The type, the exit code and the
-conductor's arms remain with no producer, so the episode below is the channel's history, not a
-live route.) Two things that cost time:
+`--stage post_generate`; readiness runs the same validator. Issue #643 PR-5 removed the type,
+the exit code and the conductor's arms, which had no producer left, so the episode below is the
+channel's history, not a live route.) Two things that cost time:
 
 - **A type channel dies silently on a list rebuild.** `[str(v) for v in violations]`, a JSON
   round-trip, or a `sorted(...)` that constructs new strings drops it back to the generic code.

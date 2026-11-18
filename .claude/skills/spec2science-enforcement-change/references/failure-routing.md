@@ -199,8 +199,9 @@ is an availability and reproducibility class — the "loss of reproducibility" f
 **Since issue #643 PR-4 the gate half of this episode is history.** That PR removed both
 `--stage post_generate` emit sites of rc 4 — the §5.1 surface guard and the io_contract wrap
 described below — because every route to `Generate` either just ran `Compile.static` on the IR or
-skipped it through readiness, which runs the same validator. No gate emits rc 4 now;
-`StaleDependencyIRViolation`, the exit code and the conductor's arms remain without a producer.
+skipped it through readiness, which runs the same validator. Issue #643 PR-5 then removed
+`StaleDependencyIRViolation`, the `STALE_DEPENDENCY_IR_MARKER` exit code and the conductor's arms,
+which had no producer left.
 The attribution rule (by what the call site was given) and the readiness bullet stand.
 
 §The decision says what the leaf can fix is a content failure and what the IR caused is a
