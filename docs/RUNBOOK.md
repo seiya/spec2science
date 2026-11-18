@@ -1051,11 +1051,10 @@ one next action for each — `read_manifest_read_guard`, `output_manifest_write_
 `forbid_tools_direct_read`, `rule_source_violation` and the rest. `git log` at the Z4 PR-1 commit
 is where to read it if you are diagnosing a run recorded before the cut.
 
-An OPERATOR's own session still has two hook modules, and their blocks are not in that class:
+An OPERATOR's own session still has one hook module, and its block is not in that class:
 
 | policy | example of the blocked operation | the one next action to take |
 |---|---|---|
-| `forbid_verify_bypass_flags` | a command whose TEXT names `validate_pipeline_semantics` AND contains one of the two verify-bypass flags `tools/hooks/operator_safety.py::VERIFY_BYPASS_TOKENS` names (`--allow-missing-orchestration`, `--allow-missing-llm-review`) — including one that only mentions both, such as a grep of the validator's source for a flag, which is a known over-refusal | do not bypass the gate; fix what it is reporting — or, for a command that only mentions them, rephrase so the two do not appear together |
 | a sleep-based wait | a shell command that waits by sleeping, in an agent session (`tools/hooks/dev_session_hygiene.py`) | do not poll: wait on the condition itself, or let the harness report the background job |
 
 A refusal from the build-runtime library (`docs/BUILD_RUNTIME.md`) is not a hook block and is not in the table above. The library has ONE validation mode for every caller since [issue #171](https://github.com/seiya/spec2science/issues/171) PR-2, and it does not read `SPEC2SCIENCE_ORCHESTRATION_ID` or `SPEC2SCIENCE_WORKFLOW_MODE` at all — so an exported workflow variable does not change what a test run or a direct `import` of the library may do, and there is nothing to clear. Whoever calls, the library checks neither the type nor the range of an argument ([issue #643](https://github.com/seiya/spec2science/issues/643)): what it still refuses is what it cannot serve or place — among them a build system, a preset or a compiler it does not run, a build with no build system over a directory with no marker, and a staged source whose name the syntax check cannot compile — with a message naming the value, while a missing required argument raises the Python error of the line that reads it; the content of `env`, `target` and `extra_args` is not checked since [issue #457](https://github.com/seiya/spec2science/issues/457). The MCP protocol layer, its `mcp_call.py` client and its refusal of `capability_token` were deleted in [issue #444](https://github.com/seiya/spec2science/issues/444).

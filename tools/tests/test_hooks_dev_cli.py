@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """The DEV entrypoint (`tools/hooks/dev_cli.py`), issue #102.
 
-Two properties, and they pull in opposite directions on purpose: it must refuse what its two
-rule modules refuse (the validator's verify-bypass flags, a sleep-based wait), and it must
-refuse NOTHING else — including when its input is
+Two properties, and they pull in opposite directions on purpose: it must refuse what its
+rule module refuses (a sleep-based wait), and it must refuse NOTHING else — including when its input is
 malformed, because the session it guards is the one an operator edits these hooks from.
 """
 
@@ -44,60 +43,6 @@ def _run(backend: str, event: str, command, extra_env=None) -> tuple[int, str, s
                 ["--backend", backend, "--event", event, "--input-json", json.dumps(payload)]
             )
     return code, out.getvalue(), err.getvalue()
-
-
-class DevCliRefusesTheVerifyBypassFlags(unittest.TestCase):
-    def test_each_verify_bypass_flag_on_the_validator_is_refused(self) -> None:
-        """One row per flag, so a flag dropped from the tuple fails by name. The exported
-        `SPEC2SCIENCE_WORKFLOW_EXEC_MODE` that used to exempt a command is set here and changes
-        nothing (issue #445 deleted that branch)."""
-        from tools.hooks.operator_safety import VERIFY_BYPASS_TOKENS
-        self.assertEqual(VERIFY_BYPASS_TOKENS,
-                         ("--allow-missing-orchestration", "--allow-missing-llm-review"))
-        for flag in VERIFY_BYPASS_TOKENS:
-            for env in ({}, {"SPEC2SCIENCE_WORKFLOW_EXEC_MODE": "workflow"}):
-                with self.subTest(flag=flag, env=env):
-                    code, _out, err = _run(
-                        "claude", "PreToolUse",
-                        f"python3 tools/validate_pipeline_semantics.py --legacy-mode {flag}",
-                        extra_env=env)
-                    self.assertEqual(code, 2)
-                    self.assertIn(flag, err)
-        code, _out, err = _run(
-            "claude", "PreToolUse",
-            "python3 -m tools.Validate_Pipeline_Semantics --ALLOW-MISSING-LLM-REVIEW")
-        self.assertEqual(code, 2, "the match is case-insensitive on both halves")
-
-    def test_a_flag_without_the_validator_or_the_validator_without_a_flag_passes(self) -> None:
-        """The conjunction, each half alone. A grep for the flag text and an echo of a
-        document quoting it name no validator; a flag on another program is not a bypass of
-        anything; the validator without a flag is its ordinary run."""
-        for command in (
-            'grep -rn -- "--allow-missing-llm-review" docs/',
-            "echo 'the --allow-missing-orchestration flag requires --legacy-mode'",
-            "python3 tools/other_tool.py --allow-missing-orchestration",
-            "python3 tools/validate_pipeline_semantics.py --stage full",
-        ):
-            with self.subTest(command=command):
-                code, out, err = _run("claude", "PreToolUse", command)
-                self.assertEqual((code, out, err), (0, "", ""))
-
-    def test_the_refused_flags_are_the_validators_waivers(self) -> None:
-        """Set identity with what the validator's parser defines, read by `ast`: a flag it
-        stops accepting must leave the hook, and a waiver it adds must arrive in it. The
-        sample is every `--allow-missing-*` option, the family both members belong to."""
-        from tools.hooks import operator_safety
-
-        tree = ast.parse((REPO_ROOT / "tools" / f"{operator_safety.VERIFY_BYPASS_SCRIPT}.py")
-                         .read_text(encoding="utf-8"))
-        defined = {
-            node.args[0].value for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_argument" and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and str(node.args[0].value).startswith("--allow-missing-")
-        }
-        self.assertEqual(defined, set(operator_safety.VERIFY_BYPASS_TOKENS))
 
 
 class DevCliRefusesASleepBasedWait(unittest.TestCase):
@@ -198,7 +143,7 @@ class DevCliRefusesASleepBasedWait(unittest.TestCase):
         self.assertLess(text.index("Monitor tool"), text.index("another terminal"))
 
     def test_the_audit_detail_names_the_policy(self) -> None:
-        """Carried for symmetry with `operator_safety`, and pinned so the two stay alike.
+        """Carried for symmetry with the deleted `operator_safety` rule (issue #643).
 
         NOT because the DEV path records it: `dev_cli.main` reads `violation[0]` and writes no
         audit line at all, so on this layer the detail is consumed by this row alone. An earlier
@@ -480,7 +425,7 @@ class DevCliImportBoundary(unittest.TestCase):
         repo_imports = _dev_cli_repo_imports()
         self.assertEqual(
             repo_imports,
-            {"tools.hooks.operator_safety", "tools.hooks.dev_session_hygiene"},
+            {"tools.hooks.dev_session_hygiene"},
             "the DEV entrypoint may import only its stdlib-only rule modules; anything else "
             "can refuse the operator out of the session they are editing in")
         for name in self.FORBIDDEN:
@@ -498,24 +443,19 @@ class DevCliImportBoundary(unittest.TestCase):
         audience. Z4 (issue #171) removed the leaf entrypoint, so the difference is no longer
         computable and the shared side no longer exists to check.
 
-        What is checked instead is the pair the convention now covers, named explicitly because
+        What is checked instead is the module the convention now covers, named explicitly because
         nothing derives it any more: `dev_session_hygiene` guards the agent session itself and
-        carries the prefix; `operator_safety` was applied from both the DEV hook and (while a leaf
-        hook existed) the leaf one, and is named for its subject — the operator's checkout,
-        whoever issues the command — so it does not. Only `dev_cli` imports either today.
-        Adding a third rule module fails the equality.
+        carries the prefix. (`operator_safety`, named for its subject rather than its audience,
+        was deleted in issue #643.) Only `dev_cli` imports it today. Adding a second rule module
+        fails the equality.
         """
         self.assertEqual(
             _dev_cli_repo_imports(),
-            {"tools.hooks.operator_safety", "tools.hooks.dev_session_hygiene"},
+            {"tools.hooks.dev_session_hygiene"},
             "a rule module was added or removed; decide whether it is DEV-only and give it "
             "(or withhold from it) the `dev_` prefix, then update this row")
         self.assertTrue(
             Path("tools/hooks/dev_session_hygiene.py").name.startswith("dev_"))
-        self.assertFalse(
-            Path("tools/hooks/operator_safety.py").name.startswith("dev_"),
-            "operator_safety is named for its subject (the operator's checkout), not for "
-            "the session that applies it")
 
     def test_the_rule_modules_import_only_stdlib(self) -> None:
         """Every module `dev_cli` imports carries the same obligation, or the boundary is
@@ -587,14 +527,14 @@ class DevMatcherActuallyMatchesTheToolThatCarriesACommand(unittest.TestCase):
     `docs/HOOKS.md` says the dev layer's entries are "pinned by test rather than read by eye",
     and nothing read a matcher. The reviewer set `.claude/settings.json`'s only matcher to
     `ZzNeverMatches` and all three test files that even open that file stayed green — which
-    makes both dev rules (the verify-bypass refusal and the sleep-based-wait refusal)
-    silently inert, the one failure mode a matcher has.
+    makes the dev rules (then the verify-bypass refusal, deleted in issue #643, and the
+    sleep-based-wait refusal) silently inert, the one failure mode a matcher has.
 
     WHY A FULL MATCH. `docs/HOOKS.md` records the measurement: a Claude `matcher` is a regular
     expression matched in FULL against the tool name, so `Bash` matches and a prefix of a
     longer name does not. Applying `re.fullmatch` here is that rule, not a guess about it.
 
-    BOUNDED to the tools that carry a COMMAND, because a command is the only thing either dev
+    BOUNDED to the tools that carry a COMMAND, because a command is the only thing the dev
     rule reads. A file tool is out of scope for this layer by design — the operator owns their
     own checkout.
     """

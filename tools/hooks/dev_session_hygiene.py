@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """One DEV-ONLY hook policy: an agent session must not wait by sleeping.
 
-Separate from `tools/hooks/operator_safety.py` on purpose. That module's subject is the
-operator's own checkout; this rule's subject is how an AGENT SESSION spends wall-clock and
-process table. Both were applied from the DEV entrypoint and only this one was DEV-only, back
-when a leaf-facing entrypoint existed (deleted in Z4, issue #171): a leaf that sleeps wastes its
-own budget and gets no closer to reporting its task done, which `AGENTS.md` §Development premises
-puts out of the defended set. The distinction is worth keeping even with one entrypoint left,
-because it is the reason each rule exists.
+Its subject is how an AGENT SESSION spends wall-clock and process table. It was the DEV-only
+rule back when a leaf-facing entrypoint existed (deleted in Z4, issue #171): a leaf that sleeps
+wastes its own budget and gets no closer to reporting its task done, which `AGENTS.md`
+§Development premises puts out of the defended set. The other DEV rule module,
+`operator_safety.py` (the validator's verify-bypass flags), was deleted with those flags in issue
+#643, so this is the only rule the DEV entrypoint applies.
 
 **The incident.** A review subagent, whose launch prompt said in as many words "create only waits
 whose exit condition can be satisfied, and no background polling", polled a background job with
@@ -29,8 +28,8 @@ tool exists. Both are in the refusal message, most reachable first.
 
 KNOWN OVER-REFUSAL, stated rather than discovered. The match is over the raw command text, so a
 command that merely CONTAINS a sleep invocation is refused too — a `grep "sleep 60"`, a commit
-message quoting this rule, a heredoc documenting it. This is the same trade
-`operator_safety.py` records for its own rules and for the same reason: the failure direction is a
+message quoting this rule, a heredoc documenting it. This is the same trade the deleted
+`operator_safety.py` recorded for its own rules and for the same reason: the failure direction is a
 refusal the operator can rephrase, and narrowing it by parsing shell grammar is the losing line
 (`.claude/skills/spec2science-enforcement-change/references/source-text-surface.md`). It is not
 hypothetical: this rule refused two commands of the commit that introduced it, both of them
@@ -57,7 +56,7 @@ first two could not happen:
   `apply_patch`, Codex's only editing route, so a Codex session cannot write a file containing
   the refused literal without splitting the string; the Claude layer's `Write` / `Edit` are not
   matched. The two dev layers therefore differ in REACH. Inherited from what `operator_safety`
-  already did to patch text rather than introduced here, and left alone — but it belongs in this
+  (deleted in issue #643) already did to patch text rather than introduced here, and left alone — but it belongs in this
   list rather than in a reader's surprise.
 
 LIMIT, so nobody reads this as a detector: it is a bound on the ordinary spellings, not a barrier.
@@ -128,13 +127,12 @@ _REMEDY = (
 def polling_wait_violation(command: str) -> tuple[str, dict[str, Any]] | None:
     """Return `(reason, audit_detail)` for a command that waits by sleeping, or None.
 
-    A pure function of its argument, like `operator_safety_violation`, so a test drives it
-    without a process and the DEV entrypoint stays stdlib-only.
+    A pure function of its argument, so a test drives it without a process and the DEV
+    entrypoint stays stdlib-only.
     """
     # NOT PINNED, and kept anyway: an empty command finds no match either, so a mechanism
-    # sweep cannot distinguish this guard from its absence. It mirrors
-    # `operator_safety_violation`'s first line, and "the mutation survives" is not grounds for
-    # deleting a defense in this repository — what it is grounds for is saying so here.
+    # sweep cannot distinguish this guard from its absence. "The mutation survives" is not
+    # grounds for deleting a defense in this repository — what it is grounds for is saying so here.
     if not command:
         return None
     match = _SLEEP_INVOCATION.search(command)
