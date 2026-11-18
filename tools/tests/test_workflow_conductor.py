@@ -18456,8 +18456,9 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertIn("unreadable", wc._verdict_failure_report(doc))
 
-            # a malformed predicate shape (which Compile refuses) is the structural doc, not a crash
-            ir["io_contract"]["predicates"][0]["op"] = "includes"
+            # a predicate the evaluator raises on (an expr that does not parse, which Compile
+            # refuses) is the structural doc, not a crash
+            ir["io_contract"]["predicates"][0]["expr"] = "final.u["
             doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["failure_class"], "structural_violation")
             self.assertEqual(doc["per_test"], [])

@@ -2751,8 +2751,9 @@ class ProcedureGateTest(unittest.TestCase):
     def test_a_state_listed_as_a_record_takes_no_initial_state(self) -> None:
         ir = procedure_ir()
         ir["case"]["test_case_set"][0]["initial_state"]["n_calls"] = 0.0
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "call record"):
-            pe.evaluate_case_inputs(ir)
+        # Compile's gate (f) refuses it (the evaluator's copy went in issue #643)
+        self.assertTrue(any(m.startswith("(f) case 'c': initial_state.n_calls") and "call record"
+                            in m for m in pe.drive_violations(ir, kind="component")))
 
 
 # --- the distributed driver, compiled and run under the launcher (issue #610, PR-B2) -------------

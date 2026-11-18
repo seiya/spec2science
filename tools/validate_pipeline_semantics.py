@@ -8276,11 +8276,11 @@ def _validate_tests_and_predicates(
     for msg in validate_tests_schema(tests, case_ids=case_ids, test_ids=test_ids):
         violations.append(f"{derived_path}:{msg}")
 
-    # The drive gates, under the CATALOG's kind. No answer is refused by
-    # `_validate_catalog_spec_kind` in the same stage, so nothing here falls back to the leaf's
-    # `meta.spec_kind`.
+    # The drive gates, under the CATALOG's kind. No answer, and a kind no phase runs on, are
+    # refused by `_validate_catalog_spec_kind` in the same stage, so nothing here falls back to
+    # the leaf's `meta.spec_kind` and no drive finding cascades onto that refusal.
     kind = _ir_catalog_spec_kind(repo_root, ir)
-    if kind is not None:
+    if kind in _CANONICAL_SPEC_KINDS:
         for msg in drive_violations(ir, kind=kind):
             violations.append(f"{derived_path}:{msg}")
     if not _has_drive(ir):
