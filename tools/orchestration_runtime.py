@@ -1463,7 +1463,9 @@ class DerivationResolver:
                         else:
                             against["libraries"] = stamped_libraries
                     if "oracle" in inputs:
-                        # The oracle's library files, off the same stamp (issue #680).
+                        # The oracle's library files, off the same stamp (issue #680). A
+                        # diagnosis only, as the libraries' above; no row drives it, so it is
+                        # not pinned.
                         stamped_oracle = _stamped_oracle(recorded, inputs["oracle"])
                         if stamped_oracle is None:
                             missing.append("oracle")

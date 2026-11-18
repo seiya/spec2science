@@ -39,7 +39,9 @@ builds:
     libraries: [vend]
     cases: [c2]
 """
-OTHER_LANGUAGE = profile_with(toolchain={"language": "cpp"})
+#: A declared language other than the fixture libraries' (`registry.unsupported_reason`).
+OTHER = "cuda_cpp"
+OTHER_LANGUAGE = profile_with(toolchain={"language": OTHER})
 
 
 def _cross(cases: list[str], **scope: Any) -> dict[str, Any]:
@@ -105,7 +107,8 @@ class OracleDeclarationTest(_OracleFixture):
             "bool version": {**good, "oracle_version": True},
             "no language": {**good, "language": None},
             "source absent": {**good, "source": "nope.f90"},
-            "source a path": {**good, "source": f"../{ADAPTER}"},
+            # A file that exists outside the oracle directory, so only the path rule refuses it.
+            "source a path": {**good, "source": "../deps.yaml"},
             "source the declaration": {**good, "source": oracle.DECLARATION_FILE},
             "origin not text": {**good, "origin": 3},
             "builds empty": {**good, "builds": []},
@@ -140,22 +143,23 @@ class OracleDeclarationTest(_OracleFixture):
         self.assertIsNone(self.load())
 
     def test_an_oracle_of_another_language_is_not_read_beyond_its_language(self) -> None:
-        self.write_oracle("language: cpp\nbuilds: nonsense\n")
+        self.write_oracle(f"language: {OTHER}\nbuilds: nonsense\n")
         self.assertIsNone(self.load())
         with self.assertRaises(oracle.OracleDeclarationError):
-            self.load(language="cpp")
+            self.load(language=OTHER)
 
     def test_a_library_of_another_language_is_refused(self) -> None:
         (self.repo / xl.LIBRARIES_DIR / "cfoo.yaml").write_text(textwrap.dedent("""\
             library_version: 1
             library_id: cfoo
-            language: cpp
+            language: cuda_cpp
             modules: []
             procedures: [cfoo]
             link: [cfoo]
             """))
         self.write_oracle(_VALID.replace("libraries: [vend]", "libraries: [cfoo]"))
-        with self.assertRaisesRegex(oracle.OracleDeclarationError, "cfoo"):
+        self.assertIsNotNone(xl.load_declaration(self.repo, "cfoo"))   # declared, of another language
+        with self.assertRaisesRegex(oracle.OracleDeclarationError, "is for language 'cuda_cpp'"):
             self.load()
 
 
@@ -420,10 +424,10 @@ class OracleVerdictTest(_OracleFixture):
             shutil.rmtree(targets)
 
     def test_an_oracle_of_another_language_than_the_target_s_is_not_read(self) -> None:
-        self.write_oracle(_VALID.replace("language: fortran", "language: cpp"))
+        self.write_oracle(_VALID.replace("language: fortran", f"language: {OTHER}"))
         write_sites(self.repo, self.dirs, libraries="      vend:\n")
         self.assertIsNone(self.verdict())
-        self.write_oracle("language: cpp\nbuilds: nonsense\n")
+        self.write_oracle(f"language: {OTHER}\nbuilds: nonsense\n")
         self.assertIsNone(self.verdict())
 
     def test_a_malformed_oracle_declaration_is_not_read_on_a_compile_only_run(self) -> None:
