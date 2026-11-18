@@ -3534,7 +3534,7 @@ def _resolve_dependency_facts(
             node_key = node_key.strip()
             # A called dependency (`component` / `problem`) is read by its CANONICAL key, the
             # spelling the dependency gates read (`_called_dep_key`, which agrees with V4's
-            # `_normalize_node_key_token`): a key respelled with whitespace around its kind, id or
+            # `_versioned_node_key_token`): a key respelled with whitespace around its kind, id or
             # version is the member to those gates, so its call is required at Generate, and the
             # leaf is shown its interface here under the same reading (review round 2, sec-L1).
             called = _called_dep_key(node_key)
