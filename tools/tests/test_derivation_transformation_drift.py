@@ -2392,10 +2392,13 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-20@03643f31": "6a8e679f3d71687194e6e84e27f4a10895c6db3def95cc1c762d2972e84ca00e",
     # verdict-20 re-pinned in place by issue #643 PR-5, behaviour-preserving:
     # `_author_derived_validate_artifacts` no longer writes `aggregate_verdict.json`'s
-    # `dependency_set` and `dependency_nodes` (WC5-40, WC5-41c; no reader in code or documents)
+    # `dependency_set` and `dependency_nodes` (WC5-40, WC5-41c; no code or document reads them,
+    # and the escalate diagnostician, which is shown the file whole, has no rule naming them)
     # and loses two `except Exception` around a token normalisation that cannot raise and a
     # readiness probe whose raise now ends the attempt fail_closed rather than `blocked` (WC5-41;
-    # neither certifies). `aggregate_verdict`, `self_verdict`, `blocked`, `blocking_direct_deps`,
+    # neither certifies); its comments also stop calling the readiness check the pre_judge
+    # substep's (U33, WC5-39: `run_phase`'s pre-launch guard). `aggregate_verdict`,
+    # `self_verdict`, `blocked`, `blocking_direct_deps`,
     # `summary.json` and `validate_meta.json` do not move, and no consumer key binds a Validate
     # output hash. (Measured by diffing `verdict_tuple()` against main ed5b95e2's: that row and
     # no other.) The digest `verdict-20` shipped with at ed5b95e2:

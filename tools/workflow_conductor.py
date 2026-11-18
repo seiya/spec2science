@@ -971,7 +971,8 @@ def classify_compile_static_failure(failure_category: str | None) -> RouteDecisi
 # not name — the measured case is a `pre_judge` whose meta says `status: "pass"` but whose
 # deliverable failed the freshness gate in `determine_substep_status` — and naming that failure
 # after a violation the substep did not record (issue #114's case was `pre_judge_dag_incomplete`,
-# which the substep classified until issue #643 PR-5 moved the DAG check to `run_phase`) writes a
+# which the substep classified until issue #643 PR-5 removed its copy of the DAG check, which
+# `run_phase` already ran before any substep) writes a
 # record that is false, and points the operator at a dependency closure the same record shows
 # complete.
 VALIDATE_GATE_NO_CATEGORY_SUFFIX = "_failed_without_category"
@@ -12098,8 +12099,8 @@ class Conductor:
                     if model_src.is_file():
                         alone_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                                      / "syntax" / f"{compiler}_model_alone")
-                        # Reset, for the leaf probe's reason below: a residue from an earlier
-                        # attempt would make the set wider than what a consumer is staged.
+                        # Reset: a residue from an earlier attempt would make the set wider
+                        # than what a consumer is staged.
                         if alone_dir.exists():
                             shutil.rmtree(alone_dir)
                         alone_dir.mkdir(parents=True, exist_ok=True)

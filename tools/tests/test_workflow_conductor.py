@@ -1359,7 +1359,8 @@ class _FakeConductor(wc.Conductor):
     # does not write, and it writes `<ir_ref>/dependency_surface.json`, which would litter the
     # shared root and make the next attempt's `_claim_artifact_dir` (`not path.exists()`)
     # rotate the IR id. The fake writes nothing and shows the leaf an empty surface. The real
-    # author is covered against a real Conductor by `WriteDependencySurfaceTest`.
+    # author is covered by `WriteDependencySurfaceTest`, which calls the real
+    # `Conductor._write_dependency_surface` unbound on a `_FakeConductor`.
     def _write_dependency_surface(self, refs):  # type: ignore[override]
         return []
 
