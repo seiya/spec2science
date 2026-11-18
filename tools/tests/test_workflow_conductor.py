@@ -5852,11 +5852,11 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             node_dir.mkdir(parents=True, exist_ok=True)
             (node_dir / "pre_judge_meta.json").write_text(
                 json.dumps({"status": "pass"}), encoding="utf-8")
-            audit_only = sorted(wc._OPTIONAL_OUTPUT_BASENAMES)[0]
+            audit_only = min(wc._OPTIONAL_OUTPUT_BASENAMES)
             for paths in ([], [f"{refs.run_node_dir()}/{audit_only}"]):
-                with self.subTest(paths=paths):
-                    with self.assertRaisesRegex(ValueError, "declares no deliverable"):
-                        c.determine_substep_status(refs, "validate", "pre_judge", paths)
+                with self.subTest(paths=paths), \
+                        self.assertRaisesRegex(ValueError, "declares no deliverable"):
+                    c.determine_substep_status(refs, "validate", "pre_judge", paths)
 
     def test_a_below_window_mtime_on_a_pass_meta_is_what_builds_the_freshness_reason(self) -> None:
         """The exhibit for `validate_<substep>_deliverable_not_freshly_written`.
@@ -22887,7 +22887,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
             harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
                             "run_id": "run_h_001", "aggregate_verdict_ref": None}
-            gate_calls: list[Any] = []
+            gate_calls: list = []
 
             def _gate(cmd, **_k):
                 gate_calls.append(cmd)

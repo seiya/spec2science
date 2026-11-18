@@ -871,15 +871,14 @@ def expand_profile_dependencies(
     return expanded, profiles_record, None
 
 
-# Codex round 31 F2: the freshness reader MUST share the same canonical
-# grammar as the writer (`_SLUG_DATE_SEQ3_PATTERN` defined further down).
-# The previous reader regex (`^.+_(\d{8})_(\d{3})$`) accepted ANY prefix —
+# Codex round 31 F2: the freshness reader takes only the canonical grammar the conductor
+# mints ids in. The previous reader regex (`^.+_(\d{8})_(\d{3})$`) accepted ANY prefix —
 # uppercase letters, underscores between slug parts, slashes in the path
 # tail, etc. — so a planted `FAKE__20991231_999/binary_meta.json` outranked
 # legitimate artifacts despite never having been issued by any writer.
-# Anchoring both ends to the strict slug grammar closes that trust gap.
-# `_SLUG_DATE_SEQ3_PATTERN` is this pattern without its two capture groups, built from it
-# below, so the two grammars cannot diverge.
+# Anchoring both ends to the strict slug grammar closes that trust gap. (A writer-side copy,
+# `_SLUG_DATE_SEQ3_PATTERN`, went in issue #643 PR-3 with the reservation and launch refusals
+# that read it: the ids are the conductor's own, and a non-canonical one is never selected.)
 _FRESHNESS_CANONICAL_ID_RE = re.compile(
     r"^[a-z0-9]+(?:-[a-z0-9]+)*_([0-9]{8})_([0-9]{3})$"
 )
@@ -896,8 +895,7 @@ def _freshness_key_from_id(name: str) -> tuple[str, int] | None:
     PR-2 this is the ordering token of `_stage_meta_candidates`, and the "latest" it used
     to pick is no longer what certifies — the derivation key is.
 
-    Codex round 31 F2: the matcher uses the same grammar as the writer
-    (`_SLUG_DATE_SEQ3_PATTERN`).
+    Codex round 31 F2: the matcher takes only the canonical grammar the conductor mints.
     """
     m = _FRESHNESS_CANONICAL_ID_RE.match(name)
     if m is None:
@@ -4294,11 +4292,6 @@ PREFLIGHT_TTL_DEFAULT_SECONDS: int = 1800
 _NODE_KEY_KIND_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _NODE_KEY_ID_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _NODE_KEY_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._-]*$")
-_SLUG_DATE_SEQ3_PATTERN = re.compile(
-    _FRESHNESS_CANONICAL_ID_RE.pattern
-    .replace(r"([0-9]{8})", r"[0-9]{8}")
-    .replace(r"([0-9]{3})", r"[0-9]{3}")
-)
 
 
 def _parse_node_key_strict(node_key: Any) -> tuple[str, str, str]:
@@ -14539,7 +14532,7 @@ def main(argv: list[str] | None = None) -> int:
         "writes every artifact after the child window closes. allowed_file_tool_paths is accepted and IGNORED: "
         "it named a leaf's Edit/Write grant, and no leaf holds either tool. "
         "ir_id/pipeline_id format: <slug>_<YYYYMMDD>_<seq3> where slug uses hyphens only "
-        "(e.g. 'flux-rsn-p0_20260425_001'; underscores in slug are invalid). "
+        "(e.g. 'flux-rsn-p0_20260425_001'); an id of another form is never selected by the readers. "
         "Execute step extra-required fields: run_id, "
         "source_id (the source whose <source_id>/src/ run_quality_checks uses; record_launch verifies "
         "verification_status=pass), and source_binary_id (the binary_id whose binary execute uses; "
@@ -14782,7 +14775,8 @@ def main(argv: list[str] | None = None) -> int:
             "Format: <slug>_<YYYYMMDD>_<seq3> where slug is hyphen-separated lowercase alphanumeric "
             "(regex: ^[a-z0-9]+(?:-[a-z0-9]+)*_[0-9]{8}_[0-9]{3}$). "
             "Example: 'flux-rsn-p0_20260425_001'. "
-            "Underscores inside the slug are INVALID (use hyphens instead)."
+            "Nothing refuses another form, but no reader selects it (an underscore inside the "
+            "slug makes it non-canonical; use hyphens)."
         ),
     )
     reserve_root_parser.add_argument("--reserved-by-agent-run-id", required=True,

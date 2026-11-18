@@ -43,8 +43,8 @@ TARGET_PROFILE_SUFFIX = ".yaml"
 #: segment of the store without escaping it.
 TARGET_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 #: The store-id grammar (`<slug>_<YYYYMMDD>_<seq3>`) every ir / pipeline / stage directory
-#: takes — `orchestration_runtime._SLUG_DATE_SEQ3_PATTERN`, restated because this module must
-#: not import the runtime at load time. A target id matching it is REFUSED: the level under
+#: takes — `orchestration_runtime._FRESHNESS_CANONICAL_ID_RE` without its capture groups,
+#: restated because this module must not import the runtime at load time. A target id matching it is REFUSED: the level under
 #: `workspace/pipelines/<safe>/` holds target ids, and until R4-a PR-2 the same level held
 #: pipeline ids, so the two namespaces are kept disjoint by construction rather than by
 #: whichever reader happens to look first.

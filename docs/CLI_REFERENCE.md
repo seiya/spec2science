@@ -34,7 +34,7 @@ Related canonical sources:
 - `--repo-root` / `--orchestration-id` are **required** in (almost) all subcommands.
 - agent_run_id is a UUID. The canonical path for issuing a new one is `python3 tools/new_agent_run_id.py` (`python3 -c 'import uuid; …'` is rejected by hook policy).
 - The form of `node_key` is `<spec_kind>/<spec_id>@<spec_version>` (e.g. `component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0`). It is not a filesystem path.
-- The form of `ir_id` / `pipeline_id` is `<slug>_<YYYYMMDD>_<seq3>` (slug being hyphen-separated lowercase alphanumeric). E.g. `flux-rsn-p0_20260425_001`. An underscore in the slug is invalid.
+- The form of `ir_id` / `pipeline_id` is `<slug>_<YYYYMMDD>_<seq3>` (slug being hyphen-separated lowercase alphanumeric). E.g. `flux-rsn-p0_20260425_001`. An id of another form (an underscore in the slug, say) is not refused, and no reader selects it.
 - ISO 8601 timestamps are canonically UTC (`Z` suffix).
 - For JSON arguments (`--*-json`), be careful with shell quoting. A single argv element is also capped at MAX_ARG_STRLEN (128 KiB on Linux), and a large payload makes `execve` fail with `E2BIG` before the process starts. So for a large or unbounded payload use the file/stdin variant: `--request-json-file` (record-launch), `--agent-run-json-file` and `--reply-from-stdin` (finalize-child), `--reply-from-stdin` (record-reply).
 - **Terse stdout by default.** The high-frequency bookkeeping subcommands (`record-launch` / `record-agent-run` / `finalize-child` / `deactivate-child` / `record-reply` / `write-step-result`) print **only the result fields the conductor parses downstream** to stdout, not the full payload (the default dates from an LLM orchestrator whose context the full payload inflated). The full payload is always persisted to the canonical artifact files regardless (`launches/<arid>.*`, `agent_runs.jsonl`, `steps/.../step_result.json`, etc.); pass `--verbose` to also emit the full JSON to stdout for debugging/audit. Soft-failure signals (`violations` / `error[s]` / `warning[s]`) are retained in terse output when present, and hard failures still exit non-zero via stderr.
@@ -286,7 +286,7 @@ Reserve an `ir_id` or `pipeline_id`. It does not create the actual directory (th
 | `--orchestration-id` | yes | |
 | `--node-key` | yes | |
 | `--step` | yes | reserve ir_id with `compile`, reserve pipeline_id with `generate` |
-| `--reserved-id` | yes | `<slug>_<YYYYMMDD>_<seq3>` (an underscore in the slug is invalid; use a hyphen) |
+| `--reserved-id` | yes | `<slug>_<YYYYMMDD>_<seq3>` (an underscore in the slug makes it non-canonical, and no reader selects it; use a hyphen) |
 | `--reserved-by-agent-run-id` | yes | the UUID of the agent that uses the reserved ID |
 | `--target` | with `--step generate` | the `target_id` the pipeline is built for (issue #284): a pipeline id names a directory only under `workspace/pipelines/<node_key_safe>/<target_id>/`. Passed with `generate` alone (a `compile` output is target-free), recorded as `generate.json#target_id` |
 

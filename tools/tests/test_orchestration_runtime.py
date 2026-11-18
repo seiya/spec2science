@@ -14995,7 +14995,7 @@ def _setup_verified_dep(
         catalog.unlink()
     node_key = f"{dep_kind}/{dep_id}@{dep_version}"
     safe = f"{dep_kind}__{dep_id}__{dep_version}"
-    # Codex round 31 F2: the freshness reader anchors to the strict `_SLUG_DATE_SEQ3_PATTERN`
+    # Codex round 31 F2: the freshness reader anchors to the strict canonical grammar
     # (lowercase, hyphen-separated slug), so an underscored `dep_id` takes a hyphenated slug
     # for the directory ids; the catalog spec_id keeps its underscored form.
     slug = dep_id.replace("_", "-")
@@ -18027,8 +18027,8 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
 
 
 class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
-    """Codex round 31 F2: the freshness reader must use the SAME grammar
-    as the writer (`_SLUG_DATE_SEQ3_PATTERN`). Round 23's loose regex
+    """Codex round 31 F2: the freshness reader takes only the canonical grammar the conductor
+    mints ids in (a writer-side copy, `_SLUG_DATE_SEQ3_PATTERN`, went in issue #643 PR-3). Round 23's loose regex
     (`^.+_(\\d{8})_(\\d{3})$`) accepted any prefix — including uppercase,
     leading underscore, or arbitrary fabricated names — so a planted
     `FAKE_20991231_999/` directory outranked legitimate artifacts."""
@@ -18060,12 +18060,10 @@ class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
             ("20260415", 1),
         )
 
-    def test_writer_pattern_matches_reader_in_lock_step(self) -> None:
-        """If a reader-accepted id is REJECTED by the writer pattern,
-        the trust-gap is back. This test prevents future drift."""
-        from tools.orchestration_runtime import (
-            _freshness_key_from_id, _SLUG_DATE_SEQ3_PATTERN,
-        )
+    def test_the_reader_takes_canonical_ids_and_no_fabrication(self) -> None:
+        """The reader's half of what used to be a writer/reader lock-step row: canonical ids
+        parse, fabricated or non-canonical ones do not."""
+        from tools.orchestration_runtime import _freshness_key_from_id
         samples = [
             "dep-a_20260101_001",
             "shallow-water2d_20260415_001",
@@ -18074,7 +18072,6 @@ class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
         ]
         for s in samples:
             self.assertIsNotNone(_freshness_key_from_id(s), s)
-            self.assertIsNotNone(_SLUG_DATE_SEQ3_PATTERN.match(s), s)
         fabrications = [
             "FAKE_20991231_999",
             "_leading_underscore_20260101_001",
@@ -18083,7 +18080,6 @@ class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
         ]
         for s in fabrications:
             self.assertIsNone(_freshness_key_from_id(s), s)
-            self.assertIsNone(_SLUG_DATE_SEQ3_PATTERN.match(s), s)
 
 
 class InitialLeafReadinessCertifiedDepsTests(unittest.TestCase):
