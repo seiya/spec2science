@@ -11493,11 +11493,10 @@ class Conductor:
             for directory in (work, bin_oracle):
                 if directory.exists():
                     shutil.rmtree(directory)
+            # Every file of `src/` but the audit logs, then the adapter over the model source.
             for path in sorted(src_dir.rglob("*")):
-                relative = path.relative_to(src_dir)
-                if (path.is_file() and path.name not in AUDIT_LOG_BASENAMES
-                        and relative.as_posix() != model):
-                    target_path = build_src / relative
+                if path.is_file() and path.name not in AUDIT_LOG_BASENAMES:
+                    target_path = build_src / path.relative_to(src_dir)
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(path, target_path)
             build_src.mkdir(parents=True, exist_ok=True)

@@ -238,6 +238,10 @@ class OracleKeyTest(_OracleFixture):
         assert declared is not None
         self.assertEqual(self.inputs("build")["oracle"],
                          oracle.member(self.repo, declared, FORTRAN_CPU))
+        # The `use` the workflow puts it to: a Build certified under issue #680 PR-1's member
+        # (none) is not one that built the oracle.
+        self.assertEqual(self.inputs("build")["oracle"]["use"], oracle.ORACLE_USE_VERSION)
+        self.assertEqual(oracle.ORACLE_USE_VERSION, 2)
         self.assertNotIn("oracle", self.inputs("build", OTHER_LANGUAGE))
         self.assertIsNone(self.member(target=OTHER_LANGUAGE))
 
@@ -289,8 +293,11 @@ class OracleKeyTest(_OracleFixture):
         swapped["builds"][0]["libraries"][0]["files"]["soname"]["libfoo.so.1"] = "0" * 64
         self.assertNotEqual(ort._derivation_key("validate", inputs(probed)),
                             ort._derivation_key("validate", inputs(swapped)))
+        # A stamp of a Build certified before Build built the oracle carries no `use`
+        # (issue #680 PR-1's member): not copied, so the node's Validate re-derives.
+        pr1_stamp = {k: v for k, v in probed.items() if k != "use"}
         for broken in (None, {**probed, "source": "0"},
-                       {**probed, "builds": probed["builds"][:1]}):
+                       {**probed, "builds": probed["builds"][:1]}, pr1_stamp):
             with self.subTest(broken=broken), \
                     self.assertRaises(ort.DerivationInputsUnresolvable):
                 inputs(broken)
@@ -322,8 +329,10 @@ class OracleKeyTest(_OracleFixture):
         self.assertEqual(out["oracle"], probed)
         other_library = json.loads(json.dumps(probed))
         other_library["builds"][1]["libraries"][0]["library_id"] = "zz"
+        pr1_stamp = {k: v for k, v in probed.items() if k != "use"}
         for broken in (None, {**probed, "declaration": "0"},
-                       {**probed, "builds": probed["builds"][::-1]}, other_library):
+                       {**probed, "builds": probed["builds"][::-1]}, other_library,
+                       pr1_stamp, {**probed, "use": oracle.ORACLE_USE_VERSION - 1}):
             with self.subTest(broken=broken):
                 self.assertIsNone(substituted(broken))
 
@@ -602,6 +611,7 @@ class OracleBuildTest(_OracleFixture):
         build_runtime = _build_runtime()
         real_compile = build_runtime.tool_compile_project
         calls = record if record is not None else []
+        staged = self.staged = []
         resolved = xl.resolve_closure(c.repo_root, FORTRAN_CPU,
                                       [xl.load_declaration(c.repo_root, i) for i in closure])
         real_run = subprocess.run
@@ -619,7 +629,8 @@ class OracleBuildTest(_OracleFixture):
                 mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
                                   lambda self_, refs_: []), \
                 mock.patch.object(wc.Conductor, "_stage_dependency_sources",
-                                  lambda self_, refs_, obj_dir, *, phase: []), \
+                                  lambda self_, refs_, obj_dir, *, phase:
+                                  staged.append((Path(obj_dir), phase)) or []), \
                 mock.patch.object(wc.Conductor, "_closure_libraries",
                                   lambda self_, refs_: resolved), \
                 mock.patch.object(subprocess, "run", run_but_the_post_build_validator):
@@ -679,6 +690,11 @@ class OracleBuildTest(_OracleFixture):
             # The adapter took the model's name; the driver and the control file are the
             # certified ones; nothing else of the oracle directory was copied.
             build_src = Path(call["project_dir"])
+            # The closure is staged into the build's own object directory, the one its
+            # overrides name.
+            overrides = dict(a.split("=", 1) for a in call["extra_args"])
+            self.assertIn((Path(overrides["OBJDIR"]), "build"), self.staged)
+            self.assertEqual(Path(overrides["OBJDIR"]), build_src.parent / "build")
             self.assertEqual((build_src / "spec_x_model.f90").read_text(), _ADAPTER_FOO)
             self.assertEqual(sorted(p.name for p in build_src.iterdir()),
                              ["Makefile", "spec_x_model.f90", "spec_x_runner.f90"])
@@ -773,6 +789,33 @@ class OracleBuildTest(_OracleFixture):
                       result.stderr)
         self.assertIn("adapter.f90", result.stderr)
         self.assertFalse((repo / refs.binary_dir() / "binary_meta.json").exists())
+
+    def test_an_oracle_build_that_leaves_no_binary_is_fail_closed_whatever_an_earlier_left(
+            self) -> None:
+        """A build that reports success and leaves no binary at the imposed path fails as one
+        that exited non-zero, and a binary an earlier attempt left there does not stand in."""
+        import tools.workflow_conductor as wc
+        from tools.tests.test_workflow_conductor import _build_runtime
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: []\n")
+        repo, c, refs = self.node(oracle_text=text)
+        stale = repo / refs.binary_dir() / "bin_oracle" / "default" / "spec_x_runner"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("an earlier attempt's\n")
+        build_runtime = _build_runtime()
+        real_compile = build_runtime.tool_compile_project
+
+        def no_oracle_binary(args):
+            if "/oracle/" in args["project_dir"]:
+                return {"ok": True, "return_code": 0, "command_id": "c", "stderr": ""}
+            return real_compile(args)
+
+        with mock.patch.object(build_runtime, "tool_compile_project", no_oracle_binary):
+            result = self.build(c, refs)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("oracle_build_failed: oracle build 'default'", result.stderr)
+        self.assertIn("left no binary at bin_oracle/default/spec_x_runner", result.stderr)
+        self.assertFalse(stale.exists())
 
     def test_an_oracle_at_a_remote_site_is_refused_before_anything_is_staged(self) -> None:
         import tools.workflow_conductor as wc
