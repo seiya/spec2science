@@ -12672,12 +12672,16 @@ class Conductor:
     def _author_quality_check(node_dir: Path, qc_cmd_id: str | None,
                               preset: str, *, ir: dict[str, Any], reference_dir: Path,
                               shape_runs: list[dict[str, Any]], launcher: bool,
-                              output_format: str,
+                              output_format: str, reference_ok: bool,
                               block_imposed: bool = False,
                               threads_checked: bool = False) -> str:
         """quality_check.json = the run of every execution shape compared with the serial
         reference: the quality-check preset's re-run, one process with one thread (per phase_04
         §4-1 / §4-2; issue #512). Returns the top-level status.
+
+        `reference_ok` is whether that re-run itself succeeded (`run_quality_checks`' `ok`): a
+        re-run that exited non-zero fails the status even when every shape agrees with what it
+        captured (issue #674). It has no default, since a default of true would pass that run.
 
         `shape_runs` holds one entry per shape the run launched — the certified shape first
         (`target_profile.TargetProfile.execution_shapes`) — as `{shape, dir, ok, command_id}`:
@@ -12696,8 +12700,8 @@ class Conductor:
         the shape's whenever the shape imposes one; and for one some shape of which runs more than
         one thread per rank (`threads_checked`, `TargetProfile.thread_count_observable`), the
         thread count it reports must be the shape's. The top-level
-        `checks` and `comparison` are the certified shape's, which the post-execute gate reads
-        as it did before the sweep. `output_format` is the target's: every shape's captures and
+        `checks` and `comparison` are the certified shape's, as they were before the sweep; no
+        gate reads this record. `output_format` is the target's: every shape's captures and
         the reference's are read through its capture store."""
         def _object(path: Path) -> dict[str, Any]:
             # A runner output that is unreadable, not UTF-8, not JSON or not an object reads as
@@ -12753,7 +12757,8 @@ class Conductor:
                 and row["state_agreement"]["status"] in ("agree", "not_applicable")) else "fail"
             shapes.append(row)
         certified = shapes[0]
-        status = "pass" if all(r["status"] == "pass" for r in shapes) else "fail"
+        status = "pass" if reference_ok and all(r["status"] == "pass" for r in shapes) \
+            else "fail"
         threads, ranks = certified["threads_per_rank"], certified["ranks"]
         doc = {
             "status": status,
@@ -13628,7 +13633,7 @@ class Conductor:
             node_dir, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
             ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,
             launcher=declares_launcher(target.parallel_backend),
-            output_format=target.output_format,
+            output_format=target.output_format, reference_ok=bool(res_qc.get("ok")),
             block_imposed=imposes_block_size(target.parallel_backend),
             threads_checked=target.thread_count_observable)
 
@@ -13715,10 +13720,10 @@ class Conductor:
         (node_dir / "trial_meta.json").write_text(
             json.dumps(trial_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-        # 4. gate: post_execute structural check. It also requires perf.json
-        # and quality_check.json to be present and to parse as JSON objects
-        # (`_validate_raw_evidence` / `_validate_execution_json_outputs`), so it needs no
-        # separate well-formedness gate ahead of it (issue #180).
+        # 4. gate: post_execute structural check. It also requires perf.json to be present and
+        # to parse as a JSON object (`_validate_raw_evidence` / `_validate_execution_json_outputs`),
+        # so it needs no separate well-formedness gate ahead of it (issue #180). It does not read
+        # quality_check.json, which the conductor wrote above and decides (issues #643, #674).
         gate = subprocess.run(
             ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_execute",
              "--pipeline-root", refs.pipeline_ref, "--run-id", refs.run_id or ""],
@@ -13777,6 +13782,20 @@ class Conductor:
                     f"<case_id>...` (the runner requires `--cases`); the binding is "
                     f"docs/backends/build_system/{build_system}/CONTROL_FILE.md §2, and see "
                     f"docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
+            # A re-run that exited non-zero (issue #674), named with its return code and the head
+            # and tail of its stderr (`_stderr_head_and_tail`, at most 2 000 characters). Last in
+            # the block, so the excerpt's tail cut keeps it: every later shape reports only that
+            # the reference failed first, and on a target with no further shape nothing else
+            # would.
+            if not res_qc.get("ok") and not res_qc.get("error"):
+                block += (f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} "
+                          f"re-run (the serial reference) failed (rc="
+                          f"{res_qc.get('return_code')!r})")
+                qc_err = _stderr_head_and_tail(res_qc.get("stderr") or "")
+                tail = qc_err["stderr_tail"].splitlines()
+                shown = qc_err["stderr_head"].splitlines() + (["..."] + tail if tail else [])
+                if shown:
+                    block += "; its stderr:" + "".join(f"\n    {ln}" for ln in shown)
             stderr += block
             # Classify the structural failure for classify_failure's execute branch (B1): the
             # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the

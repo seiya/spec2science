@@ -342,56 +342,6 @@ class EndToEndTests(unittest.TestCase):
         (qc_entry,) = self.h.log_entries("qc")
         self.assertEqual(qc_entry["command"], ["sh", "-c", "echo qc-ran; ls ../run"])
 
-    def test_the_post_execute_gate_accepts_the_entries_it_binds(self) -> None:
-        """The real post-execute gate function over the quality-check entry this executor
-        wrote, in a synthetic tree where the shipped control file IS the node's source `src/`
-        one: no violation. (The run entry's binding to the build's `bin/` and the quality-check
-        entry's `cwd` rule went in issue #643: the host composes both argvs and writes the
-        entries.)"""
-        import tools.validate_pipeline_semantics as vps
-
-        repo = self.h.root / "repo"
-        pipeline = repo / "workspace" / "pipelines" / "p"
-        bin_dir = pipeline / "binary" / "b1" / "bin"
-        bin_dir.mkdir(parents=True)
-        runner = bin_dir / "runner"
-        runner.write_text(_RUNNER)
-        runner.chmod(0o755)
-        src_dir = pipeline / "source" / "s1" / "src"
-        src_dir.mkdir(parents=True)
-        (src_dir / "Makefile").write_text("test:\n\t@echo quality check ran\n")
-        (src_dir.parent / "source_meta.json").write_text('{"verification_status": "pass"}')
-        ir = repo / "workspace" / "ir" / "n" / "spec.ir.yaml"
-        ir.parent.mkdir(parents=True)
-        ir.write_text("{}\n")
-        node_dir = pipeline / "runs" / "r1" / "n"
-        run_log, qc_log = node_dir / "command_log.jsonl", src_dir / "command_log.jsonl"
-        run = rx.CommandSpec(
-            tag="run", tool_name="run_program",
-            argv=(f"{self.h.job}/bin/runner", "--cases", f"{self.h.job}/ir/spec.ir.yaml", "c1"),
-            cwd=f"{self.h.job}/run", record_cwd=str(repo / "workspace" / "tmp" / "run"), env={},
-            timeout_sec=60, command_log_path=run_log, capture_limit=120000)
-        qc = rx.CommandSpec(
-            tag="qc", tool_name="run_quality_checks", argv=("make", "test"),
-            cwd=f"{self.h.job}/src", record_cwd=str(src_dir), env={}, timeout_sec=60,
-            command_log_path=qc_log, capture_limit=120000)
-        result = self.h.run(self.h.request(run, qc, ship={
-            "bin/runner": runner, "ir/spec.ir.yaml": ir, "src/Makefile": src_dir / "Makefile"}))
-        self.assertTrue(result.results[1]["ok"], result.results[1])
-        (node_dir / "trial_meta.json").write_text(json.dumps({
-            "source_binary_id": "b1", "source_source_id": "s1",
-            "source_command_ref": [
-                {"command_id": r["command_id"], "command_log_ref": log.relative_to(repo).as_posix()}
-                for r, log in zip(result.results, (run_log, qc_log))]}))
-        execution = vps.NodeExecution(node_key="n", node_dir=node_dir, exec_dir=node_dir,
-                                      pipeline_dir=pipeline)
-
-        found: list[str] = []
-        with mock.patch.object(vps, "_target_toolchain_from_pipeline_dir", autospec=True,
-                               return_value=("make", "fortran")):
-            vps._validate_quality_check_commands(repo, execution, found)
-        self.assertEqual(found, [])
-
     def test_the_entry_has_the_local_servers_shape_plus_site(self) -> None:
         """The local server's entry keys, read by running the server once, plus `site`."""
         server = rx.build_runtime

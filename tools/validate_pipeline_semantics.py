@@ -199,8 +199,9 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     issue #289 (R4-b PR-2), three of them values no backend implements.
 
     The gates once spelled the condition out rather than sharing a predicate (a third,
-    `_validate_quality_check_commands`'s `run_quality_checks` command rule, wrote it INVERTED and
-    was removed in issue #643), so a change had to be made in several places in two polarities.
+    the post-execute gate's rule on the `run_quality_checks` command, wrote it INVERTED and was
+    removed in issue #643, before that gate's quality-check checks went whole in issue #674), so a
+    change had to be made in several places in two polarities.
 
     NORMALIZATION: `provides` strips and case-folds the build-system value while the language
     half is compared exactly. Measured, that makes this predicate fire on 16 spellings the old
@@ -803,21 +804,6 @@ def _lineage_records(
 
 
 _COMMAND_LOG_BASENAME: str = "command_log.jsonl"
-
-
-def _iter_command_ref_entries(node: Any) -> list[dict[str, Any]]:
-    refs: list[dict[str, Any]] = []
-    if isinstance(node, dict):
-        if "command_id" in node and (
-            "command_log_ref" in node or "command_log_path" in node
-        ):
-            refs.append(node)
-        for value in node.values():
-            refs.extend(_iter_command_ref_entries(value))
-    elif isinstance(node, list):
-        for item in node:
-            refs.extend(_iter_command_ref_entries(item))
-    return refs
 
 
 def _validate_raw_evidence(
@@ -4949,28 +4935,6 @@ def _canonical_log_ref_for_run_program(
         return None
 
 
-def _canonical_log_ref_for_run_quality_checks(
-    pipeline_dir: Path, repo_root: Path, source_source_id: str
-) -> str | None:
-    """Canonical command_log_ref placement for the trial's specific source.
-
-    docs/workflow/phases/phase_04_validate.md mandates run_quality_checks
-    against `project_dir=source/<source_id>/src/`. The canonical placement
-    is bound strictly to the trial_meta's declared `source_source_id` —
-    sibling or older sources under the same pipeline are NOT acceptable.
-    This prevents a child from pointing trial_meta at a stale/unrelated
-    source's audit log to forge quality-check evidence.
-    """
-    gen_id = source_source_id.strip()
-    if not gen_id:
-        return None
-    canonical = pipeline_dir / "source" / gen_id / "src" / _COMMAND_LOG_BASENAME
-    try:
-        return canonical.resolve().relative_to(repo_root.resolve()).as_posix()
-    except ValueError:
-        return None
-
-
 def _validate_device_kernel_execution(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str]
 ) -> None:
@@ -5094,105 +5058,6 @@ def _validate_device_kernel_execution(
             f"host loop instead is refused by the reviewer: a loop the plan puts on the device "
             f"runs there, and a reason for keeping a loop on the host must be about the loop "
             f"itself, not about this gate or a run in which the kernel did not execute")
-
-
-def _validate_quality_check_commands(
-    repo_root: Path, execution: NodeExecution, violations: list[str]
-) -> None:
-    trial_meta_path = execution.node_dir / "trial_meta.json"
-    if not trial_meta_path.exists():
-        return
-
-    data = _read_json(trial_meta_path)
-    source_command_ref = data.get("source_command_ref")
-    if source_command_ref is None:
-        return
-
-    # The cross-phase canonical placement is bound strictly to the trial's
-    # `source_source_id` (single source of truth). Sibling/older
-    # generations under the same pipeline are not acceptable evidence for
-    # this execute run.
-    source_source_id_raw = data.get("source_source_id")
-    source_source_id: str | None = None
-    if isinstance(source_source_id_raw, str) and source_source_id_raw.strip():
-        source_source_id = source_source_id_raw.strip()
-    canonical_qc_ref: str | None = None
-    if source_source_id is not None:
-        canonical_qc_ref = _canonical_log_ref_for_run_quality_checks(
-            execution.pipeline_dir, repo_root, source_source_id
-        )
-
-    for entry in _iter_command_ref_entries(source_command_ref):
-        command_id = entry.get("command_id")
-        log_ref = entry.get("command_log_ref") or entry.get("command_log_path")
-        matched = (_find_command_log_record(repo_root=repo_root, command_id=command_id,
-                                            log_ref=log_ref)
-                   if isinstance(command_id, str) and isinstance(log_ref, str) else None)
-        if entry.get("tool_name") == "run_quality_checks" and (
-                matched is None or matched.get("tool_name") != "run_quality_checks"):
-            # The conductor wrote this entry from the record build_runtime logged for the
-            # quality check; without it the `ok` member below cannot be read (issue #643, D7).
-            # That member matters only on a target with neither a sweep shape nor a checked
-            # run: on any other, a quality check that exited non-zero already fails the run in
-            # the conductor (no sweep shape or checked run follows it, so their rows are
-            # `run_ok: false` and `qc_status` fails `structural_ok`). No declared target is such a one today;
-            # issue #643 PR-6's D2 run measures that case. A leaf-built program reaches this
-            # raise: the quality-check target of the host-written control file in `src/` runs
-            # the program built from the leaf's sources, which can append an unterminated line to
-            # `src/command_log.jsonl`, so the host's record is glued onto it and
-            # `_find_command_log_record` finds none.
-            # The run fails either way (rc 1, `post_execute_violation`), and the failure is
-            # charged to the leaf's Generate repair.
-            raise ValueError(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id!r} names no "
-                f"run_quality_checks record in {log_ref!r}")
-        if matched is None or matched.get("tool_name") != "run_quality_checks":
-            continue
-
-        # Reject failed build-runtime runs as evidence: ok!=true means the
-        # quality_check itself failed, so the record cannot prove a
-        # successful quality check. Kept by issue #643 plan decision D2: it is the only
-        # refusal of that failure on a target with neither a sweep shape nor a checked run
-        # (none declared today; PR-6's D2 run measures that case) — on every other target the
-        # conductor's `qc_status` has already failed the run.
-        if matched.get("ok") is not True:
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                f"ok must be true (got {matched.get('ok')!r}). Failed build-runtime "
-                f"runs cannot serve as tool-execution evidence."
-            )
-            continue
-
-        if canonical_qc_ref is None:
-            continue
-        log_ref_norm = log_ref.strip().rstrip("/")
-        if log_ref_norm != canonical_qc_ref:
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                f"command_log_ref must be the canonical command log placement "
-                f"for source_source_id={source_source_id!r} "
-                f"(expected {canonical_qc_ref!r}, got {log_ref_norm!r}). "
-                "Non-canonical or cross-generation placements are rejected to "
-                "prevent forged or stale tool-execution evidence."
-            )
-            continue
-
-        command = matched.get("command")
-        if not isinstance(command, list) or not command:
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} must have non-empty command array"
-            )
-            continue
-
-        normalized = [str(token).strip() for token in command if str(token).strip()]
-        if not normalized:
-            violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} must have non-empty command array"
-            )
-            continue
-
-        # The argv is the target build system's preset (`build_runtime.quality_check_command`),
-        # and the control file whose test target it runs is host-rendered for every bundle.
 
 
 def _validate_tests_verdict_summary_consistency(
@@ -8363,7 +8228,6 @@ def _validate_impl(
         # Per execution, not per source: each run carries its own trace (issue #307).
         _validate_device_kernel_execution(
             repo_root, execution, in_scope_src_dir, violations)
-        _validate_quality_check_commands(repo_root, execution, violations)
         _validate_tests_verdict_summary_consistency(
             repo_root, execution, violations, require_verdict=require_verdict
         )

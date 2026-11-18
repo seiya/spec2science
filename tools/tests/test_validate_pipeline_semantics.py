@@ -10536,83 +10536,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             )
             self.assertEqual(violations, [])
 
-    def test_run_quality_checks_rejects_sibling_generation_log(self) -> None:
-        """Cross-phase canonical placement is bound strictly to source_source_id.
-
-        An execute trial_meta that points run_quality_checks at a sibling
-        generation's canonical log (different gen_id) must be rejected, even
-        though the path is technically a canonical placement under the same
-        pipeline. Provenance must match the trial's own generation.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            pipeline_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-            )
-            node_dir = (
-                pipeline_dir / "runs" / "run_test_001" / "problem__shallow_water2d__0.3.0"
-            )
-            # Plant a sibling generation with its own canonical log.
-            sibling_gen_id = "gen_sibling_001"
-            sibling_dir = pipeline_dir / "source" / sibling_gen_id
-            sibling_dir.mkdir(parents=True, exist_ok=True)
-            (sibling_dir / "source_meta.json").write_text(
-                '{"verification_status": "pass"}\n', encoding="utf-8"
-            )
-            sibling_src = sibling_dir / "src"
-            sibling_src.mkdir(parents=True, exist_ok=True)
-            sibling_log_ref = (
-                f"workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                f"shallow-water2d_20260415_001/source/{sibling_gen_id}/src/"
-                "command_log.jsonl"
-            )
-            (sibling_src / "command_log.jsonl").write_text(
-                json.dumps(
-                    {
-                        "command_id": "cmd_quality_sibling",
-                        "tool_name": "run_quality_checks",
-                        "cwd": str(sibling_src),
-                        "command": ["make", "test"],
-                        "ok": True,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            # trial_meta declares the real (fixture) generation but references
-            # the sibling generation's log.
-            trial_meta["source_source_id"] = "src_20260415_001"
-            trial_meta["source_command_ref"]["run_quality_checks"] = {
-                "command_id": "cmd_quality_sibling",
-                "tool_name": "run_quality_checks",
-                "command_log_ref": sibling_log_ref,
-            }
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run_quality_checks command_id=cmd_quality_sibling" in v
-                    and "canonical command log placement" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
     def test_the_harness_self_test_reports_the_grid_it_was_launched_on(self) -> None:
         """Issue #512 (round 2): on the Validate run of the target's own harness, every case
         snapshot capturing the grid `__grid_dims` reports agrees with the launch grid, and one
@@ -27087,36 +27010,6 @@ class HostInvariantRaiseTests(unittest.TestCase):
         with self.assertRaisesRegex(
                 ValueError, r"snapshot_schema\.json: not written for a run that requires "
                             r"state_snapshots"):
-            validate(repo_root=repo_root, workspace_root="workspace")
-
-    def test_post_execute_raises_on_a_quality_check_entry_naming_no_record(self) -> None:
-        repo_root = self._tree()
-        trial_meta = next((repo_root / self._PIPE).rglob("trial_meta.json"))
-        data = copy.deepcopy(json.loads(trial_meta.read_text(encoding="utf-8")))
-        log_ref = data["source_command_ref"]["run_threads_1"]["command_log_ref"]
-        data["source_command_ref"]["run_quality_checks"] = {
-            "tool_name": "run_quality_checks", "command_id": "cmd_qc_absent",
-            "command_log_ref": log_ref}
-        _write_json(trial_meta, data)
-        with self.assertRaisesRegex(
-                ValueError, r"run_quality_checks command_id='cmd_qc_absent' names no "
-                            r"run_quality_checks record"):
-            validate(repo_root=repo_root, workspace_root="workspace")
-
-    def test_post_execute_raises_on_a_quality_check_entry_naming_another_tools_record(
-            self) -> None:
-        # The id resolves, but to the run's `run_program` record: the qc raise's second arm.
-        repo_root = self._tree()
-        trial_meta = next((repo_root / self._PIPE).rglob("trial_meta.json"))
-        data = copy.deepcopy(json.loads(trial_meta.read_text(encoding="utf-8")))
-        run_entry = data["source_command_ref"]["run_threads_1"]
-        data["source_command_ref"]["run_quality_checks"] = {
-            "tool_name": "run_quality_checks", "command_id": run_entry["command_id"],
-            "command_log_ref": run_entry["command_log_ref"]}
-        _write_json(trial_meta, data)
-        with self.assertRaisesRegex(
-                ValueError, rf"run_quality_checks command_id={run_entry['command_id']!r} names "
-                            r"no run_quality_checks record"):
             validate(repo_root=repo_root, workspace_root="workspace")
 
     def test_post_execute_raises_on_a_source_id_naming_no_src_dir(self) -> None:

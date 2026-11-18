@@ -23,7 +23,6 @@ Stdlib only; imports nothing from the neutral core.
 from __future__ import annotations
 
 import posixpath
-from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from tools.backends.build_system.make.failure import (  # noqa: F401  (re-export)
@@ -51,11 +50,6 @@ CONTROL_FILE_BASENAMES: tuple[str, ...] = ("GNUmakefile", "makefile", "Makefile"
 #: file — the one cross-phase log placement the runtime grants
 #: (`orchestration_runtime._builds_in_source`).
 BUILDS_IN_SOURCE = True
-
-#: The `run_quality_checks` presets that run this build system's test target, each mapped to the
-#: target it requires the control file to declare. A compiled language's quality check must use
-#: one of them (`validate_pipeline_semantics._validate_quality_check_commands`).
-QUALITY_CHECK_PRESETS: dict[str, str] = {"make_test": "test", "make_check": "check"}
 
 
 #: The suffix of an object the control file's rules compile a source to.
@@ -280,22 +274,3 @@ test:
 clean:
 {_clean_recipe(rules)}"""
 
-
-def targets(makefile_path: Path) -> set[str]:
-    """The target names a Makefile's rule lines declare (a best-effort line reader, for the
-    `run_quality_checks` gate's "the preset's target exists" check)."""
-    targets: set[str] = set()
-    for raw_line in makefile_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or raw_line.startswith("\t"):
-            continue
-        if ":" not in raw_line:
-            continue
-        head, _ = raw_line.split(":", 1)
-        if "=" in head:
-            continue
-        for token in head.split():
-            token_l = token.strip().lower()
-            if token_l:
-                targets.add(token_l)
-    return targets

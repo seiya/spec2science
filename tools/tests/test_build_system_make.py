@@ -3,7 +3,7 @@
 What the neutral core reads off `tools/backends/build_system/make/execute.py` and
 `control_file.object_name`, pinned by value: these moved unchanged out of the conductor, the
 server, the validator and `codegen_bundle`, and a value that changes here changes what a Build
-runs, what a quality check re-runs and which record the gate accepts. The readers' wiring is
+runs and what a quality check re-runs. The readers' wiring is
 pinned where the readers are (`test_workflow_conductor.py`, `test_build_runtime.py`,
 `test_validate_pipeline_semantics.py`, `test_codegen_bundle.py`).
 """
@@ -27,16 +27,9 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
         self.assertIs(registry.capability_module("build_system", "make", "build_execute"),
                       execute)
 
-    def test_the_quality_check_presets_are_the_control_files(self) -> None:
-        # The argv table and the control-file target table name ONE preset set: a preset the
-        # server runs whose target the gate does not require (or the reverse) would pass a
-        # record the control file cannot have produced.
-        self.assertEqual(set(execute.QUALITY_CHECK_COMMANDS),
-                         set(control_file.QUALITY_CHECK_PRESETS))
-        for preset, (executable, target) in execute.QUALITY_CHECK_COMMANDS.items():
-            with self.subTest(preset=preset):
-                self.assertEqual(executable, "make")
-                self.assertEqual(target, control_file.QUALITY_CHECK_PRESETS[preset])
+    def test_the_quality_check_presets(self) -> None:
+        self.assertEqual(execute.QUALITY_CHECK_COMMANDS,
+                         {"make_test": ("make", "test"), "make_check": ("make", "check")})
         self.assertIn(execute.QUALITY_CHECK_PRESET, execute.QUALITY_CHECK_COMMANDS)
         self.assertEqual(execute.QUALITY_CHECK_PRESET, "make_test")
 
@@ -59,30 +52,6 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
             execute.quality_check_env("/o", "/b", "/r", "x_runner", "/s.yaml", ["c1", "c2"]),
             {"OBJDIR": "/o", "BINDIR": "/b", "RUNDIR": "/r", "BIN": "x_runner",
              "SPEC": "/s.yaml", "CASES": "c1 c2"})
-
-    def test_quality_check_preset_reads_the_recorded_argv(self) -> None:
-        cases = {
-            ("make", "test"): "make_test",
-            ("/usr/bin/make", "-j4", "test"): "make_test",
-            ("MAKE", "TEST"): "make_test",
-            ("make", "check"): "make_check",
-            ("make", "", "check"): "make_check",
-            ("make",): None,
-            ("make", "all"): None,
-            ("make", "tests"): None,
-            ("ctest",): None,
-            ("pytest", "-q"): None,
-            # Another executable carrying a preset's target token is not that preset.
-            ("ninja", "test"): None,
-            ("ctest", "test"): None,
-            ("gmake", "check"): None,
-            ("bash", "-c", "make test"): None,
-            ("test", "make"): None,
-            (): None,
-        }
-        for argv, expected in cases.items():
-            with self.subTest(argv=argv):
-                self.assertEqual(execute.quality_check_preset(list(argv)), expected)
 
     def test_build_artifacts_and_binary_missing(self) -> None:
         self.assertEqual(execute.BUILD_ARTIFACT_SUFFIXES, (".o", ".a", ".so"))
