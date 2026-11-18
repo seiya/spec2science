@@ -2197,14 +2197,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # execute-22 re-pinned in place by issue #674 (operator decision O4, 2026-11-18):
     # `_author_quality_check` takes the serial reference re-run's own `ok` (`reference_ok`) and
     # its status requires it, and `_execute_inproc` passes it and names a re-run that exited
-    # non-zero in trial_meta.json#failure_excerpt. A run whose re-run exits 0 writes the same
+    # non-zero in trial_meta.json#failure_excerpt; its comment on the post-execute gate no longer
+    # says the gate reads quality_check.json. A run whose re-run exits 0 writes the same
     # records (quality_check.json gains no key); one whose re-run exits non-zero already failed
     # on every declared target (each later shape's row is `not_run`), and on a target with no
     # further shape the post-execute gate's `ok` member refused it. No certified Validate output
     # changes status. (Measured by diffing `execute_tuple()` against main 8adea1c4's: those two
     # rows and no other.) The digest `execute-22` shipped with at 8adea1c4:
     "execute-22@8adea1c4": "b1f87278a22c0ebf72c53d58677822a6d703ecfc0a162769777b6def2c20a238",
-    "execute-22": "0c0785ca7cf9e5c9f5dc833091330c099ad187b7b8afa4537eac95d8560a75f2",
+    "execute-22": "5351468e8ac5006e8c58928560478865eb5869927659c611e3bf81d754f99415",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

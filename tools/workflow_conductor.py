@@ -13720,10 +13720,10 @@ class Conductor:
         (node_dir / "trial_meta.json").write_text(
             json.dumps(trial_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-        # 4. gate: post_execute structural check. It also requires perf.json
-        # and quality_check.json to be present and to parse as JSON objects
-        # (`_validate_raw_evidence` / `_validate_execution_json_outputs`), so it needs no
-        # separate well-formedness gate ahead of it (issue #180).
+        # 4. gate: post_execute structural check. It also requires perf.json to be present and
+        # to parse as a JSON object (`_validate_raw_evidence` / `_validate_execution_json_outputs`),
+        # so it needs no separate well-formedness gate ahead of it (issue #180). It does not read
+        # quality_check.json, which the conductor wrote above and decides (issues #643, #674).
         gate = subprocess.run(
             ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_execute",
              "--pipeline-root", refs.pipeline_ref, "--run-id", refs.run_id or ""],
