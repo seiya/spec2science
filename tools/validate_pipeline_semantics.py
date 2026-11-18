@@ -882,13 +882,12 @@ def _validate_raw_evidence(
                 if not schema_path.exists():
                     # The conductor writes snapshot_schema.json from the IR's `state_snapshots`
                     # entry (`_author_snapshot_schema`); no leaf writes it (issue #643, D7: a
-                    # raise, not a silent skip of the per-record shape checks below). It is NOT
-                    # a pure host invariant: an IR that spells the entry's `artifact` by an
-                    # alias this reader admits (`raw/state_snapshots`,
-                    # `_normalize_raw_evidence_artifact`) reaches here, because
-                    # `_author_snapshot_schema` matches only the bare `state_snapshots` and
-                    # writes nothing (no `artifact` of the IR corpus is an alias spelling,
-                    # measured 2026-11-18). The run fails either way: the raise exits rc 1 and
+                    # raise, not a silent skip of the per-record shape checks below). This
+                    # reader admits an alias spelling of the `artifact` (`raw/state_snapshots`)
+                    # that `_author_snapshot_schema` does not match, but Compile.static refuses
+                    # an IR whose only `state_snapshots` entry is spelled that way (measured
+                    # 2026-11-18 on three certified IRs rewritten to the alias: 3, 3 and 13
+                    # violations), so no certified IR reaches here. The raise exits rc 1 and
                     # routes as `post_execute_violation`.
                     raise ValueError(f"{schema_path}: not written for a run that requires "
                                      f"state_snapshots")
