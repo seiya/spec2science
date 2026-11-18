@@ -436,6 +436,45 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                                      if ln.startswith("    ")))
                 self.assertNotIn("serial reference re-run failed", trial["failure_excerpt"])
 
+    def test_a_reference_that_exits_non_zero_fails_with_no_further_shape(self) -> None:
+        """Issue #674: on a target with neither a sweep shape nor a checked row, a quality-check
+        re-run that writes complete captures and then exits non-zero agrees with the certified
+        run on every row; the conductor fails it on the re-run's own exit and names the return
+        code and the re-run's stderr in the excerpt. The post-execute gate is answered 0, so
+        this observes the conductor's decision alone. The same target exiting 0 passes."""
+        target = profile_with(execution={"threads_per_rank": 1})
+        self.assertEqual(list(target.sweep_shapes), [])
+        for where in ("site", "local"):
+            for rc in (1, 0):
+                with self.subTest(where=where, rc=rc), tempfile.TemporaryDirectory() as tmp:
+                    n = _Node(tmp, target=target,
+                              site=None if where == "site" else Site(LOCAL_SITE, ("cpu",)))
+                    (n.src / "Makefile").write_text(
+                        _MAKEFILE + "\techo 'qc reference boom' >&2\n\texit %d\n" % rc,
+                        encoding="utf-8")
+                    with mock.patch("tools.checked_build.checked_shape", return_value=None):
+                        self.assertEqual(n.execute()["returncode"], 0)
+                    qc_log = [e for e in n.log_entries(n.src / "command_log.jsonl")
+                              if e["tool_name"] == "run_quality_checks"]
+                    self.assertEqual([(e["ok"], e["return_code"] != 0) for e in qc_log],
+                                     [(rc == 0, rc != 0)])
+                    quality = json.loads((n.node_dir / "quality_check.json").read_text())
+                    # The re-run captured every case: the one row agrees with it.
+                    self.assertEqual([r["status"] for r in quality["shapes"]], ["pass"])
+                    self.assertTrue(quality["checks"]["verdict_match"])
+                    trial = json.loads((n.node_dir / "trial_meta.json").read_text())
+                    if rc == 0:
+                        self.assertEqual(quality["status"], "pass")
+                        self.assertEqual(trial["status"], "pass")
+                        continue
+                    self.assertEqual(quality["status"], "fail")
+                    self.assertEqual(trial["status"], "fail")
+                    self.assertEqual(trial["failure_category"], "quality_check_mismatch")
+                    excerpt = trial["failure_excerpt"]
+                    self.assertIn("re-run (the serial reference) failed (rc="
+                                  f"{qc_log[0]['return_code']!r}); its stderr:", excerpt)
+                    self.assertIn("    qc reference boom", excerpt.splitlines())
+
     def _job_request(self, n: _Node, **knobs: str):
         """Execute, and hand back the `JobRequest` the job really ran from."""
         from tools import remote_execution

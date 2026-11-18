@@ -18127,11 +18127,18 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual(trial["status"], "fail")
         self.assertIn("re-run (the serial reference) did not complete: "
                       "timeout: exceeded 1800 sec", trial["failure_excerpt"])
-        # a re-run that failed with no reason of the library's carries no such line
+        # The stopped re-run is named once, by the library's reason, not as an exit too.
+        self.assertNotIn("re-run (the serial reference) failed", trial["failure_excerpt"])
+        # A re-run that exited non-zero with no reason of the library's carries no such line;
+        # it is named by its return code instead (issue #674), and the line is the excerpt's
+        # last, so its tail cut keeps it. This fake re-run writes no stderr, so none is quoted.
         result, _, node_dir, *_ = self._drive_traced_execute(target, qc_rc=2)
         trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
         self.assertEqual(trial["status"], "fail")
         self.assertNotIn("did not complete", trial["failure_excerpt"])
+        self.assertEqual(trial["failure_excerpt"].splitlines()[-1],
+                         "[execute fail: quality_check] the make_test re-run (the serial "
+                         "reference) failed (rc=2)")
 
     def test_execute_inproc_a_failed_run_runs_no_summary_and_keeps_no_stale_one(self) -> None:
         """A runner failure stays the content failure it was (no trace summary runs after it),
@@ -19361,6 +19368,9 @@ class DeterministicBuildTest(unittest.TestCase):
                 self.assertEqual(row["run_failure"],
                                  {"not_run": "the serial reference re-run failed first"})
             self.assertEqual(meta["status"], "fail")
+            # And the reference names itself (issue #674); this fake reports no return code.
+            self.assertIn("the make_test re-run (the serial reference) failed (rc=None)",
+                          meta["failure_excerpt"])
 
     def test_execute_inproc_records_quality_check_mismatch(self) -> None:
         # Gates clean, every shape's captures present -> the only failing input is the make-test
@@ -23040,12 +23050,13 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         return d
 
     def _author(self, runs: list[dict], *, ir=None, launcher: bool = False,
-                block_imposed: bool = False,
-                threads_checked: bool = False) -> tuple[str, dict]:
+                block_imposed: bool = False, threads_checked: bool = False,
+                reference_ok: bool = True) -> tuple[str, dict]:
         ir = self._ir() if ir is None else ir
         status = wc.Conductor._author_quality_check(
             self.node, "Q", "make_test", ir=ir, reference_dir=self.ref,
             shape_runs=runs, launcher=launcher, output_format="json",
+            reference_ok=reference_ok,
             block_imposed=block_imposed, threads_checked=threads_checked)
         return status, json.loads((self.node / "quality_check.json").read_text())
 
@@ -23074,6 +23085,28 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertEqual(doc["shapes"][1]["verdict"],
                          {"self_verdict": "pass", "per_test": {"t_h": "pass", "t_s": "pass"}})
         self.assertEqual(wc.Conductor._quality_check_failure_lines(self.node), [])
+
+    def test_a_reference_that_did_not_succeed_fails_while_every_shape_agrees(self) -> None:
+        """Issue #674: the re-run's own exit decides the status as well as the rows. With
+        `reference_ok` false every row still agrees with what the re-run captured, the status
+        is `fail`, and the document is otherwise the one a succeeding re-run writes: the record
+        gains no key."""
+        docs = {}
+        for reference_ok in (True, False):
+            status, docs[reference_ok] = self._author(
+                self._runs(self._run_dir(f"run_{reference_ok}", self.h),
+                           self._run_dir(f"t2_{reference_ok}", self.h)),
+                reference_ok=reference_ok)
+            self.assertEqual(status, "pass" if reference_ok else "fail")
+            self.assertEqual(docs[reference_ok]["status"], status)
+        self.assertEqual([r["status"] for r in docs[False]["shapes"]], ["pass", "pass"])
+
+        def without_status_and_dirs(doc: dict) -> str:
+            text = json.dumps({k: v for k, v in doc.items() if k != "status"}, sort_keys=True)
+            return text.replace("_True", "").replace("_False", "")
+
+        self.assertEqual(without_status_and_dirs(docs[False]),
+                         without_status_and_dirs(docs[True]))
 
     def test_a_state_that_disagrees_fails_and_names_the_shape_case_and_quantity(self) -> None:
         """A shape whose state differs from the serial reference's by 1e-6 relative fails,
