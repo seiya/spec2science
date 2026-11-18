@@ -36,11 +36,6 @@ try:
     # the variables its build had to be handed.
     from tools import capture_store
     from tools import checked_build
-    from tools.meta_contracts import (
-        STAGE_META_FILENAME_BY_STEP,
-        required_meta_keys_for_step,
-        stage_meta_type_violations,
-    )
     # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
     # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
     # The module imports only the capture store seam (the registry beneath it, stdlib-only)
@@ -77,11 +72,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     # the variables its build had to be handed.
     from tools import capture_store
     from tools import checked_build
-    from tools.meta_contracts import (
-        STAGE_META_FILENAME_BY_STEP,
-        required_meta_keys_for_step,
-        stage_meta_type_violations,
-    )
     # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
     # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
     # The module imports only the capture store seam (the registry beneath it, stdlib-only)
@@ -679,24 +669,6 @@ def _has_execution_artifacts(node_dir: Path) -> bool:
     return any(path.exists() for path in markers)
 
 
-def _subtree_has_any_file(root: Path) -> bool:
-    """True if any regular file exists anywhere under ``root``.
-
-    Used by the non-canonical run-directory scan. The only legitimate child under
-    ``runs/<run_id>/`` is the pipeline's ``<node_key_safe>`` dir (skipped by the
-    caller), so any file-bearing non-canonical child is a forbidden Validate
-    output placement — regardless of filename. Detecting content generally
-    (rather than a fixed marker set) covers every documented output: perf /
-    verdict / summary / semantic_review / trial_meta / quality_check /
-    validate_meta, raw evidence (state_snapshots, snapshot_schema), stdout/stderr logs, and command_log — plus any future
-    additions. Recursive so legacy nested ``<kind>/<spec>/`` layouts are caught.
-    """
-    for path in root.rglob("*"):
-        if path.is_file():
-            return True
-    return False
-
-
 def _node_executions(
     workspace_root: Path,
     pipeline_roots: list[Path] | None = None,
@@ -711,7 +683,7 @@ def _node_executions(
         # The canonical run node directory is the pipeline's own node_key_safe
         # (`_pipeline_node_safe`). Derive node_key from it so a non-canonical
         # run subdir name (mismatched or unparseable) is never discovered as the
-        # execution node; such dirs are reported by _validate_run_node_dir_names.
+        # execution node; the conductor creates only the canonical one.
         expected_node_safe = _pipeline_node_safe(pipeline_dir) or ""
         node_key = _node_safe_to_node_key(expected_node_safe)
         if node_key is None:
@@ -740,65 +712,6 @@ def _node_executions(
                     )
                 )
     return result
-
-
-def _validate_run_node_dir_names(
-    workspace_root: Path,
-    pipeline_roots: list[Path] | None,
-    violations: list[str],
-    run_ids: set[str] | None = None,
-) -> None:
-    """Every run-artifact-bearing ``runs/<run_id>/<child>`` directory must be
-    named exactly the pipeline's ``node_key_safe`` (``_pipeline_node_safe``),
-    and that parent must itself be a valid ``node_key_safe``.
-
-    Reports mismatched-but-parseable names (e.g. a forged ``@version`` segment),
-    unparseable run-child names, and malformed pipeline parents (where the
-    canonical name itself is invalid, so the child could never be canonical).
-    ``_node_executions`` only discovers the canonical dir, so without this scan a
-    non-canonical artifact directory would be silently ignored and could pass
-    validation whenever a canonical execution also exists. Content detection is
-    general (``_subtree_has_any_file``) so every documented Validate output —
-    including judge-only outputs, logs, command_log, validate_meta, and raw
-    evidence — and legacy nested (``<kind>/<spec>/``) layouts are all covered.
-    """
-    for pipeline_dir in _pipeline_targets(workspace_root, pipeline_roots):
-        if not pipeline_dir.is_dir():
-            continue
-        expected_node_safe = _pipeline_node_safe(pipeline_dir) or ""
-        parent_is_valid = _node_safe_to_node_key(expected_node_safe) is not None
-        runs_root = pipeline_dir / "runs"
-        if not runs_root.exists():
-            continue
-        for exec_dir in sorted(runs_root.iterdir()):
-            if not exec_dir.is_dir():
-                continue
-            if run_ids is not None and exec_dir.name not in run_ids:
-                continue
-            for child in sorted(exec_dir.iterdir()):
-                if not child.is_dir():
-                    continue
-                # The canonical run node dir (parent valid + name match) is
-                # validated by the per-execution checks; skip it (and its nested
-                # raw/ artifacts) entirely.
-                if parent_is_valid and child.name == expected_node_safe:
-                    continue
-                # Non-canonical child: any run artifact anywhere beneath it is a
-                # forbidden non-canonical Validate output (including legacy nested
-                # <kind>/<spec>/ layouts).
-                if not _subtree_has_any_file(child):
-                    continue
-                if not parent_is_valid:
-                    violations.append(
-                        f"{child}: pipeline node_key_safe directory "
-                        f"{expected_node_safe!r} is not a valid "
-                        "'<spec_kind>__<spec_id>__<spec_version>'"
-                    )
-                else:
-                    violations.append(
-                        f"{child}: run node directory name must equal pipeline "
-                        f"node_key_safe {expected_node_safe!r} (got {child.name!r})"
-                    )
 
 
 def _pipeline_node_safe(pipeline_dir: Path) -> str | None:
@@ -889,85 +802,6 @@ def _lineage_records(
     return records
 
 
-def _validate_source_meta_json_files(
-    pipeline_dir: Path,
-    violations: list[str],
-    *,
-    in_scope_source_ids: set[str] | None = None,
-) -> None:
-    """Check every in-scope ``source/<id>/source_meta.json`` against the stage-meta contract.
-
-    ``in_scope_source_ids`` scopes the sweep to the source directories the in-scope runs
-    actually DECLARE (``trial_meta.source_source_id``), mirroring ``_execution_in_scope_src_dir``
-    (see its docstring): a superseded attempt directory, left behind by an earlier Generate
-    under the append-only contract, must not fail an otherwise-conformant run. That is not a
-    cosmetic concern — a schema-violating meta in a superseded dir is UNREPAIRABLE: a Generate
-    reopen rotates a FRESH source dir and deletes nothing, so every subsequent attempt re-reads
-    the same immutable violation and the repair loop cannot converge (E2E #4).
-
-    A superseded dir is therefore skipped ENTIRELY — not even its JSON is parsed. Anything the
-    sweep could still flag there would reintroduce exactly the unrepairable class this scoping
-    removes; the dir is debug provenance, not a certified deliverable.
-
-    ``None`` (the default) keeps the historic pipeline-wide sweep: callers that cannot derive a
-    declared-source scope must not silently get a weaker gate.
-    """
-    generate_root = pipeline_dir / "source"
-    if not generate_root.exists() or not generate_root.is_dir():
-        return
-    for gen_dir in sorted(generate_root.iterdir()):
-        if not gen_dir.is_dir():
-            continue
-        if in_scope_source_ids is not None and gen_dir.name not in in_scope_source_ids:
-            continue
-        meta_path = gen_dir / "source_meta.json"
-        if not meta_path.exists():
-            # An in-scope (declared) source MUST carry its meta: it is a required output of the
-            # certified Generate. An undeclared/superseded dir is only ever an attempt artifact,
-            # so a missing meta there says nothing.
-            if in_scope_source_ids is not None:
-                violations.append(f"{meta_path}: missing")
-            continue
-        try:
-            data = _read_json(meta_path)
-        except json.JSONDecodeError:
-            violations.append(f"{meta_path}: invalid json")
-            continue
-        if not isinstance(data, dict):
-            violations.append(f"{meta_path}: must be json object")
-            continue
-        for key in required_meta_keys_for_step("generate"):
-            if key not in data:
-                violations.append(f"{meta_path}: missing required key {key!r}")
-        for clause in stage_meta_type_violations(data, step_token="generate"):
-            violations.append(f"{meta_path}:{clause}")
-        # NOTE: lint is no longer recorded in source_meta.lint_command_ref (the leaf does
-        # not run run_linter); the conductor-run lint is certified by post_generate (which now
-        # runs as the static check of the deterministic generate.gate substep, before verify)
-        # against the host-authored lint evidence (_validate_generate_lint_command_logs).
-
-
-def _validate_ir_meta_json(ir_dir: Path, violations: list[str]) -> None:
-    meta_path = ir_dir / STAGE_META_FILENAME_BY_STEP["compile"]
-    if not meta_path.exists():
-        violations.append(f"{meta_path}: missing")
-        return
-    try:
-        data = _read_json(meta_path)
-    except json.JSONDecodeError:
-        violations.append(f"{meta_path}: invalid json")
-        return
-    if not isinstance(data, dict):
-        violations.append(f"{meta_path}: must be json object")
-        return
-    required_keys = required_meta_keys_for_step("compile")
-    for key in required_keys:
-        if key not in data:
-            violations.append(f"{meta_path}: missing required key {key!r}")
-    for clause in stage_meta_type_violations(data, step_token="compile"):
-        violations.append(f"{meta_path}:{clause}")
-
-
 _COMMAND_LOG_BASENAME: str = "command_log.jsonl"
 
 
@@ -1002,188 +836,6 @@ def _iter_command_ref_entries(node: Any) -> list[dict[str, Any]]:
     return refs
 
 
-def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: list[str]) -> None:
-    trial_meta_path = execution.node_dir / "trial_meta.json"
-    if not trial_meta_path.exists():
-        violations.append(f"{trial_meta_path}: missing")
-        return
-
-    data = _read_json(trial_meta_path)
-
-    process_trace_ref = data.get("process_trace_ref")
-    if not isinstance(process_trace_ref, str) or not process_trace_ref.startswith("workspace/"):
-        violations.append(
-            f"{trial_meta_path}:process_trace_ref must start with workspace/"
-        )
-    else:
-        trace_path = repo_root / process_trace_ref
-        if not trace_path.exists():
-            violations.append(f"{trial_meta_path}:process_trace_ref target not found ({process_trace_ref})")
-
-    raw_refs = data.get("raw_artifact_refs")
-    if not isinstance(raw_refs, list) or not raw_refs:
-        violations.append(f"{trial_meta_path}:raw_artifact_refs must be non-empty list")
-    else:
-        for i, ref in enumerate(raw_refs):
-            if not isinstance(ref, str) or not ref.startswith("workspace/"):
-                violations.append(
-                    f"{trial_meta_path}:raw_artifact_refs[{i}] must start with workspace/"
-                )
-                continue
-            target = repo_root / ref
-            if not target.exists():
-                violations.append(
-                    f"{trial_meta_path}:raw_artifact_refs[{i}] target not found ({ref})"
-                )
-
-    source_command_ref = data.get("source_command_ref")
-    if source_command_ref is None:
-        violations.append(f"{trial_meta_path}:source_command_ref missing")
-        return
-
-    # `source_source_id` is a hard requirement for execute trial_meta —
-    # without it, validators cannot bind quality_check evidence to a specific
-    # generation, and a writer could otherwise omit the field to silently
-    # bypass `tool_name` / mandatory `run_program` checks. Legacy artifacts
-    # under active validation must be re-recorded; post-migration writers
-    # always emit the field.
-    _src_gen_raw = data.get("source_source_id")
-    if not isinstance(_src_gen_raw, str) or not _src_gen_raw.strip():
-        violations.append(
-            f"{trial_meta_path}:source_source_id is required (single "
-            "trusted source for cross-phase quality_check provenance and "
-            "the gate for strict source_command_ref validation)."
-        )
-    # `source_binary_id` binds run_program evidence to the specific build whose
-    # binary this execute used. Without it, a trial_meta could attribute its
-    # results to one build while having actually executed a sibling build's
-    # binary (mixed-build attribution).
-    _src_build_raw = data.get("source_binary_id")
-    _trial_source_build_id: str | None = None
-    if not isinstance(_src_build_raw, str) or not _src_build_raw.strip():
-        violations.append(
-            f"{trial_meta_path}:source_binary_id is required (binds "
-            "run_program evidence to the specific build whose binary the "
-            "execute run consumed)."
-        )
-    else:
-        _trial_source_build_id = _src_build_raw.strip()
-        # Verify the referenced binary directory exists with a bin/ subdirectory.
-        _build_bin = (
-            execution.pipeline_dir
-            / "binary"
-            / _trial_source_build_id
-            / "bin"
-        )
-        if not _build_bin.is_dir():
-            violations.append(
-                f"{trial_meta_path}:source_binary_id={_trial_source_build_id!r} "
-                f"does not resolve to an existing build bin directory "
-                f"({_build_bin!s})."
-            )
-            _trial_source_build_id = None
-    declared_tool_names_in_entries: list[str] = []
-
-    # source_command_ref entries record run_program/run_threads/etc. command
-    # invocations; their log files use project-defined filenames (e.g.
-    # `run_commands.jsonl`) and do NOT use the canonical command log basename.
-    # The validator only checks command_id presence (no tool_name/ok inspection),
-    # so the forge surface here is limited to "a record exists with this id" —
-    # not meaningful evidence of successful build-runtime execution. Canonical
-    # placement is enforced separately for the conductor lint evidence where the
-    # validator inspects tool_name/ok and the forge becomes high-impact.
-    for entry in _iter_command_ref_entries(source_command_ref):
-        command_id = entry.get("command_id")
-        log_ref = entry.get("command_log_ref") or entry.get("command_log_path")
-        if not isinstance(command_id, str) or not command_id:
-            violations.append(f"{trial_meta_path}:command_id invalid in source_command_ref")
-            continue
-        if not isinstance(log_ref, str):
-            violations.append(f"{trial_meta_path}:command_log_ref/path invalid in source_command_ref")
-            continue
-        if not log_ref.startswith("workspace/"):
-            violations.append(
-                f"{trial_meta_path}:command_log_ref/path must start with workspace/ ({log_ref})"
-            )
-            continue
-        log_path = repo_root / log_ref if log_ref.startswith("workspace/") else Path(log_ref)
-        if not log_path.exists():
-            violations.append(f"{trial_meta_path}:command log missing ({log_ref})")
-            continue
-        found_record: dict[str, Any] | None = None
-        for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("command_id") == command_id:
-                if isinstance(obj, dict):
-                    found_record = obj
-                break
-        if found_record is None:
-            violations.append(
-                f"{trial_meta_path}:command_id {command_id} not found in {log_ref}"
-            )
-            continue
-        # Defense against forged source_command_ref evidence: every entry must
-        # declare its role via `tool_name` and the matched log record must
-        # report the same tool. Execute trial_meta only documents tools
-        # actually invoked by the execute role (run_program / run_quality_checks).
-        # `compile_project` is a build-phase tool whose evidence belongs in
-        # binary_meta.json, not execute trial_meta — accepting it here would
-        # let a child claim build provenance through execute records without
-        # any role-specific lineage validation.
-        recognized_tool_names = {"run_program", "run_quality_checks"}
-        declared_tool_name_raw = entry.get("tool_name")
-        if (
-            not isinstance(declared_tool_name_raw, str)
-            or declared_tool_name_raw.strip() not in recognized_tool_names
-        ):
-            violations.append(
-                f"{trial_meta_path}:source_command_ref entry with command_id "
-                f"{command_id} must declare tool_name field in "
-                f"{sorted(recognized_tool_names)!r} (got "
-                f"{declared_tool_name_raw!r}). Each entry must commit to a "
-                f"specific build-runtime tool role so downstream role-specific checks "
-                f"cannot be silently skipped."
-            )
-            continue
-        declared_tool_name = declared_tool_name_raw.strip()
-        declared_tool_names_in_entries.append(declared_tool_name)
-        record_tool_name = found_record.get("tool_name")
-        if not isinstance(record_tool_name, str) or record_tool_name not in recognized_tool_names:
-            violations.append(
-                f"{trial_meta_path}:source_command_ref command_id {command_id} log "
-                f"record must declare tool_name in {sorted(recognized_tool_names)!r} "
-                f"(got {record_tool_name!r}). Records without a recognized build-runtime "
-                f"tool_name cannot serve as tool-execution evidence."
-            )
-            continue
-        if record_tool_name != declared_tool_name:
-            violations.append(
-                f"{trial_meta_path}:source_command_ref entry tool_name="
-                f"{declared_tool_name!r} (command_id={command_id}) does not "
-                f"match log record tool_name={record_tool_name!r}. The "
-                f"declared role must match the resolved build-runtime record."
-            )
-
-    # Execute trial_meta MUST contain at least one run_program entry — this is
-    # the actual execution evidence the trial is supposed to record. Without
-    # this check, a forged trial_meta with only `compile_project` /
-    # `run_quality_checks` entries (which validate via different code paths)
-    # could pass `post_execute` while never proving the program actually ran.
-    if "run_program" not in declared_tool_names_in_entries:
-        violations.append(
-            f"{trial_meta_path}:source_command_ref must include at least one "
-            f"entry with tool_name='run_program' (declared roles: "
-            f"{sorted(set(declared_tool_names_in_entries))!r}). Execute trial "
-            f"metadata requires actual program-run evidence."
-        )
-
-
 def _validate_raw_evidence(
     repo_root: Path, execution: NodeExecution, violations: list[str]
 ) -> None:
@@ -1195,10 +847,7 @@ def _validate_raw_evidence(
         expected_time_shape_expr,
     ) = _state_snapshot_requirement_details(repo_root, execution)
 
-    required = [
-        execution.node_dir / "perf.json",
-        execution.node_dir / "quality_check.json",
-    ]
+    required = [execution.node_dir / "perf.json"]
     snapshots_dir = capture_store.snapshot_dir(execution.node_dir)
     if state_snapshot_required or "state_snapshots" in required_raw_evidence:
         required.append(snapshots_dir)
@@ -2111,18 +1760,7 @@ def _plain_source_dir_name(source_source_id: str | None) -> str | None:
     return source_source_id
 
 
-def _execution_declared_source_id(execution: NodeExecution) -> str | None:
-    """The source directory NAME this execution declares it was produced from, or ``None``
-    when absent/invalid. Pure: reports no violation (``_execution_in_scope_src_dir`` and
-    ``_validate_trial_meta`` already own that reporting, and a second report of one defect
-    would double-count it).
-    """
-    return _plain_source_dir_name(_execution_raw_source_source_id(execution))
-
-
-def _execution_in_scope_src_dir(
-    execution: NodeExecution, violations: list[str]
-) -> Path | None:
+def _execution_in_scope_src_dir(execution: NodeExecution) -> Path:
     """Resolve the single ``source/<source_source_id>/src`` directory that this
     execution's ``trial_meta.json`` declares it was produced from.
 
@@ -2133,28 +1771,23 @@ def _execution_in_scope_src_dir(
     append-only contract) permanently fail an otherwise-conformant run; mirroring
     the existing ``--run-id`` run-scoping fixes this.
 
-    Returns ``None`` when ``source_source_id`` is absent/invalid (already reported
-    by ``_validate_trial_meta`` as a hard requirement, so no double-report and no
-    silent pass) — callers then skip the structural source scan entirely rather
-    than falling back to a pipeline-wide sweep.
+    ``trial_meta.json`` and its ``source_source_id`` are the conductor's: ``_execute_inproc``
+    writes ``refs.source_id``, the source the run was built from, before this gate runs. A run
+    whose record names no plain id of an existing ``src/`` directory is therefore a broken host
+    invariant, not a leaf outcome, and it raises rather than skip the source scans without a
+    word (issue #643, D7).
     """
     raw_source_id = _execution_raw_source_source_id(execution)
-    if raw_source_id is None:
-        return None
     source_source_id = _plain_source_dir_name(raw_source_id)
-    if source_source_id is None:
-        # Malformed (separator / traversal). Flag it rather than silently skipping so a
-        # forged/malformed trial_meta is caught.
-        trial_meta_path = execution.node_dir / "trial_meta.json"
-        violations.append(
-            f"{trial_meta_path}:source_source_id={raw_source_id!r} must be a "
-            "plain source directory name (no path separators or traversal)"
-        )
-        return None
-    src_dir = execution.pipeline_dir / "source" / source_source_id / "src"
-    if not src_dir.is_dir():
-        violations.append(f"{src_dir}: declared source_source_id directory missing")
-        return None
+    src_dir = (execution.pipeline_dir / "source" / source_source_id / "src"
+               if source_source_id is not None else None)
+    if src_dir is None or not src_dir.is_dir():
+        # Host invariant broken: the conductor wrote this run's trial_meta.json from the source
+        # it built; no leaf writes it.
+        raise ValueError(
+            f"{execution.node_dir / 'trial_meta.json'}: source_source_id={raw_source_id!r} "
+            f"names no source directory of {execution.pipeline_dir} (the conductor writes this "
+            f"record from the source the run was built from)")
     return src_dir
 
 
@@ -6646,11 +6279,11 @@ def _validate_device_kernel_execution(
 
     trial_meta_path = execution.node_dir / "trial_meta.json"
     if not trial_meta_path.exists():
-        return  # no run record; `_validate_trial_meta` reports it
+        return  # no run record; `_execution_in_scope_src_dir` raised on it before this
     try:
         data = _read_json(trial_meta_path)
     except (OSError, ValueError):
-        return  # an unreadable record; `_validate_trial_meta` reports it
+        return  # an unreadable record; `_execution_in_scope_src_dir` raised on it before this
     if not isinstance(data, dict):
         return
     summary = execution.node_dir / host_execution.KERNEL_TRACE_ARTIFACT
@@ -7611,7 +7244,6 @@ def _validate_compile_ir_dir_impl(repo_root: Path, ir_dir: Path) -> list[str]:
 
     _try_load_optional_plan_yaml(ir_dir, "spec.ir.yaml", violations)
     _validate_ir_source_refs_tests(repo_root, ir_dir, violations)
-    _validate_ir_meta_json(ir_dir, violations)
     _validate_compile_dependency_consistency(repo_root, ir_dir, violations)
     _validate_profile_selection(repo_root, ir_dir, violations)
     _validate_component_dep_operations(repo_root, ir_dir, violations)
@@ -10164,18 +9796,15 @@ def _validate_post_generate_stage_impl(
     _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
     node_key, ir_ref = _lineage_node_key_and_ir_ref(pipeline_dir)
     if not node_key:
-        violations.append(f"{pipeline_dir / 'lineage.json'}: missing node_key")
-        return violations
+        # Host invariant broken: the conductor writes lineage.json (`_write_lineage`) before
+        # Generate runs; no leaf writes it (issue #643, D7: a raise, not a silent pass).
+        raise ValueError(f"{pipeline_dir / 'lineage.json'}: no node_key")
 
     gen_id = source_id or _latest_source_id(pipeline_dir)
     if not gen_id:
-        violations.append(f"{pipeline_dir / 'generate'}: no generation directory found")
-        return violations
-    if _parse_stage_attempt_id(gen_id, "src") is None:
-        violations.append(
-            f"{pipeline_dir / 'source' / gen_id}: invalid source_id; expected src_<YYYYMMDD>_<seq3>"
-        )
-        return violations
+        # Host invariant broken: the conductor passes `--source-id` for the source it just
+        # wrote (issue #643, D7).
+        raise ValueError(f"{pipeline_dir / 'source'}: no source directory")
 
     if ir_ref:
         ir_dir = (repo_root / ir_ref).resolve()
@@ -10188,8 +9817,6 @@ def _validate_post_generate_stage_impl(
             ir_violations: list[str] = []
             _validate_io_contract_file(repo_root, derived_path, ir_violations)
             violations.extend(_as_stale_certified_ir(v, derived_path) for v in ir_violations)
-        else:
-            violations.append(f"{derived_path}: missing (ir_ref {ir_ref})")
 
     execution = _stub_execution(pipeline_dir, node_key)
     _validate_generate_outputs_for_generation(
@@ -10243,16 +9870,12 @@ def _validate_post_build_stage_impl(
 
     _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
     gen_id = source_id or _latest_source_id(pipeline_dir)
-    if not gen_id:
-        violations.append(f"{pipeline_dir / 'generate'}: no generation directory found")
-        return violations
-    if _parse_stage_attempt_id(gen_id, "src") is None:
-        violations.append(
-            f"{pipeline_dir / 'source' / gen_id}: invalid source_id; expected src_<YYYYMMDD>_<seq3>"
-        )
-        return violations
-
-    src_dir = pipeline_dir / "source" / gen_id / "src"
+    src_dir = pipeline_dir / "source" / gen_id / "src" if gen_id else None
+    if src_dir is None or not src_dir.is_dir():
+        # Host invariant broken: the conductor passes `--source-id` for the source it built
+        # (issue #643, D7: a raise, not a silent pass — the control-file gates read nothing
+        # from an absent directory).
+        raise ValueError(f"{pipeline_dir / 'source'}: no source directory {gen_id!r}")
     _build_system, _language = _target_toolchain_from_pipeline_dir(repo_root, pipeline_dir)
     _validate_control_file(src_dir, violations, build_system=_build_system, language=_language,
                            report_language_refusal=True)
@@ -10301,14 +9924,6 @@ def _validate_impl(
     executions = _node_executions(
         workspace_path, pipeline_roots=pipeline_roots, run_ids=run_ids
     )
-    # The run node directory under runs/<run_id>/ must be the pipeline's own
-    # node_key_safe. Report any artifact-bearing run subdir that deviates (a
-    # forged version segment or an unparseable name) — _node_executions only
-    # discovers the canonical dir, so without this scan a non-canonical artifact
-    # directory would be silently ignored and could pass whenever a canonical
-    # execution also exists. Run before the empty-executions check so a lone
-    # non-canonical dir fails explicitly instead of "no execution artifacts found".
-    _validate_run_node_dir_names(workspace_path, pipeline_roots, violations, run_ids)
     # When --run-id scopes validation, every explicitly requested pipeline root
     # must contribute at least one execution for the requested run. Without this,
     # run-id filtering silently drops any requested root that lacks the scoped run
@@ -10331,30 +9946,6 @@ def _validate_impl(
     _validate_pipeline_targets_resolve(
         repo_root, [execution.pipeline_dir for execution in executions], violations)
 
-    # Scope the source_meta sweep to the source dirs the in-scope executions DECLARE, the
-    # same lineage scoping the structural source checks already use. With --run-id (the
-    # post_execute / pre_judge stages) `executions` is already the current run, so only the
-    # current source lineage is strictly checked and superseded attempt dirs are skipped;
-    # a full run takes the union over every run's declared source, so only a dir NO run
-    # references is skipped. A pipeline whose executions declare no valid source at all
-    # (itself a hard _validate_trial_meta violation) falls back to None = sweep everything,
-    # so the gate never silently weakens.
-    scope_by_pipeline: dict[Path, set[str]] = {}
-    for execution in executions:
-        declared = _execution_declared_source_id(execution)
-        if declared:
-            scope_by_pipeline.setdefault(execution.pipeline_dir, set()).add(declared)
-
-    seen_pipeline_dirs: set[Path] = set()
-    for execution in executions:
-        pd = execution.pipeline_dir
-        if pd in seen_pipeline_dirs:
-            continue
-        seen_pipeline_dirs.add(pd)
-        _validate_source_meta_json_files(
-            pd, violations, in_scope_source_ids=(scope_by_pipeline.get(pd) or None)
-        )
-
     if require_orchestration:
         _validate_orchestration_hierarchy(
             workspace_path=workspace_path,
@@ -10376,17 +9967,13 @@ def _validate_impl(
     for execution in executions:
         _validate_algorithm_contract_schema(repo_root, execution, violations)
         _validate_io_contract_schema(repo_root, execution, violations)
-        _validate_trial_meta(repo_root, execution, violations)
         _validate_execution_json_outputs(execution, violations)
         _validate_launched_ranks(repo_root, execution, violations)
         _validate_execution_shapes(repo_root, execution, violations)
         _validate_checked_row(repo_root, execution, violations)
         _validate_raw_evidence(repo_root, execution, violations)
-        in_scope_src_dir = _execution_in_scope_src_dir(execution, violations)
-        if (
-            in_scope_src_dir is not None
-            and in_scope_src_dir not in validated_structural_src_dirs
-        ):
+        in_scope_src_dir = _execution_in_scope_src_dir(execution)
+        if in_scope_src_dir not in validated_structural_src_dirs:
             validated_structural_src_dirs.add(in_scope_src_dir)
             _validate_generate_outputs(
                 repo_root, execution, in_scope_src_dir, violations
@@ -10398,9 +9985,8 @@ def _validate_impl(
                 repo_root, execution, in_scope_src_dir, violations)
         _validate_run_program_inputs(repo_root, execution, violations)
         # Per execution, not per source: each run carries its own trace (issue #307).
-        if in_scope_src_dir is not None:
-            _validate_device_kernel_execution(
-                repo_root, execution, in_scope_src_dir, violations)
+        _validate_device_kernel_execution(
+            repo_root, execution, in_scope_src_dir, violations)
         _validate_quality_check_commands(repo_root, execution, violations)
         _validate_tests_verdict_summary_consistency(
             repo_root, execution, violations, require_verdict=require_verdict

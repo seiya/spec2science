@@ -31,8 +31,6 @@
 
   A placement to a non-canonical path (e.g. `<execute>/raw/forged.jsonl`) is rejected by the post_generate / post_execute gate (prevention of forged build-runtime execution evidence).
 
-  Furthermore, `_validate_trial_meta` requires that the log record each entry of `source_command_ref` points to include a **recognized build-runtime `tool_name`** (`run_program` / `run_quality_checks`). `compile_project` is a build-phase tool and is not accepted in the execute trial_meta. A forge record with a missing / unknown `tool_name` is rejected (blocking the path where a tool-specific validator silently skips).
-
   The cross-phase canonical placement of the Validate.execute substep is bound only to the `source_id` field of the launch request. A path listed under `<pipeline_ref>/source/<other_source_id>/src/...` (a generation different from the request's `source_id`) authorizes nothing: the placement is derived from `source_id`, not from the list. On the trial_meta side too, `source_source_id` is a required record, fixing the bind between execute and generate.
 
   **Single-namespace enforcement:** the `allowed_output_paths` of a generate / build / validate step (Validate.execute substep) must target only a single `<source_id>` / `<binary_id>` / `<run_id>`. Mixing and listing multiple ids under the same pipeline makes `record-launch` reject with a `ValueError` (prevention of granting write authority to the audit log of a sibling/older run). For Generate / Validate.execute, it additionally requires that the request's `source_id` / `run_id` matches the ids of the listed paths (a mismatch is rejected with `does not match request ...id`).

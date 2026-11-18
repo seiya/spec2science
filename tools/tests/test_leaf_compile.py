@@ -967,8 +967,8 @@ class PureCompileProducerTests(_Fixture):
 
     def test_the_host_written_meta_satisfies_the_stage_meta_contract(self) -> None:
         """The five keys and their types, checked by the contract module itself rather than by a
-        list transcribed here — `_stage_meta_contract_findings` runs the same functions inside
-        `classify_failure`, so a meta that fails them escalates every compile failure."""
+        list transcribed here — `write_step_result` runs the same functions on a pass step
+        result, so a meta that fails them refuses every compile pass."""
         import tools.meta_contracts as mc
         c = self.conductor(_envelope(_whole()))
         c.run_substep(self.refs, "compile", "generate")

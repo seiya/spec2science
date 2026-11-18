@@ -10126,10 +10126,8 @@ def _validate_step_meta_payload(meta_data: dict[str, Any], *, step_token: str, m
             f"{meta_filename} missing required keys: {missing_keys} "
             f"(phase={step_token} substep=verify ref={meta_ref})"
         )
-    # Value types come from the one canonical definition (tools/meta_contracts), shared with
-    # both validator sweeps, so this write gate and the read gates cannot drift apart. The
-    # first violation in canonical key order is raised; the clause text is byte-identical to
-    # the sweeps' so a finding reads the same wherever it surfaces.
+    # Value types come from the one canonical definition (tools/meta_contracts). The first
+    # violation in canonical key order is raised.
     violations = stage_meta_type_violations(meta_data, step_token=step_token)
     if violations:
         raise ValueError(f"{meta_filename} {violations[0]}: {meta_ref}")

@@ -31,7 +31,6 @@ from tools.validate_pipeline_semantics import (
     _required_raw_evidence,
     _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
-    _validate_source_meta_json_files,
     _validate_compile_dependency_consistency,
     _validate_published_surface,
     _parse_public_api_from_controlled_spec,
@@ -1541,6 +1540,10 @@ end program shallow_water2d_runner
             node_dir = root_with_run / "runs" / "run_test_001" / node_safe
             node_dir.mkdir(parents=True, exist_ok=True)
             _write_json(node_dir / "perf.json", {"walltime_sec": 0.0})
+            # The conductor's run record naming the source the run was built from: without it
+            # the stage raises (a broken host invariant, issue #643 D7).
+            _write_json(node_dir / "trial_meta.json", {"source_source_id": "src_20260415_001"})
+            (root_with_run / "source" / "src_20260415_001" / "src").mkdir(parents=True)
 
             # Second requested root holds only a different (sibling) run id.
             root_without_run = (
@@ -1562,233 +1565,6 @@ end program shallow_water2d_runner
                 any(
                     "no execution artifacts found for requested --run-id" in v
                     and "shallow-water2d_20260415_002" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_rejects_run_node_dir_not_matching_pipeline_node_safe(self) -> None:
-        """A run node dir whose name != the pipeline's node_key_safe must fail.
-
-        Discovery reconstructs node_key from the inner directory name; downstream
-        node_key matching normalizes away @version, so a forged version segment
-        (e.g. ...__9.9.9 under a ...__0.3.0 pipeline) would otherwise pass. The
-        validator must reject it instead of treating it as the execution node.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            forged_node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__9.9.9"
-            )
-            forged_node_dir.mkdir(parents=True, exist_ok=True)
-            (forged_node_dir / "perf.json").write_text("{}\n", encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run node directory name must equal pipeline node_key_safe" in v
-                    and "problem__shallow_water2d__9.9.9" in v
-                    for v in violations
-                ),
-                violations,
-            )
-            self.assertFalse(
-                any("no execution artifacts found" in v for v in violations),
-                violations,
-            )
-
-    def test_rejects_unparseable_run_node_dir_with_artifacts(self) -> None:
-        """An artifact-bearing run dir whose name is not a valid node_key_safe
-        must be reported, not silently dropped, even when a canonical execution
-        exists elsewhere."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            # Plant an artifact-bearing run dir with an unparseable name (no
-            # `<kind>__<id>__<version>` structure) alongside the canonical run.
-            bad_node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_002"
-                / "garbage_dir"
-            )
-            bad_node_dir.mkdir(parents=True, exist_ok=True)
-            (bad_node_dir / "perf.json").write_text("{}\n", encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run node directory name must equal pipeline node_key_safe" in v
-                    and "garbage_dir" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_rejects_judge_only_noncanonical_run_dir(self) -> None:
-        """A non-canonical run dir holding only Validate.judge outputs (no execute
-        markers) must still be reported, even when a canonical execution exists."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            judge_only_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_003"
-                / "problem__shallow_water2d__9.9.9"
-            )
-            judge_only_dir.mkdir(parents=True, exist_ok=True)
-            (judge_only_dir / "verdict.json").write_text("{}\n", encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run node directory name must equal pipeline node_key_safe" in v
-                    and "problem__shallow_water2d__9.9.9" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_rejects_legacy_nested_run_artifacts(self) -> None:
-        """Legacy nested run artifacts (runs/<run_id>/<kind>/<spec>/perf.json),
-        where markers sit a level below the immediate run child, must be reported
-        alongside a canonical execution — not silently skipped."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            legacy_spec_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_004"
-                / "problem"
-                / "shallow_water2d"
-            )
-            legacy_spec_dir.mkdir(parents=True, exist_ok=True)
-            (legacy_spec_dir / "perf.json").write_text("{}\n", encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run node directory name must equal pipeline node_key_safe" in v
-                    and "got 'problem'" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_rejects_noncanonical_run_dir_with_only_log_output(self) -> None:
-        """A non-canonical run dir holding only a non-marker Validate output
-        (e.g. stdout.log / validate_meta.json, not in the fixed marker set) must
-        still be reported — content detection is general, not basename-keyed."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            log_only_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_005"
-                / "problem__shallow_water2d__9.9.9"
-            )
-            log_only_dir.mkdir(parents=True, exist_ok=True)
-            (log_only_dir / "stdout.log").write_text("ran\n", encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run node directory name must equal pipeline node_key_safe" in v
-                    and "problem__shallow_water2d__9.9.9" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_rejects_malformed_pipeline_node_safe_parent_with_artifacts(self) -> None:
-        """A pipeline whose node_key_safe parent dir is unparseable must be
-        reported when it holds run artifacts, even though _node_executions skips
-        it and a canonical execution exists elsewhere."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            # Malformed pipeline parent ("bad" is not <kind>__<id>__<version>);
-            # the run child matches that malformed parent name.
-            bad_run_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "bad"
-                / _TARGET_ID
-                / "shallow-water2d_20260415_009"
-                / "runs"
-                / "run_test_001"
-                / "bad"
-            )
-            bad_run_dir.mkdir(parents=True, exist_ok=True)
-            (bad_run_dir / "perf.json").write_text("{}\n", encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "is not a valid '<spec_kind>__<spec_id>__<spec_version>'" in v
-                    and f"{bad_run_dir}" in v
                     for v in violations
                 ),
                 violations,
@@ -1971,8 +1747,9 @@ end program shallow_water2d_runner
     def test_path_like_source_source_id_is_rejected(self) -> None:
         """The scoped source lookup uses trial_meta.source_source_id directly as a
         path component. A value containing a separator / absolute path / traversal
-        must be rejected (not used to scan an unintended directory), so a forged or
-        malformed trial_meta cannot escape `<pipeline>/source/`.
+        is not used to scan an unintended directory (`_plain_source_dir_name`): the
+        conductor writes the record, so such a value is a broken host invariant and
+        the stage raises rather than skip the source scans (issue #643, D7).
         """
         for bad_id in ("../../escape", "/abs/source", "a/b"):
             with self.subTest(source_source_id=bad_id):
@@ -2025,16 +1802,8 @@ end program shallow_water2d_runner
                         encoding="utf-8",
                     )
 
-                    violations = validate(
-                        repo_root=repo_root, workspace_root="workspace"
-                    )
-                    self.assertTrue(
-                        any(
-                            "must be a plain source directory name" in v
-                            for v in violations
-                        ),
-                        f"path-like source_source_id must be rejected; got: {violations}",
-                    )
+                    with self.assertRaisesRegex(ValueError, "names no source directory"):
+                        validate(repo_root=repo_root, workspace_root="workspace")
 
     def test_state_variables_shorthand_in_snapshot_schema_is_rejected(self) -> None:
         """Regression: the `state_variables: [name, ...]` shorthand (variable
@@ -7851,66 +7620,6 @@ end program shallow_water2d_runner
                 any("io_contract.outputs must be non-empty list" in v for v in violations)
             )
 
-    def test_rejects_source_command_log_outside_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            outside_log = repo_root / "command_log.jsonl"
-            outside_log.write_text(
-                json.dumps(
-                    {
-                        "command_id": "cmd_run_001",
-                        "tool_name": "run_program",
-                        "command": ["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            trial_meta["source_command_ref"]["run_threads_1"]["command_log_ref"] = "command_log.jsonl"
-            _write_json(trial_meta_path, trial_meta)
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("command_log_ref/path must start with workspace/" in v for v in violations)
-            )
-
     def test_validates_tests_md_and_per_test_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -10787,62 +10496,6 @@ end program shallow_water2d_runner
         self.assertIn(f"test {dropped['test_id']!r}: no predicate", partial[0])
         self.assertIn(repr([dropped["quantity"]]), partial[0])
 
-    def test_validate_compile_stage_rejects_missing_context_isolated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["x", "y"],
-            )
-            meta_path = (
-                repo_root
-                / "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json"
-            )
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-            data.pop("context_isolated", None)
-            meta_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            violations = validate_compile_stage(
-                repo_root,
-                "workspace",
-                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-            )
-            self.assertTrue(
-                any("ir_meta.json: missing required key 'context_isolated'" in v for v in violations),
-                violations,
-            )
-
-    def test_validate_compile_stage_requires_constraint_reason_when_not_isolated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["x", "y"],
-            )
-            meta_path = (
-                repo_root
-                / "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json"
-            )
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-            data["context_isolated"] = False
-            meta_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            violations = validate_compile_stage(
-                repo_root,
-                "workspace",
-                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-            )
-            self.assertTrue(
-                any("requires non-empty constraint_reason when context_isolated=false" in v for v in violations),
-                violations,
-            )
-
     def test_validate_post_generate_stage_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -11152,238 +10805,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 any(
                     "canonical command log placement" in v for v in violations
                 ),
-                violations,
-            )
-
-    def test_trial_meta_rejects_role_mismatch_compile_project_for_run_program(self) -> None:
-        """Defense against forged role substitution in source_command_ref.
-
-        A child writes a log record with `tool_name=compile_project` at the
-        canonical placement and points the run_program slot in trial_meta at
-        it. Without role binding, the trial_meta whitelist accepts the record
-        (compile_project is recognized) and downstream
-        `_validate_run_program_inputs` silently skips because the matched
-        tool_name != run_program. The new validator must reject this role
-        substitution explicitly via declared/resolved tool_name match.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            # Replace the canonical log with a compile_project record (wrong
-            # tool for the run_program slot the fixture's trial_meta declares).
-            log_path = node_dir / "command_log.jsonl"
-            log_path.write_text(
-                json.dumps(
-                    {
-                        "command_id": "fixture_run_program_001",
-                        "tool_name": "compile_project",
-                        "command": ["make", "all"],
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta["source_command_ref"]["run_threads_1"]["command_id"] = (
-                "fixture_run_program_001"
-            )
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            # compile_project is no longer accepted in execute trial_meta's
-            # tool_name whitelist (it's a build-phase tool). The forged log
-            # record's tool_name=compile_project is rejected by the
-            # recognized-tool-names check, not role mismatch.
-            self.assertTrue(
-                any(
-                    "log record must declare tool_name" in v
-                    and "compile_project" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_trial_meta_rejects_log_record_without_recognized_tool_name(self) -> None:
-        """Defense against forged source_command_ref records lacking tool_name.
-
-        A child agent that writes a log record with command_id only (no
-        tool_name field) at the canonical placement, then points trial_meta
-        source_command_ref at it, must be rejected. Without tool_name the
-        downstream tool-specific validators silently skip the entry, leaving
-        the forged provenance unverified.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            # Overwrite the canonical log file with a record that has no
-            # tool_name field — only command_id.
-            log_path = node_dir / "command_log.jsonl"
-            log_path.write_text(
-                json.dumps(
-                    {
-                        "command_id": "fixture_run_program_001",
-                        "command": ["./simulate", "spec.ir.yaml", "out"],
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta["source_command_ref"]["run_threads_1"]["command_id"] = (
-                "fixture_run_program_001"
-            )
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "log record must declare tool_name" in v
-                    and "fixture_run_program_001" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_trial_meta_requires_source_source_id(self) -> None:
-        """Strict policy: every execute trial_meta must declare
-        `source_source_id`. Without it, validators cannot bind
-        provenance and the field could be omitted to silently bypass
-        per-entry tool_name and mandatory run_program checks.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta.pop("source_source_id", None)
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "source_source_id is required" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_trial_meta_requires_source_build_id(self) -> None:
-        """source_binary_id binds run_program to the specific build whose
-        binary the execute used. Omission must be rejected.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta.pop("source_binary_id", None)
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("source_binary_id is required" in v for v in violations),
-                violations,
-            )
-
-    def test_trial_meta_source_binary_id_must_name_an_existing_build(self) -> None:
-        """A recorded source_binary_id with no `binary/<id>/bin/` is rejected, and the
-        violation names the key trial_meta actually carries."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta["source_binary_id"] = "build_absent_999"
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("source_binary_id='build_absent_999' does not resolve to an existing build"
-                    in v for v in violations),
                 violations,
             )
 
@@ -11924,265 +11345,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                     and "canonical command log placement" in v
                     for v in violations
                 ),
-                violations,
-            )
-
-    def test_validate_source_meta_accepts_fail_without_lint_command_ref(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            pipeline_dir = Path(tmp) / "pipeline"
-            gen_dir = pipeline_dir / "source" / "gen_fail_001"
-            gen_dir.mkdir(parents=True)
-            _write_json(
-                gen_dir / "source_meta.json",
-                {
-                    "attempt_count": 1,
-                    "verification_status": "fail",
-                    "last_fail_reason": "lint failed",
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            violations: list[str] = []
-            _validate_source_meta_json_files(pipeline_dir, violations)
-            self.assertEqual(violations, [])
-
-    # -- source_meta sweep lineage scoping (E2E #4) ---------------------------------
-
-    _INCIDENT_DICT_REASON = {
-        "violated_convention": "inert_dependency_call",
-        "target_artifact": "src/model.f90",
-        "reason": "binding probe invented",
-    }
-
-    def _plant_sibling_source_meta(self, pipeline_dir: Path, source_id: str, meta: dict) -> None:
-        gen_dir = pipeline_dir / "source" / source_id
-        gen_dir.mkdir(parents=True, exist_ok=True)
-        _write_json(gen_dir / "source_meta.json", meta)
-
-    def _minimal_tree_pipeline_dir(self, repo_root: Path) -> Path:
-        _seed_shape_expr_schema_into(repo_root)
-        _create_minimal_execution_tree(
-            repo_root,
-            dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-            model_text="module m\nimplicit none\nend module m\n",
-            runner_text="program r\nimplicit none\nend program r\n",
-            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-        )
-        return (
-            repo_root
-            / "workspace"
-            / "pipelines"
-            / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-            / "shallow-water2d_20260415_001"
-        )
-
-    def test_superseded_source_dir_dict_last_fail_reason_does_not_fail_post_execute(self) -> None:
-        """E2E #4 reproduction: a SUPERSEDED source dir (left by an earlier failed Generate
-        attempt) whose source_meta.last_fail_reason is a structured dict must not fail the
-        run that declares a different, conformant source. The superseded dir is immutable
-        under the append-only contract and a Generate reopen only rotates a fresh dir, so
-        flagging it would make the failure permanently unrepairable."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            pipeline_dir = self._minimal_tree_pipeline_dir(repo_root)
-            # The tree's trial_meta declares src_20260415_001; this is a stale sibling.
-            self._plant_sibling_source_meta(
-                pipeline_dir,
-                "src_20260415_000",
-                {
-                    "attempt_count": 2,
-                    "verification_status": "fail",
-                    "last_fail_reason": self._INCIDENT_DICT_REASON,
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertFalse(
-                [v for v in violations if "last_fail_reason" in v], violations
-            )
-
-    def test_declared_source_dir_dict_last_fail_reason_still_fails(self) -> None:
-        """The gate is scoped, not weakened: the same violation in the source the run
-        DECLARES is still reported."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            pipeline_dir = self._minimal_tree_pipeline_dir(repo_root)
-            meta_path = (
-                pipeline_dir / "source" / "src_20260415_001" / "source_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["last_fail_reason"] = self._INCIDENT_DICT_REASON
-            _write_json(meta_path, meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                [
-                    v
-                    for v in violations
-                    if "src_20260415_001" in v
-                    and "last_fail_reason must be string or null" in v
-                ],
-                violations,
-            )
-
-    def test_source_meta_sweep_unscoped_call_checks_all_dirs(self) -> None:
-        """The default (in_scope_source_ids=None) stays a pipeline-wide sweep: a caller that
-        cannot derive a declared-source scope must not silently get a weaker gate."""
-        with tempfile.TemporaryDirectory() as tmp:
-            pipeline_dir = Path(tmp) / "pipeline"
-            self._plant_sibling_source_meta(
-                pipeline_dir,
-                "src_stale_001",
-                {
-                    "attempt_count": 1,
-                    "verification_status": "fail",
-                    "last_fail_reason": self._INCIDENT_DICT_REASON,
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            violations: list[str] = []
-            _validate_source_meta_json_files(pipeline_dir, violations)
-            self.assertEqual(
-                violations,
-                [
-                    f"{pipeline_dir / 'source' / 'src_stale_001' / 'source_meta.json'}"
-                    ":last_fail_reason must be string or null"
-                ],
-            )
-
-    def test_source_meta_scope_skips_only_undeclared_dirs(self) -> None:
-        """An explicit scope strictly checks the declared dirs and skips the rest — the
-        superseded dir is not even parsed (its JSON is invalid here, and that is fine)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            pipeline_dir = Path(tmp) / "pipeline"
-            self._plant_sibling_source_meta(
-                pipeline_dir,
-                "src_declared_a",
-                {
-                    "attempt_count": 1,
-                    "verification_status": "pass",
-                    "last_fail_reason": None,
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            self._plant_sibling_source_meta(
-                pipeline_dir,
-                "src_declared_b",
-                {
-                    "attempt_count": 1,
-                    "verification_status": "fail",
-                    "last_fail_reason": self._INCIDENT_DICT_REASON,
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            superseded = pipeline_dir / "source" / "src_superseded"
-            superseded.mkdir(parents=True)
-            (superseded / "source_meta.json").write_text("{not json", encoding="utf-8")
-
-            violations: list[str] = []
-            _validate_source_meta_json_files(
-                pipeline_dir,
-                violations,
-                in_scope_source_ids={"src_declared_a", "src_declared_b"},
-            )
-            self.assertEqual(
-                violations,
-                [
-                    f"{pipeline_dir / 'source' / 'src_declared_b' / 'source_meta.json'}"
-                    ":last_fail_reason must be string or null"
-                ],
-            )
-
-    def test_source_meta_scope_unions_multiple_runs(self) -> None:
-        """A full (no --run-id) validate takes the UNION of every run's declared source, so a
-        second run's own source is strictly checked too; only a dir NO run references is
-        skipped. This is what keeps full-mode scoping equivalent to the structural source
-        check's existing semantics."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            pipeline_dir = self._minimal_tree_pipeline_dir(repo_root)
-            src_root = pipeline_dir / "source"
-            runs_root = pipeline_dir / "runs"
-            # Run 2 declares its own (copied) source dir; both are live lineage.
-            shutil.copytree(src_root / "src_20260415_001", src_root / "src_20260415_002")
-            shutil.copytree(runs_root / "run_test_001", runs_root / "run_test_002")
-            node_dir = (
-                runs_root / "run_test_002" / "problem__shallow_water2d__0.3.0"
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta["source_source_id"] = "src_20260415_002"
-            _write_json(trial_meta_path, trial_meta)
-            # The second run's declared source violates the contract...
-            meta_path = src_root / "src_20260415_002" / "source_meta.json"
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["last_fail_reason"] = self._INCIDENT_DICT_REASON
-            _write_json(meta_path, meta)
-            # ...while an unreferenced sibling violates it too.
-            self._plant_sibling_source_meta(
-                pipeline_dir,
-                "src_20260415_000",
-                {
-                    "attempt_count": 1,
-                    "verification_status": "fail",
-                    "last_fail_reason": self._INCIDENT_DICT_REASON,
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            reason_violations = [v for v in violations if "last_fail_reason" in v]
-            self.assertTrue(
-                [v for v in reason_violations if "src_20260415_002" in v], violations
-            )
-            self.assertFalse(
-                [v for v in reason_violations if "src_20260415_000" in v], violations
-            )
-
-    def test_declared_source_dir_without_source_meta_is_flagged(self) -> None:
-        """Scoping must not turn the sweep into a no-op: a DECLARED source dir has to carry its
-        meta (a required Generate output). Only undeclared/superseded attempt dirs, where a
-        missing meta says nothing, are silently skipped."""
-        with tempfile.TemporaryDirectory() as tmp:
-            pipeline_dir = Path(tmp) / "pipeline"
-            declared = pipeline_dir / "source" / "src_declared"
-            declared.mkdir(parents=True)
-            superseded = pipeline_dir / "source" / "src_superseded"
-            superseded.mkdir(parents=True)
-
-            violations: list[str] = []
-            _validate_source_meta_json_files(
-                pipeline_dir, violations, in_scope_source_ids={"src_declared"}
-            )
-            self.assertEqual(
-                violations, [f"{declared / 'source_meta.json'}: missing"]
-            )
-
-    def test_declared_source_meta_missing_constraint_reason_flagged(self) -> None:
-        """WI-2 contract unification: the source sweep now also enforces the conditional
-        constraint_reason requirement (previously only the ir_meta sweep and the runtime
-        write gate did), scoped to the declared lineage."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            pipeline_dir = self._minimal_tree_pipeline_dir(repo_root)
-            meta_path = (
-                pipeline_dir / "source" / "src_20260415_001" / "source_meta.json"
-            )
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["context_isolated"] = False
-            meta.pop("constraint_reason", None)
-            _write_json(meta_path, meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                [
-                    v
-                    for v in violations
-                    if "src_20260415_001" in v
-                    and "constraint_reason when context_isolated=false" in v
-                ],
                 violations,
             )
 
@@ -25186,28 +24348,6 @@ class IrFixtureShapeTests(unittest.TestCase):
             self.assertIsNotNone(found)
             self.assertIsNone(_find_command_log_record(repo_root, "cmd_absent", log_ref))
 
-            # `_validate_trial_meta` scans the same log through its own reader.
-            node_dir = repo_root / "node"
-            node_dir.mkdir()
-            _write_json(
-                node_dir / "trial_meta.json",
-                {
-                    "source_command_ref": [
-                        {"command_id": "cmd_ok", "command_log_ref": log_ref},
-                    ]
-                },
-            )
-            execution = vps.NodeExecution(
-                node_key="component/n@0.1.0",
-                node_dir=node_dir,
-                exec_dir=node_dir,
-                pipeline_dir=node_dir,
-            )
-            violations: list[str] = []
-            vps._validate_trial_meta(repo_root, execution, violations)  # must not raise
-        self.assertFalse(
-            [v for v in violations if "command_id" in v and "not found" in v], violations
-        )
 
     def test_over_long_controlled_spec_ref_is_a_violation_not_a_traceback(self) -> None:
         """`meta.source_refs.controlled_spec` is LLM-authored like the tests ref, and the two
@@ -26499,7 +25639,7 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             / "problem__shallow_water2d__0.3.0"
         )
 
-    # --- compile stage: spec.ir.yaml + ir_meta.json -------------------------------------
+    # --- compile stage: spec.ir.yaml -------------------------------------------------
 
     def test_compile_stage_reports_a_missing_ir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -26536,33 +25676,6 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             violations.count(f"{ir_path}: must be non-null yaml document"), 1, violations
         )
 
-    def test_compile_stage_reports_a_missing_ir_meta(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._tree(tmp)
-            (repo_root / _FIXTURE_IR_REL).parent.joinpath("ir_meta.json").unlink()
-            violations = self._compile(repo_root)
-        self.assertTrue([v for v in violations if v.endswith("ir_meta.json: missing")], violations)
-
-    def test_compile_stage_reports_an_unparsable_ir_meta(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._tree(tmp)
-            (repo_root / _FIXTURE_IR_REL).parent.joinpath("ir_meta.json").write_text(
-                "{bad", encoding="utf-8")
-            violations = self._compile(repo_root)  # must not raise
-        self.assertTrue(
-            [v for v in violations if v.endswith("ir_meta.json: invalid json")], violations
-        )
-
-    def test_compile_stage_reports_a_non_object_ir_meta(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._tree(tmp)
-            (repo_root / _FIXTURE_IR_REL).parent.joinpath("ir_meta.json").write_text(
-                "[]", encoding="utf-8")
-            violations = self._compile(repo_root)  # must not raise
-        self.assertTrue(
-            [v for v in violations if v.endswith("ir_meta.json: must be json object")], violations
-        )
-
     # --- post_execute: perf.json / quality_check.json -----------------
 
     def _post_execute(self, tmp: str, name: str, body: str) -> tuple[Path, list[str]]:
@@ -26576,13 +25689,13 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._tree(tmp)
             node_dir = self._node_dir(repo_root)
-            for name in ("perf.json", "quality_check.json"):
-                (node_dir / name).unlink()
+            (node_dir / "perf.json").unlink()
             violations = validate(repo_root=repo_root, workspace_root="workspace")
-        for name in ("perf.json", "quality_check.json"):
-            self.assertTrue(
-                [v for v in violations if v.endswith(f"{name}: missing")], (name, violations)
-            )
+        # `quality_check.json` is the conductor's own record, written before the gate runs; its
+        # presence is not re-checked (issue #643).
+        self.assertTrue(
+            [v for v in violations if v.endswith("perf.json: missing")], violations
+        )
 
     def test_post_execute_reports_a_non_object_perf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

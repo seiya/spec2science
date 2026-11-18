@@ -23936,25 +23936,16 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                     self.assertEqual(lines, [])
 
 class VerifyMetaSchemaGateTests(unittest.TestCase):
-    """A verify leaf that authors a CONTRACT-VIOLATING stage meta (canonically:
-    last_fail_reason as a structured dict instead of one plain string) must be caught at the
-    write point: its verify substep FAILS, and `classify_failure` escalates the phase as
-    `{phase}_fail_meta_schema` without consulting the meta's own (untrustworthy) severity.
+    """A verify phase whose stage meta carries a CONTRACT-VIOLATING field (canonically:
+    last_fail_reason as a structured dict instead of one plain string).
 
-    The warm-resume mini-loop that used to re-author the meta in place was deleted by issue
-    #176 — no run ever reached it (0 `verify_meta_schema_warm_resume` events in any run_log
-    since it landed at `e75db4e`), and the pure-leaf transition made it structurally
-    unreachable besides.
-
-    ONE HALF OF THE GATE REMAINS, and it is the half these pin. It used to be two: a
-    contract-violating meta failed the verify SUBSTEP (a branch of
-    `determine_substep_status`), and `classify_failure` then refused to route it by its own
-    severity. Z4 (issue #171) made `determine_substep_status` deterministic-only, and the
-    substep half went with it — no leaf authors a stage meta any more. A pure verify returns a
-    verdict DOCUMENT, the host validates it (`verify_verdict_violations`) and writes the meta
-    itself, so a violating meta is a HOST defect rather than something a leaf can produce.
-    The routing half still runs and still refuses to trust such a meta's fields, which is what
-    catches a host defect that does happen."""
+    The gate these rows were written for is gone. Its substep half went with Z4 (issue #171):
+    no leaf authors a stage meta, the host validates the verdict document
+    (`verify_verdict_violations`) and writes the meta itself. Its routing half — the
+    `{phase}_fail_meta_schema` escalate in `classify_failure` — went with issue #643 (WC3-86):
+    the host is the meta's only writer, so the re-check defended nothing. What remains pins
+    the transport branch, the repair-findings reader on such a meta, and the verify launch's
+    output set."""
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
@@ -23989,8 +23980,8 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
     def _conductor(self, repo: Path, refs: wc.NodeRefs, phase: str,
                    verify_meta: dict | None) -> _FakeConductor:
         """A fake whose verify leaf authors `verify_meta` on every run (None models a leaf that
-        writes NOTHING), and whose verify gate mirrors the real one (status + freshness +
-        stage-meta contract). Every other substep passes unless `status_fn` says otherwise."""
+        writes NOTHING), and whose verify gate mirrors the real one (status + freshness).
+        Every other substep passes unless `status_fn` says otherwise."""
         _register_target_harness(repo)
         meta_path = self._meta_path(repo, refs, phase)
         state = {"verify_runs": 0}
@@ -24023,14 +24014,12 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
                     return self.status_fn(p, substep, self._sn), ["out.json"]
                 if substep != "verify":
                     return "pass", ["out.json"]
-                # Faithful mirror of the real verify gate: status + freshness + contract. The
-                # contract clause delegates to the REAL _stage_meta_contract_findings.
+                # Mirror of the real verify gate: status + freshness.
                 if not meta_path.exists():
                     return "fail", ["out.json"]
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 ok = (meta.get("verification_status") == "pass"
-                      and meta_path.stat().st_mtime >= min_mtime
-                      and not self._stage_meta_contract_findings(r, p))
+                      and meta_path.stat().st_mtime >= min_mtime)
                 return ("pass" if ok else "fail"), ["out.json"]
 
         c = _C(repo_root=repo, orchestration_id="orch_x",
@@ -24040,37 +24029,13 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
         c.verify_runs = state
         return c
 
-    # -- 3b: the choke point (real gate) ------------------------------------------------
-
-    def test_contract_findings_empty_when_meta_absent(self) -> None:
-        # An absent meta is an ordinary verify failure (the leaf wrote nothing), NOT this
-        # class — the meta-schema escalation must not claim it.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-            self.assertEqual(c._stage_meta_contract_findings(refs, "generate"), [])
-            self.assertEqual(c._stage_meta_contract_findings(refs, "build"), [])
-
-    # -- 3c: the escalation the violation earns ----------------------------------------
+    # -- the transport branch -----------------------------------------------------------
 
     def test_a_transport_failed_verify_fail_closes_before_the_meta_schema_gate(self) -> None:
-        """The ORDER of two terminal branches, which nothing else observes.
-
-        `run_phase`'s transport branch (a verify leaf with a nonzero returncode) must return
-        BEFORE `classify_failure` reaches its `{phase}_fail_meta_schema` escalate. The two
-        disagree about what happened and about where the attempt goes: `fail_closed` is
-        terminal, while `escalate` hands the attempt to the diagnostician, which may route it
-        back to a retry or a reuse — so a leaf that died of a transport error and authored
-        nothing would be treated as one that authored a bad meta.
-
-        Restored in round 3 of issue #176's review. The class this row lives in used to carry
-        `test_transport_failed_verify_is_not_repaired`, whose subject was the mini-loop, and
-        deleting the loop took the ORDER's only witness with it: a mutant that lets the
-        meta-schema branch win (`if transport is not None and not
-        self._stage_meta_contract_findings(...)`) is red on `origin/main` and GREEN at the
-        commit that deleted it. The fixture's `verify_leaf_returncode` hook survived the
-        rewrite unused; this is the row that uses it.
+        """`run_phase`'s transport branch (a verify leaf with a nonzero returncode) is
+        terminal: `fail_closed` on `leaf_transport_error`, with no repair turn, whatever the
+        meta on disk says. (The `{phase}_fail_meta_schema` escalate this row once ordered it
+        against was removed by issue #643; the transport outcome is what it still pins.)
         """
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -24088,42 +24053,7 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
             self.assertEqual(c.verify_runs["verify_runs"], 1)
             self.assertEqual(self._repair_requests(c), [])
 
-    def test_schema_violating_meta_escalates_without_a_repair_turn(self) -> None:
-        # The behaviour change of issue #176, witnessed: a leaf that writes the violating meta
-        # terminalizes on its FIRST verify run as `{phase}_fail_meta_schema`. Before the
-        # deletion this same fixture spent `1 + MAX_ATTEMPTS_PER_PHASE` verify runs on repair
-        # turns first. The terminal decision is unchanged; only the turns spent reaching it are.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            bad = _conformant_stage_meta(
-                "fail", last_fail_reason=_INCIDENT_DICT_REASON, last_fail_severity="minor")
-            self._write_meta(repo, refs, "generate", bad)
-            c = self._conductor(repo, refs, "generate", bad)
-            oc = c.run_phase(refs, "generate")
-
-            self.assertEqual(oc.status, "fail")
-            self.assertEqual((oc.decision.action, oc.decision.reason),
-                             ("escalate", "generate_fail_meta_schema"))
-            self.assertEqual(c.verify_runs["verify_runs"], 1)
-            self.assertEqual(self._repair_requests(c), [])
-
-    # -- 3d / 3e: routing guard + findings recomputation --------------------------------
-
-    def test_classify_failure_ignores_severity_on_schema_violating_meta(self) -> None:
-        # severity=minor on a schema-violating meta must NOT route through the severity table:
-        # the meta's fields are not trustworthy inputs to a decision.
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            self._write_meta(repo, refs, "generate", _conformant_stage_meta(
-                "fail", last_fail_reason=_INCIDENT_DICT_REASON, last_fail_severity="minor"))
-            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
-                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-            # SUBSTEPS["generate"] == ("generate","gate","verify"); verify is index 2.
-            outcomes = [wc.SubstepOutcome("g", "pass", [], 0),
-                        wc.SubstepOutcome("gate", "pass", [], 0),
-                        wc.SubstepOutcome("v", "fail", [], 0)]
-            d = c.classify_failure(refs, "generate", outcomes)
-            self.assertEqual((d.action, d.reason), ("escalate", "generate_fail_meta_schema"))
+    # -- findings recomputation ---------------------------------------------------------
 
     def test_read_repair_findings_never_returns_a_dict_reason(self) -> None:
         # The generic `verify_` route reads the meta's own last_fail_reason — which in this

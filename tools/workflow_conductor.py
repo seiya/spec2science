@@ -7299,8 +7299,7 @@ class Conductor:
     def _ir_meta_text(self, refs: NodeRefs, *, verification_status: str,
                       last_fail_reason: str | None, issue_severity: str | None,
                       attempts: int) -> str:
-        """The text `_write_ir_meta` writes, also what a `compile.generate` workshop lineage's
-        `check_ir` places beside its scratch IR (`_freeze_ir_check_context`)."""
+        """The text `_write_ir_meta` writes."""
         meta: dict[str, Any] = {
             "ir_id": refs.ir_id,
             "node_key": refs.node_key,
@@ -10445,49 +10444,6 @@ class Conductor:
         except Exception:
             return None
 
-    def _stage_meta_contract_findings(self, refs: NodeRefs, phase: str) -> list[str]:
-        """Contract findings against the phase's verify meta (compile -> ir_meta.json,
-        generate -> source_meta.json): missing required keys + value-type violations, from the
-        one canonical definition (tools/meta_contracts) the runtime write gate and the
-        validator sweeps also use.
-
-        This is the WRITE-POINT detector for a defect class that is otherwise UNREPAIRABLE:
-        the runtime's `_validate_step_meta_payload` only runs for a PASS step_result, so a
-        FAILED verify leaf could persist a schema-violating meta (e.g. `last_fail_reason` as a
-        structured incident dict) unchecked — and since a Generate reopen rotates a fresh
-        source dir and deletes nothing, the violation is immutable and no repair loop
-        converges on it (E2E #4). Detecting it while the authoring leaf's session is still
-        resumable is what makes it fixable at all.
-
-        Stateless by construction: the meta is re-read and re-checked on demand, so no new
-        persisted artifact is introduced and the findings cannot go stale. A missing or
-        non-dict meta returns [] — that is an ordinary verify failure (or a leaf that wrote
-        nothing), handled by the normal severity/freshness gates, not this class.
-        """
-        from tools.meta_contracts import (
-            STAGE_META_FILENAME_BY_STEP,
-            missing_required_meta_keys,
-            stage_meta_type_violations,
-        )
-
-        if phase not in STAGE_META_FILENAME_BY_STEP:
-            return []
-        meta_filename = STAGE_META_FILENAME_BY_STEP[phase]
-        # Same meta-path synthesis as classify_failure / _read_repair_findings.
-        meta_dir = refs.ir_ref if phase == "compile" else refs.source_dir()
-        meta = _read_json(self.repo_root / meta_dir / meta_filename)
-        if not isinstance(meta, dict):
-            return []
-        findings = [
-            f"{meta_filename} missing required key {k!r}"
-            for k in missing_required_meta_keys(meta, step_token=phase)
-        ]
-        findings += [
-            f"{meta_filename} {clause}"
-            for clause in stage_meta_type_violations(meta, step_token=phase)
-        ]
-        return findings
-
     def _launch_instant(self, child_arid: str) -> float:
         """The freshness gate's reference instant, read from the clock that STAMPS FILES.
 
@@ -11250,8 +11206,8 @@ class Conductor:
         (issue #534 step 2), computed in the main thread: the one operation `check_ir`, bound
         to what the host's own path runs on the snapshot — the IR assembly, the producer's
         document contract (`_leaf_ir_document_violations`), the declaration reader, the IR
-        serializer `_write_leaf_ir_artifacts` writes with, the pending `ir_meta.json` it writes
-        beside it, the `<ir_ref>` sidecars as they stand now, and the `Compile.static`
+        serializer `_write_leaf_ir_artifacts` writes with, the `<ir_ref>` sidecars as they
+        stand now, and the `Compile.static`
         validators (`validate_pipeline_semantics.validate_compile_ir_dir`). An absent sidecar
         is not copied, so the validators report it as the gate would. `closure_file_names` is
         unused (a compile lineage stages no closure)."""
@@ -11281,9 +11237,6 @@ class Conductor:
             assemble=assemble_ir_document,
             declared_fail=self._leaf_ir_declared_fail,
             ir_yaml=self._leaf_ir_yaml,
-            ir_meta_text=self._ir_meta_text(refs, verification_status="pending",
-                                            last_fail_reason=None, issue_severity=None,
-                                            attempts=1),
             sidecar_texts=tuple(sidecars),
             validate_ir_dir=validate_compile_ir_dir,
             seed_texts=tuple(sorted((seed_texts or {}).items())),
@@ -16668,16 +16621,6 @@ class Conductor:
         # compile / generate: verify severity gate. A failed phase with no
         # recorded severity (e.g. the producing substep itself failed) is
         # unclassifiable -> escalate to the diagnostician rather than guessing.
-        #
-        # A meta that violates the stage-meta contract is read FIRST and never routed by
-        # severity: its fields are not trustworthy inputs to a decision table (the same posture
-        # as `{phase}_fail_unclassified`). Reaching here is the FIRST response to the
-        # violation: issue #176 deleted the mini-loop that used to spend a repair budget ahead
-        # of it, so a contract-violating meta escalates on the attempt that authored it
-        # (`test_schema_violating_meta_escalates_without_a_repair_turn`). It covers a malformed
-        # meta from the PRODUCING substep as well as from `verify`.
-        if self._stage_meta_contract_findings(refs, phase):
-            return RouteDecision("escalate", reason=f"{phase}_fail_meta_schema")
         meta_path = (refs.ir_ref + "/ir_meta.json") if phase == "compile" else (refs.source_dir() + "/source_meta.json")
         meta = _read_json(self.repo_root / meta_path) or {}
         sev = meta.get("last_fail_severity") or meta.get("issue_severity")

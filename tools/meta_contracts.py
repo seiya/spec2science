@@ -58,9 +58,10 @@ def stage_meta_type_violations(meta_data: dict[str, Any], *, step_token: str) ->
 
     Returns bare violation clauses (no path/filename prefix) in canonical key order, so
     each caller can format them in its own idiom: the runtime raises
-    ``f"{meta_filename} {clause}: {meta_ref}"``, the validator sweeps append
-    ``f"{meta_path}:{clause}"``. Keeping the clauses prefix-free is what lets the three
-    historical copies of these checks collapse into one definition.
+    ``f"{meta_filename} {clause}: {meta_ref}"``. Keeping the clauses prefix-free is what let
+    the three historical copies of these checks collapse into one definition; the runtime's
+    write gate is the one reader left (issue #643 removed the validator sweeps and the
+    conductor's routing re-check: the host is the meta's only writer).
 
     Only keys PRESENT in the payload are type-checked — a missing required key is
     ``missing_required_meta_keys``' responsibility, and reporting it twice would

@@ -1805,7 +1805,6 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(ctx.ops, ("check_ir",))
         self.assertEqual({n for n, _ in ctx.sidecar_texts},
                          {"dependency_graph.json", "dependency_surface.json"})
-        self.assertEqual(json.loads(ctx.ir_meta_text)["verification_status"], "pending")
         self.assertIn(workshop_tree.IR_DOCUMENT_NAME, ctx.reserved_names)
         self.assertIn(workshop_tree.COMPILE_FAIL_NAME, ctx.reserved_names)
 

@@ -1251,7 +1251,6 @@ def _ir_context(paths: wt.LineagePaths, reserved, seen: list, **over) -> ww.Wrap
         declared_fail=lambda doc: (None if doc.get("compile_fail") is None
                                    else f"{doc['compile_fail']['input']} declared"),
         ir_yaml=lambda ir: "# host form\n" + json.dumps(ir, sort_keys=True) + "\n",
-        ir_meta_text='{"verification_status": "pending"}\n',
         sidecar_texts=(("dependency_graph.json", '{"g": 1}'),),
         validate_ir_dir=validate)
     fields.update(over)
@@ -1262,7 +1261,7 @@ class WrapperCheckIrTests(_IrLineageCase):
     """`check_ir` (issue #534 step 2) with its callables stubbed: what it hands the validators,
     and in which order it stops. The real validators are driven by `test_workshop_producer`."""
 
-    def test_the_validators_read_the_host_form_beside_the_meta_and_sidecars(self) -> None:
+    def test_the_validators_read_the_host_form_beside_the_sidecars(self) -> None:
         seen: list = []
         self.write(wt.IR_DOCUMENT_NAME, "meta: {spec_kind: component}\n")
         result = ww.run_wrapper_op(_ir_context(self.paths, self.reserved, seen), "check_ir")
@@ -1272,7 +1271,6 @@ class WrapperCheckIrTests(_IrLineageCase):
         self.assertFalse(ir_dir.is_relative_to(self.paths.tree))
         self.assertEqual(files, {
             "spec.ir.yaml": '# host form\n{"meta": {"spec_kind": "component"}}\n',
-            "ir_meta.json": '{"verification_status": "pending"}\n',
             "dependency_graph.json": '{"g": 1}'})
         # emptied on every call: a file of the previous call's directory does not survive
         (ir_dir / "stale.txt").write_text("x")

@@ -435,9 +435,15 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
 
     _REFUSAL = "the target this pipeline was built for does not resolve"
 
+    _SOURCE_ID = "src_20260101_001"
+
     def _undeclared_pipeline(self, repo: Path) -> str:
+        """The pipeline with what the conductor writes before either stage runs — the lineage
+        and the source directory — without which the stage raises (issue #643, D7)."""
         ref = pipe_ref(_SAFE, "spec-x_20260101_001", "not_declared")
-        (repo / ref).mkdir(parents=True)
+        (repo / ref / "source" / self._SOURCE_ID / "src").mkdir(parents=True)
+        (repo / ref / "lineage.json").write_text(
+            json.dumps({"node_key": "component/spec_x@0.1.0"}), encoding="utf-8")
         return ref
 
     def test_post_generate(self) -> None:
@@ -445,7 +451,8 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             ref = self._undeclared_pipeline(repo)
-            violations = vps._validate_post_generate_stage_impl(repo, "workspace", ref, None)
+            violations = vps._validate_post_generate_stage_impl(
+                repo, "workspace", ref, self._SOURCE_ID)
             self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
 
     def test_post_build(self) -> None:
@@ -453,7 +460,8 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             ref = self._undeclared_pipeline(repo)
-            violations = vps._validate_post_build_stage_impl(repo, "workspace", ref, None)
+            violations = vps._validate_post_build_stage_impl(
+                repo, "workspace", ref, self._SOURCE_ID)
             self.assertTrue(any(self._REFUSAL in v for v in violations), violations)
 
     def test_the_execution_stages(self) -> None:
