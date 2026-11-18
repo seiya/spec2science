@@ -450,7 +450,9 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                     n = _Node(tmp, target=target,
                               site=None if where == "site" else Site(LOCAL_SITE, ("cpu",)))
                     (n.src / "Makefile").write_text(
-                        _MAKEFILE + f"\techo 'qc reference boom' >&2\n\texit {rc}\n",
+                        _MAKEFILE + "\techo 'qc reference boom' >&2\n"
+                        + "".join(f"\techo 'qc frame {i}' >&2\n" for i in range(1, 41))
+                        + f"\texit {rc}\n",
                         encoding="utf-8")
                     with mock.patch("tools.checked_build.checked_shape", return_value=None):
                         self.assertEqual(n.execute()["returncode"], 0)
@@ -481,7 +483,17 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                     excerpt = trial["failure_excerpt"]
                     self.assertIn("re-run (the serial reference) failed (rc="
                                   f"{qc_log[0]['return_code']!r}); its stderr:", excerpt)
-                    self.assertIn("    qc reference boom", excerpt.splitlines())
+                    # The re-run's stderr (the runner's line, the boom, 40 frames, make's report) is
+                    # longer than `_stderr_head_and_tail` keeps whole: the quote is its head and tail —
+                    # the cause at the top, make's report of the failed target last — and not
+                    # its middle.
+                    self.assertGreater(43, 2 * wc._SHAPE_STDERR_LINES)
+                    lines = excerpt.splitlines()
+                    self.assertIn("    qc reference boom", lines)
+                    self.assertIn("    qc frame 8", lines)
+                    self.assertNotIn("    qc frame 20", lines)
+                    self.assertIn("    qc frame 40", lines)
+                    self.assertTrue(lines[-1].startswith("    make: ***"), lines[-1])
 
     def _job_request(self, n: _Node, **knobs: str):
         """Execute, and hand back the `JobRequest` the job really ran from."""
