@@ -493,6 +493,8 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                     self.assertIn("    qc frame 8", lines)
                     self.assertNotIn("    qc frame 20", lines)
                     self.assertIn("    qc frame 40", lines)
+                    # and the cut is marked, as the first failed shape's quote marks its own
+                    self.assertEqual(lines[lines.index("    qc frame 8") + 1], "    ...")
                     self.assertTrue(lines[-1].startswith("    make: ***"), lines[-1])
 
     def _job_request(self, n: _Node, **knobs: str):

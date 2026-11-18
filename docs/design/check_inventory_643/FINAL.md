@@ -200,9 +200,9 @@ Removable members named inside rows whose row class is keep, undecided or operat
 | PE-032, PE-044 | "case has no case_id"; non-finite member (masked, needs-run) | not verified |
 | PE-114, PE-133 | `LOOP_KEYS`, `_DRIVE_KEYS` constant merge to runner_ir | not verified |
 | PE-063, PE-109 | `cases_read` / `scalar_pairing` record pair (G6, with verdict_evaluator); `grammar_version` (operator-diag?) | not verified |
-| VP2-72 | placement, declared-id and empty-command members (host-twin); the `ok` member stays (D2) | not verified |
+| VP2-72 | placement, declared-id and empty-command members (host-twin); the `ok` member stayed (D2) until [#674](https://github.com/seiya/spec2science/issues/674) deleted VP2-72 whole | not verified |
 | VP2-69 | provenance member | not verified |
-| VP2-18 | lenient log reader; goes only if VP2-72's `ok` member goes (it does not) | stays |
+| VP2-18 | lenient log reader; goes only if VP2-72's `ok` member goes (it went in #674; VP2-18 stays for the device-trace gate) | stays |
 | VP2-48 | two constant members (compile-docs re-pin, phase_01_compile.md:591) | not verified |
 | VP2-09 | five restated members → `primary_evidence.parse_distribute` | not verified |
 | VP2-77, VP3-051, VP3-094, VP3-114 | `review_method` / decision / scope members; sidecar-malformed; structural sidecar; root-not-exist | not verified |

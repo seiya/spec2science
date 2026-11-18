@@ -2212,7 +2212,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # `execute_tuple()` against main 8adea1c4's: those four rows and no other.) The digest
     # `execute-22` shipped with at 8adea1c4:
     "execute-22@8adea1c4": "b1f87278a22c0ebf72c53d58677822a6d703ecfc0a162769777b6def2c20a238",
-    "execute-22": "f19d8f104647ba4700748081bf5102f9836deb57ea4873953ad39e024ac941a4",
+    "execute-22": "f76069607d72f9416d5b4b4f2e6aea74ae4d68559241dd90e70c084d6aae6661",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

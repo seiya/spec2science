@@ -13792,8 +13792,8 @@ class Conductor:
                           f"re-run (the serial reference) failed (rc="
                           f"{res_qc.get('return_code')!r})")
                 qc_err = _stderr_head_and_tail(res_qc.get("stderr") or "")
-                shown = (qc_err["stderr_head"].splitlines()
-                         + qc_err["stderr_tail"].splitlines())
+                tail = qc_err["stderr_tail"].splitlines()
+                shown = qc_err["stderr_head"].splitlines() + (["..."] + tail if tail else [])
                 if shown:
                     block += "; its stderr:" + "".join(f"\n    {ln}" for ln in shown)
             stderr += block
