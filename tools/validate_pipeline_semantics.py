@@ -562,6 +562,20 @@ def _normalize_node_key_token(raw: str) -> str:
     return f"{kind.strip()}/{spec_id}"
 
 
+def _versioned_node_key_token(raw: str) -> str:
+    """`<kind>/<spec_id>@<version>` with each part stripped (no `@` when the token has none):
+    the canonical node_key the dependency-surface sidecar is keyed by and the membership gate
+    looks an entry up by (`_called_dep_key`). The consistency gate compares `direct_deps` keys
+    in this form (issue #661), so a key it accepts is a key the membership gate finds. A token
+    with no `/` is returned stripped."""
+    token = raw.strip()
+    if "/" not in token:
+        return token
+    kind, body = token.split("/", 1)
+    spec_id, sep, version = body.partition("@")
+    return f"{kind.strip()}/{spec_id.strip()}" + (f"@{version.strip()}" if sep else "")
+
+
 def _node_safe_to_node_key(node_safe: str) -> str | None:
     """Restore `<spec_kind>__<spec_id>__<spec_version>` to `<spec_kind>/<spec_id>@<spec_version>`.
 
@@ -2196,57 +2210,6 @@ def _validate_pipeline_targets_resolve(
                 "and <target_id> must name a loadable spec/targets/<target_id>.yaml")
 
 
-def _io_contract_for_execution(
-    repo_root: Path, execution: NodeExecution
-) -> dict[str, Any] | None:
-    ir_dir = _ir_dir_for_execution(repo_root, execution)
-    if ir_dir is None:
-        return None
-
-    contract_path = ir_dir / "spec.ir.yaml"
-    if not contract_path.exists():
-        return None
-
-    try:
-        data = _read_yaml(contract_path)
-    except (json.JSONDecodeError, yaml.YAMLError):
-        try:
-            data = _read_json(contract_path)
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(data, dict):
-        return None
-    # Unwrap the io_contract section if the doc uses the new IR nesting:
-    # spec.ir.yaml.io_contract holds inputs / outputs / raw_requirements /
-    # semantic_dependency as siblings.  Tests and
-    # callers that expect derived_contract.json's flat layout will see those
-    # siblings at the top level after this transform.
-    if (
-        isinstance(data.get("io_contract"), dict)
-        and (
-            "inputs" in data["io_contract"]
-            or "outputs" in data["io_contract"]
-            or "raw_requirements" in data["io_contract"]
-        )
-        and "raw_requirements" not in data
-    ):
-        section = data["io_contract"]
-        flattened: dict[str, Any] = {
-            "io_contract": {
-                "inputs": section.get("inputs"),
-                "outputs": section.get("outputs"),
-            },
-        }
-        for key in (
-            "raw_requirements",
-            "semantic_dependency",
-        ):
-            if key in section:
-                flattened[key] = section[key]
-        return flattened
-    return data
-
-
 def _read_yaml(path: Path) -> Any:
     # Decode STRICTLY, and translate the two errors that would otherwise escape into the one the
     # callers already handle (`yaml.YAMLError` -> "invalid json" / a contract violation):
@@ -3589,11 +3552,22 @@ def _shape_matches_expr(shape_expr: str, actual_shape: list[int]) -> bool:
 def _raw_requirements_for_execution(
     repo_root: Path, execution: NodeExecution
 ) -> dict[str, Any] | None:
-    contract = _io_contract_for_execution(repo_root, execution)
-    if not isinstance(contract, dict):
+    """`io_contract.raw_requirements` of the node's `spec.ir.yaml` — the block the conductor
+    reads (`Conductor._required_evidence_artifacts`), and no other: a top-level
+    `raw_requirements` is ignored (issue #662)."""
+    contract_path = _ir_document_path_for_execution(repo_root, execution)
+    if contract_path is None or not contract_path.exists():
         return None
-
-    raw_requirements = contract.get("raw_requirements")
+    try:
+        data = _read_yaml(contract_path)
+    except (json.JSONDecodeError, yaml.YAMLError):
+        try:
+            data = _read_json(contract_path)
+        except json.JSONDecodeError:
+            return None
+    io_contract = data.get("io_contract") if isinstance(data, dict) else None
+    raw_requirements = (
+        io_contract.get("raw_requirements") if isinstance(io_contract, dict) else None)
     if not isinstance(raw_requirements, dict):
         return None
     return raw_requirements
@@ -3712,46 +3686,16 @@ def _validate_io_contract_file(
         violations.append(f"{contract_path}: must be json object")
         return
 
-    # tests.md is referenced from `meta.source_refs.tests`, which the io_contract flattening below
-    # does not carry — resolve it from the document while we still hold it.
+    # tests.md is referenced from `meta.source_refs.tests`, outside the `io_contract` section.
     tests_path = _tests_path_from_ir_document(repo_root, contract)
-    # `algorithm.state_variables` is not carried by the flattening either; keep the declared
-    # names for the snapshot-coverage rule below (Z6, issue #255).
+    # The declared `algorithm.state_variables`, for the snapshot-coverage rule below (Z6, issue
+    # #255).
     declared_state_variables = _algorithm_state_variable_names(contract)
     # `state_history`, `step_series` and `restart_points` are admitted on every IR (issue #644
     # P4b): `drive_violations` (h) pins them to `drive.loop` / `drive.history` /
     # `drive.restart_points` on a node that carries `drive`, and an IR with none is an
     # `infrastructure` node's (a `component` / `problem` IR without `drive` is refused by the
     # same gate), whose own runner commits the records its suite judges.
-
-    # New IR: spec.ir.yaml has the io_contract section nested under
-    # `io_contract:` and contains inputs / outputs / raw_requirements /
-    # semantic_dependency as siblings.  The
-    # original validator was written against derived_contract.json's flat
-    # structure where `io_contract`, `raw_requirements`, etc. were all
-    # top-level keys.  When we see the new nested form, lift the io_contract
-    # section to act as the contract dict, but keep `io_contract.inputs`
-    # path semantics by wrapping inputs/outputs in a synthetic `io_contract`
-    # key.
-    if (
-        isinstance(contract.get("io_contract"), dict)
-        and ("inputs" in contract["io_contract"] or "outputs" in contract["io_contract"])
-        and "raw_requirements" not in contract  # not legacy flat form
-    ):
-        io_section = contract["io_contract"]
-        new_contract: dict[str, Any] = {
-            "io_contract": {
-                "inputs": io_section.get("inputs"),
-                "outputs": io_section.get("outputs"),
-            },
-        }
-        for key in (
-            "raw_requirements",
-            "semantic_dependency",
-        ):
-            if key in io_section:
-                new_contract[key] = io_section[key]
-        contract = new_contract
 
     output_items: list[tuple[int, dict[str, Any]]] = []
     io_contract = contract.get("io_contract")
@@ -3839,7 +3783,12 @@ def _validate_io_contract_file(
                         )
                 output_items.append((idx, item))
 
-    raw_requirements = contract.get("raw_requirements")
+    # The block the conductor reads (`Conductor._required_evidence_artifacts`,
+    # `_author_snapshot_schema`): `io_contract.raw_requirements`, and no other. A top-level
+    # `raw_requirements` is ignored (issue #662: the legacy flat form, read here in preference to
+    # the nested block, let a valid top-level copy hide a defective nested one).
+    raw_requirements = (
+        io_contract.get("raw_requirements") if isinstance(io_contract, dict) else None)
     if not isinstance(raw_requirements, dict):
         violations.append(f"{contract_path}:raw_requirements must be object")
         return
@@ -4111,18 +4060,10 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
             return None
     if not isinstance(data, dict):
         return None
-    # Unwrap the new IR layout where io_contract.{inputs,outputs} live inside
-    # the spec.ir.yaml `io_contract:` section.  When already in legacy flat
-    # form we'll see `inputs`/`outputs` at the root of `io_contract`.
+    # The `io_contract` section the conductor reads, and no other spelling of it: neither a
+    # top-level `raw_requirements` nor a nested `io_contract.io_contract` contributes a name
+    # (issue #662).
     ic = data.get("io_contract")
-    if isinstance(ic, dict) and isinstance(ic.get("io_contract"), dict):
-        # Already double-nested: drill in once more
-        ic = ic["io_contract"]
-    elif isinstance(ic, dict) and "inputs" not in ic and "outputs" not in ic:
-        # io_contract section but inputs/outputs not visible at this level —
-        # try the section itself (the new IR sometimes stores inputs/outputs
-        # as siblings of raw_requirements at the same level)
-        pass
     if not isinstance(ic, dict):
         return None
     names: set[str] = set()
@@ -4145,13 +4086,7 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
     # state_snapshots entries are considered because derived-contract validation enforces
     # schema.variables structure exclusively for that artifact type; schemas on other
     # artifact entries are unchecked and could inject arbitrary names.
-    # raw_requirements may live at the root (legacy derived_contract.json) or
-    # nested under spec.ir.yaml.io_contract.raw_requirements (new IR).
-    rr = data.get("raw_requirements")
-    if not isinstance(rr, dict):
-        io_section = data.get("io_contract")
-        if isinstance(io_section, dict):
-            rr = io_section.get("raw_requirements")
+    rr = ic.get("raw_requirements")
     if isinstance(rr, dict):
         evidence_list = rr.get("required_evidence")
         if isinstance(evidence_list, list):
@@ -4587,27 +4522,26 @@ def _called_dep_key(node_key: Any) -> tuple[str, str, str] | None:
     """`(kind, spec_id, canonical node_key)` of a direct-dependency token whose kind a model
     CALLS (`_CALLED_DEP_KIND_PREFIXES`), else None.
 
-    The token is read exactly as `_normalize_node_key_token` reads it — the token stripped, the
-    kind and the spec_id each stripped — because that is the reader that decides whether the
-    entry IS the host's direct dependency (`_validate_compile_dependency_consistency`). Until the
+    The kind and the spec_id are read as `_normalize_node_key_token` reads them — the token
+    stripped, each part stripped — and the canonical node_key is `_versioned_node_key_token`'s,
+    the form in which `_validate_compile_dependency_consistency` decides whether the entry IS
+    the host's direct dependency (issue #661: `@version` included). Until the
     system tier's review round 1 the operations gates and `_component_dep_spec_ids` tested the
     prefix on the raw or stripped token instead, so `"problem /m@0.1.0"` (or `"component /…"`)
     passed the consistency gate as the member and was read by none of the gates that ask what
     the member's `operations` are and whether the model calls it. The canonical node_key is
     `<kind>/<spec_id>@<version>` with each part stripped (no `@` when the token has none), the
-    form the dependency-surface sidecar is keyed by."""
+    form the dependency-surface sidecar is keyed by and the consistency gate compares."""
     if not isinstance(node_key, str) or "/" not in node_key:
         return None
     kind, body = node_key.strip().split("/", 1)
     kind = kind.strip()
     if f"{kind}/" not in _CALLED_DEP_KIND_PREFIXES:
         return None
-    spec_id, sep, version = body.partition("@")
-    spec_id = spec_id.strip()
+    spec_id = body.partition("@")[0].strip()
     if not spec_id:
         return None
-    canonical = f"{kind}/{spec_id}" + (f"@{version.strip()}" if sep else "")
-    return kind, spec_id, canonical
+    return kind, spec_id, _versioned_node_key_token(node_key)
 
 
 def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[str]:
@@ -6209,7 +6143,12 @@ def _validate_component_dep_operations_membership(
     real names here to converge.
 
     Inert (skip) when: the sidecar file is absent (a legacy tree / a non-conductor-driven
-    compile), a dep has NO sidecar entry (an unresolved graph edge), or its entry's ``source`` is
+    compile), a dep has NO sidecar entry (a key that is not one of the graph's direct
+    dependencies, which ``_validate_compile_dependency_consistency`` — run first — has already
+    refused, since the sidecar holds an entry for every called direct dependency of the graph;
+    or a host that could not resolve the surface at all, where
+    ``orchestration_runtime._resolve_component_dep_surface`` writes no entry), or its
+    entry's ``source`` is
     ``unresolved`` (the surface could not be resolved — never manufacture a violation from a
     resolution gap). A sidecar that is unreadable, or an entry whose ``published_operations`` is
     the wrong shape, is fail-closed. The skip→fail-closed asymmetry is a deliberate rollout
@@ -6264,17 +6203,17 @@ def _validate_component_dep_operations_membership(
         if len(declared) != len(ops):
             continue  # malformed entry — handled by _validate_component_dep_operations
 
-        # Exact-node_key lookup (incl. `@version`): the sidecar is keyed by the graph's resolved
-        # node_keys. A version-drifted `direct_deps` entry — which the version-AGNOSTIC
-        # `_validate_compile_dependency_consistency` would still pass — finds no entry and this
-        # gate goes inert (fail-open, consistent with the tracked rollout affordance); the leaf is
-        # shown the full versioned node_key in the injected catalog, so a drift is unlikely.
-        # The lookup key is the CANONICAL spelling (`_called_dep_key`): a key respelled with
-        # inner whitespace names the same member to the consistency gate, so it names the same
-        # sidecar entry here.
+        # Lookup by the CANONICAL versioned key (`_called_dep_key`, `_versioned_node_key_token`):
+        # the sidecar is keyed by the graph's resolved node_keys, one entry per called direct
+        # dependency (`orchestration_runtime._resolve_component_dep_surface`), and the
+        # consistency gate, which runs first, compares `direct_deps` keys in the same form
+        # (issue #661). So a key with no entry here is one that gate has already refused — a
+        # drifted or missing `@version` included — and the stage fails on that finding. The
+        # other way to have no entry is the host's own: a surface it could not resolve at all is
+        # written with no entries (the `except` of `_resolve_component_dep_surface`).
         surface = surface_by_key.get(called[2])
         if not isinstance(surface, dict):
-            continue  # inert: no sidecar entry (unresolved graph edge / legacy)
+            continue  # inert: refused by the consistency gate, or the host resolved no surface
         source_tag = str(surface.get("source") or "").strip()
         if source_tag == "unresolved":
             continue  # inert: surface could not be resolved — not a violation
@@ -7984,11 +7923,16 @@ def _validate_compile_dependency_consistency(
     A violation is a content failure routed (via ``classify_compile_static_failure``) back to
     ``compile.generate`` for a warm reopen (the LLM re-authors ``direct_deps`` to match
     ``deps.yaml``). Checks: sidecar present + parseable; ``all_nodes`` well-formed with the self
-    node present and every ``transitive_deps`` node in ``all_nodes``; and the version-agnostic
-    ``(kind, spec_id)`` set of IR ``direct_deps`` equals the host directly-required set
-    ``{all_nodes} − {self} − {transitive}``. Version drift is deliberately NOT flagged here
-    (soft — the gfortran/link backstop catches a wrong dependency version at Build; the sidecar
-    pins the resolved version)."""
+    node present and every ``transitive_deps`` node in ``all_nodes``; and the set of IR
+    ``direct_deps`` keys equals the host directly-required set
+    ``{all_nodes} − {self} − {transitive}``, each key read as ``_versioned_node_key_token``
+    reads it — ``@version`` included, the form the dependency-surface sidecar is keyed by, so a
+    key this gate accepts is one ``_validate_component_dep_operations_membership`` finds (issue
+    #661: a drifted or missing version used to pass here and turn that gate inert, and no Build
+    backstop exists — the build closure is derived from the graph, not from the IR). The IR's
+    own ``dependency.node_key`` is compared by ``(kind, spec_id)`` only: its readers take the
+    kind and the id and nothing decides by its version, so a check on it would defend
+    nothing."""
     sidecar_path = ir_dir / "dependency_graph.json"
     if not sidecar_path.is_file():
         violations.append(
@@ -8004,7 +7948,8 @@ def _validate_compile_dependency_consistency(
         violations.append(f"{sidecar_path}: dependency_graph.json must be a JSON object")
         return
 
-    self_token = _normalize_node_key_token(str(graph.get("node_key") or ""))
+    graph_self = str(graph.get("node_key") or "")
+    self_token = _versioned_node_key_token(graph_self)
     all_nodes = graph.get("all_nodes")
     if not isinstance(all_nodes, list) or not all_nodes:
         violations.append(f"{sidecar_path}: all_nodes must be a non-empty list")
@@ -8020,7 +7965,7 @@ def _validate_compile_dependency_consistency(
             violations.append(
                 f"{sidecar_path}: all_nodes[{nk!r}] topo_level must be a non-negative int")
             return
-        all_tokens.add(_normalize_node_key_token(nk))
+        all_tokens.add(_versioned_node_key_token(nk))
     if not self_token or self_token not in all_tokens:
         violations.append(
             f"{sidecar_path}: node_key {graph.get('node_key')!r} not present in all_nodes")
@@ -8034,7 +7979,7 @@ def _validate_compile_dependency_consistency(
         if not (isinstance(nk, str) and nk.strip()):
             violations.append(f"{sidecar_path}: transitive_deps entry missing node_key")
             return
-        tok = _normalize_node_key_token(nk)
+        tok = _versioned_node_key_token(nk)
         if tok not in all_tokens:
             violations.append(
                 f"{sidecar_path}: transitive_deps node {nk!r} not present in all_nodes")
@@ -8054,7 +7999,7 @@ def _validate_compile_dependency_consistency(
     dep = dep if isinstance(dep, dict) else {}
     ir_self = dep.get("node_key")
     if isinstance(ir_self, str) and ir_self.strip():
-        if _normalize_node_key_token(ir_self) != self_token:
+        if _normalize_node_key_token(ir_self) != _normalize_node_key_token(graph_self):
             violations.append(
                 f"{ir_dir / 'spec.ir.yaml'}: dependency.node_key {ir_self!r} disagrees with "
                 f"dependency_graph.json node_key {graph.get('node_key')!r}")
@@ -8065,7 +8010,7 @@ def _validate_compile_dependency_consistency(
     for entry in ir_direct:
         nk = entry.get("node_key") if isinstance(entry, dict) else entry
         if isinstance(nk, str) and nk.strip():
-            ir_direct_tokens.add(_normalize_node_key_token(nk))
+            ir_direct_tokens.add(_versioned_node_key_token(nk))
 
     if ir_direct_tokens != host_direct:
         missing = sorted(host_direct - ir_direct_tokens)
@@ -8073,7 +8018,8 @@ def _validate_compile_dependency_consistency(
         violations.append(
             f"{ir_dir / 'spec.ir.yaml'}: dependency.direct_deps disagrees with the "
             f"deterministic dependency closure (deps.yaml via dependency_graph.json); "
-            f"missing direct deps {missing}; unexpected direct deps {extra}")
+            f"missing direct deps {missing}; unexpected direct deps {extra} — copy each "
+            f"node_key from dependency_graph.json exactly, @version included")
 
 
 def _validate_profile_selection(

@@ -55,4 +55,4 @@ U37 was withdrawn (item 10). Every digest move was a re-pin; no derivation versi
 - Both copies of VP3-012 / VP3-025 / VP3-027 and their helpers VP1-23 / VP1-24.
 - The `standing` rows (#169, #172, #173, #174) and BR-10.
 - The out-of-scope defects of `FINAL.md` §2, other than OR1-87 and the swallowed `fail_closed` status write, which PR #669 fixed.
-- [#661](https://github.com/seiya/spec2science/issues/661) and [#662](https://github.com/seiya/spec2science/issues/662).
+- [#661](https://github.com/seiya/spec2science/issues/661) and [#662](https://github.com/seiya/spec2science/issues/662): fixed after this inventory, in one pull request (the `direct_deps` consistency gate compares `@version`; the validator reads `io_contract.raw_requirements` alone).

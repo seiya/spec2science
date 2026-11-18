@@ -3468,8 +3468,9 @@ def _resolve_dependency_facts(
 
     The dependency ``@version`` is taken from the IR ``direct_deps[].node_key`` (a well-
     formed IR pins the resolved version, consistent with how readiness resolves it from
-    ``deps.yaml`` + catalog). This output decides no launch, so a rare version drift never
-    mis-authorizes one; it stales a hint and folds that dependency as ``blocked``. It has two readers: the leaf's
+    ``deps.yaml`` + catalog). ``Compile.static`` refuses an IR whose ``direct_deps`` key differs
+    from the graph's, ``@version`` included (issue #661), so a certified IR carries the resolved
+    version. This output decides no launch either way. It has two readers: the leaf's
     ``DEPENDENCIES.md`` (Generate and Validate), and the conductor's ``post_judge`` aggregate fold
     (``Conductor._author_derived_validate_artifacts``). The fold reads each fact's
     ``aggregate_verdict_ref`` to choose a READY dependency's contribution, ``xfail`` or
@@ -3533,7 +3534,7 @@ def _resolve_dependency_facts(
             node_key = node_key.strip()
             # A called dependency (`component` / `problem`) is read by its CANONICAL key, the
             # spelling the dependency gates read (`_called_dep_key`, which agrees with V4's
-            # `_normalize_node_key_token`): a key respelled with whitespace around its kind, id or
+            # `_versioned_node_key_token`): a key respelled with whitespace around its kind, id or
             # version is the member to those gates, so its call is required at Generate, and the
             # leaf is shown its interface here under the same reading (review round 2, sec-L1).
             called = _called_dep_key(node_key)

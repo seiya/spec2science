@@ -1349,6 +1349,29 @@ end program shallow_water2d_runner
                         "required_evidence": entries}}})
                     self.assertEqual(expected, _required_raw_evidence(repo_root, execution))
 
+            # Issue #662: the block the conductor reads is `io_contract.raw_requirements`, and no
+            # other. A top-level copy that says otherwise — the legacy flat form, which these
+            # readers used to take in preference — is ignored, in both directions.
+            from tools.validate_pipeline_semantics import _state_snapshot_required
+            nested = [{"artifact": "state_snapshots", "required": True}]
+            decoy = [{"artifact": "state_snapshots", "required": False}]
+            for inner, outer, expected in ((nested, decoy, {"state_snapshots"}),
+                                           (decoy, nested, set())):
+                with self.subTest(nested=inner, top_level=outer):
+                    _write_json(ir_dir / "spec.ir.yaml", {
+                        "io_contract": {"raw_requirements": {"required_evidence": inner}},
+                        "raw_requirements": {"required_evidence": outer}})
+                    self.assertEqual(expected, _required_raw_evidence(repo_root, execution))
+                    self.assertEqual(bool(expected),
+                                     _state_snapshot_required(repo_root, execution))
+            # ... and a top-level block alone is not read either (round 1: a fallback to it when
+            # the nested block is absent survived the rows above).
+            with self.subTest(top_level_only=nested):
+                _write_json(ir_dir / "spec.ir.yaml", {
+                    "io_contract": {}, "raw_requirements": {"required_evidence": nested}})
+                self.assertEqual(set(), _required_raw_evidence(repo_root, execution))
+                self.assertFalse(_state_snapshot_required(repo_root, execution))
+
     def _d7_violations(self, repo_root: Path, snapshots: dict[str, dict]) -> list[str]:
         """`_validate_raw_evidence` over a node whose IR declares `x` and `y`, with `snapshots`
         as the capture files, reduced to what the completeness gate (D7) says."""
@@ -8654,19 +8677,19 @@ end program shallow_water2d_runner
                             "raw_variables": ["h"],
                         }
                     ],
-                },
-                "raw_requirements": {
-                    "required_evidence": [
-                        {
-                            "artifact": "state_snapshots",
-                            "required": True,
-                            "schema": {
-                                "variables": [{"name": "h", "shape_expr": "[2,2]"}],
-                                "time_variable": "snapshot_index",
-                                "time_shape_expr": time_shape_expr,
-                            },
-                        }
-                    ]
+                    "raw_requirements": {
+                        "required_evidence": [
+                            {
+                                "artifact": "state_snapshots",
+                                "required": True,
+                                "schema": {
+                                    "variables": [{"name": "h", "shape_expr": "[2,2]"}],
+                                    "time_variable": "snapshot_index",
+                                    "time_shape_expr": time_shape_expr,
+                                },
+                            }
+                        ]
+                    },
                 },
             }
 
@@ -8695,6 +8718,62 @@ end program shallow_water2d_runner
                     any("time_shape_expr" in v and "scalar" in v for v in good_violations),
                     f"scalar must not be flagged, got: {good_violations}",
                 )
+            finally:
+                _active_repo_root_for_schema.reset(token)
+
+    def test_a_top_level_raw_requirements_copy_does_not_hide_the_nested_block(self) -> None:
+        """Issue #662: `Compile.static` reads `io_contract.raw_requirements`, the block the
+        conductor reads, and no other. The flat-form lift ran only when the document had no
+        top-level `raw_requirements`, so a valid top-level copy beside a defective nested block
+        cleared the gate while the conductor read the defect. Each document is driven through
+        `_validate_io_contract_file`; the valid one must produce no finding, or a finding of the
+        defective one could come from somewhere else."""
+        import copy
+        from tools.validate_pipeline_semantics import (
+            _active_repo_root_for_schema,
+            _validate_io_contract_file,
+        )
+
+        snapshots = {"artifact": "state_snapshots", "required": True,
+                     "schema": {"variables": [{"name": "q", "shape_expr": "[nx]"}],
+                                "time_variable": "t"}}
+        valid = {"io_contract": {
+            "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
+            "outputs": [{"name": "metric", "shape_expr": "scalar", "evidence_ref": "perf.json",
+                         "raw_variables": ["q"]}],
+            "raw_requirements": {"required_evidence": [snapshots]}}}
+        defective = copy.deepcopy(valid)
+        defective["io_contract"]["raw_requirements"]["required_evidence"].append(
+            copy.deepcopy(snapshots))
+        masked = copy.deepcopy(defective)
+        masked["raw_requirements"] = copy.deepcopy(valid["io_contract"]["raw_requirements"])
+
+        def findings(doc: dict) -> list[str]:
+            path = repo_root / "spec.ir.yaml"
+            path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+            violations: list[str] = []
+            _validate_io_contract_file(repo_root, path, violations)
+            return [v for v in violations if "state_snapshots a second" in v]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            token = _active_repo_root_for_schema.set(repo_root)
+            try:
+                path = repo_root / "spec.ir.yaml"
+                path.write_text(yaml.safe_dump(valid), encoding="utf-8")
+                clean: list[str] = []
+                _validate_io_contract_file(repo_root, path, clean)
+                self.assertEqual(clean, [])
+                self.assertEqual(len(findings(defective)), 1)
+                self.assertEqual(findings(masked), findings(defective))
+                # A top-level block with no nested one is not read: the document has none.
+                top_only = copy.deepcopy(valid)
+                top_only["raw_requirements"] = top_only["io_contract"].pop("raw_requirements")
+                path.write_text(yaml.safe_dump(top_only), encoding="utf-8")
+                found: list[str] = []
+                _validate_io_contract_file(repo_root, path, found)
+                self.assertTrue(any("raw_requirements must be object" in v for v in found), found)
             finally:
                 _active_repo_root_for_schema.reset(token)
 
@@ -11168,6 +11247,40 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # `time_variable` is deliberately NOT a provenance source — pin that the fix
         # widened the spelling only, not the set of contributing schema keys.
         self.assertNotIn("t", canonical or set())
+
+    def test_snapshot_provenance_reads_the_io_contract_section_alone(self) -> None:
+        """Issue #662: provenance is read from `io_contract` and its `raw_requirements` — the
+        blocks the conductor reads — and from no other spelling. A top-level `raw_requirements`
+        (the legacy flat form, once read in preference to the nested block) and a double-nested
+        `io_contract.io_contract` (once drilled into in place of the real inputs and outputs)
+        each contributed names the conductor never reads; neither contributes one now, and the
+        nested schema's variable is still in the set."""
+        from tools.validate_pipeline_semantics import _extract_spec_var_names
+
+        def spec_vars(doc: dict) -> set[str] | None:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "spec.ir.yaml"
+                path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+                return _extract_spec_var_names(path)
+
+        def snapshots(name: str) -> dict:
+            return {"required_evidence": [{"artifact": "state_snapshots", "schema": {
+                "variables": [{"name": name}], "time_variable": "t"}}]}
+
+        base = {"io_contract": {"inputs": [{"name": "q_in"}], "outputs": [{"name": "q_out"}],
+                                "raw_requirements": snapshots("u")}}
+        self.assertEqual(spec_vars(base), {"q_in", "q_out", "u"})
+        top_level = {**base, "raw_requirements": snapshots("decoy_root")}
+        double = {"io_contract": {**base["io_contract"], "io_contract": {
+            "inputs": [{"name": "decoy_in"}], "outputs": [{"name": "decoy_out"}]}}}
+        for label, doc in (("top-level raw_requirements", top_level),
+                           ("io_contract.io_contract", double)):
+            with self.subTest(decoy=label):
+                self.assertEqual(spec_vars(doc), {"q_in", "q_out", "u"})
+        # A top-level block with no nested one contributes nothing either.
+        top_only = {"io_contract": {"inputs": [{"name": "q_in"}], "outputs": [{"name": "q_out"}]},
+                    "raw_requirements": snapshots("u")}
+        self.assertEqual(spec_vars(top_only), {"q_in", "q_out"})
 
     def test_the_compile_authoring_rules_reach_the_leaf_that_is_gated_on_them(self) -> None:
         """The rules a `Compile.generate` leaf is gated on are stated where that leaf reads.
@@ -13652,23 +13765,55 @@ class CompileDependencyConsistencyTests(unittest.TestCase):
             self.assertIn("component/c1", violations[0])
             self.assertIn("profile/pr", violations[0])
 
-    def test_version_drift_is_soft_not_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ir_dir = Path(tmp)
-            # IR pins @0.2.0 but the closure resolved @0.1.0: version-agnostic gate accepts it
-            # (gfortran/link backstop catches a wrong version at Build).
-            self._seed(
-                ir_dir,
-                ir_dependency={"node_key": "component/top@0.1.0",
-                               "direct_deps": [{"node_key": "component/mid@0.2.0"}]},
-                sidecar={"node_key": "component/top@0.1.0",
-                         "all_nodes": [
-                             {"node_key": "component/mid@0.1.0", "topo_level": 0},
-                             {"node_key": "component/top@0.1.0", "topo_level": 1}],
-                         "transitive_deps": [], "generated_by": "conductor"})
-            violations: list[str] = []
-            _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
-            self.assertEqual(violations, [])
+    _DRIFT_SIDECAR = {"node_key": "component/top@0.1.0",
+                      "all_nodes": [
+                          {"node_key": "component/mid@0.1.0", "topo_level": 0},
+                          {"node_key": "component/top@0.1.0", "topo_level": 1}],
+                      "transitive_deps": [], "generated_by": "conductor"}
+
+    def test_a_key_with_another_version_or_none_is_refused(self) -> None:
+        """Issue #661: each `direct_deps` key is compared `@version` included. The gate used to
+        read keys version-agnostically ("version drift is soft — the Build backstop catches
+        it"), and no such backstop exists: the build closure is derived from the graph. A drifted
+        or missing version passed here and turned the membership gate inert, because the
+        dependency-surface sidecar is keyed by the versioned key. Each spelling gives ONE
+        violation naming the host's key missing and the written key unexpected, and the message
+        says how to converge."""
+        for written in ("component/mid@0.2.0", "component/mid", "component/mid@",
+                        "component/mid@0.1.0@x"):
+            with self.subTest(written=written), tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                self._seed(ir_dir,
+                           ir_dependency={"node_key": "component/top@0.1.0",
+                                          "direct_deps": [{"node_key": written}]},
+                           sidecar=self._DRIFT_SIDECAR)
+                violations: list[str] = []
+                _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn("missing direct deps ['component/mid@0.1.0']", violations[0])
+                self.assertIn(f"unexpected direct deps [{written!r}]", violations[0])
+                self.assertIn("@version included", violations[0])
+
+    def test_the_node_s_own_key_is_compared_by_kind_and_id(self) -> None:
+        """The IR's own `dependency.node_key` keeps the `(kind, spec_id)` comparison: its
+        readers take the kind and the id, and nothing decides by its version, so a leaf gains
+        nothing from drifting it (issue #661's plan, "not added"). A later tightening is then a
+        decision, not an accident; a different id is still refused."""
+        for own, refused in (("component/top@9.9.9", False), ("component/top", False),
+                             ("component/other@0.1.0", True)):
+            with self.subTest(own=own), tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                self._seed(ir_dir,
+                           ir_dependency={"node_key": own,
+                                          "direct_deps": [{"node_key": "component/mid@0.1.0"}]},
+                           sidecar=self._DRIFT_SIDECAR)
+                violations: list[str] = []
+                _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
+                if refused:
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertIn("dependency.node_key", violations[0])
+                else:
+                    self.assertEqual(violations, [])
 
     def test_missing_sidecar_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -19068,8 +19213,9 @@ class ProblemDependencyCallGateTests(unittest.TestCase):
 class RespelledDependencyKeyTests(unittest.TestCase):
     """A direct-dependency token with whitespace around its kind or spec_id (review round 1 of
     the system tier's PR-S1, sec-M1). The consistency gate (V4) reads it as the member through
-    `_normalize_node_key_token`; every gate that asks what the member's `operations` are must
-    then read it as the member too (`_called_dep_key`). Before the fix `"problem /m@0.1.0"` (and
+    `_versioned_node_key_token` (`_normalize_node_key_token` until issue #661); every gate that
+    asks what the member's `operations` are must then read it as the member too
+    (`_called_dep_key`). Before the fix `"problem /m@0.1.0"` (and
     its `component /` twin, pre-existing at 0b22e6a5) passed V4 and was read by neither V4c-i nor
     V4c-ii, so an empty or fabricated `operations` cleared Compile.static by respelling."""
 
@@ -19133,6 +19279,55 @@ class RespelledDependencyKeyTests(unittest.TestCase):
                 if expected is not None:
                     self.assertEqual(vps._normalize_node_key_token(raw),
                                      f"{expected[0]}/{expected[1]}")
+                    # The key V4 compares (issue #661) is the key V4c-ii looks up.
+                    self.assertEqual(vps._versioned_node_key_token(raw), expected[2])
+
+    def test_a_key_the_consistency_gate_accepts_is_one_the_membership_gate_finds(self) -> None:
+        """Issue #661: for every spelling of the member's key, a fabricated operation is
+        refused by V4 or by V4c-ii — never by neither. Before the fix V4 read keys
+        version-agnostically and V4c-ii looked the sidecar up by the versioned key, so
+        `@0.9.9`, no version, a trailing `@` and a double `@` passed V4 and found no entry, and
+        `m__bogus` cleared both."""
+        templates = self.SPELLINGS + ("{k}/{s}@0.9.9", "{k}/{s}", "{k}/{s}@", "{k}/{s}@0.1.0@x")
+        for kind in ("problem", "component"):
+            for template in templates:
+                spelled = template.format(k=kind, s="m")
+                with self.subTest(kind=kind, spelled=spelled):
+                    bogus = self._gates(kind, spelled, ["m__bogus"])
+                    self.assertTrue(
+                        bogus["V4"] or any("m__bogus" in v for v in bogus["V4c-ii"]), bogus)
+
+    def test_a_drifted_key_is_refused_at_the_compile_static_entry(self) -> None:
+        """The same through `validate_compile_ir_dir`, the Compile.static entry (pin at the
+        handler, not the helper): a drifted `@version` with a fabricated operation is reported
+        by the consistency gate; the exact key's fabricated operation, by the membership gate —
+        the control that the entry runs both."""
+        def entry(spelled: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                ir_dir = root / "workspace" / "ir" / "problem__top__0.1.0" / "i_001"
+                ir_dir.mkdir(parents=True)
+                member = "component/m@0.1.0"
+                (ir_dir / "dependency_graph.json").write_text(json.dumps({
+                    "node_key": "problem/top@0.1.0",
+                    "all_nodes": [{"node_key": member, "topo_level": 0},
+                                  {"node_key": "problem/top@0.1.0", "topo_level": 1}],
+                    "transitive_deps": []}), encoding="utf-8")
+                (ir_dir / "dependency_surface.json").write_text(json.dumps({"dependencies": [
+                    {"node_key": member, "published_operations": ["m__step"],
+                     "source": "ir_public_api"}]}), encoding="utf-8")
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                    "meta": {"spec_id": "top", "spec_kind": "problem"},
+                    "dependency": {"node_key": "problem/top@0.1.0", "direct_deps": [
+                        {"node_key": spelled, "kind": "component",
+                         "operations": ["m__bogus"]}]}}), encoding="utf-8")
+                return vps.validate_compile_ir_dir(root, ir_dir)
+        drifted = entry("component/m@0.9.9")
+        self.assertTrue(any("direct_deps disagrees" in v and "'component/m@0.9.9'" in v
+                            for v in drifted), drifted)
+        exact = entry("component/m@0.1.0")
+        self.assertFalse(any("direct_deps disagrees" in v for v in exact), exact)
+        self.assertTrue(any("m__bogus" in v for v in exact), exact)
 
 
 class ProblemDepOperationsEqualMemberSurfaceTests(unittest.TestCase):
@@ -19521,7 +19716,9 @@ class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
         self.assertEqual(v, [])
 
     def test_missing_sidecar_entry_inert(self) -> None:
-        # A component dep with no sidecar entry at all (unresolved graph edge) is skipped.
+        # A component dep with no sidecar entry at all is skipped here: such a key is not one of
+        # the graph's direct dependencies, which the consistency gate (run first) refuses
+        # (issue #661).
         v = self._run(
             [{"node_key": "component/dep_base@0.1.0", "kind": "component",
               "operations": ["dep_base__apply"]}],
