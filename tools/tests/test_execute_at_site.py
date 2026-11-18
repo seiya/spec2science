@@ -450,7 +450,7 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                     n = _Node(tmp, target=target,
                               site=None if where == "site" else Site(LOCAL_SITE, ("cpu",)))
                     (n.src / "Makefile").write_text(
-                        _MAKEFILE + "\techo 'qc reference boom' >&2\n\texit %d\n" % rc,
+                        _MAKEFILE + f"\techo 'qc reference boom' >&2\n\texit {rc}\n",
                         encoding="utf-8")
                     with mock.patch("tools.checked_build.checked_shape", return_value=None):
                         self.assertEqual(n.execute()["returncode"], 0)
