@@ -44,7 +44,6 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from tools import capture_store
 from tools import primary_evidence as pe
 from tools import runner_ir
 from tools.tests.yaml_fixtures import load_yaml_fixture
