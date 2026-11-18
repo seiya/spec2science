@@ -4547,6 +4547,29 @@ class DriveViolationsTest(unittest.TestCase):
         del ir["drive"]
         self._refused(ir, "drive is required on a problem node")
 
+    def test_a_kind_no_phase_runs_on_draws_the_catalog_finding_alone(self) -> None:
+        """Issue #643 PR-6 (PE-231): the drive gates run only under a canonical catalog kind. An
+        IR whose `meta.spec_id` names a catalog `profile` entry is refused by
+        `_validate_catalog_spec_kind`, and no drive finding is added to it: run under the profile's
+        kind, the drive gates draw (g) findings on `_toy` that would send a repair after
+        `derived` instead of the `spec_id`. Through the real stage function and the real
+        catalog."""
+        from tools import validate_pipeline_semantics as vps
+        import yaml
+        spec_id = "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2"
+        catalog = yaml.safe_load((_REPO / "spec" / "registry" / "spec_catalog.yaml").read_text())
+        self.assertIn(f"'spec_id': '{spec_id}'", str(catalog))   # the probe names a real entry
+        self.assertNotIn("profile", vps._CANONICAL_SPEC_KINDS)
+        ir = _toy()
+        ir["meta"]["spec_id"] = spec_id
+        ir["meta"]["spec_kind"] = "profile"
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            found: list[str] = []
+            vps._validate_tests_and_predicates(_REPO, Path(td), found)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("records spec_kind 'profile', which no phase runs on", found[0])
+
     def test_a_problem_publishes_and_calls_its_step(self) -> None:   # (a)
         ir = _toy()
         ir["meta"]["spec_id"] = "other"
