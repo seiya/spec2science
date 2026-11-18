@@ -68,9 +68,12 @@ time (two since issue #643 PR-3 retired the matcher), and the first commit touch
    #643 PR-3 removed it for every phase the conductor launches: the list is the conductor's own
    and nothing a leaf writes reaches it;
 3. `phase_required_outputs` — the step result's `required_outputs`, the set
-   `_certifiable_artifact_refs` takes `artifact_hashes` over. A launch list that carries a path
-   the step result does not, or the reverse, is refused at `write-step-result`
-   (`required_outputs must be satisfied by substep output_refs`).
+   `_certifiable_artifact_refs` takes `artifact_hashes` over. For `compile` / `generate` /
+   `validate` a step result whose required outputs the substeps' output refs do not cover is
+   refused at `write-step-result` (`required_outputs must be satisfied by substep output_refs`).
+   `build` is not in `SUBSTEP_AWARE_STEPS`, so that comparison never runs for it, and since the
+   matcher went (issue #643 PR-3) nothing at run time compares Build's two lists: the row that
+   drives the real `run_phase("build")` (below) is what holds them together.
 
 What shipped through round 0: (1) only. Round 1 reproduced the refusal on a recorded real build
 request (`tools/tests/data/conductor_launch_requests/`): every `fortran_cpu` /

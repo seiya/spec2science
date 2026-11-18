@@ -1744,16 +1744,6 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
                           "validate": "run_1"})
         self.assertEqual(refs.ir_ref, f"workspace/ir/{refs.safe}/ir_1")
 
-    def test_the_reason_code_is_in_the_runtime_allowlist(self) -> None:
-        """The conductor records this terminal under its own code, which is a member of
-        `FAIL_CLOSED_REASON_CODES`, the vocabulary the operator's RUNBOOK routes by."""
-        self.assertIn("revocation_not_landed", ort.FAIL_CLOSED_REASON_CODES)
-
-    def test_the_writerless_noncanonical_code_is_not_in_the_runtime_allowlist(self) -> None:
-        """`noncanonical_phase_write_attempt` was emitted only by `_reject_noncanonical_phase_write`,
-        which had no caller and went with issue #433. An allowlisted code nothing emits reads as a
-        live terminal; putting it back is a visible edit of this row."""
-        self.assertNotIn("noncanonical_phase_write_attempt", ort.FAIL_CLOSED_REASON_CODES)
 
 
 class SeedRepairsFromRevocationsTest(unittest.TestCase):
@@ -2461,17 +2451,16 @@ class LaunchCheckRefusalTest(unittest.TestCase):
         # Refused before any leaf: nothing was launched.
         self.assertNotIn("record-launch", [sub for sub, _ in c.calls])
 
-    def test_a_refusal_code_outside_the_allowlist_keeps_the_code_in_the_detail(self) -> None:
-        """`backend_not_probed` is a launch-check code outside `FAIL_CLOSED_REASON_CODES`; the
-        conductor carries it under the generic conductor code and it LEADS the detail."""
-        self.assertNotIn("backend_not_probed", wc.FAIL_CLOSED_REASON_CODES)
+    def test_a_preflight_refusal_is_recorded_under_its_own_code(self) -> None:
+        """`backend_not_probed` is recorded as given, the code a substep's own `record-launch`
+        records for the same refusal (issue #643 PR-3; it used to be carried under the generic
+        conductor code while `set-status` refused it)."""
         c = self._conductor("backend_not_probed")
         result, events = self._conduct(c)
         self.assertEqual(result, "fail_closed")
         [status] = [kw for sub, kw in c.calls if sub == "set-status"]
         self.assertEqual((status["--status"], status["--reason-code"], status["--reason-detail"]),
-                         ("fail_closed", "conductor_phase_fail_closed",
-                          f"backend_not_probed: {self._DETAIL}"))
+                         ("fail_closed", "backend_not_probed", self._DETAIL))
         [ev] = [e for e in events if e.get("event") == "launch_check_refused"]
         self.assertEqual((ev["reason_code"], ev["detail"]), ("backend_not_probed", self._DETAIL))
 
@@ -3118,19 +3107,9 @@ class ConductRoutingTest(unittest.TestCase):
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001",
         )
 
-    def test_conductor_fail_closed_codes_are_allowlisted(self) -> None:
-        # Every reason_code the conductor uses for set-status fail_closed is a member of the
-        # runtime's FAIL_CLOSED_REASON_CODES, the vocabulary the operator's RUNBOOK routes by.
-        from tools.orchestration_runtime import FAIL_CLOSED_REASON_CODES
-        for code in ("leaf_transport_error", "retry_budget_exhausted",
-                     "conductor_phase_fail_closed", "sandbox_enforcement_violation",
-                     "dev_phase_rollback"):
-            self.assertIn(code, FAIL_CLOSED_REASON_CODES)
-
-    def test_generic_fail_closed_uses_allowlisted_reason_code(self) -> None:
+    def test_generic_fail_closed_uses_the_conductor_reason_code(self) -> None:
         # A generic phase fail_closed decision (e.g. a declared compile fail) maps to the
-        # allowlisted conductor_phase_fail_closed code, with the specific reason in detail.
-        from tools.orchestration_runtime import FAIL_CLOSED_REASON_CODES
+        # conductor_phase_fail_closed code, with the specific reason in detail.
         c = self._conductor()
         c.status_fn = lambda phase, substep, n: "fail" if phase == "compile" else "pass"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
@@ -3139,7 +3118,6 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(status, "fail_closed")
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--reason-code"], "conductor_phase_fail_closed")
-        self.assertIn(ss["--reason-code"], FAIL_CLOSED_REASON_CODES)
         self.assertEqual(ss["--reason-detail"], wc.COMPILE_DECLARED_FAIL)
 
     def test_conduct_terminalizes_sandbox_enforcement_as_fail_closed(self) -> None:
@@ -3156,7 +3134,6 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(status, "fail_closed")
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--status"], "fail_closed")
-        # a FAIL_CLOSED_REASON_CODES value, the vocabulary the operator's RUNBOOK routes by
         self.assertEqual(ss["--reason-code"], "sandbox_enforcement_violation")
 
     def test_reopen_compile_on_ir_then_succeed(self) -> None:
@@ -22896,6 +22873,42 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["blocked"], 1)
             self.assertEqual(summary["dependency_summary"]["pass"], 1)
+
+    def test_post_judge_fails_closed_on_a_blocked_aggregate_before_the_gate(self) -> None:
+        """Issue #643 PR-3 round 2 (Codex P2): the fold above writes a `blocked` aggregate while
+        `validate_meta.json` says `pass`, so post_judge must not certify it. The gate is made to
+        pass, so only the aggregate can fail the substep; the gate is not run at all."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
+            gate_calls: list[Any] = []
+
+            def _gate(cmd, **_k):
+                gate_calls.append(cmd)
+                return wc.subprocess.CompletedProcess(cmd, 0, "", "")
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[harness_fact]), \
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True), \
+                 self._patch_run(_gate):
+                out = c._post_judge_inproc(refs, "child-post")
+            self.assertEqual(out["returncode"], 0)  # a content outcome, not transport
+            meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+            self.assertEqual(meta["status"], "fail")
+            self.assertEqual(meta["failure_category"], "aggregate_blocked")
+            self.assertEqual(meta["disposition"], "fail_closed")
+            self.assertIn("certified verdict does not resolve", meta["failure_excerpt"])
+            self.assertEqual(gate_calls, [])
+            status, _ = c.determine_substep_status(
+                refs, "validate", "post_judge", [f"{refs.run_node_dir()}/post_judge_meta.json"])
+            self.assertEqual(status, "fail")
 
     def test_author_derived_blocked_per_test_not_certifiable(self) -> None:
         """G6 review finding #2: an all-`blocked` per_test must not certify as pass."""

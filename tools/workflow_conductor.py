@@ -242,7 +242,6 @@ from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_
 # same resolvers the certification predicate will read, stamped by this conductor on every
 # launch and step_result of the attempt.
 from tools.orchestration_runtime import (
-    FAIL_CLOSED_REASON_CODES,
     WORKSHOP_CUT_READ_REPAIR_REASON,
     DerivationInputsUnresolvable,
     phase_derivation,
@@ -15621,6 +15620,23 @@ class Conductor:
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
         self._author_derived_validate_artifacts(refs)
+        # A `blocked` aggregate is an integrity blocker (`phase_04_validate.md`): the node is not
+        # certifiable in this run. On this path the pre_judge substep has already required every
+        # immediate dependency ready, so the fold blocks only when a dependency it admitted no
+        # longer resolves through `DerivationResolver.select` (revoked or re-keyed since). Without
+        # this the run would certify the node with that aggregate, and later runs would adopt it.
+        agg = _read_json(self.repo_root / refs.run_node_dir() / "aggregate_verdict.json") or {}
+        if agg.get("aggregate_verdict") == "blocked":
+            self._write_run_node_meta(refs, "post_judge_meta.json", {
+                "run_id": refs.run_id, "node_key": refs.node_key,
+                "pipeline_id": refs.pipeline_id, "status": "fail",
+                "validation_stage": "pre_judge",
+                "failure_category": "aggregate_blocked",
+                "failure_excerpt": str(agg.get("blocked_reason") or "")[:400],
+                "violations": [], "disposition": "fail_closed",
+            })
+            return {"returncode": 0, "stdout": "",
+                    "stderr": f"[post_judge aggregate blocked] {agg.get('blocked_reason')}"}
         judge_arid = getattr(self, "_pending_judge_arid", {}).get(refs.node_key, "")
         cmd = ["python3", "tools/validate_pipeline_semantics.py", "--stage", "pre_judge",
                "--orchestration-id", self.orchestration_id,
@@ -16952,16 +16968,11 @@ class Conductor:
                                 reason_detail=str(exc)[:200])
                 return "fail_closed"
             except LaunchCheckRefused as exc:
-                # The runtime refused the phase start (a dependency not ready, preflight).
-                # Its reason is a fail_closed code already; one outside the
-                # allowlist (`backend_not_probed`) is carried under the generic code and leads
-                # the detail, so nothing the check said is lost (issue #383).
-                detail = exc.reason_detail
-                if exc.reason_code in FAIL_CLOSED_REASON_CODES:
-                    reason_code = exc.reason_code
-                else:
-                    reason_code = "conductor_phase_fail_closed"
-                    detail = f"{exc.reason_code}: {detail}"
+                # The runtime refused the phase start (a dependency not ready, preflight). Its
+                # code is recorded as given — the same code a substep's own `record-launch`
+                # records for the same refusal (issue #643 PR-3, which removed the allowlist
+                # that used to make this remap a generic code).
+                reason_code, detail = exc.reason_code, exc.reason_detail
                 self.emit("launch_check_refused", node_key=refs.node_key, phase=phase,
                           reason_code=exc.reason_code, detail=exc.reason_detail)
                 self.set_status("fail_closed", reason_code=reason_code,
@@ -17010,8 +17021,8 @@ class Conductor:
                 decision = self.escalate(refs, phase, outcome)
             if decision.action == "fail_closed":
                 reason = decision.reason or ""
-                # Map to a FAIL_CLOSED_REASON_CODES value (the vocabulary the operator's RUNBOOK
-                # routes by); the specific routing reason is preserved in reason_detail.
+                # Map to a reason code the operator's RUNBOOK routes by; the specific routing
+                # reason is preserved in reason_detail.
                 if reason.startswith("leaf_transport_error"):
                     reason_code = "leaf_transport_error"
                 elif "sandbox" in reason:

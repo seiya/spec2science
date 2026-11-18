@@ -5319,37 +5319,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
     if reached:
         invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
 
-FAIL_CLOSED_REASON_CODES = {
-    "child_agent_unavailable_on_execution_platform",
-    "phase_body_started_before_launch",
-    "dependency_not_ready",
-    "downstream_artifact_not_ready",
-    "parallel_nodes_not_explicitly_allowed",
-    "sandbox_enforcement_violation",
-    # Conductor (deterministic driver) terminal failure modes. The conductor is the
-    # canonical driver; it maps each fail_closed terminalization onto one of these codes and
-    # carries the specific reason in reason_detail (`set-status` no longer refuses another code
-    # since issue #643; the vocabulary is what the operator's RUNBOOK routes by):
-    #   - leaf_transport_error: a leaf process crashed / hit a token limit / transport,
-    #     or was killed by the conductor at the per-leaf cap (tag `leaf_timeout`).
-    #   - retry_budget_exhausted: a phase exceeded its cross-phase reopen budget.
-    #   - conductor_phase_fail_closed: a generic phase fail_closed routing decision
-    #     (e.g. judge spec-attribution, dev-mode severe verify) — the specific reason is
-    #     carried in reason_detail.
-    #   - dev_phase_rollback: dev-mode only — a cross-phase backward rollback (reopen of an
-    #     already-passed upstream phase, or a retry/reopen targeting an earlier phase) is
-    #     stopped immediately instead of auto-retrying (F1); the routing reason is in
-    #     reason_detail. prod keeps the bounded cross-phase reopen/retry.
-    "leaf_transport_error",
-    "retry_budget_exhausted",
-    "conductor_phase_fail_closed",
-    "dev_phase_rollback",
-    #   - revocation_not_landed: the conductor decided to re-derive a phase and the
-    #     revocation resolved no stage meta while the phase stayed `certified`. Continuing
-    #     would let a `--resume` skip the phase the run just decided to re-derive, so the run
-    #     stops and says so instead of spending itself arriving back where it started.
-    "revocation_not_landed",
-}
 
 PARALLEL_NODES_ENV_VAR = "SPEC2SCIENCE_ALLOW_PARALLEL_NODES"
 
@@ -9578,8 +9547,7 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
     # re-inlining them is redundant. A `restart` (or any non-reuse) repair has no such session,
     # and the cold fallback renderer needs the context re-inlined, so it is NOT exempt: require
     # `repair_strategy == "reuse"` alongside warm_resume + findings, or the context stays
-    # mandatory. The same (warm + reuse + findings) shape the slim repair turn used, which is
-    # why `validate_pipeline_semantics` still classifies the two apart on a pre-Z4 record.
+    # mandatory. The same (warm + reuse + findings) shape the slim repair turn used.
     warm = bool(request_payload.get("warm_resume"))
     reuse = str(request_payload.get("repair_strategy", "")).strip() == "reuse"
     findings = str(request_payload.get("repair_findings", "")).strip()
