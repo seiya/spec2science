@@ -12,8 +12,10 @@
 # them. Blanking a slug is also fine: a run then stops at `llm_config_codex_cli_requires_model`
 # before launching anything, rather than mid-phase.
 #
-#     gpt-5.6-sol     frontier agentic coding      gpt-5.6-luna   fast and affordable
-#     gpt-5.6-terra   balanced, everyday work
+#     gpt-6.1-sol     coding and everyday work (default effort `medium`)
+#     gpt-6.1-terra   efficient tier (default effort `low`)
+#
+# The CLI still serves the legacy gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna.
 #
 # EVERY phase, substep, provider, model and effort is written out. The substep entries are
 # REQUIRED: each states its own bounds (`lineage_timeout_s`, and `max_wrapper_calls` on a
@@ -32,11 +34,13 @@
 #            `codex --config model_reasoning_effort="<level>"` (Codex has no `--effort` flag).
 #            These are the CLI's own words, read off `supported_reasoning_levels`; they are NOT
 #            the OpenAI API's `reasoning_effort` list, which has `none`/`minimal` and no `ultra`.
-#            Luna serves every level but `ultra`.
 #
-# WHY `medium`. It is `default_reasoning_level` for every gpt-5.6 model, and the predecessor
-# gpt-5.5 defaulted to `xhigh` — the vendor lowered the default as the model got better. A
-# sample should not override that without evidence about the model it will run on.
+# WHY `medium`. It is `default_reasoning_level` of gpt-6.1-sol, as it was of every gpt-5.6
+# model, and the earlier gpt-5.5 defaulted to `xhigh`: the vendor lowered the default as the
+# model got better. A sample should not override that without evidence about the model it will
+# run on. The one exception is gpt-6.1-terra, which defaults to `low`: its one entry below
+# (`compile.verify`) is held at `medium` so that the economy there is the model tier alone, as
+# stated below, rather than a lower effort that no measurement backs.
 #
 # The measured table in `llm_claude.example.yaml` is NOT that evidence: it was recorded almost
 # entirely on Opus 4.8, and a re-run rate belongs to the (model, effort, task) triple. What it does
@@ -73,7 +77,7 @@
 # `docs/RUNBOOK.md` §0-3).
 defaults:
   provider: codex_cli
-  model: gpt-5.6-sol
+  model: gpt-6.1-sol
   effort: medium
   # `defaults` also serves the `escalate` diagnostician, a READING workshop leaf: this bounds
   # its lineage (required; no substep entry inherits it).
@@ -89,7 +93,7 @@ phases:
       # measurement in `llm_claude.example.yaml`, and every later leaf reads what it wrote.
       generate:
         provider: codex_cli
-        model: gpt-5.6-sol
+        model: gpt-6.1-sol
         effort: medium
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -97,10 +101,10 @@ phases:
       # seeded in its tree, written as one verdict document, `verdict.json`. The cheapest leaf
       # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read
       # the same IR afterwards. The only leaf this file economises, and it does so by model tier —
-      # effort stays at the generation default here as everywhere else.
+      # effort stays at `medium` here as everywhere else, above terra's own default of `low`.
       verify:
         provider: codex_cli
-        model: gpt-5.6-terra
+        model: gpt-6.1-terra
         effort: medium
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
@@ -112,7 +116,7 @@ phases:
       # The last leaf to economise.
       generate:
         provider: codex_cli
-        model: gpt-5.6-sol
+        model: gpt-6.1-sol
         effort: medium
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -121,7 +125,7 @@ phases:
       # of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
         provider: codex_cli
-        model: gpt-5.6-sol
+        model: gpt-6.1-sol
         effort: medium
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
@@ -132,6 +136,6 @@ phases:
       # and still not economised, because nothing runs after it to catch a miss.
       judge:
         provider: codex_cli
-        model: gpt-5.6-sol
+        model: gpt-6.1-sol
         effort: medium
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch

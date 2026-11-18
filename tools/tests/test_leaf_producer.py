@@ -997,7 +997,7 @@ class PureProducerSubstepTests(unittest.TestCase):
             with self.subTest(stream=label), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = _write_node(repo)
-                c = _workshop_conductor(repo, backend="codex", agent_model="gpt-5.6-sol")
+                c = _workshop_conductor(repo, backend="codex", agent_model="gpt-6.1-sol")
                 # The leaf writes the bundle into its tree; its JSONL stream names `streamed`.
                 c.procs = [wc.ProcResult(0, _envelope(_valid_bundle()), "",
                                          usage={"output_tokens": 10}, model=streamed)]
@@ -1007,7 +1007,7 @@ class PureProducerSubstepTests(unittest.TestCase):
                     (repo / refs.source_dir() / "bundle_meta.json").read_text())
                 row = [cap["--agent-run-json"] for sub, cap in c.calls
                        if sub == "finalize-child" and "--agent-run-json" in cap][-1]
-            self.assertEqual(meta["per_attempt"][0]["model"], "gpt-5.6-sol", label)
+            self.assertEqual(meta["per_attempt"][0]["model"], "gpt-6.1-sol", label)
             self.assertEqual(meta["per_attempt"][0]["model_provenance"], "codex_launch_pinned",
                              label)
             self.assertEqual(meta["per_attempt"][0]["agent_run_id"], row["agent_run_id"])
