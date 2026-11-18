@@ -5860,6 +5860,27 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
             status, _ = c.determine_substep_status(refs, "validate", "pre_judge", [rel])
             self.assertEqual(status, "pass")
 
+    def test_a_pass_meta_with_no_declared_deliverable_is_refused_not_certified(self) -> None:
+        """Issue #643 PR-3 (OR2-B35): record-launch no longer refuses an empty deliverable list,
+        so `determine_substep_status` states the premise itself. A passing meta with nothing
+        declared beside it would otherwise certify the substep on the vacuous freshness test,
+        however old the meta is. An audit-log-only list is the same case."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            node_dir = repo / refs.run_node_dir()
+            node_dir.mkdir(parents=True, exist_ok=True)
+            (node_dir / "pre_judge_meta.json").write_text(
+                json.dumps({"status": "pass"}), encoding="utf-8")
+            audit_only = sorted(wc._OPTIONAL_OUTPUT_BASENAMES)[0]
+            for paths in ([], [f"{refs.run_node_dir()}/{audit_only}"]):
+                with self.subTest(paths=paths):
+                    with self.assertRaisesRegex(ValueError, "declares no deliverable"):
+                        c.determine_substep_status(refs, "validate", "pre_judge", paths)
+
     def test_a_below_window_mtime_on_a_pass_meta_is_what_builds_the_freshness_reason(self) -> None:
         """The exhibit for `validate_<substep>_deliverable_not_freshly_written`.
 
