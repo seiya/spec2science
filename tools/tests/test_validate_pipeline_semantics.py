@@ -27717,6 +27717,33 @@ class HostInvariantRaiseTests(unittest.TestCase):
                             r"run_quality_checks record"):
             validate(repo_root=repo_root, workspace_root="workspace")
 
+    def test_post_execute_raises_on_a_quality_check_entry_naming_another_tools_record(
+            self) -> None:
+        # The id resolves, but to the run's `run_program` record: the qc raise's second arm.
+        repo_root = self._tree()
+        trial_meta = next((repo_root / self._PIPE).rglob("trial_meta.json"))
+        data = copy.deepcopy(json.loads(trial_meta.read_text(encoding="utf-8")))
+        run_entry = data["source_command_ref"]["run_threads_1"]
+        data["source_command_ref"]["run_quality_checks"] = {
+            "tool_name": "run_quality_checks", "command_id": run_entry["command_id"],
+            "command_log_ref": run_entry["command_log_ref"]}
+        _write_json(trial_meta, data)
+        with self.assertRaisesRegex(
+                ValueError, rf"run_quality_checks command_id={run_entry['command_id']!r} names "
+                            r"no run_quality_checks record"):
+            validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_post_execute_raises_on_a_source_id_naming_no_src_dir(self) -> None:
+        # A plain id, so `_plain_source_dir_name` passes it: the `not src_dir.is_dir()` arm.
+        repo_root = self._tree()
+        trial_meta = next((repo_root / self._PIPE).rglob("trial_meta.json"))
+        data = copy.deepcopy(json.loads(trial_meta.read_text(encoding="utf-8")))
+        data["source_source_id"] = "src_absent"
+        _write_json(trial_meta, data)
+        with self.assertRaisesRegex(
+                ValueError, r"source_source_id='src_absent' names no source directory"):
+            validate(repo_root=repo_root, workspace_root="workspace")
+
     def test_an_unresolvable_harness_propagates_out_of_validate(self) -> None:
         from tools.target_profile import TargetProfileError
         repo_root = self._tree()
