@@ -150,16 +150,16 @@ releases/
 
     ```yaml
     oracle_version: 1
-    language: <language>          # the targets of this language build the oracle
+    language: <language>          # the language of the targets the oracle applies to
     source: <file name>           # the adapter, in the oracle/ directory
-    origin: "<repository, revision, files>"   # optional free text, copied into the record
+    origin: "<repository, revision, files>"   # optional free text
     builds:
       - id: <build id>            # [a-z0-9_]+, unique
         libraries: [<library_id>, ...]   # external libraries of the same language (requirement 16); may be empty
         cases: [<case_id>, ...]   # optional; at most one build omits it and takes every other compared case
     ```
 
-    No other key is admitted (`tools/oracle.py` `load`), and a library of another language than the oracle's is refused. What the rest of this requirement states is the contract the later pull requests of issue #680 implement; until they land, the declaration is read only for the startup verdict over its libraries and for the build and validate keys, and nothing builds the adapter or compares it. A build links its `libraries` beside the closure's (requirement 16). The compared cases are the cases the IR's cross-target predicates compare a comparand in; each goes to the build that names it, else to the one build that names none, and a named case the IR does not hold, a case named twice, and a compared case no build takes are refused (`tools/oracle.py` `case_plan`). Every compared case is compared: the declaration has no member that takes a case out of the comparison. The adapter is compiled under the target's flags and conforms to the target's `toolchain.standard`; no gate reads it, because no leaf writes it. An oracle is built and run at the `local` `execution site` only, and a run that reaches `Build` on a target mapped to a remote site is refused as `oracle_at_remote_site` whatever the oracle links.
+    No other key is admitted (`tools/oracle.py` `load`), and a library of another language than the oracle's is refused. What the rest of this requirement states is the contract the later pull requests of issue #680 implement; until they land, the declaration is read only by the startup verdict (its shape, the site, its libraries) and for the build and validate keys, and nothing builds the adapter or compares it. A build links its `libraries` beside the closure's (requirement 16). The compared cases are the cases the IR's cross-target predicates compare a comparand in; each goes to the build that names it, else to the one build that names none, and a named case the IR does not hold, a case named twice, and a compared case no build takes are refused (`tools/oracle.py` `case_plan`). Every compared case is compared: the declaration has no member that takes a case out of the comparison. The adapter is compiled under the target's flags and conforms to the target's `toolchain.standard`; no gate reads it, because no leaf writes it. An oracle is built and run at the `local` `execution site` only, and a run that reaches `Build` on a target mapped to a remote site is refused as `oracle_at_remote_site` whatever the oracle links.
 
 ### Design Policy
 - A `problem spec` defines the integration scenario and guarantees the consistency of multiple `component`. A `problem spec` may compose other `problem`s: its `__step` calls each member's `__step` and its own direct `component`s, with call intervals and a process switched at run time as `in` arguments. This is the first form of the assembled model's driver.
