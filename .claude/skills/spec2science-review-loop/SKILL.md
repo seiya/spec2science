@@ -105,6 +105,18 @@ next pick) so the message says what the resolved diff does; and before the push,
 picked message for claims about code another group touched** (`references/round-conduct.md`
 §"Hand-resolved cherry-picks keep the agent's message").
 
+**A CLEAN pick keeps the agent's MEASUREMENTS, and they describe the agent's branch, not the
+integrated commit.** Issue #643 PR-5 picked three groups' commits with no conflict, and the
+disclosure round still found four false records in them: a suite count ("7745 passed") and two
+"the digests stay green" that held only on the agent's branch, a commit cited by its hash on the
+agent's branch (the pick gave it another), and a session scratch file cited as the ground.
+**Rule: tell implementing agents in the brief to state a suite figure as "on `<their branch>`
+at `<sha>`", to cite a commit of their own by its subject rather than its hash, and to cite the
+record (`FINAL.md`, an issue) rather than a scratch file; and at integration, read each picked
+message for a count, a green/red claim, a hash or a scratch path, and fix it with
+`git commit --amend --only` before the next pick** (`references/round-conduct.md`
+§"Clean picks keep the agent's measurements").
+
 **`git commit --amend` for a message-only fix requires an empty index** (or `--only`); it
 silently absorbs whatever is staged (PR #58: an amend swallowed a file replacement, leaving a
 commit that claims work `git log -S` cannot find). **If it is unpushed you can fix it by
