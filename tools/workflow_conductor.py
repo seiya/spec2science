@@ -8161,7 +8161,6 @@ class Conductor:
             # identity is the inode the sandbox binds a few host calls later. Per launch, never
             # per lineage: a warm repair launch binds the file afresh.
             credential_identity = None if http else self._credential_identity(entry)
-            self._launch_instant(child_arid)
             launched_monotonic = time.monotonic()
             timeout_seconds, timeout_name = self._workshop_timeout(lineage.deadline)
             if http:

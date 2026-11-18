@@ -45,7 +45,7 @@ workspace/
 │       │       ├── dialogs/                        (the launch itself is recorded once, under launches/; the child.{request,response,prompt,reply} copies went in issue #447)
 │       │       │   ├── agent.result.json           (written by record-agent-run on pass)
 │       │       │   └── agent.summary.txt           (same as above)
-│       │       └── launch_instant.probe.json       (its MTIME is the attempt's freshness bound)
+│       │       └── launch_instant.probe.json       (deterministic substeps only: its MTIME is the attempt's freshness bound)
 │       │
 │       ├── sandbox_profiles/
 │       │   └── <agent_run_id>.json                (bwrap profile; a CLI leaf's carries its `network` block, issue #534 step 4)
@@ -160,7 +160,7 @@ workspace/
 | `launches/<arid>.reply.txt` | `record-launch` (provisional) → `record-reply` (overwrite) | runtime | runtime / validator / parent orchestration agent | the leaf final response |
 | `launches/<arid>.request.input.json` | before `record-launch` | conductor | operator (audit) | the payload passed as `--request-json-file` (a single argv element is capped at 128 KiB). Kept, never cleaned up: if `record-launch` itself fails there is no sibling `.request.json`, and that lone file is the only record of what was sent |
 | `launches/<arid>.agent_run.input.json` | before `finalize-child` | conductor | operator (audit) | the payload passed as `--agent-run-json-file`; the reply text goes over stdin and is persisted by the runtime as `.reply.txt` |
-| `agents/<arid>/launch_instant.probe.json` | `Conductor._launch_instant`, one per ATTEMPT (each retry allocates a fresh `<arid>`, so a dead attempt keeps its own) | conductor | operator (audit) | its **mtime** is the freshness bound `determine_substep_status` judges that attempt's deliverables against — a stamp of the clock that stamps THEM, not a `time.time()` reading (issue #113). The `launched_at_wall_clock` field inside is a second reading, for a human, and can differ from the mtime by up to one timer tick |
+| `agents/<arid>/launch_instant.probe.json` | `Conductor._launch_instant`, one per ATTEMPT of a deterministic (in-process) substep (each retry allocates a fresh `<arid>`, so a dead attempt keeps its own); a workshop leaf's launch writes none since issue #643 (its start is `started_at` in the launch response) | conductor | operator (audit) | its **mtime** is the freshness bound `determine_substep_status` judges that attempt's deliverables against — a stamp of the clock that stamps THEM, not a `time.time()` reading (issue #113). The `launched_at_wall_clock` field inside is a second reading, for a human, and can differ from the mtime by up to one timer tick |
 | `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result, including the per-leaf `usage` (below) |
 | `agents/<arid>/dialogs/agent.summary.txt` | same as above | runtime | same as above | single-line forbidden, must include the basis |
 

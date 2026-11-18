@@ -1014,26 +1014,6 @@ class PureProducerSubstepTests(unittest.TestCase):
             self.assertEqual(meta["per_attempt"][0]["model"], row["agent_model"], label)
             self.assertEqual(row["agent_model_provenance"], "codex_launch_pinned", label)
 
-    def test_the_producer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
-        """Issue #113's resolver is used by THIS loop too, not only by `run_substep`.
-
-        PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted by issue #176 with
-        the mini-loop that was its only production consumer, so what the resolver leaves on this
-        path is the PROBE ITSELF — an operator's record, under the arid of the row it belongs
-        to, of the instant the attempt started. This is that probe's witness on the producer
-        loop: without it, a mutation dropping the `_launch_instant` call from
-        `_spawn_workshop_turn` is silent.
-
-        Round 0's hunk mutation found the producer loop unwitnessed while its reviewer sibling
-        was covered — the two took the instant on lines that read identically.
-        """
-        c, _refs, oc = self._run([_envelope(_valid_bundle())])
-        self.assertEqual(oc.status, "pass")
-        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
-                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
-        self.assertTrue(probe.exists(), probe)
-        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
-
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """The finalize payload a passing pure leaf produces must survive the REAL
         runtime validators.

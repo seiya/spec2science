@@ -610,30 +610,6 @@ class PureVerifySubstepTests(unittest.TestCase):
                 finally:
                     self._tmp.cleanup()
 
-    def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
-        """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
-
-        The three sites that take a launch instant read identically, and round 0's hunk
-        mutation reported this one killed in one run and surviving in another (the kill came
-        from a neighbouring failure under `-x`, not from an assertion about this line). An
-        identity against the probe `Conductor._launch_instant` writes for this attempt's arid
-        settles it: a `time.time()` reading is a different number, the two clocks differing by
-        up to one timer tick.
-
-        What this pins is PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted
-        by issue #176 with the mini-loop that was its only production consumer, so what the
-        resolver leaves on this path is the PROBE ITSELF — an operator's record of when this
-        attempt started, under the arid of the row it belongs to. This is that probe's only
-        witness on the reviewer loop: without it, a mutation dropping the `_launch_instant`
-        call from `_spawn_workshop_turn` is silent.
-        """
-        c, _refs, oc = self._run([_envelope(_verdict("pass"))])
-        self.assertEqual(oc.status, "pass")
-        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
-                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
-        self.assertTrue(probe.exists(), probe)
-        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
-
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """Mirror of the producer's regression pin (billed E2E, 2026-07-16).
 
