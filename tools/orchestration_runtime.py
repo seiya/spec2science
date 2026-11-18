@@ -5915,28 +5915,6 @@ def pre_phase_launch(
     return merged
 
 
-def pre_orchestration_start(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    event: str,
-) -> dict[str, Any]:
-    """A pre-workflow-start hook applied idempotently at the `init` / `preflight` entry.
-
-    It wrote `orchestration_meta.json#parallel_nodes_explicit` / `parallel_nodes_policy` under
-    the meta lock until issue #643 PR-5: no reader decided from either (the sequential-child
-    gate reads only the active-child marker), so the fields, the lock and the meta rewrite
-    went. An old meta that carries them is read like any other."""
-    ws = repo_root / "workspace"
-    created_ws: str | None = None
-    if not ws.exists():
-        ws.mkdir(parents=True, exist_ok=True)
-        created_ws = "created_workspace_root"
-    _orchestration_root(repo_root, orchestration_id).mkdir(parents=True, exist_ok=True)
-    return {"status": "pass", "hook": "pre_orchestration_start", "event": event,
-            "workspace_bootstrap": created_ws}
-
-
 # An id interpolated directly into a repo-relative path is constrained to an explicit
 # allowlist rather than a denylist: only `[A-Za-z0-9_-]` (the superset of the canonical `run_` /
 # `src_` id forms). This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but
@@ -12068,7 +12046,6 @@ def init_orchestration(
         status="running",
     )
 
-    pre_orchestration_start(repo_root, orchestration_id, event="init")
     return meta
 
 
@@ -12079,7 +12056,6 @@ def write_preflight(
 ) -> dict[str, Any]:
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
-    pre_orchestration_start(repo_root, orchestration_id, event="preflight")
 
     stored = dict(payload)
     if "probed_at" not in stored:
