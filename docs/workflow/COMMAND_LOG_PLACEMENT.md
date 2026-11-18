@@ -4,7 +4,7 @@
 > This is the canonical source for where the build-runtime side output `command_log.jsonl`, the
 > host-authored build control file under `src/`, and the Validate.execute program output
 > (`perf.json` / `raw/*`) must be placed in `allowed_output_paths`, and
-> for the routing / forge-prevention rules the post_generate / post_build / post_execute gates
+> for the routing / forge-prevention rules the post_build / post_execute gates
 > enforce. (The pipeline `lineage.json` is NOT a leaf output — the conductor authors it
 > host-side; see below.) It lives under `docs/`, which the host reads when it assembles a prompt. The
 > substep launch prompt carries a one-line pointer to this doc instead of inlining the full
