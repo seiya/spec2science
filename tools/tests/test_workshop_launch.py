@@ -768,9 +768,11 @@ class SpawnTimeoutTests(unittest.TestCase):
             self.assertIn("leaf exceeded lineage_timeout_s=1", result.stderr)
             self.assertNotIn(wc.LEAF_CANCELLED_MARKER, result.stderr)
 
-    def test_a_cancel_event_is_a_cli_leafs(self) -> None:
-        """An HTTP entry has no process to end, so it refuses the event (a codex entry takes it
-        since issue #534 step 2 PR-2: `CodexWorkshopSpawnTests`)."""
+    def test_an_http_entry_is_refused_before_any_spawn(self) -> None:
+        """An HTTP entry has no process to spawn, so `spawn_leaf` refuses it — event or not (a
+        codex entry takes a cancel event since issue #534 step 2 PR-2:
+        `CodexWorkshopSpawnTests`). The event-specific refusal went in issue #643: this one
+        precedes every use of the event."""
         import threading
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "llm.yaml"
@@ -781,7 +783,7 @@ class SpawnTimeoutTests(unittest.TestCase):
             c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "runs in the host loop"):
                 wc.Conductor.spawn_leaf(c, "", {}, c.entry_for(None, None), child_arid="c",
                                         cancel_event=threading.Event())
 
@@ -801,17 +803,6 @@ class SpawnTimeoutTests(unittest.TestCase):
                                         c.entry_for("generate", "verify"), child_arid="child",
                                         timeout_seconds=10 ** 12)
             self.assertLessEqual(seen[0], wc.LEAF_TIMEOUT_MAX_SECONDS)
-
-    def test_an_explicit_bound_is_a_positive_integer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                                   orchestration_agent_run_id="orch", env={},
-                                   llm_config=_WorkshopConfig.config(Path(tmp)))
-            for bad in (0, -1, 1.5, True, "3"):
-                with self.subTest(bad=bad), self.assertRaises(ValueError):
-                    wc.Conductor.spawn_leaf(c, "", {}, c.entry_for("generate", "verify"),
-                                            child_arid="c", timeout_seconds=bad)
-
 
 
 class HttpWorkshopRecordLaunchTests(_Env):

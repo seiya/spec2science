@@ -10189,12 +10189,6 @@ class LeafSpawnTest(unittest.TestCase):
                       [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
         self.assertIn("--skip-git-repo-check", argv)  # issue #227: the sandbox cwd is empty
 
-    def test_codex_leaf_rejects_generic_model_alias(self) -> None:
-        with self.assertRaisesRegex(ValueError, "explicit model slug"):
-            self._c(backend="codex", agent_model="codex").leaf_command(
-                self._c(backend="codex", agent_model="codex").entry_for("generate", "generate"),
-                session_id="a", **_leaf_kind("generate", "generate"))
-
     # --- codex JSONL stream handling -----------------------------------------
 
     def _codex_stream_result(self, lines: str, *, child_arid: str | None = "A",
@@ -14917,19 +14911,9 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
         # No `skill_must_read_refs` at all since Z4 (issue #171): no launch force-reads a
         # document, so the builder emits the key nowhere rather than emitting it empty.
         self.assertNotIn("skill_must_read_refs", cs_req)
-        # compile.generate authors the IR (spec.ir.yaml) + ir_meta.json.
-        gen_outs = self._build("compile", "generate", ())["allowed_output_paths"]
-        self.assertTrue(any(p.endswith("/spec.ir.yaml") for p in gen_outs))
-        self.assertTrue(any(p.endswith("/ir_meta.json") for p in gen_outs))
-        # compile.verify authors NOTHING in the IR (io_contract moved to generate; Compile.static
-        # gated it): its sole write is ir_meta.json, so it cannot mutate spec.ir.yaml post-gate.
-        ver_outs = self._build("compile", "verify", ())["allowed_output_paths"]
-        self.assertEqual([p for p in ver_outs if p.endswith("/ir_meta.json")], ver_outs)
-        self.assertFalse(any(p.endswith("/spec.ir.yaml") for p in ver_outs))
-        # Verify still READS spec.ir.yaml to check it, but not through a must-read list: it is
-        # a PURE leaf, and the host inlines the IR into its prompt as `ir_document`
-        # (`PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]`). The delivery moved with the
-        # leaf model in Z4 (issue #171); what stays true is that the IR is not a write target.
+        # Verify READS spec.ir.yaml to check it, but not through a must-read list: it is a
+        # workshop leaf, and the host seeds the IR as `ir_document`
+        # (`PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]`).
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         self.assertIn("ir_document", PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")])
 
@@ -16397,27 +16381,6 @@ class WriteRunnerTest(unittest.TestCase):
                     self.assertIn(initial, rendered)
                     self.assertNotIn(bare, rendered)
 
-    def test_build_launch_request_lists_no_source_for_either_shape(self) -> None:
-        # generate.generate is a pure leaf on every shape: it authors nothing, so neither the
-        # model nor the runner (runner-authoring node) is in its output set. The
-        # swap this row used to pin lived in a list no leaf read (issue #424 PR-2 deleted it);
-        # which source is a Generate DELIVERABLE is `phase_required_outputs`' answer, pinned by
-        # `test_phase_required_outputs_symmetry` below.
-        refs = self._refs()
-        for runner_host_authored in (True, False):
-            built = wc.build_launch_request(
-                refs, step="generate", substep="generate", orchestration_id="o",
-                orchestration_agent_run_id="ORCH", child_agent_run_id="c",
-                agent_model="m", workflow_mode="prod", runner_host_authored=runner_host_authored)
-            self.assertEqual(built["allowed_output_paths"], [], runner_host_authored)
-        # generate.verify writes ONLY source_meta.json — it inspects the sources, never rewrites
-        # them — so no runner / model appears in its output set at all.
-        ver = wc.build_launch_request(
-            refs, step="generate", substep="verify", orchestration_id="o",
-            orchestration_agent_run_id="ORCH", child_agent_run_id="c",
-            agent_model="m", workflow_mode="prod", runner_host_authored=True)
-        self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
-
     def test_phase_required_outputs_symmetry(self) -> None:
         """The phase's deliverables on both shapes (issue #250 made the host-rendered runner
         and the control file Generate deliverables — they are what Build compiles and what
@@ -16727,30 +16690,13 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
 
 class GenerateLeafAuthorizationTest(unittest.TestCase):
-    """A generate leaf authors nothing: the host writes src/ (the control file included), so
-    neither generate substep's launch lists a source among its outputs."""
+    """A generate leaf authors nothing: the host writes src/ (the control file included), and
+    the phase's deliverables are `phase_required_outputs`' answer."""
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/foo_bar@0.1.0", spec_path="spec/component/foo_bar",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
-
-    def _launch(self, refs: wc.NodeRefs, substep: str) -> dict:
-        return wc.build_launch_request(
-            refs, step="generate", substep=substep, orchestration_id="o",
-            orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev")
-
-    def test_generate_leaves_declare_no_source_output(self) -> None:
-        # Issue #424 PR-2 deleted the generate branch's leaf-authored list (model, runner or
-        # checks, the Makefile unless host-authored): every generate leaf is pure, so it was
-        # dead, and it spelled one language's and one build system's file names.
-        refs = self._refs()
-        self.assertEqual(self._launch(refs, "generate")["allowed_output_paths"], [])
-        # generate.verify writes ONLY source_meta.json — it inspects the sources, never
-        # rewrites them.
-        self.assertEqual(self._launch(refs, "verify")["allowed_output_paths"],
-                         [f"{refs.source_dir()}/source_meta.json"])
 
     def test_phase_required_outputs_declares_every_bundle_source(self) -> None:
         """A `helper` / `internal_module` bundle file is written to `src/` and compiled by the
@@ -23905,21 +23851,6 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             self.assertIsNone(c._read_repair_findings(refs, "verify_minor", "generate"))
 
-    # -- loop preconditions: only repair a meta THIS verify leaf authored -----------------
-
-    def test_build_launch_request_narrows_a_normal_verify_launch_too(self) -> None:
-        # generate.verify's output set is source_meta.json on EVERY turn (not just a meta-schema
-        # repair turn): it inspects the producer sources but never rewrites them. So an ordinary
-        # verify launch carries exactly the meta and nothing under src/.
-        refs = self._refs()
-        req = wc.build_launch_request(
-            refs, step="generate", substep="verify", orchestration_id="orch_x",
-            orchestration_agent_run_id="parent", child_agent_run_id="child-2",
-            agent_model="m", workflow_mode="dev")
-        self.assertEqual(req["allowed_output_paths"],
-                         [f"{refs.source_dir()}/source_meta.json"])
-        self.assertFalse([p for p in req["allowed_output_paths"] if p.endswith("_model.f90")])
-
 
 class LeafEntryThreadingTests(unittest.TestCase):
     """Issue #28 Phase 2: the leaf's model is a per-launch PARAMETER, not the run's identity.
@@ -23959,15 +23890,13 @@ class LeafEntryThreadingTests(unittest.TestCase):
         return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                             orchestration_agent_run_id="O", env={}, llm_config=cfg, **kw)
 
-    def test_a_conductor_without_a_configuration_refuses_to_be_built(self) -> None:
-        """There is no run-wide backend identity left to reconstruct one from, so `None` can
-        only mean a caller forgot. Inventing a configuration there would launch models nobody
-        chose, which is the failure this whole parameterization exists to prevent — and the
-        removed `--llm/--agent-model/--llm-command` trio is not a spelling that comes back."""
+    def test_the_removed_run_wide_backend_arguments_do_not_come_back(self) -> None:
+        """There is no run-wide backend identity: the removed `--llm/--agent-model/--llm-command`
+        trio is not a spelling a Conductor accepts. (Its `llm_config` is passed by both
+        constructors right after `validate_runnable`; the refusal of a `None` one went in
+        issue #643.)"""
         base = dict(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                     orchestration_agent_run_id="O", env={})
-        with self.assertRaises(TypeError):
-            wc.Conductor(**base)
         for name in ("backend", "agent_model", "llm_command"):
             with self.assertRaises(TypeError, msg=name):
                 wc.Conductor(**base, llm_config=_sample_config("claude"), **{name: "claude"})

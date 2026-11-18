@@ -1616,17 +1616,11 @@ def build_launch_request(
     # satisfied) but it produces nothing and reads nothing from disk, so every phase-specific
     # must-read and output set below is skipped for it.
     #
-    # MEASURED, so the next reader does not have to guess which half is load-bearing: of the
-    # four places `diagnose` is consulted below, only `deterministic` changes the payload a
-    # PURE diagnose request comes out with. Building all four phases' requests with the skips
-    # and again with them neutralised differs on `deterministic` for `build` and on NOTHING
-    # else, because the pure override at the end empties `allowed_output_paths` and the three
-    # skill fields anyway. The `deterministic` one is required — a `build` diagnostician IS a
-    # leaf, and `leaf_mode=pure` with `deterministic=True` is refused at validation. The other
-    # three are kept for the reason a fail-safe is kept rather than the reason a check is: they
-    # state that this launch claims no read, they cost nothing, and they are what a diagnose
-    # launch that is NOT pure would need. They are NOT pinned, and cannot be through this
-    # function's return value.
+    # Of the two places `diagnose` is consulted below, only `deterministic` changes the payload
+    # a PURE diagnose request comes out with: a `build` diagnostician IS a leaf, and
+    # `leaf_mode=pure` with `deterministic=True` is refused at validation. The `build` branch's
+    # skip changes nothing, because the pure override at the end empties
+    # `allowed_output_paths` anyway.
     diagnose = substep == DIAGNOSE_SUBSTEP
     # `deterministic` means "this substep runs in-process, with no leaf". The diagnostician IS
     # a leaf, so it is never deterministic — including on `build`, whose PHASE is in-process
@@ -1671,11 +1665,13 @@ def build_launch_request(
         # carries the accounting of its one remaining oddity.
         req["runner_host_authored"] = True
 
+    # Only the deterministic substeps list their outputs below. Every LLM substep and the
+    # diagnostician is a workshop leaf, which authors nothing: the `pure_leaf` override at the
+    # end sets its list to `[]` (the per-substep lists these branches used to spell for them
+    # had no reader, issue #643).
     if step == "compile":
         req["dependency_ref"] = f"{spec}/deps.yaml"
-        if diagnose:
-            pass
-        elif substep == "static":
+        if substep == "static":
             # Deterministic in-process compile gate: the conductor authors
             # compile_static_meta.json (the only freshness-gated deliverable) from
             # validate_workspace_root + validate_pipeline_semantics --stage compile.
@@ -1683,47 +1679,11 @@ def build_launch_request(
             req["allowed_output_paths"] = [
                 f"{refs.ir_ref}/compile_static_meta.json",
             ]
-        else:
-            # generate/verify LLM substeps read the NL spec + tests + deps. spec.ir.yaml is a
-            # must-read only for verify (generate authors it).
-            #
-            # `dependency_graph.json` is a must-read for GENERATE only, and it is not optional:
-            # since issue #175 the node's direct dependency set is the sidecar's
-            # `all_nodes − self − transitive_deps`, NOT the `deps.yaml` declaration (a `profile`
-            if substep == "verify":
-                # Compile.verify authors NOTHING in spec.ir.yaml — all 5 sections (incl.
-                # io_contract) are authored by Compile.generate and the deterministic
-                # Compile.static gate validated the IR before verify runs. Verify's sole write
-                # is ir_meta.json (verification_status), so the IR cannot be mutated post-gate
-                # (which would bypass --stage compile). spec.ir.yaml stays a must-read (verify
-                # reads it to check), but is NOT a write target.
-                req["allowed_output_paths"] = [
-                    f"{refs.ir_ref}/ir_meta.json",
-                ]
-            else:  # generate authors the IR + its meta
-                # dependency_graph.json is deliberately NOT listed: the derived
-                # closure/topo graph is conductor-authored at Compile phase start
-                # (_write_dependency_graph); compile.generate authors only the IR's
-                # direct_deps. Keeping it out of allowed_output_paths (and the
-                # file-tool set derived from it) makes the sidecar leaf-non-writable.
-                req["allowed_output_paths"] = [
-                    f"{refs.ir_ref}/spec.ir.yaml",
-                    f"{refs.ir_ref}/ir_meta.json",
-                ]
     elif step == "generate":
         req["source_id"] = refs.source_id
         req["dependency_ref"] = refs.ir_ref
         src = refs.source_dir()
-        if diagnose:
-            pass
-        elif substep == "generate":
-            # The generate leaf is pure since Z4 (issue #171): it authors nothing; the host
-            # writes the sources from the document it returns, and the build control file and
-            # lineage.json itself. Its output set is empty here as well as in the pure override below —
-            # the list of leaf-authored sources this branch used to spell (one language's names
-            # and one build system's control file) had no reader (issue #424 PR-2).
-            req["allowed_output_paths"] = []
-        elif substep == "gate":
+        if substep == "gate":
             # Deterministic in-process gate: the conductor authors gate_meta.json (the single
             # freshness-gated deliverable, unioning the lint / syntax / static checkers). The
             # lint and syntax checkers both append to the canonical src/command_log.jsonl, so it
@@ -1737,19 +1697,6 @@ def build_launch_request(
             req["allowed_output_paths"] = [
                 f"{src}/gate_meta.json",
                 f"{src}/src/command_log.jsonl",
-            ]
-        else:  # verify
-            # Verify's SOLE write is source_meta.json (verification_status): it inspects the
-            # producer sources (model / runner|checks / Makefile) but never rewrites them — a
-            # fail requests regeneration under a NEW source_id (SKILL workflow-generate-verify
-            # Scope + Rule 3), never an in-place edit. Those sources were certified by the
-            # deterministic lint / syntax / static gates that run BEFORE verify and never re-run,
-            # so listing them (or the Makefile / command_log) here would let a verify turn smuggle
-            # an uncertified source into Build. Narrowed to source_meta.json on ALL turns; the
-            # runtime pins verify's write_root to the same file (a structural second layer under
-            # the pattern-based file-tool guard).
-            req["allowed_output_paths"] = [
-                f"{src}/source_meta.json",
             ]
     elif step == "build":
         req["source_id"] = refs.source_id
@@ -1773,9 +1720,7 @@ def build_launch_request(
         req["run_id"] = refs.run_id
         req["dependency_ref"] = refs.pipeline_ref
         rundir = refs.run_node_dir()
-        if diagnose:
-            pass
-        elif substep == "pre_judge":
+        if substep == "pre_judge":
             # Deterministic pre-spawn dependency-DAG readiness gate. The conductor authors
             # pre_judge_meta.json (the only freshness-gated deliverable) in-process; no leaf,
             # no must-read, no run evidence yet.
@@ -1800,8 +1745,7 @@ def build_launch_request(
                 f"{rundir}/trial_meta.json",
                 f"{rundir}/quality_check.json",
                 # R2: execute authors verdict.json deterministically (the host's predicates over
-                # the captures), so the judge leaf authors only semantic_review.json. Moved out
-                # of the judge's allowed_output_paths (below).
+                # the captures), so the judge leaf authors only semantic_review.json.
                 f"{rundir}/verdict.json",
             ]
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
@@ -1829,17 +1773,6 @@ def build_launch_request(
                 f"{refs.source_dir()}/src/command_log.jsonl",
             ]
             req["allowed_output_paths"] = outs
-        elif substep == "judge":
-            # R2: the judge authors ONLY semantic_review.json. verdict.json (per_test +
-            # failure_class) is now deterministically host-authored at execute from the IR
-            # predicates over the captures; the deterministically-derivable aggregate_verdict /
-            # summary / validate_meta are conductor-authored in post_judge (G6,
-            # _author_derived_validate_artifacts). The judge is a pure semantic pass.
-            req["allowed_output_paths"] = [
-                f"{rundir}/semantic_review.json",
-            ]
-    else:  # pragma: no cover - guarded by SUBSTEPS keys
-        raise ValueError(f"unknown step: {step}")
 
     # Orientation-only dependency facts for the LLM leaves that benefit (generate's
     # semantic authoring, validate.judge's dependency-PASS review). Deterministic phases
@@ -1863,21 +1796,6 @@ def build_launch_request(
     if exemplar and step == "generate" and substep == "generate":
         req["exemplar"] = exemplar
     req.update(rep)
-    # A verify substep's allowed_output_paths is already narrowed to exactly its stage-meta file
-    # on ALL turns (compile.verify -> ir_meta.json, generate.verify -> source_meta.json, above),
-    # so a verify_meta_schema repair turn — which re-authors ONLY that meta — needs no special-case
-    # narrowing here: the normal list already IS the meta. The THREE write-authorization layers this
-    # comment used to describe — `allowed_file_tool_paths` into the output-manifest write guard, the
-    # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
-    # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
-    # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
-    # branch. So the narrowing above is dead for both verify substeps, which are pure; it
-    # survives for a deterministic launch, where `determine_substep_status` reads the list
-    # (record-launch no longer matches it against the phase contract, issue #643). The hazard the three layers were defence in depth
-    # against — a source rewritten on a verify turn, which would
-    # reach Build uncertified, the lint/syntax/static gates having already run and never re-running
-    # — is refused by the sandbox itself, not merely by the hook. The constraint therefore does not
-    # rely on the findings text (which the slim renderer fences as untrusted data anyway).
     # Slim warm-resume repair turn: when the conductor has decided the producer session is
     # resumable (warm_resume) AND this is a reuse repair carrying findings, mark the request
     # so the runtime renders the findings-only slim prompt.
@@ -1891,8 +1809,7 @@ def build_launch_request(
     # lineage's tree), the lineage the launch belongs to and the provider whose tool surface its
     # prompt states, and EMPTY write/skill fields. `allowed_output_paths` is forced empty (the
     # host writes every artifact from the tree's snapshot AFTER the child window closes), and
-    # the three skill fields are declared empty (no SKILL exists to read). Applied LAST so it
-    # overrides the generate branch's leaf-authored output set. On a warm-resume repair the
+    # the three skill fields are declared empty (no SKILL exists to read). On a warm-resume repair the
     # lineage already holds the context, so pure_context is omitted (the validator exempts it
     # for a warm+reuse+findings request); a cold launch carries it. Every caller that passes
     # `pure_leaf=True` passes a lineage and its entry's provider too.
@@ -3976,10 +3893,6 @@ class Conductor:
     _compile_claim: contextlib.ExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.llm_config is None:
-            raise TypeError(
-                "Conductor requires llm_config: the leaf-model authority is the only thing "
-                "that says which provider and model each leaf launches")
         self._resolve_claude_model_aliases()
         # Codex writes its bookkeeping through the JSON-transaction helper, so a crashed prior
         # run may leave a half-applied transaction to roll forward. Keyed on "does ANY entry
@@ -4105,15 +4018,10 @@ class Conductor:
 
 
     def _codex_pinned_model(self, entry: ResolvedLeafEntry | None = None) -> str:
-        """Return the operator-selected Codex model for THIS leaf, never a mutable leaf claim."""
-        model = (entry if entry is not None else self.entry_for(None, None)).model.strip()
-        if not model or model.lower() == "codex":
-            raise ValueError(
-                "Codex workflow leaves require an explicit model slug: set `model:` on this "
-                "leaf's entry or in `defaults`. The generic 'codex' alias cannot provide "
-                "authoritative provenance"
-            )
-        return model
+        """Return the operator-selected Codex model for THIS leaf, never a mutable leaf claim.
+        A blank slug or the generic `codex` alias is refused before the run by
+        `LlmConfig.validate_runnable` (`llm_config_codex_cli_requires_model`)."""
+        return (entry if entry is not None else self.entry_for(None, None)).model.strip()
 
     def _codex_model_provenance(self, entry: ResolvedLeafEntry) -> tuple[str, str]:
         """The model a codex leaf is recorded as having run, and the provenance that says why.
@@ -4166,18 +4074,11 @@ class Conductor:
         `ResolvedLeafEntry` carries no `(phase, substep)`. A PRODUCING launch takes its
         wrapper's endpoint as `mcp_config_json` (`leaf_contract.workshop_leaf_flags`,
         `leaf_contract.codex_workshop_overrides`); a READING launch (a judging substep, or the
-        diagnostician) is served no endpoint, so it takes none and the reading flag set. Either
-        combination the other way round is refused: a leaf would hold the wrapper under a
-        reading contract or lack it under a producing one.
+        diagnostician) is served no endpoint, so it takes none and the reading flag set. Both
+        callers derive `reading` and the endpoint from the same predicate.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         base = _provider_command_base(entry)
-        if reading == (mcp_config_json is not None):
-            raise ValueError(
-                "leaf_command: a producing workshop launch takes its wrapper's mcp_config_json "
-                "and a reading one takes none (reading="
-                f"{reading!r}, mcp_config_json="
-                f"{'given' if mcp_config_json is not None else 'absent'})")
         if entry.provider == "claude_cli":
             # `-p` runs non-interactively, and `workshop_leaf_flags` below is the whole of the
             # leaf's surface beyond the model selection: the file tools its kind is served, the
@@ -4206,40 +4107,38 @@ class Conductor:
             from tools.leaf_contract import workshop_leaf_flags
             flags += workshop_leaf_flags(mcp_config_json, reading=reading)
             return [*base, *flags, "-p"]
-        if entry.provider == "codex_cli":
-            # JSONL is mandatory: thread.started is the sole authoritative Codex
-            # session identity, and the warm resume of every repair turn is keyed on it.
-            model = self._codex_pinned_model(entry)
-            # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
-            # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
-            # would leave the gate green on a CLI that dropped it. Codex has no `--effort`
-            # flag; the reasoning level is a config override on both subcommands.
-            effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
-                            if entry.effort else [])
-            # codex's `workspace-write` sandbox: its shell and patch tool write inside the
-            # working directory, which the lineage profile makes the tree (issue #534 step 2
-            # PR-2), and the wrapper's endpoint on a producing launch
-            # (`leaf_contract.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
-            # sends it with `strict: true` hardcoded). `--skip-git-repo-check`: the tree is not
-            # a git checkout, and codex refuses an untrusted non-git cwd before any API call
-            # without it (measured on codex-cli 0.154.0, rc 1). `codex exec resume` has no
-            # `--sandbox`, so resume re-pins the policy through the `sandbox_mode` override both
-            # subcommands share; passing `--sandbox` there aborts the turn at argv parsing.
-            # `-` is the documented stdin sentinel for the positional prompt on BOTH
-            # subcommands; an omitted positional on `resume` would be read as the session id.
-            from tools.leaf_contract import codex_workshop_overrides
-            overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
-            if resume_session_id:
-                return [*base, "exec", "resume", "--model", model, resume_session_id,
-                        *effort_flags, "--ignore-rules",
-                        "--config", 'sandbox_mode="workspace-write"',
-                        "--skip-git-repo-check", *overrides, "--json", "-"]
-            return [*base, "exec", "--model", model, *effort_flags,
-                    "--ignore-rules", "--sandbox", "workspace-write",
+        # codex_cli: the other CLI provider (`llm_config.CLI_PROVIDERS`). An HTTP entry never
+        # reaches here: `spawn_leaf` refuses it and `_launch_setting_surface` returns first.
+        # JSONL is mandatory: thread.started is the sole authoritative Codex
+        # session identity, and the warm resume of every repair turn is keyed on it.
+        model = self._codex_pinned_model(entry)
+        # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
+        # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
+        # would leave the gate green on a CLI that dropped it. Codex has no `--effort`
+        # flag; the reasoning level is a config override on both subcommands.
+        effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
+                        if entry.effort else [])
+        # codex's `workspace-write` sandbox: its shell and patch tool write inside the
+        # working directory, which the lineage profile makes the tree (issue #534 step 2
+        # PR-2), and the wrapper's endpoint on a producing launch
+        # (`leaf_contract.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
+        # sends it with `strict: true` hardcoded). `--skip-git-repo-check`: the tree is not
+        # a git checkout, and codex refuses an untrusted non-git cwd before any API call
+        # without it (measured on codex-cli 0.154.0, rc 1). `codex exec resume` has no
+        # `--sandbox`, so resume re-pins the policy through the `sandbox_mode` override both
+        # subcommands share; passing `--sandbox` there aborts the turn at argv parsing.
+        # `-` is the documented stdin sentinel for the positional prompt on BOTH
+        # subcommands; an omitted positional on `resume` would be read as the session id.
+        from tools.leaf_contract import codex_workshop_overrides
+        overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
+        if resume_session_id:
+            return [*base, "exec", "resume", "--model", model, resume_session_id,
+                    *effort_flags, "--ignore-rules",
+                    "--config", 'sandbox_mode="workspace-write"',
                     "--skip-git-repo-check", *overrides, "--json", "-"]
-        raise ValueError(
-            f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
-            f"backend); this substep must not have reached spawn_leaf")
+        return [*base, "exec", "--model", model, *effort_flags,
+                "--ignore-rules", "--sandbox", "workspace-write",
+                "--skip-git-repo-check", *overrides, "--json", "-"]
 
     @staticmethod
     def _feed_prompt_stdin(process: Any, prompt_text: str) -> threading.Thread | None:
@@ -4383,20 +4282,12 @@ class Conductor:
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
-        if cancel_event is not None and entry.provider not in ("claude_cli", "codex_cli"):
-            raise ValueError(f"spawn_leaf cancel_event is a CLI leaf's (provider "
-                             f"{entry.provider!r})")
         if entry.is_http:
             # An HTTP entry has no process to spawn: its workshop leaf runs in the host's own
             # tool-use loop (`_spawn_workshop_turn` -> `tools/llm_workshop_loop.py`). The pure
             # HTTP transport this used to hand it to went in issue #534 PR-J4-b.
             raise ValueError(f"spawn_leaf launches a CLI leaf; provider {entry.provider!r} "
                              f"runs in the host loop")
-        if timeout_seconds is not None and (
-                isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
-                or timeout_seconds < 1):
-            raise ValueError(f"spawn_leaf timeout_seconds must be an integer >= 1 (got "
-                             f"{timeout_seconds!r})")
         if timeout_seconds is not None:
             # The same sanity ceiling the environment cap is clamped to: a deadline past it
             # cannot be handed to a selecting wait.
@@ -6718,8 +6609,6 @@ class Conductor:
         # the record names one contract version (the workshop template counter it also carried
         # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
         # `workshop_prompt_contract_version`; its readers keep accepting both.
-        if leaf_mode != "workshop":
-            raise ValueError(f"bundle_meta leaf_mode must be workshop (got {leaf_mode!r})")
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
@@ -17447,7 +17336,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     local site. `local_site` is the `local` entry of the same `sites.yaml` (None: the default)."""
     root = Path(repo_root)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
-    # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
+    # otherwise launch `codex exec --model ''`, phases in.
     llm_config.validate_runnable()
     node_key, spec_path = resolve_node(root, spec_ref)
     if target_profile is None:
