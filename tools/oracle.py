@@ -1,6 +1,6 @@
-"""The `oracle` of a node (issue #680): existing code a person declares for one node, as the
-reference its generated variant is compared with (`docs/SPEC.md` requirement 17,
-`docs/GLOSSARY.md` §oracle).
+"""The `oracle` of a node (issue #680): existing code a person declares for one node, for its
+generated variant to be compared with (`docs/SPEC.md` requirement 17, `docs/GLOSSARY.md`
+§oracle).
 
 The declaration is Project data a person writes, beside the node's three files:
 
