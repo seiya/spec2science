@@ -96,8 +96,8 @@ def resolve_launch_axis_selection(target) -> dict[str, str]:
     target: the checkout declares several profiles (issue #289, R4-b PR-5), and which one a run
     builds for is the launch's own target resolution (`tools/run_workflow.py`)."""
     # The language -> linter answer is the registry's, the one the conductor's
-    # `_gate_lint_check` runs and the certification expects: a second copy would be a drift
-    # pair, and this one would send the probe after a linter the gate never runs.
+    # `_gate_lint_check` runs: a second copy would be a drift pair, and this one would send the
+    # probe after a linter the gate never runs.
     from tools.backends import registry as backend_registry
 
     # The values are the profile's; nothing is defaulted, so this file spells no technology.

@@ -17354,14 +17354,9 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(section["status"], "fail")
             self.assertEqual(section["failure_category"], "syntax_error")
             self.assertIn("-o.f90", section["failure_excerpt"])
-            # No compiler ran, so the stage is `skipped` — the shape the evidence
-            # reader accepts without a command id — and the certificate is written,
-            # like the lint checker's on a content fail.
+            # No compiler ran, so the stage is `skipped`, with no command id.
             self.assertEqual(section["stages"][0]["status"], "skipped")
-            from tools.hooks.syntax_evidence import read_syntax_evidence
-            evidence = read_syntax_evidence(
-                pipeline_root=repo / refs.pipeline_ref, source_id=refs.source_id)
-            self.assertFalse(evidence["ok"])
+            self.assertNotIn("command_id", section["stages"][0])
 
     def test_gate_syntax_keeps_a_conductor_side_refusal_fail_closed(self) -> None:
         """Only a source NAME is the leaf's to fix. Every other refusal from the tool is
@@ -18456,8 +18451,9 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertIn("unreadable", wc._verdict_failure_report(doc))
 
-            # a malformed predicate shape (which Compile refuses) is the structural doc, not a crash
-            ir["io_contract"]["predicates"][0]["op"] = "includes"
+            # a predicate the evaluator raises on (an expr that does not parse, which Compile
+            # refuses) is the structural doc, not a crash
+            ir["io_contract"]["predicates"][0]["expr"] = "final.u["
             doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["failure_class"], "structural_violation")
             self.assertEqual(doc["per_test"], [])
@@ -20112,9 +20108,8 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertFalse(c._conductor_authors_runner(plain))
             self.assertNotIn(c._runner_basename(plain), c._host_rendered_src_names(plain))
 
-    def test_gate_lint_check_pass_returns_section_and_writes_evidence(self) -> None:
+    def test_gate_lint_check_pass_returns_the_section(self) -> None:
         import tempfile
-        from tools.hooks.lint_evidence import read_lint_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -20129,16 +20124,14 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertEqual(meta["status"], "pass")
             self.assertEqual(meta["preset"], "fortitude")
             self.assertIsNone(meta["failure_category"])
-            ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertTrue(ev["ok"])
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
+            self.assertEqual(ev["status"], "pass")
             self.assertEqual(ev["run_linter"][0]["command_id"], "cid")
             self.assertTrue(
                 ev["run_linter"][0]["command_log_ref"].endswith("/src/command_log.jsonl"))
 
     def test_gate_lint_check_findings_is_content_fail(self) -> None:
         import tempfile
-        from tools.hooks.lint_evidence import read_lint_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -20153,9 +20146,8 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "lint_findings")
             self.assertIn("S001", meta["failure_excerpt"])
-            ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertFalse(ev["ok"])
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
+            self.assertEqual(ev["status"], "fail")
 
     def test_gate_lint_check_refuses_an_invocation_that_judged_nothing(self) -> None:
         """A refused INVOCATION is a transport fail_closed, not a content failure.
@@ -20186,7 +20178,6 @@ class DeterministicLintTest(unittest.TestCase):
 
     def test_gate_lint_check_mixed_records_two_entries(self) -> None:
         import tempfile
-        from tools.hooks.lint_evidence import read_lint_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -20205,9 +20196,8 @@ class DeterministicLintTest(unittest.TestCase):
                 ],
             }
             with self._patch_linter(lambda args: mixed):
-                c._gate_lint_check(refs, "child-1")
-            ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
+                out = c._gate_lint_check(refs, "child-1")
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
             self.assertEqual(ev["preset"], "mixed")
             self.assertEqual({e["preset"] for e in ev["run_linter"]}, {"fortitude", "cppcheck"})
 
@@ -20218,7 +20208,6 @@ class DeterministicLintTest(unittest.TestCase):
         `_gate_lint_check` records the composite as one simple entry and turns this row red."""
         import tempfile
         from tools.backends import registry
-        from tools.hooks.lint_evidence import read_lint_evidence
         record = registry.Backend("linter", "zz_comp", None, core_provides=frozenset({"lint"}))
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
@@ -20238,9 +20227,8 @@ class DeterministicLintTest(unittest.TestCase):
                 ],
             }
             with self._patch_linter(lambda args: composite):
-                c._gate_lint_check(refs, "child-1")
-            ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
+                out = c._gate_lint_check(refs, "child-1")
+            ev = out  # the returned section (gate_meta.checkers.lint is not read here)
             self.assertEqual(ev["preset"], "zz_comp")
             self.assertEqual([e["preset"] for e in ev["run_linter"]], ["cppcheck", "fortitude"])
             self.assertEqual([e["command_id"] for e in ev["run_linter"]], ["c1", "f1"])
@@ -20409,9 +20397,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertTrue((probe_dir / "depz_model.f90").is_file())
             self.assertTrue((probe_dir / "spec_x_model.f90").is_file())
 
-    def test_gate_syntax_check_pass_returns_section_and_writes_evidence(self) -> None:
+    def test_gate_syntax_check_pass_returns_the_section(self) -> None:
         import tempfile
-        from tools.hooks.syntax_evidence import read_syntax_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -20442,9 +20429,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
             meta = out
             self.assertEqual(meta["status"], "pass")
             self.assertIsNone(meta["failure_category"])
-            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertTrue(ev["ok"])
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
+            self.assertEqual(ev["status"], "pass")
             self.assertEqual(ev["stages"][0]["compiler"], "gfortran")
             self.assertEqual(ev["stages"][0]["status"], "pass")
             self.assertEqual(ev["stages"][0]["command_id"], "sid")
@@ -20584,7 +20570,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
     def test_gate_syntax_check_compile_error_is_content_fail(self) -> None:
         import tempfile
-        from tools.hooks.syntax_evidence import read_syntax_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -20608,9 +20593,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "syntax_error")
             self.assertIn("IMPLICIT NONE", meta["failure_excerpt"])
-            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertFalse(ev["ok"])
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
+            self.assertEqual(ev["status"], "fail")
             self.assertEqual(ev["stages"][0]["status"], "fail")
 
     def test_the_host_given_file_names_are_the_target_languages(self) -> None:
@@ -20748,7 +20732,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
         import tempfile
         from unittest import mock
         from tools.backends import registry as backend_registry
-        from tools.hooks.syntax_evidence import read_syntax_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -20774,8 +20757,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(out["status"], "pass")
             meta = out
             self.assertEqual(meta["status"], "pass")
-            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             by_compiler = {s["compiler"]: s for s in ev["stages"]}
             # gfortran is forced to run first (the mandatory gate) even though the env
             # var listed frt first.
@@ -20994,10 +20976,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertIn("Unused dummy argument", str(ctx.exception))
             # NO deliverable assertion here, deliberately. `_gate_syntax_check` authors no
             # GATE VERDICT: `gate_meta.json` is written by `_gate_inproc`, one frame up. (It
-            # does write two other things — a temp-dir canary source, and the persistent
-            # host-authored `syntax_evidence/<source_id>.json` certificate via
-            # `write_syntax_evidence` — but both sit BELOW the raise on this path, so neither
-            # exists when this row observes the tree.) So `assertFalse(<any name>.exists())`
+            # does write a temp-dir canary source, but it sits BELOW the raise on this path, so
+            # it does not exist when this row observes the tree.) So `assertFalse(<any name>.exists())`
             # naming a verdict file in THIS row is unfalsifiable by
             # any change to the method under test — which is what it was until issue #180 (it
             # named `syntax_meta.json`) and would still have been had it merely been respelled.
@@ -21057,7 +21037,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
         its entry carries a command id and its log is the canonical one."""
         import tempfile
 
-        from tools.hooks.syntax_evidence import read_syntax_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -21092,9 +21071,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
             def _argv(a: dict) -> dict:
                 return {k: v for k, v in a.items() if k != "project_dir"}
             self.assertEqual(_argv(alone_args[0]), _argv(stage_args[0]))
-            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertTrue(ev["ok"])
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
+            self.assertEqual(ev["status"], "pass")
             self.assertEqual([s["compiler"] for s in ev["stages"]], ["gfortran", "gfortran"])
             self.assertNotIn("scope", ev["stages"][0])
             self.assertEqual(ev["stages"][1]["scope"], "model_alone")
@@ -21110,7 +21088,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
         producing node instead: a content `syntax_error` the leaf CAN fix, never a raise."""
         import tempfile
 
-        from tools.hooks.syntax_evidence import read_syntax_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -21133,9 +21110,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertIn("model-alone check fail", out["failure_excerpt"])
             self.assertIn("internal_module", out["failure_excerpt"])
             self.assertIn("spec_x_private.mod", out["failure_excerpt"])
-            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertFalse(ev["ok"])
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
+            self.assertEqual(ev["status"], "fail")
             alone = [s for s in ev["stages"] if s.get("scope") == "model_alone"]
             self.assertEqual(len(alone), 1)
             self.assertEqual(alone[0]["status"], "fail")
@@ -21453,7 +21429,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
         # skipped, NOT crashed: the tool raises ValueError for an unknown compiler, which
         # would otherwise propagate as a transport fail_closed even though gfortran passed.
         import tempfile
-        from tools.hooks.syntax_evidence import read_syntax_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -21469,8 +21444,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             with self._patch_syntax(fake):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "pass")
-            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
+            ev = out  # the returned section (gate_meta.checkers.syntax is not read here)
             by_compiler = {s["compiler"]: s for s in ev["stages"]}
             self.assertEqual(by_compiler["gfortran"]["status"], "pass")
             self.assertEqual(by_compiler["frtxx"]["status"], "skipped")
@@ -21785,7 +21759,6 @@ class DeterministicGateTest(unittest.TestCase):
         flows determine -> classify -> read_repair as a single union warm reuse."""
         import contextlib
         import tempfile
-        from tools.hooks.lint_evidence import read_lint_evidence
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -21825,10 +21798,10 @@ class DeterministicGateTest(unittest.TestCase):
             self.assertEqual(meta["checkers"]["static"]["status"], "skipped")
             self.assertEqual(meta["checkers"]["static"]["skipped_reason"],
                              "lint_or_syntax_failed")
-            # New test 6: evidence written even on a content fail (ok=false).
-            ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
-            assert ev is not None
-            self.assertFalse(ev["ok"])
+            # The lint section is recorded even on a content fail.
+            ev = meta["checkers"]["lint"]
+            self.assertEqual(ev["status"], "fail")
+            self.assertEqual(ev["run_linter"][0]["command_id"], "cid")
 
             # Same on-disk verdict flows the deterministic pipeline as ONE union.
             paths = [refs.source_dir() + "/gate_meta.json"]

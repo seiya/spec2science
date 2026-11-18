@@ -2688,7 +2688,6 @@ class RenderRefusalTest(unittest.TestCase):
                 capture_output=True)
 
     def test_the_two_readers_of_a_procedure_binding_agree(self) -> None:
-        self.assertEqual(runner_ir.PROCEDURE_FUNCTIONS, pe.PROCEDURE_FUNCTIONS)
         raw = {"procedure": " inputs.lam * u ", "calls": "state.n",
                "record": {"t": "state.st", "u": ["state.a", "state.b"]}}
         kind, (text, calls, record) = runner_ir.drive_binding(raw)
@@ -2743,6 +2742,26 @@ class ProcedureGateTest(unittest.TestCase):
                 found = self._violations(ir)
                 self.assertTrue(any(needle in x for x in found), found)
 
+    def test_an_input_the_expression_reads_must_be_a_finite_number(self) -> None:
+        """Since issue #643 PR-6 (PE-166) `_evaluate_case`'s `resolve_input_value` over the
+        inputs an expression reads is the one refusal of a bool, non-number, non-finite or
+        absent value (`_authored_json` no longer re-checks it): gate (c) reports it, and nothing
+        reaches the case file."""
+        absent = object()
+        for value in (True, float("nan"), "x", absent):
+            with self.subTest(value=value):
+                ir = procedure_ir("inputs.lam * u")
+                inputs = ir["case"]["test_case_set"][0]["inputs"]
+                if value is absent:
+                    del inputs["lam"]
+                else:
+                    inputs["lam"] = value
+                found = pe.drive_violations(ir, kind="component")
+                self.assertTrue(any(m.startswith("(c)") and "inputs.lam" in m for m in found),
+                                found)
+                with self.assertRaises(pe.PrimaryEvidenceError):
+                    pe.evaluate_case_inputs(ir)
+
     def test_an_array_input_in_an_expression_is_refused(self) -> None:
         ir = procedure_ir("inputs.lam * u")
         ir["case"]["test_case_set"][0]["inputs"]["lam"] = [1.0, 2.0, 3.0]
@@ -2752,8 +2771,9 @@ class ProcedureGateTest(unittest.TestCase):
     def test_a_state_listed_as_a_record_takes_no_initial_state(self) -> None:
         ir = procedure_ir()
         ir["case"]["test_case_set"][0]["initial_state"]["n_calls"] = 0.0
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "call record"):
-            pe.evaluate_case_inputs(ir)
+        # Compile's gate (f) refuses it (the evaluator's copy went in issue #643)
+        self.assertTrue(any(m.startswith("(f) case 'c': initial_state.n_calls") and "call record"
+                            in m for m in pe.drive_violations(ir, kind="component")))
 
 
 # --- the distributed driver, compiled and run under the launcher (issue #610, PR-B2) -------------

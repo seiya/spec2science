@@ -598,13 +598,12 @@ class CaptureStoreReachTests(unittest.TestCase):
         own, other, ir = self._runs()
         comparand = pe.ComparandEvidence(
             target_id="t2", pipeline_ref="p", run_id="r", run_dir=other.root,
-            evidence=pe.comparand_evidence_sha256(other.root, "theirs"), output_format="theirs")
+            output_format="theirs")
         records = pe.evaluate_primary_predicates(
             ir, own.root, output_format="own", comparands=[comparand])
         self.assertTrue(all(r["satisfied"] for r in records), records)
         self.assertEqual(self._asked(own.root), {"own"})
         self.assertEqual(self._asked(other.root), {"theirs"})
-        self.assertIn(("theirs", "all_case_paths", cs.snapshot_dir(other.root)), self.log)
         self.assertIn(("own", "read_record", cs.snapshot_dir(own.root)), self.log)
         # the format is how the directory is read, not part of the record
         self.assertNotIn("output_format", comparand.detail())

@@ -44,8 +44,8 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from tools import capture_store
 from tools import primary_evidence as pe
+from tools import runner_ir
 from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
@@ -650,21 +650,11 @@ class EvaluationTest(unittest.TestCase):
         pe.parse_expr("-" * pe.MAX_EXPR_DEPTH + "1")
         pe.parse_expr("abs(" * 30 + "final.h" + ")" * 30)
 
-    def test_a_predicate_that_reads_no_state_raises_at_evaluation_too(self) -> None:
-        """Round 4: the evaluator halves of the round-3 rule were unpinned."""
-        for pred in ({**HMIN, "expr": "1.0"}, {**HMIN, "expr": "final.t"},
-                     {**HMIN, "bind": {"unused": "final.h"}, "expr": "1.0"}):
-            with self.subTest(pred=pred), \
-                    self.assertRaisesRegex(pe.PrimaryEvidenceError, "reads no captured state"):
-                self._eval([pred])
-        # the evaluator applies the rule to the raw references, so this evaluates (to 0); the
-        # schema gate refuses it upstream since issue #483 (a read only inside `X * 0`)
+    def test_a_read_only_inside_x_times_zero_evaluates(self) -> None:
+        """The reads-state rule is the schema gate's alone (issue #643), which refuses a read
+        only inside `X * 0` since issue #483; the evaluator values it (to 0)."""
         [rec] = self._eval([{**HMIN, "bind": {"a": "sum(final.h)", "b": "a * 0"}, "expr": "b"}])
         self.assertEqual(rec["kind"], "physics")
-        for key in ("na_allowed", "expected_outcome"):
-            with self.subTest(key=key), \
-                    self.assertRaisesRegex(pe.PrimaryEvidenceError, f"{key} is not a primary"):
-                self._eval([{**HMIN, key: True}])
 
     def test_a_grammar_refusal_is_not_prefixed_as_a_parse_error(self) -> None:
         with self.assertRaises(pe.PrimaryEvidenceError) as cm:
@@ -712,11 +702,6 @@ class EvaluationTest(unittest.TestCase):
                                                self.run.root, output_format="json")
         self.assertTrue(rec["satisfied"], rec)
         self.assertEqual(rec["evaluated"][0]["value"], float(NX))
-        # a bind may not shadow a coordinate (the lookup order is binds first)
-        shadow = {**pred, "bind": {"x": "1"}, "expr": "sum(x) + final.s"}
-        [rec] = pe.evaluate_primary_predicates(_ir([shadow], coordinates=coords, cases=cases),
-                                               self.run.root, output_format="json")
-        self.assertIn("shadows a grammar name", rec["evaluated"][-1]["error"])
 
     def test_roll_shift_must_be_integer_and_per_axis(self) -> None:
         self._structural(self._one("sum(roll(final.h, 1.5, 0))"), "not an integer")
@@ -957,10 +942,6 @@ class EvaluationTest(unittest.TestCase):
         self.assertAlmostEqual(rec["evaluated"][0]["value"], 2 * float(self.h.sum()))
         self._structural(self._one("B", bind={"B": "A * 2", "A": "sum(final.h)"}),
                          "'A' is not a bind")
-        self._structural(self._one("pi + final.s", bind={"pi": "1"}), "shadows a grammar name")
-        # a function name too (round 1 of #327: neither side's FUNCTIONS clause was pinned)
-        self._structural(self._one("final.s", bind={"atan2": "1"}), "shadows a grammar name")
-        self._structural(self._one("final.s", bind=[1]), "bind must be a mapping")
 
     def test_capture_file_defects_are_structural(self) -> None:
         # Grammar 2 (Z6 PR-3): a capture carries the variables its writer holds for the case
@@ -1050,31 +1031,17 @@ class EvaluationTest(unittest.TestCase):
                 self._structural(self._one("final.s + sum(x)"), fragment, coordinates=coords)
 
     def test_malformed_predicate_shape_raises(self) -> None:
+        # The entry's shape, the state_snapshots entry and the target cases are the Compile
+        # gate's (`SchemaGateTest::test_each_violation`); the scope and the
+        # parse stay the evaluator's to raise.
         for pred, fragment in (
-            ({**HMIN, "test_id": ""}, "test_id"),
-            ({**HMIN, "quantity": "Bad"}, "quantity"),
-            ({**HMIN, "op": "includes"}, "op must be one of"),
-            ({**HMIN, "value": None}, "non-null value"),
-            ({**HMIN, "target_cases": []}, "target_cases"),
             ({k: v for k, v in HMIN.items() if k != "per_case"}, "exactly one of"),
             ({**HMIN, "case": "a"}, "exactly one of"),
             ({**SYM, "case": "zz"}, "not one of its target_cases"),
             ({**HMIN, "expr": "final.h["}, "does not parse"),
-            ("x", "must be a mapping"),
         ):
             with self.subTest(pred=pred), self.assertRaisesRegex(pe.PrimaryEvidenceError, fragment):
                 self._eval([pred])
-        ir = _ir([HMIN])
-        del ir["io_contract"]["raw_requirements"]
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state_snapshots"):
-            pe.evaluate_primary_predicates(ir, self.run.root, output_format="json")
-        # a target case outside test_case_set is met per case, so it is a structural RECORD
-        self._structural({**HMIN, "target_cases": ["a", "zz"]}, "not in case.test_case_set")
-
-    def test_value_map_needs_every_case_and_a_number(self) -> None:
-        self._structural({**HMIN, "value": {"per_case": {"a": 0.5}}}, "no entry for 'b'")
-        self._structural({**HMIN, "value": "0.5"}, "is not a finite number")
-        self._structural({**HMIN, "value": float("inf")}, "is not a finite number")
 
     def test_function_semantics(self) -> None:
         h = self.h
@@ -1688,9 +1655,8 @@ class SchemaGateTest(unittest.TestCase):
         ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
                                     {"name": "t", "shape_expr": "[nx]"}])
         # grammar 6 refuses `t` as a variable name; the rank check still reads it as rank 0
-        reserved = ["state_snapshots.schema.variables: 't' is not a variable name: it is the "
-                    "driver's or the harness's own name "
-                    f"({sorted(pe.RESERVED_VARIABLE_NAMES)})"]
+        reserved = ["state_snapshots.schema.variables: 't' is not a variable name: it is a "
+                    f"reserved name ({sorted(runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS)})"]
         self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), reserved)
         self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), reserved)
 
@@ -2234,7 +2200,7 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_dir / "spec.ir.yaml"),
                                       "--run", str(run.root), "--target", "fortran_cpu"]), 1)
-        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([{**HMIN, "op": "includes"}])))
+        (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([{**HMIN, "expr": "final.h["}])))
         with contextlib.redirect_stdout(out):
             self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root),
                                       "--target", "fortran_cpu"]), 2)
@@ -2267,7 +2233,6 @@ CROSS = {"test_id": "t_mass", "quantity": "cross_target_state_agreement",
 def _comparand(run: _RunDir, target_id: str) -> pe.ComparandEvidence:
     return pe.ComparandEvidence(target_id=target_id, pipeline_ref=f"p/{target_id}",
                                 run_id="run_20260928_001", run_dir=run.root,
-                                evidence=pe.comparand_evidence_sha256(run.root, "json"),
                                 output_format="json")
 
 
@@ -2290,13 +2255,7 @@ class CrossTargetGrammarTest(unittest.TestCase):
                 pe.parse_expr(text)
 
     def test_comparand_is_reserved_for_binds_and_coordinates(self) -> None:
-        run = _RunDir()
-        self.addCleanup(run.cleanup)
-        run.write_state("a", _field(), _field())
-        env = pe.load_case_env(run.root, _case("a"), pe.snapshot_schema(_ir(None)),
-                               output_format="json")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "shadows a grammar name"):
-            pe.evaluate_binds({"comparand": "final.s"}, env, {})
+        # a `comparand` bind is the schema gate's to refuse (`CrossTargetSchemaTest::test_gate`)
         coords = [{"name": "comparand", "axis": 0, "count": 8, "length": 1.0,
                    "placement": "cell_center"}]
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "not a grammar name"):
@@ -2315,55 +2274,6 @@ class CrossTargetGrammarTest(unittest.TestCase):
         ir = _ir([MASS, CROSS, HMIN, in_bind])
         self.assertEqual(pe.cross_target_predicates(ir), [CROSS, in_bind])
         self.assertEqual(pe.cross_target_predicates(_ir([MASS, HMIN])), [])
-
-
-class ComparandEvidenceHashTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.run = _RunDir()
-        self.addCleanup(self.run.cleanup)
-        self.run.write_state("a", _field(1), _field(2))
-
-    def test_hash_is_over_the_captures_only(self) -> None:
-        h0 = pe.comparand_evidence_sha256(self.run.root, "json")
-        self.assertTrue(h0.startswith("sha256:"))
-        self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
-        # the host-authored schema file is not a capture
-        (self.run.sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text('{"x": 1}')
-        self.assertEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h0)
-        # a byte of a final capture, of an initial capture, and a file's NAME each move it
-        final = self.run.sdir / "a.json"
-        final.write_text(final.read_text() + " ")
-        h1 = pe.comparand_evidence_sha256(self.run.root, "json")
-        self.assertNotEqual(h1, h0)
-        init = self.run.sdir / "initial" / "a.json"
-        init.write_text(init.read_text() + " ")
-        h2 = pe.comparand_evidence_sha256(self.run.root, "json")
-        self.assertNotEqual(h2, h1)
-        final.rename(self.run.sdir / "b.json")
-        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root, "json"), h2)
-
-    def test_file_boundaries_are_framed(self) -> None:
-        """Two captures `a.json` = `1` and `b.json` = `2` concatenate, unframed, to the same
-        bytes as ONE capture `a.json` = `1b.json2`; the hash keeps the file sets apart."""
-        other = _RunDir()
-        self.addCleanup(other.cleanup)
-        for run in (self.run, other):
-            for path in run.sdir.rglob("*.json"):
-                path.unlink()
-        (self.run.sdir / "a.json").write_text("1")
-        (self.run.sdir / "b.json").write_text("2")
-        (other.sdir / "a.json").write_text("1b.json2")
-        self.assertNotEqual(pe.comparand_evidence_sha256(self.run.root, "json"),
-                            pe.comparand_evidence_sha256(other.root, "json"))
-
-    def test_no_capture_raises(self) -> None:
-        for path in (self.run.sdir / "a.json", self.run.sdir / "initial" / "a.json"):
-            path.unlink()
-        (self.run.sdir / capture_store.SNAPSHOT_SCHEMA_FILENAME).write_text("{}")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(self.run.root, "json")
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no state snapshot capture"):
-            pe.comparand_evidence_sha256(self.run.root / "missing", "json")
 
 
 class CrossTargetEvaluationTest(unittest.TestCase):
@@ -2393,7 +2303,7 @@ class CrossTargetEvaluationTest(unittest.TestCase):
                          [("gpu", "a"), ("gpu", "b"), ("mpi", "a"), ("mpi", "b")])
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu", "mpi"])
         self.assertEqual(set(cross["comparands"][0]),
-                         {"target_id", "pipeline_ref", "run_id", "evidence"})
+                         {"target_id", "pipeline_ref", "run_id"})
         self.assertEqual(cross["grammar_version"], pe.GRAMMAR_VERSION)
         # an ordinary predicate is evaluated once, untagged, and lists no comparand
         self.assertEqual(mass["comparands"], [])
@@ -2457,11 +2367,6 @@ class CrossTargetEvaluationTest(unittest.TestCase):
                                output_format="json")
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "no comparand is bound"):
             pe.evaluate(pe.parse_expr("sum(comparand.final.h)"), env)
-
-    def test_reading_only_the_comparand_is_refused(self) -> None:
-        only = {**CROSS, "expr": "maxabs(comparand.final.h)"}
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "reads no captured state"):
-            self._eval([only], ["gpu"])
 
 
 class CrossTargetSchemaTest(unittest.TestCase):
@@ -2618,8 +2523,6 @@ class CrossTargetCliTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         cross = json.loads(out.getvalue())[1]
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
-        self.assertEqual(cross["comparands"][0]["evidence"],
-                         pe.comparand_evidence_sha256(runs["gpu"].root, "json"))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
                                       "--target", "fortran_cpu"]), 0)
@@ -2911,19 +2814,19 @@ class Grammar6Test(unittest.TestCase):
             preds, case_ids={"a", "b"}, test_ids=["t_mass"], schema=schema, cases=cases, **kw)
         self.assertEqual(gate([{**HMIN, "expr": "min(final.h) + final.step"}]), [])
         # issue #644 O13: every reserved word, and any name holding the layout separator
-        # (kills a mutant dropping a word from RESERVED_VARIABLE_NAMES, or the `__` clause of
-        # `reserved_name_reason`)
-        self.assertEqual(pe.RESERVED_VARIABLE_NAMES, frozenset({
+        # (kills a mutant dropping a word from runner_ir's HARNESS_RESERVED_SNAPSHOT_KEYS, the one
+        # set the gate reads, or the `__` clause of `reserved_name_reason`)
+        self.assertEqual(runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS, frozenset({
             "t", "step", "case_id", "n", "count", "complete", "every", "none", "initial",
             "final", "history", "restart_point", "series"}))
-        for name in sorted(pe.RESERVED_VARIABLE_NAMES) + ["a__b", "__h", "h__"]:
+        for name in sorted(runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS) + ["a__b", "__h", "h__"]:
             with self.subTest(name=name):
                 bad = {**schema, "variables": schema["variables"] + [
                     {"name": name, "shape_expr": "scalar"}]}
                 v = pe.validate_primary_predicate_schema(
                     [HMIN], case_ids={"a", "b"}, test_ids=["t_mass"], schema=bad, cases=cases)
                 self.assertIn(f"{name!r} is not a variable name: ", v[0])
-                self.assertIn("own name" if "__" not in name else "contains '__'", v[0])
+                self.assertIn("reserved name" if "__" not in name else "contains '__'", v[0])
         # one underscore is a name like any other
         ok = {**schema, "variables": schema["variables"] + [{"name": "h_b", "shape_expr": "scalar"}]}
         self.assertEqual(pe.validate_primary_predicate_schema(
@@ -3208,7 +3111,7 @@ class StateReadsTest(unittest.TestCase):
         reads2 = reads._replace(closure_tests=reads.closure_tests | {"t_other"})
         self.assertTrue(pe.is_zero_step_closure(other_test, reads2))
 
-    def test_the_evaluator_exempts_one_closure_per_test_too(self) -> None:
+    def test_the_evaluator_evaluates_the_closure(self) -> None:
         run = _RunDir()
         try:
             for cid, n in (("a", 4), ("b", 8)):
@@ -3216,18 +3119,10 @@ class StateReadsTest(unittest.TestCase):
                 run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
                           final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
             ir = _toy()
+            # the closure evaluates; which copies of it are exempt is the schema gate's alone
+            # (issue #643)
             self.assertEqual([r["kind"] for r in pe.evaluate_primary_predicates(
                 ir, run.root, output_format="json")], ["pass", "pass"])
-            ir["io_contract"]["predicates"].append(dict(ir["io_contract"]["predicates"][1]))
-            with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                        r"predicates\[2\]: reads no captured state"):
-                pe.evaluate_primary_predicates(ir, run.root, output_format="json")
-            # R3-1: the closure's text under another quantity is not exempt either
-            ir = _toy()
-            ir["io_contract"]["predicates"][1]["quantity"] = "mass"
-            with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                        r"predicates\[1\]: reads no captured state"):
-                pe.evaluate_primary_predicates(ir, run.root, output_format="json")
         finally:
             run.cleanup()
 
@@ -3336,20 +3231,6 @@ class DriverCounterReadsTest(unittest.TestCase):
             self.assertIn(name, v)
         self.assertNotIn("restart_point", v)
 
-    def test_the_evaluator_refuses_each_counter_alone(self) -> None:
-        run = _RunDir()
-        try:
-            for expr in self._COUNTERS:
-                with self.subTest(expr=expr):
-                    ir = _toy_with_input_state()
-                    ir["io_contract"]["predicates"] = [self._pred(expr)]
-                    with self.assertRaisesRegex(
-                            pe.PrimaryEvidenceError,
-                            r"predicates\[0\]: reads no captured state the kernel produced"):
-                        pe.evaluate_primary_predicates(ir, run.root, output_format="json")
-        finally:
-            run.cleanup()
-
     def test_the_swe_repro_is_refused(self) -> None:
         """The finding's repro: a test's `extrema.h.min` predicates replaced by
         `max(series.step) ge 0` passed every gate; the schema gate now refuses each, and the
@@ -3417,9 +3298,6 @@ class ClosureExemptionTest(unittest.TestCase):
                 v = self._schema(ir)
                 self.assertEqual(len(v), 1, v)
                 self.assertTrue(v[0].startswith(self._MSG), v)
-                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                            r"predicates\[1\]: reads no captured state"):
-                    self._evaluate(ir)
 
     def test_a_pass_test_s_accepted_closure_is_exempt(self) -> None:
         ir = self._ir(outcome="pass", ref="derived.n_step")
@@ -3447,9 +3325,6 @@ class ClosureExemptionTest(unittest.TestCase):
         v = self._schema(ir)
         self.assertEqual(len(v), 1, v)
         self.assertTrue(v[0].startswith(self._MSG), v)
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    r"predicates\[1\]: reads no captured state"):
-            self._evaluate(ir)
 
     def test_a_non_closure_predicate_under_run_n_step_is_not_exempt(self) -> None:
         """R3-1: the quantity alone exempts nothing — a predicate under `run.n_step` that is
@@ -3466,9 +3341,6 @@ class ClosureExemptionTest(unittest.TestCase):
                 v = self._schema(ir)
                 self.assertEqual(len(v), 1, v)
                 self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
-                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                            r"predicates\[2\]: reads no captured state"):
-                    self._evaluate(ir)
 
     #: (surface, the text that opens the statement, the text that closes it): every statement
     #: of gate (l)'s loop-node closure an author or a leaf reads.
@@ -3611,25 +3483,6 @@ class ClosureExemptionTest(unittest.TestCase):
                     self.assertIn(clause, window)
                     self.assertIn(f"`{pe.ZERO_STEP_QUANTITY}`", clause)
 
-    def test_the_evaluator_refuses_an_entry_that_reads_no_state_past_the_gate(self) -> None:
-        """R4-2: `evaluate_primary_predicates` refuses, by its OWN whole-entry message, an
-        entry the schema gate would refuse and that reaches it anyway (an IR the gate never
-        saw) — not only by the per-case refusal that follows it, whose message shares the
-        `reads no captured state` head."""
-        ir = self._ir(outcome="pass", ref="derived.n_step")
-        ir["io_contract"]["predicates"].append(
-            {**ir["io_contract"]["predicates"][0], "expr": "derived.n_step + inputs.grid.nx",
-             "op": "ge", "value": 0})
-        v = self._schema(ir)
-        self.assertEqual(len(v), 1, v)
-        self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, re.escape(
-                "predicates[2]: reads no captured state the kernel produced (final.<written "
-                "non-logical var>, initial.<var init writes>, history.<written var>, "
-                "series.<written var>_min|_max) in expr or a bind expr reaches. "
-                f"{pe.FLAG_FORM_STATEMENT}") + r"\Z"):
-            self._evaluate(ir)
-
     def test_a_pass_test_s_closure_with_a_wrong_ref_is_not_exempt(self) -> None:
         ir = self._ir(outcome="pass", ref="derived.z")
         self.assertTrue([m for m in pe.drive_violations(ir, kind="problem")
@@ -3637,17 +3490,14 @@ class ClosureExemptionTest(unittest.TestCase):
         v = self._schema(ir)
         self.assertEqual(len(v), 1, v)
         self.assertTrue(v[0].startswith(self._MSG), v)
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    r"predicates\[1\]: reads no captured state"):
-            self._evaluate(ir)
 
 
 class ResultFlagFormTest(unittest.TestCase):
     """Review round 5, R5-2 (the rule R4-3 began): a logical `out` state of `step` or `init` is
     no kernel-state read, per case, so a flag stands for no physics quantity; a flag predicate
     (`fixed_form`'s `FORM_FLAG`) is exempt from the reads-a-capture rule, ONE per (point, flag)
-    per test, only under the flag's own name. The schema gate, the evaluator and gate (l) ask
-    the one function. Removed with the four-form enumeration, their subject gone: the xfail form
+    per test, only under the flag's own name. The schema gate and gate (l) ask the one
+    function. Removed with the four-form enumeration, their subject gone: the xfail form
     on a pass test / pass form on an xfail test / init xfail form on a pass test (the value is
     free now), "a logical out that is no result still counts" (it no longer does), and the
     `VALUING_FORMS` equality."""
@@ -3665,13 +3515,9 @@ class ResultFlagFormTest(unittest.TestCase):
             **pe.predicate_schema_context(ir))
 
     def _refused_at(self, ir: dict, idx: int) -> None:
-        """The schema gate refuses ``predicates[idx]`` (and only it) as reading no state, and so
-        does the evaluator (the IR never reaches captures: it raises first or at that entry)."""
+        """The schema gate refuses ``predicates[idx]`` (and only it) as reading no state."""
         v = [m for m in self._schema(ir) if self._NO_STATE in m]
         self.assertEqual([m.split(":")[0] for m in v], [f"predicates[{idx}]"], v)
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
-            pe.evaluate_primary_predicates(ir, Path("/nonexistent-run-dir"), output_format="json")
 
     @staticmethod
     def _rus_xfail(expr: str = "final.ok", value: float = 0, quantity: str = "ok") -> dict:
@@ -3695,7 +3541,7 @@ class ResultFlagFormTest(unittest.TestCase):
         return ir
 
     # --- the reviewer's repro --------------------------------------------------------------------
-    def test_the_coriolis_repro_is_refused_by_the_gate_and_the_evaluator(self) -> None:
+    def test_the_coriolis_repro_is_refused_by_the_gate(self) -> None:
         """`l0_zero_f_gives_zero_source_pass`'s `max_abs_s` predicate rewritten to
         `final.guard_pass eq 1.0` cleared every gate (0 findings), and with captures S == 7.5,
         guard_pass = 1 the verdict passed while the test claims max|S| == 0."""
@@ -3710,12 +3556,6 @@ class ResultFlagFormTest(unittest.TestCase):
         self.assertTrue(v[0].startswith(f"predicates[{i}]: {self._NO_STATE} (final.<v>"), v)
         self.assertTrue(v[1].startswith(f"test {tid!r}: no predicate values the captured state "
                                         "of target case(s) ['l0_zero_f']"), v)
-        # the evaluator over the reviewer's captures: refused, so no verdict passes on them
-        ir["io_contract"]["predicates"] = [p for p in preds if p["test_id"] == tid]
-        ir["io_contract"]["tests"] = [t for t in ir["io_contract"]["tests"]
-                                      if t["test_id"] == tid]
-        j = next(k for k, p in enumerate(ir["io_contract"]["predicates"])
-                 if p["quantity"] == "max_abs_s")
         run = _RunDir()
         self.addCleanup(run.cleanup)
         u = np.zeros((3, 4, 3)).tolist()
@@ -3723,20 +3563,18 @@ class ResultFlagFormTest(unittest.TestCase):
         run.write("l0_zero_f", initial={"U": u, "S": s75, "guard_pass": 0.0, "t": 0.0,
                                         "step": 0},
                   final={"U": u, "S": s75, "guard_pass": 1.0, "t": 0.0, "step": 1})
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    re.escape(f"predicates[{j}]: {self._NO_STATE}")):
-            pe.evaluate_primary_predicates(ir, run.root, output_format="json")
-        # the honest predicate on the same captures fails the test
+        # the honest predicate on the reviewer's captures fails the test
         honest = _coriolis()
         honest["io_contract"]["predicates"] = [p for p in honest["io_contract"]["predicates"]
                                                if p["test_id"] == tid]
-        honest["io_contract"]["tests"] = ir["io_contract"]["tests"]
+        honest["io_contract"]["tests"] = [t for t in honest["io_contract"]["tests"]
+                                          if t["test_id"] == tid]
         records = pe.evaluate_primary_predicates(honest, run.root, output_format="json")
         doc = evaluate_verdict(honest["io_contract"]["tests"], records)
         self.assertEqual(doc["per_test"][0]["status"], "fail")
 
     def test_the_refusal_names_the_one_admitted_form(self) -> None:
-        """R5-3: the text a repairing leaf reads, from both sites, says a logical `out` is no
+        """R5-3: the text a repairing leaf reads, from the schema gate, says a logical `out` is no
         kernel-state read and names the form, so the repair is the form and not deleting the
         judgment."""
         form = ("A logical `out` state is no kernel-state read: a flag is judged in one form "
@@ -3751,11 +3589,6 @@ class ResultFlagFormTest(unittest.TestCase):
         self.assertTrue(v[0].startswith(f"predicates[0]: {self._NO_STATE} (final.<v> of a "
                                         "non-logical variable an operation writes"), v)
         self.assertTrue(v[0].endswith(f"kernel state). {form}"), v)
-        with self.assertRaises(pe.PrimaryEvidenceError) as caught:
-            pe.evaluate_primary_predicates(rus, Path("/nonexistent-run-dir"), output_format="json")
-        self.assertTrue(str(caught.exception).startswith(
-            f"predicates[0]: {self._NO_STATE} (final.<written non-logical var>"), caught.exception)
-        self.assertTrue(str(caught.exception).endswith(f"reaches. {form}"), caught.exception)
 
     def test_a_loop_node_s_result_under_a_physics_quantity_reads_nothing(self) -> None:
         ir = _toy()
@@ -4222,20 +4055,16 @@ class ResultFlagFormTest(unittest.TestCase):
             run.write(cid, initial=state, final=state)
         return run
 
-    def test_the_gate_and_the_evaluator_agree_on_each_row(self) -> None:
+    def test_each_row_is_refused_by_the_gate_or_read_by_the_evaluator(self) -> None:
         for label, ir, idx, values in self._table():
             with self.subTest(label):
                 refused = [m for m in self._schema(ir) if self._NO_STATE in m]
-                run = self._run_of(ir)
-                self.addCleanup(run.cleanup)
                 if values is None:
                     self.assertEqual([m.split(":")[0] for m in refused],
                                      [f"predicates[{idx}]"], refused)
-                    with self.assertRaisesRegex(
-                            pe.PrimaryEvidenceError,
-                            re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
-                        pe.evaluate_primary_predicates(ir, run.root, output_format="json")
                     continue
+                run = self._run_of(ir)
+                self.addCleanup(run.cleanup)
                 self.assertEqual(refused, [])
                 record = pe.evaluate_primary_predicates(ir, run.root, output_format="json")[idx]
                 self.assertEqual(record["expr"], ir["io_contract"]["predicates"][idx]["expr"])
@@ -4590,8 +4419,6 @@ class CaseInputsTest(unittest.TestCase):
             (lambda c: c["initial_state"].update(h="1 / (x - x)"), "initial_state.h"),
             (lambda c: c["initial_state"].update(h=[1.0, 2.0]), "a literal of shape [2]"),
             (lambda c: c["initial_state"].update(h="final.h"), "final.h is not admitted"),
-            (lambda c: c["initial_state"].pop("h"), "initial_state has no entry for ['h']"),
-            (lambda c: c["initial_state"].update(ok=0), "takes no initial_state entry"),
             (lambda c: c["derived"].update(n_step="final.step"), "final.step is not admitted"),
             (lambda c: c["inputs"]["grid"].update(nx=4.5), "resolved to 4.5"),
         ]
@@ -4719,7 +4546,29 @@ class DriveViolationsTest(unittest.TestCase):
         ir = _toy()
         del ir["drive"]
         self._refused(ir, "drive is required on a problem node")
-        self._refused(_coriolis(), "spec kind 'physics' is not one of", "physics")
+
+    def test_a_kind_no_phase_runs_on_draws_the_catalog_finding_alone(self) -> None:
+        """Issue #643 PR-6 (PE-231): the drive gates run only under a canonical catalog kind. An
+        IR whose `meta.spec_id` names a catalog `profile` entry is refused by
+        `_validate_catalog_spec_kind`, and no drive finding is added to it: run under the profile's
+        kind, the drive gates draw (g) findings on `_toy` that would send a repair after
+        `derived` instead of the `spec_id`. Through the real stage function and the real
+        catalog."""
+        from tools import validate_pipeline_semantics as vps
+        import yaml
+        spec_id = "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2"
+        catalog = yaml.safe_load((_REPO / "spec" / "registry" / "spec_catalog.yaml").read_text())
+        self.assertIn(f"'spec_id': '{spec_id}'", str(catalog))   # the probe names a real entry
+        self.assertNotIn("profile", vps._CANONICAL_SPEC_KINDS)
+        ir = _toy()
+        ir["meta"]["spec_id"] = spec_id
+        ir["meta"]["spec_kind"] = "profile"
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            found: list[str] = []
+            vps._validate_tests_and_predicates(_REPO, Path(td), found)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("records spec_kind 'profile', which no phase runs on", found[0])
 
     def test_a_problem_publishes_and_calls_its_step(self) -> None:   # (a)
         ir = _toy()
@@ -4798,9 +4647,6 @@ class DriveViolationsTest(unittest.TestCase):
             (toy_with(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
                       ["schema"]["variables"].append({"name": "spare", "shape_expr": "[nx]"})),
              "'spare' is bound by no dummy of drive"),
-            (toy_with(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
-                      ["schema"]["variables"][0].update(source="operation")),
-             "variables[0].source: the source vocabulary is retired"),
         ]
         for ir, msg in rows:
             with self.subTest(msg=msg):
@@ -5778,7 +5624,7 @@ class ListFormCasesTest(unittest.TestCase):
 
     def test_a_scope_over_both_partitions_reads_state_in_each(self) -> None:
         """A predicate whose read is kernel state in one partition and host data in the other
-        is refused naming the case — by the schema gate and by the evaluator — and
+        is refused naming the case by the schema gate, and
         `cases_read` / the per-test rule count only the case it reads state in."""
         ir = _saturation()
         io = ir["io_contract"]
@@ -5803,16 +5649,6 @@ class ListFormCasesTest(unittest.TestCase):
         # q_a valued by a variable its own entry writes: admitted
         pred["expr"] = "maxabs(final.temp) + maxabs(final.qsat)"
         self.assertEqual(_all_gates(ir), [])
-        pred["expr"] = "maxabs(final.temp)"
-        run = _RunDir()
-        try:
-            with self.assertRaisesRegex(
-                    pe.PrimaryEvidenceError,
-                    rf"predicates\[{idx}\]: reads no captured state the kernel produced in "
-                    r"case\(s\) \['q_a'\], which its scope evaluates"):
-                pe.evaluate_primary_predicates(ir, run.root, output_format="json")
-        finally:
-            run.cleanup()
 
     def test_gate_f_is_per_case(self) -> None:
         # `converged` is logical on s_a (no entry) and host data on q_a (an entry required)
@@ -6924,8 +6760,7 @@ class InfrastructureSeriesTest(unittest.TestCase):
                 ("no list", self._ir("step"), [shape]),
                 ("no names", self._ir(omit=True), [shape]),
                 ("reserved", self._ir(["step", "count"]),
-                 ["(h) step_series name 'count' is refused: it is the driver's or the "
-                  "harness's own name"]),
+                 ["(h) step_series name 'count' is refused: it is a reserved name"]),
                 ("separator", self._ir(["step", "a__b"]),
                  ["(h) step_series name 'a__b' is refused: it contains '__'"]),
                 ("both", self._ir(["count"]),

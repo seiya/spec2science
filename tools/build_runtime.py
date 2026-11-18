@@ -662,8 +662,7 @@ _LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
 #: A preset that runs several linters in order, named by the presets it COMPOSES rather than by
 #: their argv: the previous spelling restated `fortitude`'s and `cppcheck`'s command lines a
 #: second time inside the `mixed` branch, so a flag change reached one invocation and not the
-#: other. Declared once, in the registry (`COMPOSITE_LINTERS`, issue #424), which the
-#: post_generate validator reads too.
+#: other. Declared once, in the registry (`COMPOSITE_LINTERS`, issue #424).
 _LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = dict(_backend_registry().COMPOSITE_LINTERS)
 
 
@@ -786,7 +785,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
         ))
     # A simple preset keeps the FLAT result shape (the command's own keys plus `preset`); a
     # composite keeps the `runs` shape, one entry per sub-run in order. Both are what the
-    # conductor's `_gate_lint_check` normalizes and what the lint evidence records.
+    # conductor's `_gate_lint_check` normalizes into the gate's `run_linter` entries.
     if preset in _LINT_PRESET_COMMANDS:
         return runs[0] | {"preset": preset}
     return {

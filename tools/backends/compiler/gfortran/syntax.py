@@ -16,8 +16,7 @@ Stdlib only.
 from __future__ import annotations
 
 #: The program the stage launches; also what the launch-time host probe looks for
-#: (`tools/host_prerequisites.py`) and what the post_generate certification compares a logged
-#: argv[0] with.
+#: (`tools/host_prerequisites.py`).
 EXECUTABLE = "gfortran"
 
 #: The language whose sources this adapter reads. `run_syntax_check` asks that language's

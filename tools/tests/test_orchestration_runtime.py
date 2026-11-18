@@ -20328,7 +20328,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
             "module-level orchestration_runtime import writes its .pyc into the repo source "
             "tree before main() installs the sys.pycache_prefix redirect")
         # Ordering pin: the assignment must precede the in-process conductor import/dispatch,
-        # else the redirect is inactive when tools.build_runtime / lint_evidence first compile.
+        # else the redirect is inactive when tools.build_runtime first compiles.
         # main() is not unit-callable, so pin source POSITION instead. Anchor to line-start
         # (^\s*) so the comment mentions of the same string do not false-match.
         conductor_m = re.search(
@@ -24745,7 +24745,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:0bbdc48b47688e41":
+        "tools/prompt_templates/workshop_compile_generate.txt:50f0e0d3701d2505":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -24776,7 +24776,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "transcribing the tests document's `history:` / `restart_points:` lines, issue #644 "
             "P4b — rule 3 unchanged, rule 5 unchanged; re-keyed again 2026-11-16 when rule 5's "
             "sentence on a harness self-test's captures took the other capture groups and "
-            "their evidence entries, the harness side of P4b — rule 3 unchanged)",
+            "their evidence entries, the harness side of P4b — rule 3 unchanged; re-keyed "
+            "2026-11-18 when rule 5 dropped \"a `source` key is refused\", issue #643 PR-6 — "
+            "rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "
@@ -25497,7 +25499,7 @@ class ResolveComparandsTests(unittest.TestCase):
     `self_verdict` of fail (a verdict-8 run that failed only a cross-target record included),
     another or no IR, a judge that did not pass, a post-judge gate that did not pass, a revoked
     meta. Also pinned: B's build not certified, B's IR not this run's, a target that does not
-    load and an eligible run with no capture (`CrossTargetUnevaluable`), and the validate key
+    load (`CrossTargetUnevaluable`), an eligible run with no capture (selected), and the validate key
     carrying no comparand member — a legacy stamp that does reads as a mismatch on it."""
 
     NODE = "component/spec_x@0.1.0"
@@ -25586,7 +25588,6 @@ class ResolveComparandsTests(unittest.TestCase):
         path.write_text(json.dumps({**doc, "ir_hash": self._ir_hash()}))
 
     def test_the_latest_eligible_run_of_the_other_target_is_selected(self) -> None:
-        from tools.primary_evidence import comparand_evidence_sha256
         b = self._seed_b()
         self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
         newest = self._run(b, "run_20260102_002", capture='{"u": [3.0, 4.0]}',
@@ -25595,7 +25596,6 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual((comp.target_id, comp.run_id, comp.pipeline_ref),
                          (self.b.target_id, "run_20260102_002", b["pipeline_ref"]))
         self.assertEqual(comp.run_dir, newest)
-        self.assertEqual(comp.evidence, comparand_evidence_sha256(newest, "json"))
 
     def test_a_comparand_run_is_read_in_the_format_its_own_target_writes(self) -> None:
         # Kills: reading the other target's run through the ASKING target's format (issue #644
@@ -25610,13 +25610,9 @@ class ResolveComparandsTests(unittest.TestCase):
             prof = real_load(repo_root, tid)
             return dataclasses.replace(prof, doc={**prof.doc, "output": {"format": "theirs"}})
 
-        asked: list[str] = []
-        with mock.patch.object(ort, "load_target_profile", side_effect=load), \
-                mock.patch("tools.primary_evidence.comparand_evidence_sha256",
-                           side_effect=lambda _d, fmt: asked.append(fmt) or "sha"):
+        with mock.patch.object(ort, "load_target_profile", side_effect=load):
             [comp] = self._resolve()
-        self.assertEqual((asked, comp.output_format, _TP.output_format),
-                         (["theirs"], "theirs", "json"))
+        self.assertEqual((comp.output_format, _TP.output_format), ("theirs", "json"))
 
     def test_each_eligibility_clause_excludes_the_newest_run(self) -> None:
         good = {"self_verdict": "pass"}
@@ -25928,13 +25924,16 @@ class ResolveComparandsTests(unittest.TestCase):
                                     "comparand: the declared targets do not list"):
             self._resolve()
 
-    def test_an_eligible_run_with_no_capture_is_unresolvable(self) -> None:
+    def test_an_eligible_run_with_no_capture_is_selected(self) -> None:
+        """Issue #643 (PE-021): the selection reads no capture; the evaluation finds none (a
+        `structural` record, `unevaluable`: `test_an_unevaluable_comparison_is_not_ready_and_
+        never_raises`)."""
         b = self._seed_b()
         node = self._run(b, "run_20260102_001",
                          verdict={"self_verdict": "pass"})
         shutil.rmtree(node / "raw")
-        with self.assertRaisesRegex(ort.CrossTargetUnevaluable, "no state snapshot"):
-            self._resolve()
+        [comp] = self._resolve()
+        self.assertEqual(comp.run_dir, node)
 
     def test_the_validate_key_has_no_comparand_member(self) -> None:
         """Issue #383: another target's eligible run — appearing, then its captures moving —
@@ -26167,11 +26166,12 @@ class CrossTargetAgreementTests(unittest.TestCase):
 
         rows = (("a declared target that does not load", broken_profile, "broken_t"),
                 ("a comparand run without captures", comparand_without_captures,
-                 "no state snapshot"),
+                 "structural:cross_target_state_agreement: capture file a.json is absent"),
                 ("a non-numeric comparand capture", non_numeric_comparand,
                  "structural:cross_target_state_agreement: a.json: variable 'u' is not a "
                  "rectangular numeric array"),
-                ("own captures removed", own_captures_removed, "no state snapshot"),
+                ("own captures removed", own_captures_removed,
+                 "structural:cross_target_state_agreement: capture file a.json is absent"),
                 ("the IR does not read", ir_unreadable, "PyYAML missing"),
                 ("the evaluator raises", evaluator_raises, "ZeroDivisionError"))
         for label, breaker, cause in rows:

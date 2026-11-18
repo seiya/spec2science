@@ -34,10 +34,10 @@ from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
 #: Names a snapshot variable must not take (issue #644 O13): the driver's and the harness's own
 #: keys (`t`, `step`, `case_id`), the capture group words, and the words an output format's
-#: layout and the `tests.md` history lines spell beside a variable's name. The same set as
-#: `primary_evidence.RESERVED_VARIABLE_NAMES` (a test holds the two equal); a name containing
-#: `RESERVED_NAME_SEPARATOR` is refused with them, since a layout joins a group, a variable and
-#: a member with it.
+#: layout and the `tests.md` history lines spell beside a variable's name. The one copy:
+#: `primary_evidence`'s Compile gate imports it (the schema and `step_series` gates); a name
+#: containing `RESERVED_NAME_SEPARATOR` is refused with them, since a layout joins a group, a
+#: variable and a member with it.
 HARNESS_RESERVED_SNAPSHOT_KEYS = frozenset({
     "t", "case_id", "step", "n", "count", "complete", "every", "none",
     "initial", "final", "history", "restart_point", "series"})
@@ -802,8 +802,8 @@ def restart_variables(ir: dict[str, Any]) -> frozenset[str]:
 # What both language renderers spell: the host-rendered driver of one IR, as data (issue #589
 # PR-1b). A renderer adds names and syntax and decides nothing the plan states.
 
-#: The functions a procedure expression may call (the verdict tuple's
-#: `primary_evidence.PROCEDURE_FUNCTIONS`, held equal by `test_runner_ir.py`).
+#: The functions a procedure expression may call (`primary_evidence._procedure_violations`
+#: imports this set).
 PROCEDURE_FUNCTIONS = frozenset({"abs", "sqrt", "exp", "log", "sin", "cos", "min", "max"})
 _PROCEDURE_CONSTANTS = {"pi": math.pi, "e": math.e}
 

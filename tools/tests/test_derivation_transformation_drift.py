@@ -962,7 +962,15 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `phase_contract_document` member alone.) The digest `compile-docs-38` shipped with at
     # cfde9a2e:
     "compile-docs-38@cfde9a2e": "efb48b2c006df4d8a7a3440ac86a9942a143a2b4eebbb2a066c0fd81b6e905a1",
-    "compile-docs-38": "b11a65b6977d3a7ab8d4886e9b8fb1e9eb9fdf7c2ef7de44a2ed31c14ce05b26",
+    # compile-docs-38 re-pinned in place by issue #643 PR-6 (operator decision R1, 2026-11-17):
+    # `phase_01_compile.md` stops saying a `source` key on a snapshot-schema variable is a
+    # `Compile fail` (U36, PE-207: the refusal went; no code reads the key, no committed IR or
+    # fixture carries it). It widens what Compile admits by a key nothing reads, so every IR the
+    # previous version certified is still valid, and a bump would re-derive every node's Compile
+    # for a rule they satisfy. (Measured by diffing `compile_documents_tuple()` against main
+    # efbf8454's: that row and no other.) The digest `compile-docs-38` shipped with at efbf8454:
+    "compile-docs-38@efbf8454": "b11a65b6977d3a7ab8d4886e9b8fb1e9eb9fdf7c2ef7de44a2ed31c14ce05b26",
+    "compile-docs-38": "443705f57de79df0fa9679bc97f4494fe8518ee834ebc24cdff52c4eb25d8433",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1470,7 +1478,15 @@ PINNED_RENDER: dict[str, str] = {
     # diffing `render_tuple()` against main ed5b95e2's: that row and no other.) The digest
     # `render-22` shipped with at ed5b95e2:
     "render-22@ed5b95e2": "4c38f647a74aaf2fca89b29a433f15f9ab43ea3d4877e28f6e874fd7a6b16936",
-    "render-22": "f2f0743a57a193a72c37f1f247cd75adb999a9d86d7367629d302213d12fe3e6",
+    # render-22 re-pinned in place by issue #643 PR-6, comment-only: `tools/runner_ir.py`'s
+    # comments on `HARNESS_RESERVED_SNAPSHOT_KEYS` and `PROCEDURE_FUNCTIONS` say
+    # `primary_evidence` imports them (U35 deleted its copies), and
+    # `tools/backends/language/fortran/bundle.py` drops the post_generate syntax certification
+    # the B-1 rows removed from `MANDATORY_SYNTAX_COMPILER`'s comment. (Measured by diffing
+    # `render_tuple()` against main efbf8454's: those two rows and no other.) The digest
+    # `render-22` shipped with at efbf8454:
+    "render-22@efbf8454": "f2f0743a57a193a72c37f1f247cd75adb999a9d86d7367629d302213d12fe3e6",
+    "render-22": "6d0a0b63e7fe4d33bd54891b80abd16841e7af1d8d73a59b2fb1696dd8fb9df4",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1735,7 +1751,13 @@ PINNED_BUILD: dict[str, str] = {
     # `build_tuple()` against main ed5b95e2's: those two rows and no other.) The digest `build-5`
     # shipped with at ed5b95e2:
     "build-5@ed5b95e2": "db34c0c66ebfd344f5ed12276ecfcb3ecdbfca7f29495c842aba382461cd2931",
-    "build-5": "c2c0b3fdaa83ad10495fb593b7dc5d377bc9b66512467c3e86103f9e8f240894",
+    # build-5 re-pinned in place by issue #643 PR-6, comment-only:
+    # `tools/backends/language/fortran/bundle.py` drops the post_generate syntax certification
+    # the B-1 rows removed from `MANDATORY_SYNTAX_COMPILER`'s comment. (Measured by diffing
+    # `build_tuple()` against main efbf8454's: that row and no other.) The digest `build-5`
+    # shipped with at efbf8454:
+    "build-5@efbf8454": "c2c0b3fdaa83ad10495fb593b7dc5d377bc9b66512467c3e86103f9e8f240894",
+    "build-5": "84ee4b2a0e88983c82e36261b2f35dd1ed53b126a0d70c54510fbb84970c1457",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2141,7 +2163,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # `execute_tuple()` against main ed5b95e2's: those two rows and no other.) The digest
     # `execute-22` shipped with at ed5b95e2:
     "execute-22@ed5b95e2": "66ccc17eaea8853193d785e871de1a0d0680135518f123bd5ff0c634d1242e89",
-    "execute-22": "34e2125490ad2ae1baab7477eb8c8ba3be17f3dfea1a1d893f31851f35133f91",
+    # execute-22 re-pinned in place by issue #643 PR-6, behaviour-preserving:
+    # `tools/primary_evidence.py` loses the evaluator's re-checks of Compile-gated fields (U34),
+    # its copies of runner_ir's reserved-name and procedure-function sets (U35), the retired
+    # `source` key refusal (U36) and `comparand_evidence_sha256` with the `evidence` field it fed
+    # (PE-021, no reader); `Conductor._shape_state_agreement` stops passing that field. On every
+    # IR the Compile gate admits, the evaluator's records and the case payloads are identical
+    # (15,000 mutants, 2,292 gate-clean, against main efbf8454), and a shape with no capture
+    # still ends `unevaluable`. (Measured by diffing `execute_tuple()` against main efbf8454's:
+    # those two rows and no other.) The digest `execute-22` shipped with at efbf8454:
+    "execute-22@efbf8454": "34e2125490ad2ae1baab7477eb8c8ba3be17f3dfea1a1d893f31851f35133f91",
+    "execute-22": "b1f87278a22c0ebf72c53d58677822a6d703ecfc0a162769777b6def2c20a238",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2403,7 +2435,13 @@ PINNED_VERDICT: dict[str, str] = {
     # output hash. (Measured by diffing `verdict_tuple()` against main ed5b95e2's: that row and
     # no other.) The digest `verdict-20` shipped with at ed5b95e2:
     "verdict-20@ed5b95e2": "dd02f3c2f75fec924679d7c319b748f1d7b35a7834feccc4525108d16ff9b87b",
-    "verdict-20": "2e7a0a471203d54aabb53bd3cae9c4166ab37833eb108e9cf889fd51dfb6f211",
+    # verdict-20 re-pinned in place by issue #643 PR-6, behaviour-preserving: the
+    # `tools/primary_evidence.py` edits named at execute-22 above (U34, U35, U36, PE-021); every
+    # verdict record of a gate-admitted IR is unchanged. (Measured by diffing `verdict_tuple()`
+    # against main efbf8454's: that row and no other.) The digest `verdict-20` shipped with at
+    # efbf8454:
+    "verdict-20@efbf8454": "2e7a0a471203d54aabb53bd3cae9c4166ab37833eb108e9cf889fd51dfb6f211",
+    "verdict-20": "46376f99b2c95312f68a779650ba33d6d4ec20f98502e254bd7f4f7db791e0be",
 }
 
 

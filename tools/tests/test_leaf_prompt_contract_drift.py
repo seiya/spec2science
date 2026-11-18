@@ -1201,6 +1201,10 @@ PINNED: dict[str, str] = {
     # leaf-103 (issue #643 PR-3): `DEPENDENCIES.md` loses the signature-drift WARNING (OR1-89,
     # the canary that compared a dependency IR's signature pin with its certified source).
     "leaf-103": "93a44709f0cda2557be538346c28a2a0363522e137522bb1e9b51db713dcad9e",
+    # leaf-104 (issue #643 PR-6): `workshop_compile_generate.txt` stops telling the Compile
+    # producer a `source` key on a snapshot-schema variable is refused (U36, PE-207: the refusal
+    # went).
+    "leaf-104": "8b1117cc2cf26eab407115d10fb81b87f9845f41ac4e363343de2bb45e6d1e3f",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same

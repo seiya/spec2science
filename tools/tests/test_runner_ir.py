@@ -240,16 +240,6 @@ class AgreementWithPrimaryEvidenceTest(unittest.TestCase):
                 with self.assertRaisesRegex(RenderError, f"snapshot variable '{name}' is refused"):
                     r.snapshot_schema(ir)
 
-    def test_the_reserved_names_agree(self) -> None:
-        """Kills a word dropped from or added to one reserved set, and the `__` clause dropped
-        from one `reserved_name_reason`."""
-        self.assertEqual(r.HARNESS_RESERVED_SNAPSHOT_KEYS, pe.RESERVED_VARIABLE_NAMES)
-        self.assertEqual(r.RESERVED_NAME_SEPARATOR, pe.RESERVED_NAME_SEPARATOR)
-        for name in sorted(pe.RESERVED_VARIABLE_NAMES) + ["a__b", "__h", "h__", "h", "a_b"]:
-            with self.subTest(name=name):
-                self.assertEqual(r.reserved_name_reason(name) is None,
-                                 pe.reserved_name_reason(name) is None)
-
 
 def _binding(b: pe.Binding) -> tuple:
     """`pe.Binding` in `runner_ir.drive_binding`'s shape: a procedure's `ref` holds all three."""

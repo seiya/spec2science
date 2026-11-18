@@ -30,7 +30,6 @@ from tools.validate_pipeline_semantics import (
     _node_executions,
     _required_raw_evidence,
     _target_toolchain_from_pipeline_dir,
-    _validate_generate_lint_command_logs,
     _validate_compile_dependency_consistency,
     _validate_published_surface,
     _parse_public_api_from_controlled_spec,
@@ -593,9 +592,6 @@ def _create_minimal_execution_tree(
     )
     lint_command_id = "lint_cmd_fixture_001"
     syntax_command_id = "syntax_cmd_fixture_001"
-    rel_lint_log = (
-        f"workspace/pipelines/{node_safe}/{_TARGET_ID}/{pipeline_id}/source/src_20260415_001/src/command_log.jsonl"
-    )
     if dependency_resolved is None:
         # Real shape: `direct_deps` entries are objects (node_key / kind / operations) in every
         # certified IR — never bare strings.
@@ -911,44 +907,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             "context_isolated": True,
         },
     )
-    # Conductor-authored, leaf-non-writable lint evidence (pipeline-root). post_generate
-    # certifies the conductor-run lint against this, not source_meta.lint_command_ref.
-    _write_json(
-        pipeline_dir / "lint_evidence" / "src_20260415_001.json",
-        {
-            "checked_at": "2026-04-15T00:00:00Z",
-            "source_id": "src_20260415_001",
-            "preset": "fortitude",
-            "ok": True,
-            "run_linter": [
-                {
-                    "preset": "fortitude",
-                    "command_id": lint_command_id,
-                    "command_log_ref": rel_lint_log,
-                }
-            ],
-        },
-    )
-    # Conductor-authored, leaf-non-writable syntax evidence (pipeline-root). post_generate
-    # certifies the conductor-run generate.gate syntax check (gfortran -fsyntax-only) against it.
-    _write_json(
-        pipeline_dir / "syntax_evidence" / "src_20260415_001.json",
-        {
-            "checked_at": "2026-04-15T00:00:00Z",
-            "source_id": "src_20260415_001",
-            "ok": True,
-            "stages": [
-                {
-                    "compiler": "gfortran",
-                    "status": "pass",
-                    "compiler_version": "GNU Fortran (fixture) 13.0.0",
-                    "command_id": syntax_command_id,
-                    "command_log_ref": rel_lint_log,
-                }
-            ],
-        },
-    )
-
     _write_json(
         node_dir / "semantic_review.json",
         {
@@ -10241,19 +10199,20 @@ end program shallow_water2d_runner
                                                     step_args=step_args,
                                                     variables=variables), [])
 
-    def test_a_source_key_is_refused_at_the_stage(self) -> None:
-        """Issue #589 (D6): the `source` vocabulary is retired — what a variable is follows from
-        `drive` — so a `schema.variables[]` entry carrying the key is refused through the stage,
-        whatever its value (the four classes the gate once admitted included), once each."""
+    def test_a_source_key_is_read_by_no_gate(self) -> None:
+        """Issue #589 (D6) retired the `source` vocabulary — what a variable is follows from
+        `drive` — and no reader takes the key, so since issue #643 a `schema.variables[]` entry
+        carrying it draws the findings the same entry draws without it."""
+        w = {"name": "w", "shape_expr": "[2,2]"}
+        step_args = ({"name": "w", "rank": 2, "intent": "inout",
+                      "spec": {"type": "real", "kind": "dp"}},)
+        bare = self._scalar_stage([self._REPORT_READ, self._PAIR], variables=(w,),
+                                  step_args=step_args)
         for value in ("operation", "reported", "record", "reference", "kernel", 1, None):
             with self.subTest(source=value):
-                v = self._scalar_stage([self._REPORT_READ, self._PAIR], variables=(
-                    {"name": "w", "shape_expr": "[2,2]", "source": value},),
-                    step_args=({"name": "w", "rank": 2, "intent": "inout",
-                                "spec": {"type": "real", "kind": "dp"}},))
-                hits = [x for x in v if "source: the source vocabulary is retired (D6)" in x]
-                self.assertEqual(len(hits), 1, v)
-                self.assertIn("state_snapshots.schema.variables[5].source", hits[0])
+                self.assertEqual(self._scalar_stage(
+                    [self._REPORT_READ, self._PAIR], variables=({**w, "source": value},),
+                    step_args=step_args), bare)
         self.assertEqual(self._scalar_stage([self._REPORT_READ, self._PAIR]), [])
 
     def test_metrics_basis_is_refused_as_an_artifact_and_as_a_reference(self) -> None:
@@ -10498,174 +10457,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             )
             self.assertEqual(violations, [])
 
-    def test_validate_post_generate_stage_rejects_failed_run_linter_log(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["x", "y"],
-            )
-            pipeline_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-            )
-            log_path = pipeline_dir / "source" / "src_20260415_001" / "src" / "command_log.jsonl"
-            log_path.write_text(
-                json.dumps(
-                    {
-                        "command_id": "lint_cmd_fixture_001",
-                        "tool_name": "run_linter",
-                        "command": ["fortitude", "check", "."],
-                        "ok": False,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            violations = validate_post_generate_stage(
-                repo_root,
-                "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001",
-                source_id="src_20260415_001",
-            )
-            self.assertTrue(
-                any("run_linter did not succeed" in v for v in violations), violations
-            )
-
-    def test_validate_post_generate_stage_rejects_lint_command_mismatch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["x", "y"],
-            )
-            pipeline_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-            )
-            log_path = pipeline_dir / "source" / "src_20260415_001" / "src" / "command_log.jsonl"
-            log_path.write_text(
-                json.dumps(
-                    {
-                        "command_id": "lint_cmd_fixture_001",
-                        "tool_name": "run_linter",
-                        # The declared invocation, taken from the backend package rather than
-                        # transcribed: a fixture spelling its own argv would keep passing while
-                        # the gate's real command changed under it (issue #120 changed this one
-                        # — `--error-exitcode` moved to 2 and `--inline-suppr` left).
-                        "command": list(
-                            backend_registry.capability_module(
-                                "linter", "cppcheck", "lint").check_argv()),
-                        "ok": True,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            violations = validate_post_generate_stage(
-                repo_root,
-                "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001",
-                source_id="src_20260415_001",
-            )
-            self.assertTrue(
-                any("logged command does not match preset" in v for v in violations),
-                violations,
-            )
-
-    def test_validate_post_generate_stage_rejects_noncanonical_lint_command_log_ref(self) -> None:
-        """Defense against forged build-runtime execution evidence at non-canonical paths.
-
-        A child agent that writes a forged command_log.jsonl at a non-
-        canonical placement (e.g. <source_id>/src/notes/command_log.jsonl) and
-        points lint_command_ref.run_linter[].command_log_ref at it must be
-        rejected by the post_generate validator. The canonical placement is
-        <source_id>/src/command_log.jsonl (sibling of model/runner sources).
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["x", "y"],
-            )
-            pipeline_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-            )
-            # Plant a forged log at a NON-canonical placement (under src/notes/).
-            forged_log = (
-                pipeline_dir
-                / "source"
-                / "src_20260415_001"
-                / "src"
-                / "notes"
-                / "command_log.jsonl"
-            )
-            forged_log.parent.mkdir(parents=True, exist_ok=True)
-            forged_log.write_text(
-                json.dumps(
-                    {
-                        "command_id": "lint_cmd_fixture_001",
-                        "tool_name": "run_linter",
-                        "command": ["fortitude", "check", "."],
-                        "ok": True,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            # Rewrite the conductor lint evidence to point at the forged log.
-            evidence_path = pipeline_dir / "lint_evidence" / "src_20260415_001.json"
-            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-            forged_ref = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001/source/src_20260415_001/src/"
-                "notes/command_log.jsonl"
-            )
-            evidence["run_linter"][0]["command_log_ref"] = forged_ref
-            evidence_path.write_text(
-                json.dumps(evidence, ensure_ascii=False) + "\n", encoding="utf-8"
-            )
-            violations = validate_post_generate_stage(
-                repo_root,
-                "workspace",
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001",
-                source_id="src_20260415_001",
-            )
-            self.assertTrue(
-                any(
-                    "canonical command log placement" in v for v in violations
-                ),
-                violations,
-            )
-
     def test_run_quality_checks_rejects_sibling_generation_log(self) -> None:
         """Cross-phase canonical placement is bound strictly to source_source_id.
 
@@ -10742,408 +10533,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 ),
                 violations,
             )
-
-    def _lint_evidence_fixture(self, repo_root: Path, evidence: dict | None) -> Path:
-        """Build <repo>/workspace/pipelines/p/pid/source/src_x/source_meta.json and
-        (optionally) the conductor lint evidence at the pipeline root. Returns meta_path."""
-        pipe = repo_root / "workspace" / "pipelines" / "p" / "pid"
-        gen_dir = pipe / "source" / "src_x"
-        gen_dir.mkdir(parents=True)
-        meta_path = gen_dir / "source_meta.json"
-        if evidence is not None:
-            _write_json(pipe / "lint_evidence" / "src_x.json", evidence)
-        return meta_path
-
-    def test_validate_generate_lint_rejects_pass_without_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, None)
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("missing conductor lint evidence" in v for v in violations), violations)
-
-    def test_validate_generate_lint_rejects_evidence_not_ok(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "fortitude",
-                "ok": False,
-                "run_linter": [{"preset": "fortitude", "command_id": "a",
-                                "command_log_ref": "workspace/x/command_log.jsonl"}],
-            })
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("lint did not succeed" in v for v in violations), violations)
-
-    def test_validate_generate_lint_rejects_preset_mismatch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "cppcheck",
-                "ok": True,
-                "run_linter": [{"preset": "cppcheck", "command_id": "a",
-                                "command_log_ref": "workspace/x/command_log.jsonl"}],
-            })
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("evidence preset must be 'fortitude'" in v for v in violations), violations)
-
-    def test_validate_generate_lint_mixed_requires_exactly_two_entries(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "mixed", "ok": True,
-                "run_linter": [
-                    {"preset": "fortitude", "command_id": "a",
-                     "command_log_ref": "workspace/x/command_log.jsonl"},
-                    {"preset": "fortitude", "command_id": "b",
-                     "command_log_ref": "workspace/x/command_log.jsonl"},
-                    {"preset": "cppcheck", "command_id": "c",
-                     "command_log_ref": "workspace/x/command_log.jsonl"},
-                ],
-            })
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "mixed", violations)
-            self.assertTrue(
-                any("requires exactly 2 run_linter entries" in v for v in violations),
-                violations,
-            )
-
-    def test_validate_generate_lint_composite_follows_the_registry_declaration(self) -> None:
-        """The composite's members are the registry's `COMPOSITE_LINTERS` (issue #424), not a
-        pair spelled in the validator: a three-member declaration makes the validator expect
-        three sub-runs, refuse the two-member evidence that satisfied the old literal, and name
-        the declared members. Restoring the literal `2` or `{"fortitude", "cppcheck"}` turns
-        this row red."""
-        from tools.backends import registry
-        evidence_runs = [
-            {"preset": "fortitude", "command_id": "a",
-             "command_log_ref": "workspace/x/command_log.jsonl"},
-            {"preset": "cppcheck", "command_id": "b",
-             "command_log_ref": "workspace/x/command_log.jsonl"},
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "mixed", "ok": True,
-                "run_linter": evidence_runs,
-            })
-            with unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
-                                 {"mixed": ("fortitude", "cppcheck", "ruff")}):
-                violations: list[str] = []
-                _validate_generate_lint_command_logs(
-                    repo_root, meta_path, {"verification_status": "pass"}, "mixed", violations)
-            self.assertTrue(
-                any("requires exactly 3 run_linter entries" in v
-                    and "(fortitude, cppcheck, ruff)" in v for v in violations), violations)
-            self.assertTrue(
-                any("preset fortitude and cppcheck and ruff (found ['cppcheck', 'fortitude'])"
-                    in v for v in violations), violations)
-            # Under the real declaration the same two entries satisfy both counts.
-            violations = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "mixed", violations)
-            self.assertFalse(
-                any("run_linter entries" in v and "requires" in v for v in violations),
-                violations)
-
-    def test_validate_generate_lint_a_second_composite_takes_the_composite_branch(self) -> None:
-        """A composite declared in `registry.COMPOSITE_LINTERS` other than `mixed` is a
-        composite to this gate too (issue #424): its language's evidence carries one entry per
-        member and is checked against those members. Keying the branch on the literal `"mixed"`
-        again sends this evidence to the simple branch, which demands exactly one entry, and
-        turns this row red."""
-        from tools.backends import registry
-        record = registry.Backend("linter", "zz_comp", None, core_provides=frozenset({"lint"}))
-        with unittest.mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
-                unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
-                                         {"zz_comp": ("cppcheck", "ruff")}), \
-                tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "zz_comp", "ok": True,
-                "run_linter": [
-                    {"preset": "cppcheck", "command_id": "a",
-                     "command_log_ref": "workspace/x/command_log.jsonl"},
-                    {"preset": "ruff", "command_id": "b",
-                     "command_log_ref": "workspace/x/command_log.jsonl"},
-                ],
-            })
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "zz_comp", violations)
-            self.assertFalse(
-                any("exactly one entry" in v or "requires" in v for v in violations),
-                violations)
-        # ... and evidence missing a member is refused against the declared members.
-        with unittest.mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
-                unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
-                                         {"zz_comp": ("cppcheck", "ruff")}), \
-                tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "zz_comp", "ok": True,
-                "run_linter": [
-                    {"preset": "cppcheck", "command_id": "a",
-                     "command_log_ref": "workspace/x/command_log.jsonl"},
-                ],
-            })
-            violations = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "zz_comp", violations)
-            self.assertTrue(
-                any("requires exactly 2 run_linter entries" in v and "(cppcheck, ruff)" in v
-                    for v in violations), violations)
-
-    def test_validate_generate_lint_refuses_a_composite_named_as_one_entry(self) -> None:
-        """An evidence entry may not name a composite as its preset: a composite has no
-        invocation of its own, so its sub-runs are recorded one entry each. The refusal reads
-        `registry.COMPOSITE_LINTERS` (issue #424) and names the declared members; a second
-        composite declared there is refused the same way."""
-        from tools.backends import registry
-        record = registry.Backend("linter", "zz_comp", None, core_provides=frozenset({"lint"}))
-        with unittest.mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
-                unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
-                                         {"zz_comp": ("cppcheck", "ruff")}):
-            for composite, members in (("mixed", "fortitude and cppcheck"),
-                                       ("zz_comp", "cppcheck and ruff")):
-                with self.subTest(composite=composite), \
-                        tempfile.TemporaryDirectory() as tmp:
-                    repo_root = Path(tmp)
-                    meta_path = self._lint_evidence_fixture(repo_root, {
-                        "checked_at": "t", "source_id": "src_x", "preset": "mixed",
-                        "ok": True,
-                        "run_linter": [
-                            {"preset": composite, "command_id": "a",
-                             "command_log_ref": "workspace/x/command_log.jsonl"},
-                            {"preset": "cppcheck", "command_id": "b",
-                             "command_log_ref": "workspace/x/command_log.jsonl"},
-                        ],
-                    })
-                    violations: list[str] = []
-                    _validate_generate_lint_command_logs(
-                        repo_root, meta_path, {"verification_status": "pass"}, "mixed",
-                        violations)
-                    self.assertTrue(
-                        any(f"run_linter[0].preset must not be {composite!r}; record separate "
-                            f"{members} entries" in v for v in violations), violations)
-
-    def test_validate_generate_lint_certifies_at_static_without_pass(self) -> None:
-        # New flow: post_generate runs in generate.gate (its static check) BEFORE verify sets
-        # verification_status=pass. The cert must still run (and catch a bad evidence)
-        # purely because the conductor's lint_evidence is present — not gated on pass.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "preset": "cppcheck",
-                "ok": True,
-                "run_linter": [{"preset": "cppcheck", "command_id": "a",
-                                "command_log_ref": "workspace/x/command_log.jsonl"}],
-            })
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "fail"}, "fortran", violations)
-            self.assertTrue(
-                any("evidence preset must be 'fortitude'" in v for v in violations), violations)
-
-    def test_validate_generate_lint_skips_when_no_evidence_and_not_pass(self) -> None:
-        # No conductor evidence and not claiming pass (e.g. a manual/pre-lint invocation):
-        # nothing to certify, so it must skip silently (no false-positive violation).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._lint_evidence_fixture(repo_root, None)
-            violations: list[str] = []
-            _validate_generate_lint_command_logs(
-                repo_root, meta_path, {"verification_status": "fail"}, "fortran", violations)
-            self.assertEqual(violations, [])
-
-    def _syntax_evidence_fixture(self, repo_root: Path, evidence: dict | None) -> Path:
-        """Build <repo>/workspace/pipelines/p/pid/source/src_x/source_meta.json and
-        (optionally) the conductor syntax evidence at the pipeline root. Returns meta_path."""
-        pipe = repo_root / "workspace" / "pipelines" / "p" / "pid"
-        gen_dir = pipe / "source" / "src_x"
-        gen_dir.mkdir(parents=True, exist_ok=True)
-        meta_path = gen_dir / "source_meta.json"
-        if evidence is not None:
-            _write_json(pipe / "syntax_evidence" / "src_x.json", evidence)
-        return meta_path
-
-    def _seed_syntax_command_log(self, repo_root: Path, records: list[dict]) -> str:
-        """Write records into the canonical <source_id>/src/command_log.jsonl and return its
-        repo-relative ref."""
-        log_rel = "workspace/pipelines/p/pid/source/src_x/src/command_log.jsonl"
-        log_path = repo_root / log_rel
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
-            encoding="utf-8")
-        return log_rel
-
-    def test_validate_generate_syntax_rejects_pass_without_evidence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, None)
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("missing conductor syntax evidence" in v for v in violations), violations)
-
-    def test_validate_generate_syntax_refuses_a_language_with_no_syntax_stage(self) -> None:
-        # cpp declares no `syntax_promotions`: until issue #289 (R4-b PR-2) the gate passed it
-        # through with no evidence and this certification demanded none. Now neither half
-        # passes it — there is no stage whose pass could certify the source.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [{"compiler": "gfortran", "status": "pass", "command_id": "a",
-                            "command_log_ref": "workspace/x/command_log.jsonl"}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "cpp", violations)
-            self.assertEqual(len(violations), 1, violations)
-            self.assertIn("toolchain.language='cpp' has no syntax stage", violations[0])
-
-    def test_validate_generate_syntax_rejects_evidence_not_ok(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": False,
-                "stages": [{"compiler": "gfortran", "status": "fail",
-                            "command_id": "a",
-                            "command_log_ref": "workspace/x/command_log.jsonl"}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("syntax gate did not succeed" in v for v in violations), violations)
-
-    def test_validate_generate_syntax_rejects_skipped_gfortran_stage(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [{"compiler": "gfortran", "status": "skipped",
-                            "reason": "compiler not available: gfortran"}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("mandatory gfortran" in v for v in violations), violations)
-
-    def test_validate_generate_syntax_rejects_missing_gfortran_stage(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            log_rel = self._seed_syntax_command_log(repo_root, [{
-                "command_id": "a", "tool_name": "run_syntax_check",
-                "command": ["frt", "-c", "x.f90"], "ok": True,
-            }])
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [{"compiler": "frt", "status": "pass",
-                            "command_id": "a", "command_log_ref": log_rel}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("must record a passing gfortran stage" in v for v in violations),
-                violations)
-
-    def test_validate_generate_syntax_allows_skipped_optional_stage(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            log_rel = self._seed_syntax_command_log(repo_root, [{
-                "command_id": "a", "tool_name": "run_syntax_check",
-                "command": ["gfortran", "-fsyntax-only", "-std=f2008", "x.f90"],
-                "ok": True,
-            }])
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [
-                    {"compiler": "gfortran", "status": "pass",
-                     "command_id": "a", "command_log_ref": log_rel},
-                    {"compiler": "frt", "status": "skipped",
-                     "reason": "compiler not available: frt"},
-                ],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertEqual(violations, [])
-
-    def test_validate_generate_syntax_rejects_command_mismatch(self) -> None:
-        # The logged argv[0] must match the declared stage compiler — a forged evidence
-        # entry pointing at some other tool's record is rejected.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            log_rel = self._seed_syntax_command_log(repo_root, [{
-                "command_id": "a", "tool_name": "run_syntax_check",
-                "command": ["fortitude", "check", "."], "ok": True,
-            }])
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [{"compiler": "gfortran", "status": "pass",
-                            "command_id": "a", "command_log_ref": log_rel}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("does not match compiler 'gfortran'" in v for v in violations),
-                violations)
-
-    def test_validate_generate_syntax_rejects_wrong_tool_name_record(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            log_rel = self._seed_syntax_command_log(repo_root, [{
-                "command_id": "a", "tool_name": "run_linter",
-                "command": ["gfortran", "-fsyntax-only", "x.f90"], "ok": True,
-            }])
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [{"compiler": "gfortran", "status": "pass",
-                            "command_id": "a", "command_log_ref": log_rel}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("tool_name must be run_syntax_check" in v for v in violations),
-                violations)
-
-    def test_validate_generate_syntax_rejects_noncanonical_log_ref(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            forged_rel = "workspace/pipelines/p/pid/source/src_x/src/notes/command_log.jsonl"
-            forged = repo_root / forged_rel
-            forged.parent.mkdir(parents=True, exist_ok=True)
-            forged.write_text(json.dumps({
-                "command_id": "a", "tool_name": "run_syntax_check",
-                "command": ["gfortran", "-fsyntax-only", "x.f90"], "ok": True,
-            }) + "\n", encoding="utf-8")
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": True,
-                "stages": [{"compiler": "gfortran", "status": "pass",
-                            "command_id": "a", "command_log_ref": forged_rel}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
-            self.assertTrue(
-                any("canonical command log placement" in v for v in violations),
-                violations)
 
     def test_the_harness_self_test_reports_the_grid_it_was_launched_on(self) -> None:
         """Issue #512 (round 2): on the Validate run of the target's own harness, every case
@@ -11323,115 +10712,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         first, second = vps.HARNESS_GRID_SNAPSHOT_VARIABLES
         self.assertIn(f"`{first}` and `{second}` are the exception: every case captures",
                       section)
-
-    def test_the_syntax_stage_of_a_wrapper_target_is_certified_through_its_wrapper(
-            self) -> None:
-        """Issue #316: the pipeline's target decides the program a stage's record must have run.
-        A target whose parallel backend declares `compiler_wrapper` certifies a stage whose
-        argv[0] is the wrapper and refuses the bare compiler; every other target — and a
-        pipeline whose target does not resolve — refuses the wrapper."""
-        from unittest import mock
-
-        from tools.backends import registry
-        from tools.tests.target_fixtures import profile_with
-        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
-        mpi = profile_with(parallel={"backend": "mpi"})
-        for target, argv0, certified in (
-                (mpi, wrapper.COMPILER_WRAPPER, True),
-                (mpi, f"/opt/x/bin/{wrapper.COMPILER_WRAPPER}", True),
-                (mpi, "gfortran", False),
-                (_TP, wrapper.COMPILER_WRAPPER, False),
-                (_TP, "gfortran", True),
-                (None, wrapper.COMPILER_WRAPPER, False)):
-            name = None if target is None else target.parallel_backend
-            with self.subTest(target=name, argv0=argv0), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                log_rel = self._seed_syntax_command_log(repo_root, [{
-                    "command_id": "a", "tool_name": "run_syntax_check",
-                    "command": [argv0, "-fsyntax-only", "x.f90"], "ok": True,
-                }])
-                meta_path = self._syntax_evidence_fixture(repo_root, {
-                    "checked_at": "t", "source_id": "src_x", "ok": True,
-                    "stages": [{"compiler": "gfortran", "status": "pass",
-                                "command_id": "a", "command_log_ref": log_rel}],
-                })
-                violations: list[str] = []
-                with mock.patch.object(vps, "_pipeline_target", return_value=target):
-                    vps._validate_generate_syntax_command_logs(
-                        repo_root, meta_path, {"verification_status": "pass"}, "fortran",
-                        violations)
-                mismatch = [v for v in violations
-                            if "logged command does not match compiler" in v]
-                self.assertEqual(mismatch == [], certified, violations)
-                if certified:
-                    self.assertEqual(violations, [])
-
-    def test_a_stage_of_a_compiler_the_wrapper_does_not_run_is_held_to_its_adapter(
-            self) -> None:
-        """Round 2 (mutant O7: `_stage_executable` wrapping EVERY registered compiler survived):
-        under a wrapper target, only the stage of `WRAPPED_COMPILER` is expected to have run
-        through the wrapper; an optional stage of another registered compiler ran as its own
-        adapter spells it, and a record of it naming the wrapper is refused."""
-        from unittest import mock
-
-        from tools.backends import registry
-        from tools.tests.target_fixtures import profile_with
-        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
-        other = next(c for c in registry.backend_ids("compiler")
-                     if c != wrapper.WRAPPED_COMPILER
-                     and registry.provides("compiler", c, "syntax_check"))
-        other_exe = registry.capability_module("compiler", other, "syntax_check").EXECUTABLE
-        mpi = profile_with(parallel={"backend": "mpi"})
-        for argv0, certified in ((other_exe, True), (wrapper.COMPILER_WRAPPER, False)):
-            with self.subTest(argv0=argv0), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                log_rel = self._seed_syntax_command_log(repo_root, [
-                    {"command_id": "a", "tool_name": "run_syntax_check",
-                     "command": [wrapper.COMPILER_WRAPPER, "-fsyntax-only", "x.f90"],
-                     "ok": True},
-                    {"command_id": "b", "tool_name": "run_syntax_check",
-                     "command": [argv0, "x.f90"], "ok": True},
-                ])
-                meta_path = self._syntax_evidence_fixture(repo_root, {
-                    "checked_at": "t", "source_id": "src_x", "ok": True,
-                    "stages": [
-                        {"compiler": wrapper.WRAPPED_COMPILER, "status": "pass",
-                         "command_id": "a", "command_log_ref": log_rel},
-                        {"compiler": other, "status": "pass",
-                         "command_id": "b", "command_log_ref": log_rel}],
-                })
-                violations: list[str] = []
-                with mock.patch.object(vps, "_pipeline_target", return_value=mpi):
-                    vps._validate_generate_syntax_command_logs(
-                        repo_root, meta_path, {"verification_status": "pass"}, "fortran",
-                        violations)
-                self.assertEqual(violations == [], certified, violations)
-
-    def test_validate_generate_syntax_certifies_at_static_without_pass(self) -> None:
-        # Like lint: the cert runs whenever the conductor evidence exists, not only on a
-        # verify pass (post_generate runs in generate.gate (its static check) BEFORE verify).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, {
-                "checked_at": "t", "source_id": "src_x", "ok": False,
-                "stages": [{"compiler": "gfortran", "status": "fail",
-                            "command_id": "a",
-                            "command_log_ref": "workspace/x/command_log.jsonl"}],
-            })
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "fail"}, "fortran", violations)
-            self.assertTrue(
-                any("syntax gate did not succeed" in v for v in violations), violations)
-
-    def test_validate_generate_syntax_skips_when_no_evidence_and_not_pass(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            meta_path = self._syntax_evidence_fixture(repo_root, None)
-            violations: list[str] = []
-            vps._validate_generate_syntax_command_logs(
-                repo_root, meta_path, {"verification_status": "fail"}, "fortran", violations)
-            self.assertEqual(violations, [])
 
     def test_validate_post_build_stage_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -20669,64 +19949,12 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
 class RegistryClauseReadersTests(unittest.TestCase):
     """Rows kept from `ToolchainBackendGateTests` when R4-a PR-3 (issue #284) deleted the
     compile-stage toolchain gate with the IR's `impl_defaults`: each observes a LIVE reader of
-    the backend registry — the lint-evidence preset check, the M3c mirror (`_m3c_language`,
+    the backend registry — the M3c mirror (`_m3c_language`,
     over the target's toolchain) and the make-quality-check predicate. The rows that observed
     only the deleted gate (`_validate_toolchain_backend_supported`,
     `_missing_toolchain_capability_clauses`) went with it; its capability question is the
     target profile's at launch (`target_profile.target_profile_violations`), pinned in
     `tools/tests/test_target_profile.py`."""
-
-    def test_the_lint_evidence_preset_is_refused_with_the_registrys_clause(self) -> None:
-        """The branch this change rewrote, which had no test on either side of it.
-
-        It used to compare against a literal set and now asks
-        `registry.unimplemented_reason`. Both directions are driven: a linter that is not a
-        member at all, and — the reason this is `unimplemented_reason` and not
-        `unsupported_reason` — one that IS a declared member with no implementation anywhere.
-        A membership question would accept the second and let a preset name a linter nothing can
-        run. Review's sweep swapped the two questions and no test noticed.
-        """
-        from unittest import mock
-
-        def _run(preset: str) -> list[str]:
-            with tempfile.TemporaryDirectory() as t:
-                pipeline_root = Path(t) / "pipelines" / "p1"
-                source_dir = pipeline_root / "source" / "src_20260101_001"
-                source_dir.mkdir(parents=True)
-                (pipeline_root / "lint_evidence").mkdir()
-                (pipeline_root / "lint_evidence" / "src_20260101_001.json").write_text(
-                    json.dumps({
-                        "ok": True, "preset": "fortitude",
-                        "checked_at": "2026-08-15T00:00:00Z",
-                        "run_linter": [{"command_id": "c1", "command_log_ref": "logs/c1.json",
-                                        "preset": preset}],
-                    }), encoding="utf-8")
-                meta_path = source_dir / "source_meta.json"
-                meta_path.write_text("{}", encoding="utf-8")
-                v: list[str] = []
-                vps._validate_generate_lint_command_logs(
-                    Path(t), meta_path, {"verification_status": "pass"}, "fortran", v)
-                return v
-
-        # A non-member: refused, with the registry's clause rather than a set spelled here.
-        v = _run("no_such_linter")
-        self.assertTrue(any("no_such_linter" in x for x in v), v)
-        self.assertTrue(
-            any(backend_registry.unsupported_reason("linter", "no_such_linter") in x for x in v),
-            v)
-        # An implemented member: this branch lets it through (it fails later, on the command
-        # log, which is a different rule — the point is that the preset itself is accepted).
-        self.assertFalse(
-            any("is not a declared linter" in x for x in _run("fortitude")))
-        # A DECLARED member that implements nothing: membership would accept it; this must not.
-        record = backend_registry.Backend("linter", "zz_named_only", None)
-        with mock.patch.dict(
-                backend_registry._BACKENDS, {("linter", "zz_named_only"): record}):
-            self.assertIsNone(backend_registry.unsupported_reason("linter", "zz_named_only"))
-            v = _run("zz_named_only")
-            self.assertTrue(any("zz_named_only" in x for x in v), v)
-            self.assertTrue(any("nothing implements it" in x for x in v), v)
-
 
     def test_the_m3c_mirror_follows_the_registry_clause_by_clause(self) -> None:
         """`_m3c_language` is the validator's reader of the host-authorship question, over the
@@ -26132,6 +25360,20 @@ class DriveGateStageTests(unittest.TestCase):
                     self.assertEqual(sorted(p.name for p in ir_dir.iterdir()),
                                      ["dependency_graph.json", "ir_meta.json", "spec.ir.yaml"])
 
+    def test_an_initial_state_key_outside_the_schema_is_gate_f_not_a_crash(self) -> None:
+        """Issue #643 PR-6 kept PE-156 arm 1 (`_evaluate_case`'s "initial_state.<key> is not a
+        snapshot schema variable"): `predicate_schema_context` evaluates every IR's cases and
+        catches `PrimaryEvidenceError` alone, and without that raise the unknown key reaches
+        `shapes[var]` and a `KeyError` escapes `validate_compile_ir_dir` in place of gate (f)'s
+        finding (verify/ver_f5.md, PE-156)."""
+        def unknown_key(ir: dict) -> None:
+            ir["case"]["test_case_set"][0].setdefault("initial_state", {})[
+                "zz_not_a_variable"] = 0.0
+
+        found = _drive_stage("coriolis", unknown_key)
+        self.assertTrue(any("(f)" in f and "initial_state.zz_not_a_variable is not a snapshot "
+                            "schema variable" in f for f in found), found)
+
     # --- what a flag values (review round 6, R6-1) ---------------------------------------------------
     def test_a_value_1_flag_on_a_refusal_test_is_the_coverage_refusal(self) -> None:
         tid = "l0_invalid_ncomp_xfail"
@@ -26347,8 +25589,8 @@ class DriveGateStageTests(unittest.TestCase):
                 (["step", 3], shape + "['step', 3]"),              # a non-string
                 ("step", shape + "'step'"),                        # no list
                 (_OMIT, shape + "None"),                           # no `names` key
-                (["step", "count"], "(h) step_series name 'count' is refused: it is the "
-                                    "driver's or the harness's own name"),
+                (["step", "count"], "(h) step_series name 'count' is refused: it is a "
+                                    "reserved name"),
                 (["step", "a__b"], "(h) step_series name 'a__b' is refused: it contains "
                                    "'__'")):
             def series(ir, names=names):
@@ -26373,29 +25615,6 @@ class DriveGateStageTests(unittest.TestCase):
                 {"artifact": "state_history", "required": True})
         v = _drive_stage("coriolis", component_without_drive)
         self.assertTrue(self._hits(v, "drive is required on a"), v)
-
-    def test_a_source_key_is_refused_on_an_infrastructure_node(self) -> None:
-        """R1-5: the `source` vocabulary is retired on every kind, so the refusal runs before
-        the kind decides anything — an infrastructure node (no `drive`) carrying `source` on a
-        schema variable draws it through the stage, with and without a `drive` block."""
-        cs_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
-        catalog = [dict(spec_kind="infrastructure", spec_id=_CORIOLIS_ID,
-                        controlled_spec_path=cs_ref)]
-
-        def infra_source(ir, keep_drive=False):
-            ir["meta"]["spec_kind"] = "infrastructure"
-            if not keep_drive:
-                del ir["drive"]
-            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
-                "variables"][0]["source"] = "operation"
-        msg = ("<ir>:state_snapshots.schema.variables[0].source: the source vocabulary is "
-               "retired (D6): what a variable is follows from drive")
-        v = _drive_stage("coriolis", infra_source, catalog=catalog)
-        self.assertEqual(self._hits(v, "source vocabulary is retired"), [msg])
-        v = _drive_stage("coriolis", lambda ir: infra_source(ir, keep_drive=True),
-                         catalog=catalog)
-        self.assertEqual(self._hits(v, "source vocabulary is retired"), [msg])
-        self.assertTrue(self._hits(v, "an infrastructure node carries no drive block"), v)
 
     # --- (a)-(h) ------------------------------------------------------------------------------
     def test_a_problem_publishes_and_drives_its_step(self) -> None:   # (a)

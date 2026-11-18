@@ -495,19 +495,6 @@ class WiringTests(unittest.TestCase):
         # after the wrong program.
         self.assertEqual(server.lint_preset_executables("ruff"), (lint.EXECUTABLE,))
 
-    def test_the_command_log_check_attributes_this_executable_to_this_preset(self) -> None:
-        """`_infer_run_linter_preset_from_command` reads argv[0] out of the backend packages.
-
-        Before issue #120 it held its own copy of the three executable names, so a rename here
-        would have left it unable to attribute a command log it is supposed to certify.
-        """
-        from tools.validate_pipeline_semantics import _infer_run_linter_preset_from_command
-
-        self.assertEqual(_infer_run_linter_preset_from_command([lint.EXECUTABLE, "check"]), "ruff")
-        self.assertEqual(
-            _infer_run_linter_preset_from_command([f"/usr/bin/{lint.EXECUTABLE}"]), "ruff")
-
-
 class BackendDocumentTests(unittest.TestCase):
     """The document is compared to the code, in that direction only."""
 

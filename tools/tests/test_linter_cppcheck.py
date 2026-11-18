@@ -463,14 +463,6 @@ class WiringTests(unittest.TestCase):
         self.assertIn(lint.EXECUTABLE, server.lint_preset_executables("mixed"))
         self.assertEqual(registry.get("linter", "mixed").backend_provides, frozenset())
 
-    def test_the_command_log_check_attributes_this_executable_to_this_preset(self) -> None:
-        from tools.validate_pipeline_semantics import _infer_run_linter_preset_from_command
-
-        self.assertEqual(
-            _infer_run_linter_preset_from_command([lint.EXECUTABLE]), "cppcheck")
-        self.assertEqual(
-            _infer_run_linter_preset_from_command([f"/usr/bin/{lint.EXECUTABLE}"]), "cppcheck")
-
 class BackendDocumentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.text = BACKEND_DOC.read_text()

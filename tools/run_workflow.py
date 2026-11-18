@@ -2545,7 +2545,7 @@ def _run_main(
 
     # Redirect THIS host interpreter's bytecode cache out of the repo SOURCE tree, as early as
     # repo_root allows, so every module imported from here on (notably the conductor's
-    # lazy tools.build_runtime / tools.hooks.lint_evidence during compile.static / generate.gate)
+    # lazy tools.build_runtime during compile.static / generate.gate)
     # compiles into workspace/.pycache/ instead of tools/__pycache__/ etc. Those in-repo
     # writes used to land in a child window's FS-diff and be misattributed as an
     # unauthorized write (issue #171 PR-2 deleted that diff); what they still are is bytecode
