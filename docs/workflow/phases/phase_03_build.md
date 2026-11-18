@@ -54,14 +54,13 @@ The return to Generate on a `Build` failure is **decided deterministically witho
 
 | field | range | extraction source |
 |---|---|---|
-| `failure_category` | `compile_error` / `link_error` / `make_error` / `dependency_violation` / `validate_post_build_violation` | mechanically classified by the `command_log`'s exit code and stderr patterns |
+| `failure_category` | `compile_error` / `link_error` / `make_error` / `validate_post_build_violation` | mechanically classified by the `command_log`'s exit code and stderr patterns |
 | `failure_excerpt` | text (last 50 lines of stderr) | a direct excerpt of the `command_log` |
 
 Classification convention for `failure_category`:
 - `compile_error`: a non-zero exit of the compiler + stderr containing `error:`.
 - `link_error`: detect the linker's `undefined reference` / `unresolved external` etc.
 - `make_error`: a dependency-resolution failure of `make` itself (`No rule to make target` etc.).
-- `dependency_violation`: detection of a `dependency implementation encapsulation` violation (mixing-in of a dependency `node`'s implementation).
 - `validate_post_build_violation`: a structural fail of `validate_pipeline_semantics --stage post_build`, or a violation of the post-build library symbol checks (`last_fail_reason: library_symbol_check`; the violations are the `failure_excerpt`).
 
 ### Determination of `repair_strategy` (no LLM involvement)
@@ -72,7 +71,6 @@ The `orchestration agent` chooses `repair_strategy` deterministically from `fail
 | `compile_error` | `reuse` | assumed to converge with a local syntax / type fix |
 | `link_error` | `reuse` | a local fix of function-signature consistency |
 | `make_error` | `restart` | the whole build control file / dependency description needs reconstruction |
-| `dependency_violation` | `restart` | an encapsulation violation requires structural regeneration |
 | `validate_post_build_violation` | `restart` | a structural invariant violation does not converge with a local fix |
 
 ### What the Generate retry receives

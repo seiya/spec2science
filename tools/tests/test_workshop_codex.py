@@ -434,7 +434,7 @@ class CodexWorkshopSpawnTests(unittest.TestCase):
                                llm_config=_codex_config(tmp))
         self.events: list[tuple[str, dict]] = []
         c.emit = lambda name, **f: self.events.append((name, f))  # type: ignore[assignment]
-        c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+        c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[assignment]
         c.leaf_command = lambda *a, **k: list(argv)  # type: ignore[assignment]
         c._bind_codex_thread = lambda arid, tid: None  # type: ignore[assignment]
         return c

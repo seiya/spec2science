@@ -287,7 +287,6 @@ BUILD_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     "compile_error": ("generate", "reuse"),
     "link_error": ("generate", "reuse"),
     "make_error": ("generate", "restart"),
-    "dependency_violation": ("generate", "restart"),
     "validate_post_build_violation": ("generate", "restart"),
 }
 
@@ -590,19 +589,6 @@ VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"static_frontend_unavailable",
      "host_authored_artifact_violation", "device_kernels_absent"}
 )
-
-# The categories `GATE_FAILURE_TERMINAL` carries that Validate.execute has no counterpart for.
-# Named HERE rather than written out again in a test, so the test compares two definitions
-# instead of restating one (a restated set drifts, and this pair already has a comment saying
-# so). Both are produced by the Generate.gate lint attribution (issue #112); execute runs no
-# linter, so neither can reach `_execute_inproc`.
-GATE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset(
-    {"host_rendered_lint_findings", "lint_finding_unattributed"}
-)
-
-# The categories `VALIDATE_EXECUTE_FAILURE_TERMINAL` carries that Generate.gate has no
-# counterpart for: a run's device trace exists only at Validate.execute (issue #307).
-EXECUTE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset({"device_kernels_absent"})
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
 # no-category `validate_execute_fail` restart reason and of the per-test predicate reasons
@@ -966,13 +952,14 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
 
 
 def classify_compile_static_failure(failure_category: str | None) -> RouteDecision:
+    # The one writer (`_compile_static_inproc`) records the literal `compile_static_violation`
+    # with every `fail`, so a missing category is a host defect, not a leaf's: the measured
+    # case is a `pass` meta the freshness gate of `determine_substep_status` reads as stale.
+    # Breakage it reports: without it the lookup below fails on `None` with no name.
     if not failure_category:
-        return RouteDecision("escalate", reason="compile_static_fail_no_category")
-    routed = COMPILE_STATIC_FAILURE_ROUTING.get(failure_category)
-    if routed is None:
-        return RouteDecision("escalate",
-                             reason=f"compile_static_unknown_category:{failure_category}")
-    target, strategy = routed
+        raise RuntimeError("compile_static_fail_no_category: compile.static failed and its "
+                           "meta names no failure_category (a stale `pass` meta?)")
+    target, strategy = COMPILE_STATIC_FAILURE_ROUTING[failure_category]
     return RouteDecision("retry", target_phase=target, repair_strategy=strategy,
                          reason=f"compile_static_{failure_category}")
 
@@ -2472,8 +2459,8 @@ LEAF_STDOUT_RECORD_TRUNCATED_LABEL = "leaf_stdout_record_truncated"
 # rather than spelled at each call site because an operator greps for them (the capture and
 # tail markers are named in `docs/RUNBOOK.md`; the read-error ones are diagnostics that only
 # show up in a post-mortem), and because NONE of them may match a `_LEAF_INFRA_ERROR_PATTERNS`
-# entry — a leaf able to write one could claim an infra tag it did not earn. The set is what
-# `_LEAF_CONDUCTOR_MARKER_LABELS` below makes testable in one place.
+# entry — a leaf able to write one could claim an infra tag it did not earn. The test that
+# pins this reads every module-level `LEAF_*_LABEL` name, so keep that spelling.
 # How many structured terminal events (`error` / `turn.failed`) a codex leaf's diagnostics
 # retain. These are spliced into `stderr` AFTER every stream budget has been applied, so
 # without a bound of their own they are the one capture on either backend that a leaf can
@@ -2490,12 +2477,6 @@ LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL = "leaf_stdout_capture_truncated"
 LEAF_STDERR_CAPTURE_TAIL_LABEL = "leaf_stderr_capture_tail"
 LEAF_STDERR_READ_ERROR_LABEL = "leaf_stderr_read_error"
 LEAF_STDOUT_READ_ERROR_LABEL = "leaf_stdout_read_error"
-_LEAF_CONDUCTOR_MARKER_LABELS = (
-    LEAF_STDOUT_RECORD_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TRUNCATED_LABEL,
-    LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TAIL_LABEL,
-    LEAF_STDERR_READ_ERROR_LABEL, LEAF_STDOUT_READ_ERROR_LABEL,
-    LEAF_FAILURE_EVENTS_TRUNCATED_LABEL,
-)
 
 
 def _leaf_stdout_record_truncated_marker(limit: int) -> str:
@@ -4302,15 +4283,47 @@ class Conductor:
         thread.start()
         return thread
 
-    def _bwrap_enabled(self) -> bool:
-        """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap only).
+    def _sandboxed_argv(self, argv: list[str], child_arid: str,
+                        entry: ResolvedLeafEntry) -> list[str]:
+        """`argv` wrapped in the bwrap sandbox that record-launch already built for `child_arid`.
 
-        Since issue #171 PR-2 it is the ONLY thing that confines a leaf: the terminal FS-diff
-        that audited a leaf's writes after the fact is deleted, so an unconfined leaf would be
-        unconfined and unaudited both. A host that cannot sandbox the leaf therefore fails
-        closed at launch rather than running it. The method is retained as a single seam for
-        the call sites; it always returns True."""
-        return True
+        bwrap leaf sandboxing is unconditionally MANDATORY (Linux+bwrap only). Since issue #171
+        PR-2 it is the ONLY thing that confines a leaf: the terminal FS-diff that audited a
+        leaf's writes after the fact is deleted, so an unconfined leaf would be unconfined and
+        unaudited both. A host that cannot sandbox the leaf therefore fails closed at launch
+        rather than running it. A method of its own so a test can launch a leaf unwrapped (the
+        constant-True `_bwrap_enabled` seam it replaces went in issue #643 PR-5)."""
+        # Fail closed: enforcement is mandatory and record-launch records
+        # sandbox_enforced=true, so ANY leaf without a usable profile — a missing or
+        # invalid one (older orchestration resumed, corrupted/deleted file) — must
+        # NOT silently fall back to an unconfined launch.
+        profile = self._sandbox_profile_for(child_arid)
+        if profile is None:
+            raise SandboxEnforcementError(
+                "bwrap enforcement is mandatory but no usable sandbox profile is "
+                f"available for this leaf (child_arid={child_arid!r}); refusing to "
+                "launch unconfined (fail-closed)")
+        # The one admitted profile is a WORKSHOP lineage's (issue #534), admitted by its
+        # exact shape, fail-closed: `leaf_mode: workshop` and rw binds that are exactly the
+        # lineage's own `config/` and `tree/` — siblings under one lineage home, outside the
+        # checkout — with the tree as its working directory. Asserted at the spawn site
+        # rather than left to follow from today's callers: a guard that rests on the caller
+        # set goes quiet the moment a new caller appears. The READ-ONLY profile of the
+        # deleted pure leaf (issue #534 PR-J4-b) is one of the shapes it refuses.
+        if not _admissible_leaf_profile(profile, entry, self.repo_root):
+            raise SandboxEnforcementError(
+                f"the sandbox profile for {child_arid!r} is not a workshop lineage's "
+                "(exactly its config/ and tree/ writable); a leaf has no repository write "
+                "authority, so any other writable profile is a host defect (fail-closed)")
+        from tools.orchestration_runtime import render_bwrap_command
+        try:
+            return render_bwrap_command(profile=profile, command_argv=argv)
+        except ValueError as exc:
+            # A profile the renderer refuses (a shape it checks, a bad file
+            # mapping, …) must also fail closed as a sandbox error, not bubble
+            # up as a generic conductor error.
+            raise SandboxEnforcementError(
+                f"sandbox profile for {child_arid} is invalid: {exc}") from exc
 
     def _sandbox_profile_for(self, child_arid: str) -> dict[str, Any] | None:
         """The bwrap profile record-launch wrote for this child, or None."""
@@ -4403,38 +4416,7 @@ class Conductor:
         # Applies to both claude and codex — both get a profile at launch. EVERY leaf now has
         # a record-launch profile keyed by its own child_arid, the diagnostician included
         # (issue #169); there is no in-process profile and no caller-supplied one.
-        if self._bwrap_enabled():
-            # Fail closed: enforcement is mandatory and record-launch records
-            # sandbox_enforced=true, so ANY leaf without a usable profile — a missing or
-            # invalid one (older orchestration resumed, corrupted/deleted file) — must
-            # NOT silently fall back to an unconfined launch.
-            profile = self._sandbox_profile_for(child_arid)
-            if profile is None:
-                raise SandboxEnforcementError(
-                    "bwrap enforcement is mandatory but no usable sandbox profile is "
-                    f"available for this leaf (child_arid={child_arid!r}); refusing to "
-                    "launch unconfined (fail-closed)")
-            # The one admitted profile is a WORKSHOP lineage's (issue #534), admitted by its
-            # exact shape, fail-closed: `leaf_mode: workshop` and rw binds that are exactly the
-            # lineage's own `config/` and `tree/` — siblings under one lineage home, outside the
-            # checkout — with the tree as its working directory. Asserted at the spawn site
-            # rather than left to follow from today's callers: a guard that rests on the caller
-            # set goes quiet the moment a new caller appears. The READ-ONLY profile of the
-            # deleted pure leaf (issue #534 PR-J4-b) is one of the shapes it refuses.
-            if not _admissible_leaf_profile(profile, entry, self.repo_root):
-                raise SandboxEnforcementError(
-                    f"the sandbox profile for {child_arid!r} is not a workshop lineage's "
-                    "(exactly its config/ and tree/ writable); a leaf has no repository write "
-                    "authority, so any other writable profile is a host defect (fail-closed)")
-            from tools.orchestration_runtime import render_bwrap_command
-            try:
-                argv = render_bwrap_command(profile=profile, command_argv=argv)
-            except ValueError as exc:
-                # A profile the renderer refuses (a shape it checks, a bad file
-                # mapping, …) must also fail closed as a sandbox error, not bubble
-                # up as a generic conductor error.
-                raise SandboxEnforcementError(
-                    f"sandbox profile for {child_arid} is invalid: {exc}") from exc
+        argv = self._sandboxed_argv(argv, child_arid, entry)
         try:
             if entry.provider == "codex_cli":
                 # `resume` is derived from the caller's own argument, not sniffed out of
@@ -4480,11 +4462,9 @@ class Conductor:
             # profile rather than letting a raw OSError bubble up as a generic
             # conductor_error: every "leaf cannot be sandboxed" condition terminalizes
             # consistently as a sandbox-enforcement failure.
-            if self._bwrap_enabled():
-                raise SandboxEnforcementError(
-                    f"cannot launch sandboxed leaf — executable not found "
-                    f"(bwrap missing on this host?): {exc}") from exc
-            raise
+            raise SandboxEnforcementError(
+                f"cannot launch sandboxed leaf — executable not found "
+                f"(bwrap missing on this host?): {exc}") from exc
         self._feed_prompt_stdin(process, prompt_text)
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
         # be armed: a deterministic substep never reaches spawn_leaf, and the usage-limit wait
@@ -5640,15 +5620,14 @@ class Conductor:
         leaf-non-writable managed path). Overwritten each compile attempt, so it never stales.
 
         Returns the resolved surface list (also written) so run_phase can thread it into the
-        compile.generate launch payload without re-reading. Best-effort: a missing/unreadable graph
-        yields `[]` and writes no sidecar (L3 then inert); an unresolvable dep yields an
-        `unresolved` entry. Called only for the compile phase (whose producer is the IR)."""
+        compile.generate launch payload without re-reading. The graph is the one
+        `_write_dependency_graph` wrote just before (or the phase already failed closed), and the
+        node's library declarations were decided by the driver before any phase, so neither read
+        is guarded: an error here escapes `run_phase` as a host error. An unresolvable dep yields
+        an `unresolved` entry. Called only for the compile phase (whose producer is the IR)."""
         from tools.orchestration_runtime import _resolve_component_dep_surface
         graph_path = self.repo_root / refs.ir_ref / "dependency_graph.json"
-        try:
-            graph = json.loads(graph_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
         surface = _resolve_component_dep_surface(self.repo_root, refs.node_key, graph)
         doc: dict[str, Any] = {
             "generated_by": "workflow_conductor._write_dependency_surface",
@@ -5658,11 +5637,8 @@ class Conductor:
         # The external libraries the node declares (issue #644): ids, modules, procedures.
         # Present only when it declares one, so no other node's sidecar changes.
         from tools import external_library as xl
-        try:
-            declared = [xl.load_declaration(self.repo_root, i)
-                        for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
-        except xl.LibraryDeclarationError:
-            declared = []   # the spec-input gate refused it before any phase
+        declared = [xl.load_declaration(self.repo_root, i)
+                    for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
         if declared:
             doc["libraries"] = [{"library_id": d.library_id, "modules": list(d.modules),
                                  "procedures": list(d.procedures)} for d in declared]
@@ -6123,18 +6099,12 @@ class Conductor:
         closure (the staged model source and its object rule are keyed on the bare spec_id);
         a same-spec_id clash (diamond) raises here (L6)."""
         from tools.orchestration_runtime import pipeline_closure_nodes
-        from tools.target_profile import TargetProfileError
         # The closure itself lives in `pipeline_closure_nodes`, so the derivation inputs (the
         # `closure[]` of the generate and build keys) derive the SAME closure from the SAME
         # sidecar and the same target. What stays here is this caller's own policy: the L6
         # guard below.
-        try:
-            closure = pipeline_closure_nodes(
-                self.repo_root, refs.ir_ref, refs.node_key, self.target)
-        except TargetProfileError as exc:
-            raise RuntimeError(
-                f"dependency closure of {refs.node_key}: the harness of target "
-                f"{self.target.target_id} does not resolve ({exc.detail})") from exc
+        closure = pipeline_closure_nodes(
+            self.repo_root, refs.ir_ref, refs.node_key, self.target)
         # L6 guard: the Model B staged source basename (the target language's
         # `model_basename(<spec_id>)`), its object rule in the control file, and the module
         # the dep's generated source publishes are all keyed on the bare spec_id
@@ -6166,11 +6136,8 @@ class Conductor:
         Neutral: the names are the declaration's (`spec/libraries/<id>.yaml`); how a language
         reaches a module or a procedure is its own fragment's."""
         from tools import external_library as xl
-        try:
-            declarations = [xl.load_declaration(self.repo_root, i)
-                            for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
-        except xl.LibraryDeclarationError as exc:
-            raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
+        declarations = [xl.load_declaration(self.repo_root, i)
+                        for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
         return xl.facts_text(declarations)
 
     def _closure_libraries(self, refs: NodeRefs) -> list[Any]:
@@ -6182,11 +6149,8 @@ class Conductor:
         driver decides it before any phase, so meeting it here is a host defect, transport
         fail_closed)."""
         from tools import external_library as xl
-        try:
-            declarations = xl.closure_declarations(
-                self.repo_root, refs.spec_path, self._dependency_closure_nodes(refs))
-        except xl.LibraryDeclarationError as exc:
-            raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
+        declarations = xl.closure_declarations(
+            self.repo_root, refs.spec_path, self._dependency_closure_nodes(refs))
         return xl.resolve_closure(self.repo_root, self.target, declarations)
 
     def _library_build_args(self, libraries: Sequence[Any], execute: Any) -> list[str]:
@@ -6214,15 +6178,9 @@ class Conductor:
         dependency (`orchestration_runtime.with_target_harness`, issue #284). The one call every
         conductor reader of a node's post-Compile dependency SET goes through — `lineage.json`,
         `binary_meta.dependency_check`, the pre_judge DAG check, the derived `aggregate_verdict`.
-        A harness the catalog no longer resolves raises RuntimeError (a build precondition)."""
+        The launch gate resolved the target's harness before any phase."""
         from tools.orchestration_runtime import with_target_harness
-        from tools.target_profile import TargetProfileError
-        try:
-            return with_target_harness(block, self.repo_root, refs.node_key, self.target)
-        except TargetProfileError as exc:
-            raise RuntimeError(
-                f"dependency set of {refs.node_key}: the harness of target "
-                f"{self.target.target_id} does not resolve ({exc.detail})") from exc
+        return with_target_harness(block, self.repo_root, refs.node_key, self.target)
 
     def _dependency_closure(self, refs: NodeRefs) -> list[str]:
         """Dependency spec_ids in compile order (deepest first) — the `<dep>_model.o`/`.f90`
@@ -6323,17 +6281,10 @@ class Conductor:
         every requirement is unsatisfied.
 
         The resolution itself lives in the runtime (`harness_node_key_for`), because the
-        generate derivation inputs and the pipeline closure name the same harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
-        catalog edited under the run) raises RuntimeError — a build precondition every caller
-        already routes to a fail-closed transport outcome, never a content retry."""
+        generate derivation inputs and the pipeline closure name the same harness. The launch
+        gate resolved it before any phase."""
         from tools.orchestration_runtime import harness_node_key_for
-        from tools.target_profile import TargetProfileError
-        try:
-            return harness_node_key_for(self.repo_root, node_key, self.target)
-        except TargetProfileError as exc:
-            raise RuntimeError(
-                f"harness of target {self.target.target_id} does not resolve for {node_key}: "
-                f"{exc.detail}") from exc
+        return harness_node_key_for(self.repo_root, node_key, self.target)
 
     def _build_leaf_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
@@ -6722,11 +6673,8 @@ class Conductor:
         spec_id = spec_id_of(refs.node_key)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         public_api = ir.get("public_api") if isinstance(ir, dict) else None
-        try:
-            text = module.render(spec_id, public_api if isinstance(public_api, dict) else {},
-                                 spec_kind=refs.node_key.partition("/")[0].strip())
-        except ValueError as exc:
-            raise RuntimeError(f"interface_header_unrenderable: {refs.node_key}: {exc}") from exc
+        text = module.render(spec_id, public_api if isinstance(public_api, dict) else {},
+                             spec_kind=refs.node_key.partition("/")[0].strip())
         return module.basename(spec_id), text
 
     def _bundle_source_names(self, refs: NodeRefs) -> list[str]:
@@ -6872,11 +6820,12 @@ class Conductor:
         constraint applied, so it could inline a different catalog entry than the one the
         sidecar pinned — the same fact resolved twice, by two rules.
 
-        Resolution of the DIRECTORY is still best-effort per entry (an entry whose
-        `controlled_spec.md` cannot be read contributes a named line rather than failing the
-        substep): a profile the registry cannot resolve at all never reaches here, because
-        `_write_dependency_graph` fail-closes the phase on it first. The sentinel keeps the
-        value a NON-EMPTY string, which the launch validator requires of every declared key.
+        A profile the catalog does not resolve, or whose `controlled_spec.md` is missing, never
+        reaches here: the Compile derivation hashes each adopted profile's spec files at phase
+        start and fails the phase closed first. Any read error here (a file that exists and does
+        not decode) propagates, and the caller turns it into `pure_context_assembly_failed`. The
+        sentinel keeps the value a NON-EMPTY string, which the launch validator requires of
+        every declared key.
 
         A missing/unreadable sidecar RAISES, like `_leaf_repo_document` — the same disposition
         for the same reason, and the same recoverable `pure_context_assembly_failed`."""
@@ -6897,16 +6846,10 @@ class Conductor:
         sections: list[str] = []
         for pid in profile_ids:
             text = ""
-            try:
-                spec_ref = resolve_spec_ref_for(self.repo_root, "profile", pid)
-            except Exception:  # noqa: BLE001 — a registry outage is the graph builder's finding
-                spec_ref = None
+            spec_ref = resolve_spec_ref_for(self.repo_root, "profile", pid)
             if spec_ref:
-                try:
-                    text = (self.repo_root / spec_ref / "controlled_spec.md").read_text(
-                        encoding="utf-8")
-                except (OSError, UnicodeError):
-                    text = ""
+                text = (self.repo_root / spec_ref / "controlled_spec.md").read_text(
+                    encoding="utf-8")
             sections.append(f"# profile: {pid}\n\n"
                             + (text if text.strip()
                                else "(this profile is adopted by this node but the registry "
@@ -15679,8 +15622,8 @@ class Conductor:
                     reason=f"compile_dependency_graph_{err['reason']}"))
             # Author the component-dep published-surface sidecar (L2) from the graph just written,
             # and thread it into the compile.generate launch so the leaf is SHOWN the real op-name
-            # catalog. Best-effort: a resolution gap yields `unresolved` entries; the L3 gate is
-            # inert where the surface is unresolved.
+            # catalog. A resolution gap yields `unresolved` entries; the L3 gate is inert where
+            # the surface is unresolved.
             dep_surface = tuple(self._write_dependency_surface(refs))
 
         # The DERIVATION this attempt runs under (issue #250): the phase's contract inputs

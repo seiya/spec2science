@@ -645,7 +645,7 @@ class SpawnTimeoutTests(unittest.TestCase):
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=_WorkshopConfig.config(repo))
             c.emit = lambda name, **f: events.append((name, f))  # type: ignore[assignment]
-            c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[assignment]
             c.leaf_command = lambda *a, **k: ["sleep", "60"]  # type: ignore[assignment]
             entry = c.entry_for("generate", "verify")
             with mock.patch.dict(os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": "3600"}):
@@ -664,7 +664,7 @@ class SpawnTimeoutTests(unittest.TestCase):
                                llm_config=_WorkshopConfig.config(tmp))
         self.events: list[tuple[str, dict]] = []
         c.emit = lambda name, **f: self.events.append((name, f))  # type: ignore[assignment]
-        c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+        c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[assignment]
         c.leaf_command = lambda *a, **k: list(argv)  # type: ignore[assignment]
         return c
 
@@ -1028,7 +1028,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
             c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=_WorkshopConfig.config(repo))
-            c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[assignment]
             seen: list[list[str]] = []
 
             class _Stop(Exception):
@@ -1057,7 +1057,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
             c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))
-            c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[assignment]
             c.leaf_command = lambda *a, **k: ["sleep", "60"]  # type: ignore[assignment]
             env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
             for kwargs, expected in (

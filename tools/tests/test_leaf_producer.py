@@ -599,16 +599,17 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
     def test_the_harness_is_the_targets_whatever_the_ir_lists(self) -> None:
         """Issue #284: the harness a non-infrastructure node negotiates against is the one its
         run's target names — an IR is not read at all, so a stale IR listing another harness
-        cannot move it — and a harness the catalog cannot resolve is a RuntimeError (a build
-        precondition), not a None that would narrow to an empty manifest."""
+        cannot move it — and a harness the catalog cannot resolve raises (the resolver's own
+        TargetProfileError; issue #643 PR-5 removed the RuntimeError rewrap), not a None that
+        would narrow to an empty manifest."""
+        from tools.target_profile import TargetProfileError
         from tools.tests.target_fixtures import profile_with
         nk = self.refs.node_key
         self.assertEqual(self.c._leaf_harness_node_key(nk), _HARNESS)
         self.c.target_profile = profile_with(
             harness={"infrastructure_id": "harness_not_in_catalog"})
-        with self.assertRaises(RuntimeError) as cm:
+        with self.assertRaises(TargetProfileError):
             self.c._leaf_harness_node_key(nk)
-        self.assertIn("does not resolve", str(cm.exception))
 
     def test_an_infrastructure_node_negotiates_against_its_own_manifest(self) -> None:
         """Issue #169: on the `harness` shape the leaf IS the harness, so the manifest it is

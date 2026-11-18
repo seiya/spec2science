@@ -10958,9 +10958,15 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_bwrap_always_enforced(self) -> None:
         # Phase-2 (Linux+bwrap-only): bwrap leaf sandboxing is unconditionally mandatory;
-        # there is no opt-out env value. _bwrap_enabled() always returns True.
-        self.assertTrue(self._c(env={})._bwrap_enabled())
-        self.assertTrue(self._c(env={"SPEC2SCIENCE_CONDUCTOR_BWRAP": "off"})._bwrap_enabled())
+        # there is no opt-out env value: with no recorded profile the launch is refused
+        # whatever the environment says. (The constant-True `_bwrap_enabled` this row read
+        # went in issue #643 PR-5.)
+        with tempfile.TemporaryDirectory() as tmp:
+            for env in ({}, {"SPEC2SCIENCE_CONDUCTOR_BWRAP": "off"}):
+                with self.subTest(env=env):
+                    c = self._c(repo_root=Path(tmp), env=env)
+                    with self.assertRaises(wc.SandboxEnforcementError):
+                        c._sandboxed_argv(["true"], "no-profile", c.entry_for(None, None))
 
     def test_spawn_leaf_wraps_in_bwrap(self) -> None:
         # With a recorded sandbox profile, the leaf argv is wrapped in
@@ -11742,7 +11748,7 @@ class LeafSpawnTest(unittest.TestCase):
                 "time.sleep(300)")
         c = self._c(repo_root=Path("/tmp"), env={},
                     llm_command=f"python3 -c {leaf!r}")
-        c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
         out = io.StringIO()
         # The budget has to cover CPython startup for a REAL `python3 -c` leaf, which is
         # routinely 100 ms+ on a loaded or cold host: below ~1 s the leaf is killed before it
@@ -11784,7 +11790,7 @@ class LeafSpawnTest(unittest.TestCase):
                 f"sys.stdout.write('o' * {blob}); sys.stdout.flush();"
                 f"sys.stderr.write('e' * {blob}); sys.stderr.flush()")
         c = self._c(repo_root=Path("/tmp"), env={}, llm_command=f"python3 -c {leaf!r}")
-        c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
         wc._pid_start_ticks(os.getpid())        # warm the lazy import (see the codex twin)
         tracemalloc.start()
         self.addCleanup(tracemalloc.stop)
@@ -11841,7 +11847,7 @@ class LeafSpawnTest(unittest.TestCase):
             script.write_text(source, encoding="utf-8")
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
-            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
                     patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
@@ -11874,7 +11880,7 @@ class LeafSpawnTest(unittest.TestCase):
             script.write_text(source, encoding="utf-8")
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
-            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             # As on the claude twin: the budget must cover real interpreter startup.
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 1.0), \
@@ -13362,7 +13368,7 @@ class LeafSpawnTest(unittest.TestCase):
 
                 c = self._c(backend=backend, agent_model="gpt-5.6-sol")
                 c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-                c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+                c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
                 with patch.object(wc.subprocess, "Popen", _Popen), \
                         patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 5_000), \
                         patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
@@ -13774,7 +13780,12 @@ class LeafSpawnTest(unittest.TestCase):
                    wc._leaf_timeout_marker(7200, 7201.0),
                    wc._leaf_stdout_record_truncated_marker(2_000_000)]
         markers.append(wc._leaf_failure_events_marker())
-        for label in wc._LEAF_CONDUCTOR_MARKER_LABELS:
+        # Every module-level `LEAF_*_LABEL` (the `_LEAF_CONDUCTOR_MARKER_LABELS` tuple that
+        # listed them had no production reader and went in issue #643 PR-5).
+        labels = [v for k, v in vars(wc).items()
+                  if k.startswith("LEAF_") and k.endswith("_LABEL") and isinstance(v, str)]
+        self.assertEqual(len(labels), 7)
+        for label in labels:
             markers.append(f"[conductor] {label}: kept the first 1000 characters; "
                            "the leaf went on writing")
         self.assertGreaterEqual(len(markers), 10)
@@ -14675,16 +14686,6 @@ class WriteDependencySurfaceTest(unittest.TestCase):
             self.assertEqual(surface, [
                 {"node_key": "component/base@0.1.0",
                  "published_operations": [], "source": "unresolved"}])
-
-    def test_empty_when_no_graph(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            c = self._conductor(repo)
-            # No dependency_graph.json → best-effort empty, no sidecar written.
-            self.assertEqual(wc.Conductor._write_dependency_surface(c, refs), [])
-            self.assertFalse(
-                (repo / refs.ir_ref / "dependency_surface.json").exists())
 
 
 class WriteLineageTest(unittest.TestCase):
@@ -18791,25 +18792,22 @@ class DeterministicBuildTest(unittest.TestCase):
         # The two dev category sets this row also pinned are gone with issue #177: they belonged
         # to the `resume_directive`, which the revocation replaced (the decision is recorded on
         # the artifact, so no resume-time re-derivation reads a category set at all).
-        # The two sets DIVERGED in issue #112 and the difference is itself a definition
-        # (`GATE_ONLY_TERMINAL_CATEGORIES`), so this row compares two constants rather than
-        # restating either. Equality of the remainder is what used to be pinned; the difference
-        # is pinned by name, so adding a category to `GATE_FAILURE_TERMINAL` without deciding
-        # which side it belongs on still fails here.
-        # Issue #307 made the difference two-sided: `EXECUTE_ONLY_TERMINAL_CATEGORIES` names
-        # what the execute set carries that the gate set has no counterpart for.
+        # The two sets DIVERGED in issue #112: the categories the Generate.gate lint attribution
+        # produces have no Validate.execute counterpart (execute runs no linter). Issue #307
+        # made the difference two-sided: a run's device trace exists only at Validate.execute.
+        # Equality of the remainder is what is pinned, so adding a category to
+        # `GATE_FAILURE_TERMINAL` without deciding which side it belongs on still fails here.
+        # (The two differences were named constants with no production reader until issue
+        # #643 PR-5; they are this row's own literals now.)
+        gate_only = frozenset({"host_rendered_lint_findings", "lint_finding_unattributed"})
+        execute_only = frozenset({"device_kernels_absent"})
         self.assertEqual(
-            wc.GATE_FAILURE_TERMINAL - wc.GATE_ONLY_TERMINAL_CATEGORIES,
-            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL - wc.EXECUTE_ONLY_TERMINAL_CATEGORIES)
-        self.assertEqual(
-            frozenset(),
-            wc.GATE_ONLY_TERMINAL_CATEGORIES & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
-        self.assertEqual(
-            frozenset(),
-            wc.EXECUTE_ONLY_TERMINAL_CATEGORIES & wc.GATE_FAILURE_TERMINAL)
-        self.assertLess(wc.GATE_ONLY_TERMINAL_CATEGORIES, wc.GATE_FAILURE_TERMINAL)
-        self.assertLess(wc.EXECUTE_ONLY_TERMINAL_CATEGORIES,
-                        wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+            wc.GATE_FAILURE_TERMINAL - gate_only,
+            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL - execute_only)
+        self.assertEqual(frozenset(), gate_only & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+        self.assertEqual(frozenset(), execute_only & wc.GATE_FAILURE_TERMINAL)
+        self.assertLess(gate_only, wc.GATE_FAILURE_TERMINAL)
+        self.assertLess(execute_only, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
         # QUANTIFIED OVER BOTH SETS, not over the execute one alone. Splitting the terminal
         # categories in two made the gate-only half exempt from every assertion below, and a
         # review round measured it: adding `quality_check_mismatch` — a key of
@@ -19656,8 +19654,8 @@ class GateRoutingTerminalCategoryTests(unittest.TestCase):
 
     def test_the_category_this_row_couples_on_is_the_one_the_code_answers(self) -> None:
         """The rule is defined in the CODE; this file is checked against it, never the reverse."""
-        self.assertIn(self._HOST_CATEGORY, wc.GATE_ONLY_TERMINAL_CATEGORIES)
         self.assertIn(self._HOST_CATEGORY, wc.GATE_FAILURE_TERMINAL)
+        self.assertNotIn(self._HOST_CATEGORY, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
         self.assertEqual(
             "fail_closed", wc.classify_gate_failure([self._HOST_CATEGORY]).action)
 

@@ -661,12 +661,15 @@ class PureCompileProfileContextTests(_Fixture):
         ort._validate_leaf_launch_request_payload(
             {**base, "warm_resume": False, "pure_context": ctx})
 
-    def test_an_unresolvable_profile_is_named_rather_than_failing_the_substep(self) -> None:
-        (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").unlink()
+    def test_an_undecodable_profile_spec_fails_the_assembly(self) -> None:
+        """Issue #643 PR-5 (WC2-75): a profile spec that exists and does not decode is not
+        inlined as a placeholder; the read error propagates, and the caller names it
+        `pure_context_assembly_failed`. (A missing one never gets here: the Compile derivation
+        hashes it at phase start.)"""
+        (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").write_bytes(b"\xff\xfe")
         c = self.conductor()
-        doc = c._build_leaf_compile_context(self.refs)["profile_spec_document"]
-        self.assertIn("demo_profile", doc)
-        self.assertIn("does not resolve", doc)
+        with self.assertRaises(UnicodeDecodeError):
+            c._build_leaf_compile_context(self.refs)
 
 
 # ======================================================================================
