@@ -20328,7 +20328,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
             "module-level orchestration_runtime import writes its .pyc into the repo source "
             "tree before main() installs the sys.pycache_prefix redirect")
         # Ordering pin: the assignment must precede the in-process conductor import/dispatch,
-        # else the redirect is inactive when tools.build_runtime / lint_evidence first compile.
+        # else the redirect is inactive when tools.build_runtime first compiles.
         # main() is not unit-callable, so pin source POSITION instead. Anchor to line-start
         # (^\s*) so the comment mentions of the same string do not false-match.
         conductor_m = re.search(

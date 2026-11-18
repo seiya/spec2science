@@ -24,11 +24,9 @@
   - Validate.execute substep (cross-phase quality_check): `<pipeline_ref>/source/<source_id>/src/command_log.jsonl` (`phase_04_validate.md` — with an in-source build system (`BUILDS_IN_SOURCE`) and a compiled `toolchain.language`, `run_quality_checks` runs with `project_dir=source/<source_id>/src/`, so the log is side-output into the generate tree). When `source_id` is included in the launch request of the Validate.execute substep, the runtime derives the cross-phase canonical placement from it. `source_id` is verified by the existence of `<pipeline_ref>/source/<source_id>/source_meta.json`, and passing an unknown source_id (a value not corresponding to an actual generate execution) makes `record-launch` reject with a `ValueError` (prevention of cross-phase write authorization injection by an arbitrary caller).
 
   In addition, `validate_pipeline_semantics.py` restricts all `command_log_ref` it trusts as build-runtime execution evidence to only the canonical placement:
-  - conductor lint evidence `run_linter[].command_log_ref` (`<pipeline_root>/lint_evidence/<source_id>.json`): `<pipeline_ref>/source/<source_id>/src/command_log.jsonl`
-  - conductor syntax evidence `stages[].command_log_ref` (`<pipeline_root>/syntax_evidence/<source_id>.json`): `<pipeline_ref>/source/<source_id>/src/command_log.jsonl`
   - `source_command_ref.run_quality_checks.command_log_ref`: `<pipeline_ref>/source/<source_source_id>/src/command_log.jsonl` — bound to **only the single source_id** by `trial_meta.source_source_id`. The canonical placement of a sibling/older generation of the same pipeline is not accepted.
 
-  A placement to a non-canonical path is rejected by the post_generate / post_execute gate (prevention of forged build-runtime execution evidence).
+  A placement to a non-canonical path is rejected by the post_execute gate (prevention of forged build-runtime execution evidence).
 
   The cross-phase canonical placement of the Validate.execute substep is bound only to the `source_id` field of the launch request. A path listed under `<pipeline_ref>/source/<other_source_id>/src/...` (a generation different from the request's `source_id`) authorizes nothing: the placement is derived from `source_id`, not from the list. On the trial_meta side too, `source_source_id` is a required record, fixing the bind between execute and generate.
 

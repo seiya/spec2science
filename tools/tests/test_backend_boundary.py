@@ -2494,24 +2494,6 @@ class RegistryConsistencyTests(unittest.TestCase):
             "a collection in the validator enumerates the linter backends; ask "
             f"registry.unimplemented_reason instead (line(s) {literals})")
 
-    def test_every_implemented_linter_can_be_inferred_from_a_logged_command(self) -> None:
-        """The pair this change opened by widening one side of it.
-
-        The lint evidence gate now accepts any IMPLEMENTED linter (it asks the registry), but the
-        next check in the same loop infers the preset from the logged command via a hard-coded
-        chain of executable names. Registering a fifth linter therefore passes the registry check
-        and then fails with "logged command does not match preset (inferred None)", which names
-        neither the cause nor the fix. `mixed` is excluded because it is not an executable: the
-        branch above this one refuses it and asks for separate entries per real linter.
-        """
-        for backend_id in registry.implemented_backend_ids("linter"):
-            if backend_id == "mixed":
-                continue
-            self.assertEqual(
-                backend_id, vps._infer_run_linter_preset_from_command([backend_id, "check"]),
-                f"the lint gate accepts preset '{backend_id}' but cannot infer it from a logged "
-                f"command, so the evidence check refuses it for an unrelated-sounding reason")
-
     def test_the_language_to_linter_answer_is_the_linters_own_declaration(self) -> None:
         """Which linter a language is linted with is declared by each linter (`LANGUAGES` in its
         `lint` module) and answered by `registry.linter_for_language` (issue #289, R4-b PR-2).

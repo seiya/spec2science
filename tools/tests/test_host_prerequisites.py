@@ -594,47 +594,6 @@ class RunbookVersionRangeTests(unittest.TestCase):
         self.assertIn("no longer carries the linter version-range table", str(caught.exception))
 
 
-class LinterExecutableCollisionTests(unittest.TestCase):
-    """A property of EVERY linter at once, so it is asserted from no single backend's file.
-
-    `tools/validate_pipeline_semantics._lint_preset_by_executable` builds an argv[0] -> preset map
-    by enumeration, so two backends declaring the same executable would silently let the last row
-    win and attribute a logged command — and a certification — to the wrong preset. It fails
-    closed instead.
-
-    It lived in `tools/tests/test_linter_cppcheck.py` for one round, where it patched the RUFF
-    package to construct the collision: a cross-backend property asserted from one backend's file,
-    hardcoding its sibling, which is the placement two other checks in this repository explicitly
-    reject. Renaming or removing either backend turned the other's file red.
-    """
-
-    def test_two_backends_sharing_an_executable_are_refused(self) -> None:
-        from unittest import mock
-
-        from tools import validate_pipeline_semantics as vps
-        from tools.backends import registry
-
-        linters = [b for b in registry.backend_ids("linter")
-                   if "lint" in registry.get("linter", b).backend_provides]
-        self.assertGreaterEqual(len(linters), 2, "a collision needs two package-backed linters")
-        first, second = (registry.capability_module("linter", b, "lint") for b in linters[:2])
-
-        vps._lint_preset_by_executable.cache_clear()
-        self.addCleanup(vps._lint_preset_by_executable.cache_clear)
-        with mock.patch.object(second, "EXECUTABLE", first.EXECUTABLE):
-            with self.assertRaises(ValueError) as caught:
-                vps._lint_preset_by_executable()
-        self.assertIn(first.EXECUTABLE, str(caught.exception))
-
-    def test_the_real_declarations_have_no_collision(self) -> None:
-        """The other direction, so the row above cannot pass by refusing everything."""
-        from tools import validate_pipeline_semantics as vps
-
-        vps._lint_preset_by_executable.cache_clear()
-        self.addCleanup(vps._lint_preset_by_executable.cache_clear)
-        self.assertGreaterEqual(len(vps._lint_preset_by_executable()), 3)
-
-
 class NeutralCoreTests(unittest.TestCase):
     def test_the_probe_module_spells_no_technology_token(self) -> None:
         """The acceptance criterion of issue #109, asserted directly rather than left to the

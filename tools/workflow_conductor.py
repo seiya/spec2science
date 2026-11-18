@@ -196,9 +196,8 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #   - static (Conductor._gate_static_check): runs validate_pipeline_semantics --stage
     #     post_generate + validate_workspace_root; the verify leaf no longer invokes them, so
     #     verify is a pure LLM semantic (G1-G7) pass reached only on a deterministically-clean
-    #     source. Runs ONLY when lint AND syntax both pass — the post_generate certifier
-    #     hard-fails on lint/syntax evidence whose ok flag is not true, so running static over a
-    #     dirty source would double-report the same defect (recorded
+    #     source. Runs ONLY when lint AND syntax both pass — a dirty source gets the findings
+    #     of the checker that read it rather than a second report (recorded
     #     checkers.static.status="skipped", skipped_reason="lint_or_syntax_failed"). The gate
     #     routes its unioned findings back to generate.generate via a warm-resume reopen
     #     (GATE_FAILURE_ROUTING).
@@ -1697,9 +1696,7 @@ def build_launch_request(
             # MUST be listed: the substep DECLARES what it produces, which is what
             # `post_generate` validates the phase root against. (Until issue #171 PR-2 the
             # listing also had to satisfy the gate child's FS-diff write-attribution, which
-            # would otherwise have flagged those appends.) The host-authored lint / syntax evidence
-            # (pipeline-root, leaf-non-writable) is NOT a leaf output and is intentionally
-            # omitted from allowed_output_paths. The static checker (validate_pipeline_semantics
+            # would otherwise have flagged those appends.) The static checker (validate_pipeline_semantics
             # --stage post_generate + validate_workspace_root) writes nothing beyond gate_meta.
             req["allowed_output_paths"] = [
                 f"{src}/gate_meta.json",
@@ -11428,15 +11425,13 @@ class Conductor:
         instead of one repair turn + one Generate attempt per class.
 
         Order and semantics:
-          - lint   (_gate_lint_check):   always runs; writes lint_evidence (even on fail).
-          - syntax (_gate_syntax_check): always runs (independent of lint); writes
-            syntax_evidence. An attribution error (canary / dependency closure) raises out of
+          - lint   (_gate_lint_check):   always runs.
+          - syntax (_gate_syntax_check): always runs (independent of lint). An attribution error (canary / dependency closure) raises out of
             here, so gate_meta is NOT written and the substep returns rc 1 (transport
             fail_closed) — fail_closed dominates a co-occurring lint content-fail, the same order
             as the pre-merge sequential substeps, only surfaced sooner.
-          - static (_gate_static_check): runs ONLY when lint AND syntax both pass. The
-            post_generate certifier hard-fails on lint/syntax evidence whose ok flag is not true,
-            so running it over a dirty source would double-report the same defect; skip is
+          - static (_gate_static_check): runs ONLY when lint AND syntax both pass, so a dirty
+            source gets the findings of the checker that read it rather than a second report; skip is
             recorded as checkers.static.status="skipped", skipped_reason="lint_or_syntax_failed".
 
         gate_status = pass iff every checker passed (static counted as pass only when it actually
@@ -11457,8 +11452,7 @@ class Conductor:
         if lint_ok and syntax_ok:
             static = self._gate_static_check(refs, child_arid)
         else:
-            # Skip static: its post_generate certifier hard-fails on non-ok lint/syntax evidence,
-            # so it could only echo the failure already recorded above.
+            # Skip static: the failure is already recorded above.
             static = {
                 "status": "skipped",
                 "skipped_reason": "lint_or_syntax_failed",
@@ -11715,17 +11709,13 @@ class Conductor:
                 + _tail("\n".join(whole_dir_excerpts)))
 
     def _gate_lint_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
-        """Generate.gate lint checker: in-process run_linter over source/<id>/src/, plus a
-        host-side (leaf-non-writable) lint evidence certificate. Returns the `lint` section of
+        """Generate.gate lint checker: in-process run_linter over source/<id>/src/. Returns the
+        `lint` section of
         gate_meta (status / preset / language / run_linter / failure_category / failure_excerpt);
         `_gate_inproc` composes the single gate_meta.json verdict. Lint findings are a CONTENT
         failure (status="fail") the gate routes to generate.generate via a warm-resume reopen; a
-        genuine tool/infra error raises and surfaces as a transport fail_closed. The evidence is
-        written even on a content fail (ok=false), which the post_generate certifier depends on."""
+        genuine tool/infra error raises and surfaces as a transport fail_closed."""
         from tools.build_runtime import tool_run_linter
-        # Same language->linter answer the post_generate validator certifies against (the
-        # registry's), so the preset the conductor RUNS cannot drift from the one it EXPECTS.
-        from tools.hooks.lint_evidence import write_lint_evidence
 
         language = self._read_toolchain(refs)["language"]
         # A language with no linter is refused at launch
@@ -11796,23 +11786,6 @@ class Conductor:
             failure_category, failure_excerpt = self._attribute_lint_findings(
                 refs, child_arid, preset, excerpts)
 
-        # Host-side, leaf-non-writable certificate the post_generate validator certifies
-        # against. The evidence keys (preset/command_id/command_log_ref) are exactly what
-        # _validate_generate_lint_command_logs needs; the leaf cannot forge it (pipeline
-        # root is read-only inside the sandbox, like lineage.json). Written even on a content
-        # fail (ok=false) — the certifier reads the evidence regardless, so it must exist.
-        write_lint_evidence(
-            pipeline_root=self.repo_root / refs.pipeline_ref,
-            source_id=refs.source_id or "",
-            preset=preset,
-            ok=ok,
-            run_linter=[{
-                "preset": e["preset"],
-                "command_id": e["command_id"],
-                "command_log_ref": e["command_log_ref"],
-            } for e in run_entries],
-        )
-
         # Return the `lint` section of gate_meta; _gate_inproc composes the single verdict.
         return {
             "status": "pass" if ok else "fail",
@@ -11826,7 +11799,7 @@ class Conductor:
     def _gate_syntax_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate syntax checker: in-process run_syntax_check (a real compiler
         front-end in syntax-only mode, the language's mandatory syntax compiler) over the staged
-        node + dependency-closure sources, plus a host-side (leaf-non-writable) syntax evidence certificate. Returns the
+        node + dependency-closure sources. Returns the
         `syntax` section of gate_meta (status / language / stages / skipped_reason /
         failure_category / failure_excerpt); `_gate_inproc` composes the single gate_meta.json
         verdict. This catches the whole class of syntax / standard-conformance compile_errors
@@ -11873,7 +11846,6 @@ class Conductor:
             syntax_adapter,
             tool_run_syntax_check,
         )
-        from tools.hooks.syntax_evidence import write_syntax_evidence
 
         tc = self._read_toolchain(refs)
         language = tc["language"]
@@ -11941,7 +11913,7 @@ class Conductor:
             raw = self.env.get("SPEC2SCIENCE_SYNTAX_COMPILERS", mandatory)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
             # The mandatory stage runs regardless of the env list's content/order: it is the one
-            # stage post_generate certification requires to have passed. Its identity is the
+            # stage this checker requires to have passed. Its identity is the
             # language backend's, bound to the build `FC` default above -- so the launch-time
             # host probe covers both by probing one.
             if mandatory in compilers:
@@ -11996,9 +11968,9 @@ class Conductor:
                     `command_log_path`, so their log stays in the throwaway dir: they
                     certify nothing, and keeping them out of the node's canonical
                     <src>/command_log.jsonl keeps that log the record of the gate proper. The
-                    model-alone probe passes the canonical log, because it CERTIFIES — its stage
-                    entry's command id is resolved against that log by the post_generate
-                    validator. `None` is the tool's own default: the log beside `sub_dir`."""
+                    model-alone probe passes the canonical log, because it is part of the gate's
+                    verdict (its stage entry carries the command id). `None` is the tool's own
+                    default: the log beside `sub_dir`."""
                     return tool_run_syntax_check({
                         "compiler": compiler,
                         "std": tc["standard"],
@@ -12039,20 +12011,12 @@ class Conductor:
                     # whole retry budget on a message no regenerated source can clear.
                     #
                     # The stage is recorded `skipped`, which is what it is — no compiler
-                    # ran, so there is no command id to certify with — and the evidence
-                    # certificate below records the same, keeping this checker's
-                    # symmetry with the lint one.
+                    # ran, so there is no command id.
                     stages.append({
                         "compiler": compiler,
                         "status": "skipped",
                         "reason": str(exc),
                     })
-                    write_syntax_evidence(
-                        pipeline_root=self.repo_root / refs.pipeline_ref,
-                        source_id=refs.source_id or "",
-                        ok=False,
-                        stages=stages,
-                    )
                     return {
                         "status": "fail",
                         "language": language,
@@ -12091,7 +12055,8 @@ class Conductor:
                 # consumer is handed: the closure, the model, and the interface header. Only
                 # `_interface_header_module` decides the header. A failure is the leaf's own content (it can move what the model needs
                 # into the model file), so it is a `syntax_error` routed to generate.generate,
-                # never a raise. It certifies, so it logs to the canonical command log.
+                # never a raise. It is part of the gate's verdict, so it logs to the canonical
+                # command log.
                 if stage_ok and compiler == mandatory:
                     model_src = src_dir / self._model_basename(refs)
                     # A missing model is the static checker's / validate_bundle's finding; a
@@ -12281,18 +12246,6 @@ class Conductor:
                         else failure_excerpt
                         + f"\n[{compiler} {tc['standard']} syntax check fail]\n{tail}")
 
-        # Host-side, leaf-non-writable certificate the post_generate validator certifies
-        # against (mirrors write_lint_evidence). Written whenever the gate recorded a stage:
-        # every language reaching this line has one (the launch gate requires the syntax stage
-        # of the target's language), and certification requires it for every language.
-        if stages:
-            write_syntax_evidence(
-                pipeline_root=self.repo_root / refs.pipeline_ref,
-                source_id=refs.source_id or "",
-                ok=ok,
-                stages=stages,
-            )
-
         # Return the `syntax` section of gate_meta; _gate_inproc composes the single verdict.
         return {
             "status": "pass" if ok else "fail",
@@ -12314,9 +12267,7 @@ class Conductor:
         post_build gate in _build_inproc. A violation is a CONTENT failure (status="fail" +
         failure_category) the gate routes to generate.generate via a warm-resume reopen; only an
         unexpected error surfaces as a transport fail_closed (caught in
-        _run_deterministic_substep). The gate wrote lint_evidence + syntax_evidence earlier this
-        attempt (both ok, since this runs only on their pass), so the post_generate certification
-        certifies conductor-owned evidence.
+        _run_deterministic_substep).
         """
         status = "pass"
         failure_category: str | None = None

@@ -546,10 +546,6 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             "compiler", "nvcc", "tools.backends.compiler.nvcc",
             backend_provides=frozenset({"syntax_check", "checked_flags"}),
         ),
-        # The linter members ARE the presets the `Generate` lint evidence gate accepts: that gate
-        # asks `unimplemented_reason("linter", ...)` and holds no set of its own, so this is the
-        # only place the accepted presets are written. Listing only `fortitude` here would
-        # narrow the live gate.
         # Every linter that HAS an invocation now authors it in its own package, and
         # `tools/build_runtime.py` composes each row through `capability_module`.
         # What forced each move is the argv itself: a lint rule id, and a compiler-family
@@ -676,7 +672,7 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
 
 #: The linters that run several linters in order, each named by the presets it COMPOSES, in
 #: run order — declared once, here, beside the records (issue #424): the build-runtime server
-#: runs them from this, the post_generate validator expects exactly these sub-runs, and
+#: runs them from this, and
 #: `linter_for_language` answers a composite's own token from it. A composite token is also the
 #: `language` value it lints: `mixed` names a COMPOSITE, not a language any backend implements,
 #: so no linter's `LANGUAGES` can carry it. Naming axis values is what the neutral core may do
@@ -868,7 +864,7 @@ def linter_for_language(language: str) -> str | None:
     language -> linter fact is written where the linter's knowledge is (issue #289, R4-b PR-2;
     it was a table in the post_generate validator, carrying tokens no backend implements). A
     language two linters declare RAISES: resolving it by order would make the gate run one
-    linter and the certification expect whichever the next reader happened to pick.
+    linter and the launch probe look for whichever the next reader happened to pick.
 
     Loads the linter packages it asks — the reason this is a function rather than a table built
     at import (this module imports no backend package at import time)."""

@@ -101,7 +101,7 @@
       "fortran": 9,
       "fortran-subroutine": 1,
       "linter-cppcheck": 3,
-      "linter-fortitude": 4,
+      "linter-fortitude": 3,
       "linter-ruff": 2
     },
     "tools/build_runtime.py": {
