@@ -1,10 +1,10 @@
 """The bounds-checked second build and its `checked` row (issue #589 PR-0).
 
-Four layers: the seam that resolves what the build is (`tools/checked_build.py`, and the `make`
+Three layers: the seam that resolves what the build is (`tools/checked_build.py`, and the `make`
 backend's `checked_build_overrides`), the Build that makes it (`Conductor._build_inproc`, its
-deliverables), the post-execute gate that binds the row to it
-(`validate_pipeline_semantics._validate_checked_row` / `_validate_execution_shapes`), and a real
-`make` reading the composed variables. Validate.execute's run of the row is pinned beside the
+deliverables), and a real `make` reading the composed variables. (The post-execute gate's
+re-binding of the row to the binary went with issue #643: Build and Validate.execute are the
+conductor's, and the row's comparison is `_author_quality_check`'s.) Validate.execute's run of the row is pinned beside the
 other shapes in `test_workflow_conductor.py` and, at a site, `test_execute_at_site.py`.
 """
 
@@ -18,7 +18,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import tools.validate_pipeline_semantics as vps
 import tools.workflow_conductor as wc
 from tools import checked_build
 from tools.backends import registry
@@ -29,8 +28,6 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import (
     FORTRAN_CPU,
     TARGET_ID,
-    passing_shape_rows,
-    plant_checked_build,
     profile_with,
 )
 from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
@@ -455,252 +452,6 @@ class ExecuteRefusalTests(unittest.TestCase):
             self.assertIn("has no checked binary", str(caught.exception))
             self.assertIn("--rederive build,validate", str(caught.exception))
             self.assertEqual(ran, [])
-
-
-class GateTests(unittest.TestCase):
-    """The post-execute gate binds the `checked` row to the checked binary, REQUIRED."""
-
-    def _tree(self, tmp: str, target=FORTRAN_CPU):
-        root = Path(tmp)
-        pipeline = root / "pipe"
-        node = pipeline / "runs" / "run_1" / "node"
-        node.mkdir(parents=True)
-        (pipeline / "binary" / "bin_1" / "bin").mkdir(parents=True)
-        (pipeline / "binary" / "bin_1" / "bin" / "x_runner").write_text("bin\n")
-        (node / "trial_meta.json").write_text(json.dumps({"source_binary_id": "bin_1"}))
-        (node / "quality_check.json").write_text(json.dumps(
-            {"status": "pass", "shapes": passing_shape_rows(target)}))
-        plant_checked_build(pipeline, node, binary_id="bin_1", source_id="src_1",
-                            exe="x_runner", profile=target)
-        execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node,
-                                      exec_dir=node, pipeline_dir=pipeline)
-        return root, pipeline, node, execution
-
-    def _violations(self, root: Path, execution, target=FORTRAN_CPU) -> list[str]:
-        violations: list[str] = []
-        with mock.patch.object(vps, "_pipeline_target", return_value=target):
-            vps._validate_execution_shapes(root, execution, violations)
-            vps._validate_checked_row(root, execution, violations)
-        return violations
-
-    @staticmethod
-    def _edit_json(path: Path, fn) -> None:
-        doc = json.loads(path.read_text())
-        fn(doc)
-        path.write_text(json.dumps(doc))
-
-    @staticmethod
-    def _edit_log(path: Path, command_id: str, fn) -> None:
-        recs = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        for rec in recs:
-            if rec.get("command_id") == command_id:
-                fn(rec)
-        path.write_text("".join(json.dumps(r) + "\n" for r in recs))
-
-    def test_the_planted_records_pass_on_each_declaring_profile(self) -> None:
-        for target in (FORTRAN_CPU, MPI):
-            with self.subTest(target=target.target_id), tempfile.TemporaryDirectory() as tmp:
-                root, _p, _n, execution = self._tree(tmp, target)
-                self.assertEqual(self._violations(root, execution, target), [])
-
-    def test_a_compiler_that_declares_no_flags_needs_no_row_and_no_record(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            node = root / "node"
-            node.mkdir()
-            rows = passing_shape_rows(GPU)
-            self.assertNotIn("checked", [r["label"] for r in rows])
-            (node / "quality_check.json").write_text(json.dumps({"status": "pass",
-                                                                 "shapes": rows}))
-            execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node,
-                                          exec_dir=node, pipeline_dir=root)
-            self.assertEqual(self._violations(root, execution, GPU), [])
-
-    def test_a_declaring_compiler_s_run_without_the_row_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root, _p, node, execution = self._tree(tmp)
-            self._edit_json(node / "quality_check.json",
-                            lambda d: d.__setitem__("shapes", d["shapes"][:-1]))
-            violations = self._violations(root, execution)
-            self.assertTrue(any("then the checked binary's" in v for v in violations),
-                            violations)
-
-    def test_a_compiler_that_does_not_declare_the_capability_is_a_violation(self) -> None:
-        record = registry._BACKENDS[("compiler", "gfortran")]
-        stripped = record._replace(backend_provides=record.backend_provides - {"checked_flags"})
-        with tempfile.TemporaryDirectory() as tmp:
-            root, _p, _n, execution = self._tree(tmp)
-            with mock.patch.dict(registry._BACKENDS, {("compiler", "gfortran"): stripped}):
-                violations = self._violations(root, execution)
-            self.assertTrue(any("checked_flags" in v for v in violations), violations)
-
-    def test_each_refusal_of_the_binding(self) -> None:
-        """Every condition the walked `source_command_ref` form skips on is a refusal here."""
-        meta = ("pipe", "binary", "bin_1", "binary_meta.json")
-
-        def rows(fn):
-            return "qc", lambda d: fn(d["shapes"][-1])
-
-        def checked(fn):
-            return meta, lambda d: fn(d["checked_build"])
-
-        cases: dict[str, tuple] = {
-            # the row's command_id
-            "null command_id": (*rows(lambda r: r.__setitem__("command_id", None)),
-                                "must name exactly one record"),
-            "empty command_id": (*rows(lambda r: r.__setitem__("command_id", "")),
-                                 "must name exactly one record"),
-            "unmatched command_id": (*rows(lambda r: r.__setitem__("command_id", "nope")),
-                                     "must name exactly one record"),
-            # the record's binary and form
-            "ran bin/<exe>": ("log", lambda r: r.__setitem__(
-                "command", [r["command"][0].replace("/bin_checked/", "/bin/"),
-                            *r["command"][1:]]), "runs binary/bin_1/bin_checked/x_runner bare"),
-            "launcher prefix": ("log", lambda r: r.__setitem__(
-                "command", ["mpirun", "-n", "1", *r["command"]]), "bare"),
-            "relative executable outside": ("log", lambda r: r.update(
-                {"command": ["./x_runner", *r["command"][1:]]}), "bare"),
-            "another file under bin_checked/": ("log", lambda r: r.__setitem__(
-                "command", [r["command"][0].replace("/x_runner", "/other"),
-                            *r["command"][1:]]), "bare"),
-            "not run_program": ("log", lambda r: r.__setitem__("tool_name", "compile_project"),
-                                "run_program of the checked binary"),
-            "record failed": ("log", lambda r: r.__setitem__("ok", False),
-                              "run_program of the checked binary"),
-            "command not a list": ("log", lambda r: r.__setitem__("command", "x_runner"),
-                                   "run_program of the checked binary"),
-            # binary_meta.json#checked_build
-            "checked_build null": (meta, lambda d: d.__setitem__("checked_build", None),
-                                   "checked_build is None"),
-            "binary_ref": (*checked(lambda b: b.__setitem__(
-                "binary_ref", "binary/bin_1/bin/x_runner")), "checked_build.binary_ref"),
-            "flags": (*checked(lambda b: b.__setitem__("flags", [])), "checked_build.flags"),
-            "bin_dir": (*checked(lambda b: b.__setitem__("bin_dir", "/elsewhere")),
-                        "checked_build.bin_dir"),
-            "bin_dir under another binary id": (*checked(lambda b: b.__setitem__(
-                "bin_dir", b["bin_dir"].replace("/bin_1/", "/bin_2/"))),
-                                                "checked_build.bin_dir"),
-            "bin_dir is bin/": (*checked(lambda b: b.__setitem__(
-                "bin_dir", b["bin_dir"][:-len("bin_checked")] + "bin")),
-                                "checked_build.bin_dir"),
-            "obj_dir missing": (*checked(lambda b: b.__setitem__("obj_dir", "")),
-                                "must be non-empty strings"),
-            "argv without the flags": (*checked(lambda b: b.__setitem__("argv", b["argv"][:-1])),
-                                       "checked_build.argv must end with"),
-            "argv BINDIR on bin/": (*checked(lambda b: b.__setitem__("argv", [
-                a.replace("/bin_checked", "/bin") if a.startswith("BINDIR=") else a
-                for a in b["argv"]])), "checked_build.argv must end with"),
-            "argv OBJDIR elsewhere": (*checked(lambda b: b.__setitem__("argv", [
-                "OBJDIR=/elsewhere" if a.startswith("OBJDIR=") else a for a in b["argv"]])),
-                                      "checked_build.argv must end with"),
-            "argv recomposed": (*checked(lambda b: b["argv"].__setitem__(
-                -1, b["argv"][-1].replace("$(OBJDIR)", b["obj_dir"]))),
-                                "checked_build.argv must end with"),
-            "build command_id": (*checked(lambda b: b.__setitem__("command_id", "nope")),
-                                 "must name one compile_project record"),
-            # clause (ii): the compile record itself
-            "compile record failed": ("build_log", lambda r: r.__setitem__("ok", False),
-                                      "must name one compile_project record"),
-            "compile record other argv": ("build_log", lambda r: r.__setitem__(
-                "command", r["command"][:-1]), "must name one compile_project record"),
-        }
-        for name, (where, fn, needle) in cases.items():
-            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
-                root, pipeline, node, execution = self._tree(tmp)
-                if where == "log":
-                    self._edit_log(node / "command_log.jsonl", "cmd_checked", fn)
-                elif where == "qc":
-                    self._edit_json(node / "quality_check.json", fn)
-                elif where == "build_log":
-                    self._edit_log(pipeline / "source" / "src_1" / "src" / "command_log.jsonl",
-                                   "cmd_checked_build", fn)
-                else:
-                    self._edit_json(root.joinpath(*where), fn)
-                violations = self._violations(root, execution)
-                self.assertTrue(any(needle in v for v in violations), (needle, violations))
-
-    def test_a_resume_after_the_checkout_moved_is_admitted(self) -> None:
-        """Round 1 (record axis F1): Build records absolute directories, and a resume from a
-        moved checkout validates the same certified Build — its run records name the new
-        paths, `binary_meta.json` the old. The gate admits it (it refused it, measured)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            old_root = Path(tmp) / "old"
-            old_root.mkdir()
-            _r, _p, _n, _e = self._tree(str(old_root))
-            new_root = Path(tmp) / "new"
-            shutil.move(str(old_root), str(new_root))
-            node = new_root / "pipe" / "runs" / "run_1" / "node"
-            moved = str(new_root / "pipe" / "binary" / "bin_1" / "bin_checked" / "x_runner")
-            self._edit_log(node / "command_log.jsonl", "cmd_checked",
-                           lambda r: r.update({"command": [moved, *r["command"][1:]],
-                                               "cwd": str(node)}))
-            execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node,
-                                          exec_dir=node, pipeline_dir=new_root / "pipe")
-            meta = json.loads((new_root / "pipe/binary/bin_1/binary_meta.json").read_text())
-            self.assertTrue(meta["checked_build"]["bin_dir"].startswith(str(old_root)))
-            self.assertEqual(self._violations(new_root, execution), [])
-
-    def test_a_build_record_written_twice_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root, pipeline, _n, execution = self._tree(tmp)
-            log = pipeline / "source" / "src_1" / "src" / "command_log.jsonl"
-            log.write_text(log.read_text() * 2)
-            violations = self._violations(root, execution)
-            self.assertTrue(any("must name one compile_project record" in v
-                                for v in violations), violations)
-
-    def test_the_walked_binding_refuses_a_certified_record_that_ran_the_checked_binary(
-            self) -> None:
-        """`_bound_executable` binds by path components: `bin_checked/` is a string-prefix
-        sibling of `bin/`, and a certified `run_program` record whose executable is the
-        checked binary is refused by the walked `source_command_ref` form (round 2: a
-        `startswith` containment survived)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root, pipeline, node, execution = self._tree(tmp)
-            binary = pipeline / "binary" / "bin_1"
-            for checked, needle in ((False, None), (True, "must resolve under")):
-                exe = binary / ("bin_checked" if checked else "bin") / "x_runner"
-                (node / "command_log.jsonl").write_text(json.dumps({
-                    "command_id": "cmd_run", "tool_name": "run_program", "ok": True,
-                    "cwd": str(node), "command": [str(exe), "--cases", "spec.ir.yaml"]}) + "\n")
-                (node / "trial_meta.json").write_text(json.dumps({
-                    "source_binary_id": "bin_1",
-                    "source_command_ref": {"run_program": {
-                        "tool_name": "run_program", "command_id": "cmd_run",
-                        "command_log_ref": str(node / "command_log.jsonl")}}}))
-                violations: list[str] = []
-                with mock.patch.object(vps, "_pipeline_target", return_value=FORTRAN_CPU), \
-                        mock.patch.object(vps, "_canonical_log_ref_for_run_program",
-                                          return_value=None):
-                    vps._validate_run_program_inputs(root, execution, violations)
-                with self.subTest(checked=checked):
-                    if needle is None:
-                        self.assertEqual(violations, [])
-                    else:
-                        self.assertTrue(any(needle in v for v in violations), violations)
-
-    def test_a_record_written_twice_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root, _p, node, execution = self._tree(tmp)
-            log = node / "command_log.jsonl"
-            log.write_text(log.read_text() * 2)
-            violations = self._violations(root, execution)
-            self.assertTrue(any("found 2" in v for v in violations), violations)
-
-    def test_the_mpi_row_is_bound_bare_and_refused_under_the_certified_prefix(self) -> None:
-        """On a launcher target the certified run's prefix is not the row's: the row runs
-        bare, so a record under the launcher is refused and the bare one admitted."""
-        from tools.host_execution import launch_argv_prefix
-        prefix = list(launch_argv_prefix(MPI.parallel_backend, MPI.ranks))
-        self.assertTrue(prefix)
-        with tempfile.TemporaryDirectory() as tmp:
-            root, _p, node, execution = self._tree(tmp, MPI)
-            self.assertEqual(self._violations(root, execution, MPI), [])
-            self._edit_log(node / "command_log.jsonl", "cmd_checked",
-                           lambda r: r.__setitem__("command", [*prefix, *r["command"]]))
-            violations = self._violations(root, execution, MPI)
-            self.assertTrue(any("bare, with no launch prefix" in v for v in violations),
-                            violations)
 
 
 class RealMakeTests(unittest.TestCase):

@@ -25377,10 +25377,18 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         # can emit and `write_text` cannot express.
         (run_tmp / "perf.json").write_bytes(perf_body)
 
+        def run_quality_checks(_args):
+            # The record the library logs for the run, which the gate reads the quality check's
+            # `ok` from (a trial_meta entry naming no record raises, issue #643 D7).
+            log = repo / refs.source_dir() / "src" / "command_log.jsonl"
+            log.write_text(json.dumps({"command_id": "Q", "tool_name": "run_quality_checks",
+                                       "ok": True, "command": ["make", "test"]}) + "\n",
+                           encoding="utf-8")
+            return {"ok": True, "command_id": "Q"}
+
         with mock.patch.object(build_runtime, "tool_run_program",
                                lambda a: {"ok": True, "command_id": "R"}), \
-             mock.patch.object(build_runtime, "tool_run_quality_checks",
-                               lambda a: {"ok": True, "command_id": "Q"}), \
+             mock.patch.object(build_runtime, "tool_run_quality_checks", run_quality_checks), \
              mock.patch.object(wc.subprocess, "run", self._shim(repo)):
             _record_build_site(c.repo_root, refs)
             result = c._execute_inproc(refs, "child-1")

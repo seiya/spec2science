@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator
 
 try:
     # The registry is the ONLY way this module reaches a language or build-system backend
@@ -32,10 +32,7 @@ try:
     from tools import host_render
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
-    # The bounds-checked build's seam (issue #589 PR-0): the `checked` row's expected shape and
-    # the variables its build had to be handed.
     from tools import capture_store
-    from tools import checked_build
     # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
     # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
     # The module imports only the capture store seam (the registry beneath it, stdlib-only)
@@ -68,10 +65,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools import host_render
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
-    # The bounds-checked build's seam (issue #589 PR-0): the `checked` row's expected shape and
-    # the variables its build had to be handed.
     from tools import capture_store
-    from tools import checked_build
     # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
     # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
     # The module imports only the capture store seam (the registry beneath it, stdlib-only)
@@ -841,11 +835,6 @@ def _validate_raw_evidence(
 ) -> None:
     state_snapshot_required = _state_snapshot_required(repo_root, execution)
     required_raw_evidence = _required_raw_evidence(repo_root, execution)
-    (
-        expected_state_variables,
-        expected_time_variable,
-        expected_time_shape_expr,
-    ) = _state_snapshot_requirement_details(repo_root, execution)
 
     required = [execution.node_dir / "perf.json"]
     snapshots_dir = capture_store.snapshot_dir(execution.node_dir)
@@ -891,71 +880,43 @@ def _validate_raw_evidence(
 
             if state_snapshot_required:
                 if not schema_path.exists():
-                    violations.append(
-                        f"{schema_path}: missing for required state_snapshots evidence"
-                    )
+                    # Host invariant broken: the conductor writes snapshot_schema.json from the
+                    # IR's `state_snapshots` entry (`_author_snapshot_schema`) whenever the run
+                    # requires snapshots; no leaf writes it (issue #643, D7: a raise, not a
+                    # silent skip of the per-record shape checks below).
+                    raise ValueError(f"{schema_path}: not written for a run that requires "
+                                     f"state_snapshots")
                 else:
-                    try:
-                        schema_data = _read_json(schema_path)
-                    except json.JSONDecodeError:
-                        violations.append(
-                            f"{schema_path}: invalid json"
-                        )
-                        schema_data = None
+                    # The host's own JSON object (`json.dumps` of the IR entry); its members
+                    # are the IR's, which `_validate_io_contract_schema` refuses when empty.
+                    schema_data = _read_json(schema_path)
 
                     state_variables: list[str] = []
                     state_variable_shapes: dict[str, str] = {}
                     time_variable = ""
                     time_shape_expr = "scalar"
-                    if isinstance(schema_data, dict):
-                        raw_variables = schema_data.get("variables")
-                        if isinstance(raw_variables, list):
-                            for raw_variable in raw_variables:
-                                if not isinstance(raw_variable, dict):
-                                    continue
-                                raw_name = raw_variable.get("name")
-                                raw_shape_expr = raw_variable.get("shape_expr")
-                                if (
-                                    isinstance(raw_name, str)
-                                    and raw_name.strip()
-                                    and isinstance(raw_shape_expr, str)
-                                    and raw_shape_expr.strip()
-                                ):
-                                    name = raw_name.strip()
-                                    state_variables.append(name)
-                                    state_variable_shapes[name] = _canonical_shape_expr(raw_shape_expr)
-
-                        # Reject the legacy `state_variables: [name, ...]`
-                        # shorthand: it left snapshot shape unconstrained,
-                        # which let corrupted/wrong-rank payloads pass through
-                        # to pre_judge undetected. The canonical form is
-                        # `variables: [{name, shape_expr}, ...]` with explicit
-                        # per-variable shape_expr.
-                        if "state_variables" in schema_data:
-                            violations.append(
-                                f"{schema_path}: 'state_variables' shorthand is not supported; "
-                                "use 'variables: [{name, shape_expr}, ...]' with explicit per-variable shape_expr"
-                            )
-                        raw_time_var = schema_data.get("time_variable")
-                        if isinstance(raw_time_var, str) and raw_time_var.strip():
-                            time_variable = raw_time_var.strip()
-                        raw_time_shape = schema_data.get("time_shape_expr")
-                        if isinstance(raw_time_shape, str) and raw_time_shape.strip():
-                            time_shape_expr = _canonical_shape_expr(raw_time_shape)
-                    else:
-                        violations.append(
-                            f"{schema_path}: must be json object"
-                        )
-
-                    if not state_variables:
-                        violations.append(
-                            f"{schema_path}: variables must be a non-empty list of "
-                            "{name, shape_expr} objects"
-                        )
-                    if not time_variable:
-                        violations.append(
-                            f"{schema_path}: time_variable must be non-empty string"
-                        )
+                    raw_variables = schema_data.get("variables")
+                    if isinstance(raw_variables, list):
+                        for raw_variable in raw_variables:
+                            if not isinstance(raw_variable, dict):
+                                continue
+                            raw_name = raw_variable.get("name")
+                            raw_shape_expr = raw_variable.get("shape_expr")
+                            if (
+                                isinstance(raw_name, str)
+                                and raw_name.strip()
+                                and isinstance(raw_shape_expr, str)
+                                and raw_shape_expr.strip()
+                            ):
+                                name = raw_name.strip()
+                                state_variables.append(name)
+                                state_variable_shapes[name] = _canonical_shape_expr(raw_shape_expr)
+                    raw_time_var = schema_data.get("time_variable")
+                    if isinstance(raw_time_var, str) and raw_time_var.strip():
+                        time_variable = raw_time_var.strip()
+                    raw_time_shape = schema_data.get("time_shape_expr")
+                    if isinstance(raw_time_shape, str) and raw_time_shape.strip():
+                        time_shape_expr = _canonical_shape_expr(raw_time_shape)
 
                     if not state_paths:
                         violations.append(
@@ -963,8 +924,7 @@ def _validate_raw_evidence(
                         )
                     elif state_variables and time_variable:
                         from tools.primary_evidence import zero_extent_variables
-                        zero_extent = zero_extent_variables(
-                            schema_data if isinstance(schema_data, dict) else {})
+                        zero_extent = zero_extent_variables(schema_data)
                         missing_state_by_file: dict[str, list[str]] = {}
                         missing_time = set()
                         # Every declared variable in the initial and the final capture of
@@ -1036,59 +996,6 @@ def _validate_raw_evidence(
                             violations.append(
                                 f"{snapshots_dir}: declared time_variable missing in snapshots ({time_variable}, files={sorted(missing_time)})"
                             )
-
-                    if expected_state_variables:
-                        missing_required = set(expected_state_variables.keys()) - set(state_variables)
-                        if missing_required:
-                            violations.append(
-                                f"{schema_path}: missing required state_variables from io_contract ({sorted(missing_required)})"
-                            )
-                        for name, expected_shape in expected_state_variables.items():
-                            declared_shape = state_variable_shapes.get(name)
-                            if declared_shape is None:
-                                continue
-                            if _canonical_shape_expr(expected_shape) != _canonical_shape_expr(declared_shape):
-                                violations.append(
-                                    f"{schema_path}: variable {name} shape_expr must match io_contract ({expected_shape})"
-                                )
-
-                    if expected_time_variable and expected_time_variable != time_variable:
-                        violations.append(
-                            f"{schema_path}: time_variable must match io_contract ({expected_time_variable})"
-                        )
-                    if expected_time_variable and _canonical_shape_expr(expected_time_shape_expr) != _canonical_shape_expr(time_shape_expr):
-                        violations.append(
-                            f"{schema_path}: time_shape_expr must match io_contract ({expected_time_shape_expr})"
-                        )
-
-    quality_path = execution.node_dir / "quality_check.json"
-    if quality_path.exists():
-        try:
-            quality = _read_json(quality_path)
-        except json.JSONDecodeError:
-            violations.append(f"{quality_path}: invalid json")
-            return
-        if not isinstance(quality, dict):
-            # Same guard as `perf.json` in `_validate_execution_json_outputs`. Without it a valid-JSON non-object raised
-            # `AttributeError` out of `quality.get` below, and `main()`'s two `except` clauses
-            # cover neither — so the leaf received a traceback where every sibling shape gets
-            # a violation it can repair.
-            violations.append(f"{quality_path}: must be json object")
-            return
-        checks = quality.get("checks", {})
-        if not isinstance(checks, dict):
-            violations.append(f"{quality_path}:checks must be object")
-        else:
-            if checks.get("verdict_available") is not True:
-                violations.append(
-                    f"{quality_path}:checks.verdict_available must be true"
-                )
-            if checks.get("verdict_match") is not True:
-                violations.append(
-                    f"{quality_path}:checks.verdict_match must be true"
-                )
-        if quality.get("status") != "pass":
-            violations.append(f"{quality_path}:status must be pass")
 
 
 def _execution_output_format(repo_root: Path, execution: NodeExecution) -> str:
@@ -1265,351 +1172,25 @@ def _validate_execution_json_outputs(execution: NodeExecution, violations: list[
             violations.append(f"{perf_path}:parallelism.{key} must be >= 0")
 
 
-def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
-                             violations: list[str]) -> None:
-    """For a pipeline whose target's parallel backend declares `launcher` (issue #316): the run's
-    performance record states the process count the target runs (`execution.ranks`), and the
-    quality check records the run as that many ranks and its `make test` re-run as one. The
-    record also states the process grid the harness arranged the ranks in (issue #512): the
-    profile's `execution.process_grid`, or `[ranks, 1]` when it imposes none.
-
-    The comparison is worth what `parallelism.mpi_ranks`'s WRITER counts. It detects a launch
-    that started the binary as independent one-process runs — a launcher of another
-    installation, a prefix dropped on the way — only when the runner writes the process count
-    the harness observes at run time; a runner that wrote the profile's count would make it
-    compare the profile with itself. The runner a launcher target runs is the distributed
-    variant (issue #316 PR-4: its harness provides `distributed_state`, which the launch gate
-    requires of a launcher target), and it writes the harness's `comm_size`.
-    The shape checks of both files are `_validate_execution_json_outputs` and
-    `_validate_raw_evidence`; this reads only the members it compares, and a member that is
-    missing or of the wrong type is a violation here too, since the comparison cannot hold. A
-    target without a launcher is not asked: its runs are one process by construction."""
-    target = _pipeline_target(repo_root, execution.pipeline_dir)
-    if target is None or not host_execution.declares_launcher(target.parallel_backend):
-        return
-    ranks = target.ranks
-    perf_path = execution.node_dir / "perf.json"
-    try:
-        perf = _read_json(perf_path)
-    except (OSError, json.JSONDecodeError):
-        perf = None
-    parallelism = perf.get("parallelism") if isinstance(perf, dict) else None
-    reported = parallelism.get("mpi_ranks") if isinstance(parallelism, dict) else None
-    if reported != ranks or isinstance(reported, bool):
-        violations.append(
-            f"{perf_path}: parallelism.mpi_ranks is {reported!r} and target {target.target_id} "
-            f"runs {ranks} rank(s) under {target.parallel_backend}'s launcher; the runner's "
-            f"performance record or the launch is wrong")
-    # Issue #512: the harness arranges the ranks in the process grid the host imposes — the
-    # profile's `execution.process_grid`, or none, which the harness arranges as `[ranks, 1]`
-    # (the distributed harness's §3.3) — and records the grid it used. A harness that chose a
-    # grid of its own, or ignored the one imposed, is caught here, by the record its writer
-    # makes from the grid it established (`__write_perf`, §3.2).
-    expected_grid = list(target.process_grid)
-    imposed = (f"imposes the process grid {expected_grid} on its {ranks} rank(s)"
-               if target.declares_process_grid else
-               f"imposes no process grid on its {ranks} rank(s), which the harness arranges "
-               f"as {expected_grid}")
-    grid = parallelism.get("process_grid") if isinstance(parallelism, dict) else None
-    if not (isinstance(grid, list) and all(type(g) is int for g in grid)
-            and grid == expected_grid):
-        violations.append(
-            f"{perf_path}: parallelism.process_grid is {grid!r} and target {target.target_id}'s "
-            f"run {imposed}; the harness's grid or its performance record is wrong")
-    _validate_harness_reported_grid(repo_root, execution, target, expected_grid, violations)
-    quality_path = execution.node_dir / "quality_check.json"
-    try:
-        quality = _read_json(quality_path)
-    except (OSError, json.JSONDecodeError):
-        quality = None
-    comparison = quality.get("comparison") if isinstance(quality, dict) else None
-    for side, expected in (("reference", ranks), ("candidate", 1)):
-        entry = comparison.get(side) if isinstance(comparison, dict) else None
-        got = entry.get("ranks") if isinstance(entry, dict) else None
-        if got != expected or isinstance(got, bool):
-            violations.append(
-                f"{quality_path}: comparison.{side}.ranks is {got!r}, expected {expected} "
-                f"(the run is under the launcher with the target's ranks; the make test re-run "
-                f"is one process)")
-
-
-#: The answers of `quality_check.json#shapes[].state_agreement.status` under which a shape's
-#: comparison with the serial reference holds (issue #512): the state agrees under the IR's
-#: cross-target predicates, or the IR declares none.
-SHAPE_STATE_AGREEMENT_HOLDS = frozenset({"agree", "not_applicable"})
-
-
-def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
-                               violations: list[str]) -> None:
-    """The quality check compared every execution shape of the run with the serial reference
-    (issue #512): `quality_check.json#shapes` lists exactly the target's shapes
-    (`TargetProfile.execution_shapes`: the certified one, then each of `execution.sweep`'s), in
-    that order, each with the shape's ranks, process grid and threads per rank, and each
-    comparison holding — the run succeeded, its verdict and every check status equal the
-    reference's, its captured state agrees (`SHAPE_STATE_AGREEMENT_HOLDS`), and, for a target
-    whose backend declares a launcher, the harness reported the shape's rank count and grid —
-    for one whose backend imposes a thread-block size, the block size of a shape that imposes
-    one — and, for one some shape of which runs more than one thread per rank
-    (`TargetProfile.thread_count_observable`), the shape's thread count. When the target's
-    compiler declares checked flags, the bounds-checked binary's `checked` row follows them,
-    last (`checked_build.checked_shape`, issue #589 PR-0), held to the same comparisons; what
-    binds it to that binary is `_validate_checked_row`.
-
-    The conductor writes the record and fails the run on a comparison that does not hold, so
-    the gate reads the same facts twice: a record missing a declared shape — a sweep the
-    conductor did not run — or naming one the profile does not declare is the defect this
-    catches. A target that does not load is refused by `_validate_pipeline_targets_resolve`."""
+def _validate_harness_reported_launch(repo_root: Path, execution: NodeExecution,
+                                      violations: list[str]) -> None:
+    """The harness self-test's own report of the launch it ran under (issue #512): the process
+    grid on a target whose parallel backend declares a launcher — the profile's
+    `execution.process_grid`, or `[ranks, 1]` when it imposes none — and the thread-block size
+    on one whose backend imposes it. Whether the harness's PERFORMANCE record states the
+    shape's ranks, grid, block size and threads is the conductor's comparison
+    (`_author_quality_check`, which fails the quality check and so the run when one does not
+    hold); what this ties is the grid and block size the self-test's own snapshots report,
+    which the conductor does not read. A target that does not load is refused by
+    `_validate_pipeline_targets_resolve`."""
     target = _pipeline_target(repo_root, execution.pipeline_dir)
     if target is None:
         return
-    quality_path = execution.node_dir / "quality_check.json"
-    try:
-        quality = _read_json(quality_path)
-    except (OSError, json.JSONDecodeError):
-        return  # `_validate_raw_evidence` / `_validate_execution_json_outputs` report it
-    if not isinstance(quality, dict):
-        return
-    rows = quality.get("shapes")
-    # The bounds-checked binary's row (issue #589 PR-0), expected from the target COMPILER'S
-    # declaration — never from the record — after every shape of the profile.
-    try:
-        checked = checked_build.checked_shape(target)
-    except checked_build.CheckedBuildUnavailable as exc:
-        violations.append(f"{quality_path}: {exc}")
-        return
-    expected = [*target.execution_shapes, *([checked] if checked is not None else [])]
-    if not (isinstance(rows, list) and all(isinstance(r, dict) for r in rows)):
-        violations.append(
-            f"{quality_path}: shapes must be a list of objects, one per execution shape of "
-            f"target {target.target_id} ({[s.label for s in expected]}), got {rows!r}")
-        return
-    labels = [r.get("label") for r in rows]
-    if labels != [s.label for s in expected]:
-        violations.append(
-            f"{quality_path}: shapes are {labels!r}, and target {target.target_id}'s execution "
-            f"shapes are {[s.label for s in expected]!r} (the certified shape, then "
-            f"execution.sweep's, then the checked binary's when the target's compiler declares "
-            f"checked flags); every shape runs and is compared with the serial reference")
-        return
-    launcher = host_execution.declares_launcher(target.parallel_backend)
-    block_imposed = host_execution.imposes_block_size(target.parallel_backend)
-    threads_checked = target.thread_count_observable
-    for shape, row in zip(expected, rows):
-        where = f"{quality_path}: shapes[{shape.label}]"
-        declared = shape.record()
-        for key in ("threads_per_rank", "ranks", "process_grid", "block_size"):
-            if row.get(key) != declared[key] or isinstance(row.get(key), bool):
-                violations.append(f"{where}.{key} is {row.get(key)!r}, and the shape's is "
-                                  f"{declared[key]!r}")
-        for key in ("run_ok", "verdict_available", "verdict_match"):
-            if row.get(key) is not True:
-                violations.append(f"{where}.{key} must be true (the shape's run compared with "
-                                  f"the serial reference), got {row.get(key)!r}")
-        agreement = row.get("state_agreement")
-        status = agreement.get("status") if isinstance(agreement, dict) else None
-        if status not in SHAPE_STATE_AGREEMENT_HOLDS:
-            violations.append(f"{where}.state_agreement.status is {status!r}; the captured "
-                              f"state must agree with the serial reference's under the IR's "
-                              f"cross-target predicates ({sorted(SHAPE_STATE_AGREEMENT_HOLDS)})")
-        if launcher:
-            grid = list(shape.process_grid or (shape.ranks, 1))
-            observed = (row.get("observed_mpi_ranks"), row.get("observed_process_grid"))
-            if type(observed[0]) is not int or observed[0] != shape.ranks or observed[1] != grid:
-                violations.append(
-                    f"{where}: the harness reported mpi_ranks={observed[0]!r} and "
-                    f"process_grid={observed[1]!r}, and the shape launched {shape.ranks} rank(s) "
-                    f"in {grid}")
-        if block_imposed and shape.block_size is not None:
-            observed_block = row.get("observed_block_size")
-            if type(observed_block) is not int or observed_block != shape.block_size:
-                violations.append(
-                    f"{where}: the harness reported block_size={observed_block!r}, and the shape "
-                    f"launched its kernels in blocks of {shape.block_size}")
-        if threads_checked:
-            observed_threads = row.get("observed_threads_per_rank")
-            if type(observed_threads) is not int or observed_threads != shape.threads_per_rank:
-                violations.append(
-                    f"{where}: the harness reported threads_per_rank={observed_threads!r}, and "
-                    f"the shape ran {shape.threads_per_rank} thread(s) per rank")
-    if block_imposed and target.block_size is not None:
+    if host_execution.declares_launcher(target.parallel_backend):
+        _validate_harness_reported_grid(repo_root, execution, target, list(target.process_grid),
+                                        violations)
+    if host_execution.imposes_block_size(target.parallel_backend) and target.block_size is not None:
         _validate_harness_reported_block(repo_root, execution, target, violations)
-
-
-def _validate_checked_row(repo_root: Path, execution: NodeExecution,
-                          violations: list[str]) -> None:
-    """The `checked` row ran the bounds-checked binary Build made (issue #589 PR-0).
-
-    Asked only when the target's compiler declares checked flags and the quality check carries
-    a row labelled `checked`: whether the row is there, and last, is
-    `_validate_execution_shapes`'s question, and a missing one is refused there.
-
-    Build records the second build in `binary_meta.json#checked_build`; this recomposes what
-    that build had to be handed from the target and the recorded directories, and binds the
-    row's run to its binary:
-
-    (i) `checked_build.bin_dir` is `binary/<id>/bin_checked`, `binary_ref` is the certified
-    binary's name there, `flags` are the compiler's `checked_flags`, and `argv` ends with
-    exactly `build_execute.checked_build_overrides(obj_dir, bin_dir, exe, rules, flags)` — the
-    control file's own flag string (`checked_build.control_file_rules`) followed by the flags,
-    compared as text, the object-directory reference left unexpanded;
-    (ii) the record `checked_build.command_id` names in the source's canonical command log is
-    one `compile_project` record that succeeded, whose `command` ends with the same tuple (at
-    a remote site the record's `command` is the conductor's local-path argv,
-    `CommandSpec.record_argv`, so there this pins the record to (i) and adds no independent
-    witness);
-    and the BINDING, in REQUIRED polarity — every condition the walked `source_command_ref`
-    form skips on is a refusal here, because nothing else requires this record to exist: the
-    row's `command_id` names exactly one record in the run's canonical command log (the
-    trial's sibling), a `run_program` record whose `command` is a list of strings, and the
-    executable after NO launch prefix (the row runs bare on every target) resolves under
-    `bin_checked/` to `checked_build.binary_ref` (`_bound_executable`); the record must have
-    succeeded, as the walked form requires of its record."""
-    target = _pipeline_target(repo_root, execution.pipeline_dir)
-    if target is None:
-        return
-    try:
-        checked = checked_build.checked_shape(target)
-    except checked_build.CheckedBuildUnavailable:
-        return  # refused by `_validate_execution_shapes`
-    if checked is None:
-        return
-    quality_path = execution.node_dir / "quality_check.json"
-    try:
-        quality = _read_json(quality_path)
-    except (OSError, json.JSONDecodeError):
-        return
-    rows = quality.get("shapes") if isinstance(quality, dict) else None
-    row = next((r for r in rows if isinstance(r, dict) and r.get("label") == checked.label),
-               None) if isinstance(rows, list) else None
-    if row is None:
-        return  # `_validate_execution_shapes` refuses the label list
-    where = f"{quality_path}: shapes[{checked.label}]"
-    trial_path = execution.node_dir / "trial_meta.json"
-    try:
-        trial = _read_json(trial_path)
-    except (OSError, json.JSONDecodeError):
-        trial = None
-    binary_id = trial.get("source_binary_id") if isinstance(trial, dict) else None
-    if not (isinstance(binary_id, str) and binary_id.strip()):
-        violations.append(f"{where}: {trial_path} names no source_binary_id, so the checked "
-                          f"binary cannot be bound")
-        return
-    binary_dir = execution.pipeline_dir / "binary" / binary_id.strip()
-    meta_path = binary_dir / "binary_meta.json"
-    try:
-        meta = _read_json(meta_path)
-    except (OSError, json.JSONDecodeError):
-        meta = None
-    recorded = meta.get("checked_build") if isinstance(meta, dict) else None
-    if not isinstance(recorded, dict):
-        violations.append(
-            f"{meta_path}: checked_build is {recorded!r}, and target "
-            f"{target.target_id}'s compiler declares checked flags; Build makes the checked "
-            f"binary beside the certified one")
-        return
-    certified_ref = meta.get("binary_artifact_ref")
-    exe = certified_ref.rsplit("/", 1)[-1] if isinstance(certified_ref, str) else ""
-    bin_checked = binary_dir / "bin_checked"
-    expected_ref = f"binary/{binary_id.strip()}/bin_checked/{exe}"
-    if not exe or recorded.get("binary_ref") != expected_ref:
-        violations.append(
-            f"{meta_path}: checked_build.binary_ref is {recorded.get('binary_ref')!r}, "
-            f"expected {expected_ref!r} (the certified binary's name in bin_checked/)")
-        return
-    flags = list(checked_build.checked_flags_for(target))
-    if recorded.get("flags") != flags:
-        violations.append(f"{meta_path}: checked_build.flags is {recorded.get('flags')!r}, "
-                          f"and the target's compiler declares {flags!r}")
-    obj_dir, bin_dir, argv = (recorded.get("obj_dir"), recorded.get("bin_dir"),
-                              recorded.get("argv"))
-    if not (isinstance(obj_dir, str) and obj_dir and isinstance(bin_dir, str) and bin_dir):
-        violations.append(f"{meta_path}: checked_build.obj_dir and bin_dir must be non-empty "
-                          f"strings, got {obj_dir!r} and {bin_dir!r}")
-        return
-    # Compared by its pipeline-relative tail, not as an absolute path: Build recorded the
-    # checkout's path at the time, and a resume after the checkout moved validates the same
-    # certified Build from another one. What this clause catches is the build's binary
-    # directory being another one of the binary's (its `bin/`), which the tail shows.
-    if Path(bin_dir).parts[-3:] != ("binary", binary_id.strip(), "bin_checked"):
-        violations.append(f"{meta_path}: checked_build.bin_dir is {bin_dir!r}, and the checked "
-                          f"binary's directory is binary/{binary_id.strip()}/bin_checked")
-    build_system = str(target.toolchain.get("build_system") or "")
-    try:
-        execute = backend_registry.capability_module("build_system", build_system,
-                                                     "build_execute")
-        overrides = list(execute.checked_build_overrides(
-            obj_dir, bin_dir, exe, checked_build.control_file_rules(target), flags))
-    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
-            ValueError) as exc:
-        violations.append(f"{meta_path}: the checked build's variables cannot be composed for "
-                          f"target {target.target_id}: {exc}")
-        return
-    if not (isinstance(argv, list) and argv[-len(overrides):] == overrides):
-        violations.append(
-            f"{meta_path}: checked_build.argv must end with {overrides!r} (the control file's "
-            f"flag string followed by the compiler's checked flags, over the recorded "
-            f"directories), got {argv!r}")
-    # (ii) the build's own command-log record.
-    source_id = meta.get("source_source_id")
-    build_log = (execution.pipeline_dir / "source" / str(source_id or "").strip() / "src"
-                 / _COMMAND_LOG_BASENAME)
-    build_records = [r for r in _command_log_records(build_log)
-                     if r.get("command_id") == recorded.get("command_id")]
-    if not (isinstance(recorded.get("command_id"), str) and len(build_records) == 1
-            and build_records[0].get("tool_name") == "compile_project"
-            and build_records[0].get("ok") is True
-            and isinstance(build_records[0].get("command"), list)
-            and build_records[0]["command"][-len(overrides):] == overrides):
-        violations.append(
-            f"{meta_path}: checked_build.command_id {recorded.get('command_id')!r} must "
-            f"name one compile_project record that succeeded in {build_log}, whose command ends "
-            f"with {overrides!r}")
-    # The binding, required polarity.
-    command_id = row.get("command_id")
-    run_log = execution.node_dir / _COMMAND_LOG_BASENAME
-    run_records = ([r for r in _command_log_records(run_log)
-                    if r.get("command_id") == command_id]
-                   if isinstance(command_id, str) and command_id else [])
-    if len(run_records) != 1:
-        violations.append(
-            f"{where}.command_id {command_id!r} must name exactly one record in the run's "
-            f"command log {run_log} (found {len(run_records)})")
-        return
-    record = run_records[0]
-    command = record.get("command")
-    if record.get("tool_name") != "run_program" or record.get("ok") is not True or not (
-            isinstance(command, list) and command and all(isinstance(a, str) for a in command)):
-        violations.append(
-            f"{where}.command_id {command_id!r} names a {record.get('tool_name')!r} record "
-            f"(ok={record.get('ok')!r}) whose command is {command!r}; the checked row is a "
-            f"run_program of the checked binary that succeeded")
-        return
-    bound = _bound_executable(record, [], bin_checked.resolve())
-    try:
-        expected_binary = (execution.pipeline_dir / expected_ref).resolve()
-    except (OSError, RuntimeError):
-        expected_binary = None
-    if not bound.prefix_ok or bound.resolved is None or bound.resolved != expected_binary:
-        violations.append(
-            f"{where}.command_id {command_id!r} ran {bound.executable!r} "
-            f"(cwd={bound.cwd!r}); the checked row runs {expected_ref} bare, with no launch "
-            f"prefix")
-
-
-def _command_log_records(log_path: Path) -> list[dict[str, Any]]:
-    """Every JSON object line of a command log, in order; none when it does not exist. Decoded
-    leniently, as `_find_command_log_record` decodes."""
-    if not log_path.is_file():
-        return []
-    out: list[dict[str, Any]] = []
-    for raw_line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        try:
-            obj = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-    return out
 
 
 #: The scalar snapshot variables the distributed harness's own self-test captures the grid
@@ -5999,222 +5580,6 @@ def _canonical_log_ref_for_run_quality_checks(
         return None
 
 
-@dataclass(frozen=True)
-class _BoundExecutable:
-    """What `_bound_executable` read off a `run_program` record: whether its `command` begins
-    with the expected launch prefix (and what it began with), the argument after the prefix
-    and the record's `cwd`, and that argument resolved — `None` unless it resolves, absolute or
-    against `cwd`, UNDER the bin directory (component-wise, `Path.relative_to`)."""
-
-    prefix_ok: bool
-    got_prefix: list[Any]
-    executable: Any
-    cwd: Any
-    resolved: Path | None
-
-
-def _bound_executable(record: Mapping[str, Any], expected_prefix: list[str],
-                      bin_dir_abs: Path) -> _BoundExecutable:
-    """The executable a `run_program` record ran, bound to a build's bin directory: the
-    argument after `expected_prefix` in the record's `command` (a list of strings is the
-    caller's to require), resolved absolute or against the record's `cwd`, and required to lie
-    under `bin_dir_abs`. Two callers: the walked `source_command_ref` form
-    (`_validate_run_program_inputs`, the certified prefix and `bin/`) and the quality check's
-    `checked` row (`_validate_checked_row`, no prefix and `bin_checked/`; issue #589 PR-0). The
-    two directories are siblings, so neither resolves under the other."""
-    command = list(record.get("command") or [])
-    got_prefix = command[:len(expected_prefix)]
-    cwd_val = record.get("cwd")
-    if got_prefix != list(expected_prefix):
-        return _BoundExecutable(False, got_prefix, None, cwd_val, None)
-    executable = (command[len(expected_prefix)]
-                  if len(command) > len(expected_prefix) else None)
-    cwd_path: Path | None = None
-    if isinstance(cwd_val, str) and cwd_val.strip():
-        cwd_path = Path(cwd_val.strip())
-    executable_resolved: Path | None = None
-    if isinstance(executable, str) and executable.strip():
-        exe_path = Path(executable.strip())
-        if exe_path.is_absolute():
-            try:
-                executable_resolved = exe_path.resolve()
-            except (OSError, RuntimeError):
-                executable_resolved = None
-        elif cwd_path is not None:
-            try:
-                executable_resolved = (cwd_path / exe_path).resolve()
-            except (OSError, RuntimeError):
-                executable_resolved = None
-    if executable_resolved is not None:
-        try:
-            executable_resolved.relative_to(bin_dir_abs)
-        except ValueError:
-            executable_resolved = None
-    return _BoundExecutable(True, got_prefix, executable, cwd_val, executable_resolved)
-
-
-def _validate_run_program_inputs(
-    repo_root: Path, execution: NodeExecution, violations: list[str]
-) -> None:
-    trial_meta_path = execution.node_dir / "trial_meta.json"
-    if not trial_meta_path.exists():
-        return
-
-    data = _read_json(trial_meta_path)
-    source_command_ref = data.get("source_command_ref")
-    if source_command_ref is None:
-        return
-
-    canonical_run_program_ref = _canonical_log_ref_for_run_program(
-        trial_meta_path, repo_root
-    )
-    # Bind run_program executable to trial_meta's source_binary_id. The matched
-    # record's executable — the argument after the recorded launch prefix — must
-    # resolve, absolute or against the record's `cwd`, under
-    # `<pipeline>/binary/<source_binary_id>/bin/`. Otherwise an execute
-    # could attribute results to one build while running a sibling build's
-    # binary (mixed-build attribution forge).
-    _trial_source_build_id = data.get("source_binary_id")
-    _build_bin_abs: Path | None = None
-    if isinstance(_trial_source_build_id, str) and _trial_source_build_id.strip():
-        _build_bin_abs = (
-            execution.pipeline_dir
-            / "binary"
-            / _trial_source_build_id.strip()
-            / "bin"
-        ).resolve()
-
-    # The launch prefix the binary ran under (`environment.launch.argv_prefix`, written by the
-    # host from `tools/host_execution.py`; issue #307 puts a device trace there). The binary is
-    # the first argument AFTER it. A record without `environment.launch` predates the launch
-    # seam and ran under none; one whose prefix is not a list of strings says nothing the
-    # binding below can use, and is refused.
-    _launch = (data.get("environment") or {}).get("launch") \
-        if isinstance(data.get("environment"), dict) else None
-    _argv_prefix: list[str] | None = []
-    if isinstance(_launch, dict) and "argv_prefix" in _launch:
-        _raw_prefix = _launch.get("argv_prefix")
-        if isinstance(_raw_prefix, list) and all(isinstance(a, str) for a in _raw_prefix):
-            _argv_prefix = list(_raw_prefix)
-        else:
-            _argv_prefix = None
-            violations.append(
-                f"{trial_meta_path}: environment.launch.argv_prefix must be a list of strings "
-                f"(got {_raw_prefix!r}); the binary a run_program record ran cannot be located "
-                f"after it")
-    # A non-empty prefix is admitted only as the one the pipeline's TARGET runs its binary under
-    # (`host_execution.launch_argv_prefix`): taken on the record's word, any program named in it
-    # would run in front of the build's binary unbound (round 3: a recorded `[<other>]` or
-    # `["sh", "-c", …]` passed here, where origin/main refused the same command). An EMPTY
-    # prefix is every record written before issue #307 and every untraced target's.
-    if _argv_prefix:
-        _target = _pipeline_target(repo_root, execution.pipeline_dir)
-        _expected = (list(host_execution.launch_argv_prefix(_target.parallel_backend,
-                                                            _target.ranks))
-                     if _target is not None else None)
-        if _argv_prefix != _expected:
-            violations.append(
-                f"{trial_meta_path}: environment.launch.argv_prefix {_argv_prefix!r} is not the "
-                f"launch prefix of this pipeline's target "
-                f"({'unresolved' if _expected is None else repr(_expected)}); the binary a "
-                f"run_program record ran cannot be bound after it")
-            _argv_prefix = None
-    # ... and a target whose parallel backend declares a launcher (issue #316) never runs
-    # without one, one rank included: an EMPTY prefix on such a record says the binary ran bare,
-    # which no launch of this target does, so the record is not this target's run.
-    elif _argv_prefix == []:
-        _target = _pipeline_target(repo_root, execution.pipeline_dir)
-        if _target is not None and host_execution.declares_launcher(_target.parallel_backend):
-            violations.append(
-                f"{trial_meta_path}: environment.launch.argv_prefix is empty, and this "
-                f"pipeline's target runs its binary under {_target.parallel_backend}'s launcher "
-                f"({list(host_execution.launch_argv_prefix(_target.parallel_backend, _target.ranks))!r})")
-
-    for entry in _iter_command_ref_entries(source_command_ref):
-        command_id = entry.get("command_id")
-        log_ref = entry.get("command_log_ref") or entry.get("command_log_path")
-        if not isinstance(command_id, str) or not isinstance(log_ref, str):
-            continue
-
-        matched = _find_command_log_record(
-            repo_root=repo_root,
-            command_id=command_id,
-            log_ref=log_ref,
-        )
-        if matched is None:
-            continue
-        if matched.get("tool_name") != "run_program":
-            continue
-
-        # Reject failed build-runtime runs as evidence: a run_program record with
-        # ok!=true means the program execution itself did not succeed, and
-        # cannot serve as proof that the workload ran. Mirrors the
-        # `run_linter` validator policy.
-        if matched.get("ok") is not True:
-            violations.append(
-                f"{trial_meta_path}:run_program command_id={command_id} "
-                f"ok must be true (got {matched.get('ok')!r}). Failed build-runtime "
-                f"runs cannot serve as tool-execution evidence."
-            )
-            continue
-
-        # Canonical-placement enforcement: a run_program record must be at
-        # the canonical sibling-of-trial_meta location. Records claimed at
-        # non-canonical paths (e.g. `raw/forged.jsonl` written by the agent
-        # under raw/) are rejected to prevent forged tool-execution evidence.
-        log_ref_norm = log_ref.strip().rstrip("/")
-        if (
-            canonical_run_program_ref is not None
-            and log_ref_norm != canonical_run_program_ref
-        ):
-            violations.append(
-                f"{trial_meta_path}:run_program command_id={command_id} "
-                f"command_log_ref must be the canonical command log placement "
-                f"({canonical_run_program_ref!r}, got {log_ref_norm!r}). "
-                "Non-canonical placements are rejected to prevent forged "
-                "tool-execution evidence."
-            )
-            continue
-
-        command = matched.get("command")
-        if not isinstance(command, list):
-            continue
-
-        has_ir_spec = any(
-            isinstance(arg, str) and arg.endswith("spec.ir.yaml")
-            for arg in command
-        )
-        if not has_ir_spec:
-            violations.append(
-                f"{trial_meta_path}:run_program command_id={command_id} must include spec.ir.yaml"
-            )
-
-        # Bind to source_binary_id: the executed binary must live under the
-        # declared build's bin/ directory. Resolve via the matched record's
-        # `cwd` (project_dir) or the executable's absolute path; the executable is the
-        # argument after the recorded launch prefix (issue #307). A relative one
-        # (e.g. `./simulate`) is resolved against `cwd`.
-        if _build_bin_abs is not None and command:
-            if _argv_prefix is None:
-                continue
-            bound = _bound_executable(matched, _argv_prefix, _build_bin_abs)
-            if not bound.prefix_ok:
-                violations.append(
-                    f"{trial_meta_path}:run_program command_id={command_id} command must "
-                    f"begin with the recorded launch prefix {_argv_prefix!r} "
-                    f"(environment.launch.argv_prefix); got {bound.got_prefix!r}"
-                )
-                continue
-            if bound.resolved is None:
-                violations.append(
-                    f"{trial_meta_path}:run_program command_id={command_id} "
-                    f"executable {bound.executable!r} (cwd={bound.cwd!r}) must "
-                    f"resolve under source_binary_id={_trial_source_build_id!r}"
-                    f"'s bin directory ({_build_bin_abs!s}). Mixed-build "
-                    f"attribution is not permitted."
-                )
-
-
 def _validate_device_kernel_execution(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str]
 ) -> None:
@@ -6365,57 +5730,22 @@ def _validate_quality_check_commands(
         canonical_qc_ref = _canonical_log_ref_for_run_quality_checks(
             execution.pipeline_dir, repo_root, source_source_id
         )
-        # Verify the declared generation actually exists (source_meta.json
-        # present) and is in pass state. A forged source_source_id could
-        # otherwise authorize an arbitrary path, and pointing at a failed or
-        # superseded generation would credit stale evidence to this run.
-        if source_source_id is not None and canonical_qc_ref is not None:
-            gen_meta = (
-                execution.pipeline_dir
-                / "source"
-                / source_source_id
-                / "source_meta.json"
-            )
-            if not gen_meta.is_file():
-                violations.append(
-                    f"{trial_meta_path}:source_source_id={source_source_id!r} "
-                    f"references a generation that does not exist on disk "
-                    f"({gen_meta!s} missing)."
-                )
-                canonical_qc_ref = None
-            else:
-                try:
-                    gen_meta_doc = _read_json(gen_meta)
-                except (OSError, json.JSONDecodeError):
-                    gen_meta_doc = None
-                gen_status: str | None = None
-                if isinstance(gen_meta_doc, dict):
-                    raw_status = gen_meta_doc.get("verification_status")
-                    if isinstance(raw_status, str):
-                        gen_status = raw_status.strip().lower()
-                if gen_status != "pass":
-                    violations.append(
-                        f"{trial_meta_path}:source_source_id={source_source_id!r} "
-                        f"references a generation with verification_status="
-                        f"{gen_status!r} (expected 'pass'). Stale or failed "
-                        f"generations cannot serve as quality_check provenance."
-                    )
-                    canonical_qc_ref = None
 
     for entry in _iter_command_ref_entries(source_command_ref):
         command_id = entry.get("command_id")
         log_ref = entry.get("command_log_ref") or entry.get("command_log_path")
-        if not isinstance(command_id, str) or not isinstance(log_ref, str):
-            continue
-
-        matched = _find_command_log_record(
-            repo_root=repo_root,
-            command_id=command_id,
-            log_ref=log_ref,
-        )
-        if matched is None:
-            continue
-        if matched.get("tool_name") != "run_quality_checks":
+        matched = (_find_command_log_record(repo_root=repo_root, command_id=command_id,
+                                            log_ref=log_ref)
+                   if isinstance(command_id, str) and isinstance(log_ref, str) else None)
+        if entry.get("tool_name") == "run_quality_checks" and (
+                matched is None or matched.get("tool_name") != "run_quality_checks"):
+            # The conductor wrote this entry from the record build_runtime logged for the
+            # quality check; without it the `ok` member below cannot be read, and a silent skip
+            # would pass a quality check that exited non-zero (issue #643, D7 and D2).
+            raise ValueError(
+                f"{trial_meta_path}:run_quality_checks command_id={command_id!r} names no "
+                f"run_quality_checks record in {log_ref!r}")
+        if matched is None or matched.get("tool_name") != "run_quality_checks":
             continue
 
         # Reject failed build-runtime runs as evidence: ok!=true means the
@@ -6441,8 +5771,6 @@ def _validate_quality_check_commands(
             )
             continue
         if canonical_qc_ref is None:
-            # source_id present but source_meta.json missing — already
-            # reported above. Skip per-entry violation to avoid duplication.
             continue
         log_ref_norm = log_ref.strip().rstrip("/")
         if log_ref_norm != canonical_qc_ref:
@@ -9968,9 +9296,7 @@ def _validate_impl(
         _validate_algorithm_contract_schema(repo_root, execution, violations)
         _validate_io_contract_schema(repo_root, execution, violations)
         _validate_execution_json_outputs(execution, violations)
-        _validate_launched_ranks(repo_root, execution, violations)
-        _validate_execution_shapes(repo_root, execution, violations)
-        _validate_checked_row(repo_root, execution, violations)
+        _validate_harness_reported_launch(repo_root, execution, violations)
         _validate_raw_evidence(repo_root, execution, violations)
         in_scope_src_dir = _execution_in_scope_src_dir(execution)
         if in_scope_src_dir not in validated_structural_src_dirs:
@@ -9983,7 +9309,6 @@ def _validate_impl(
             )
             _validate_runner_outputs(
                 repo_root, execution, in_scope_src_dir, violations)
-        _validate_run_program_inputs(repo_root, execution, violations)
         # Per execution, not per source: each run carries its own trace (issue #307).
         _validate_device_kernel_execution(
             repo_root, execution, in_scope_src_dir, violations)

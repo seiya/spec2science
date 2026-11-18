@@ -1450,20 +1450,9 @@ end program shallow_water2d_runner
 
     def test_post_execute_holds_the_quality_check_to_its_two_checks(self) -> None:
         """`quality_check.json#checks` is `verdict_available` and `verdict_match` since issue
-        #582: each must be literally true, and `diagnostics_match`, which no file answers any
-        more, is asked of nobody."""
-        for key in ("verdict_available", "verdict_match"):
-            for label, value in (("false", False), ("absent", _ABSENT), ("truthy", 1)):
-                with self.subTest(key=key, value=label), tempfile.TemporaryDirectory() as tmp:
-                    node_dir = self._post_execute_tree(Path(tmp))
-                    path = node_dir / "quality_check.json"
-                    doc = json.loads(path.read_text(encoding="utf-8"))
-                    doc["checks"].pop(key)
-                    if value is not _ABSENT:
-                        doc["checks"][key] = value
-                    _write_json(path, doc)
-                    v = validate(repo_root=Path(tmp), workspace_root="workspace")
-                    self.assertIn(f"{path}:checks.{key} must be true", v)
+        #582, and `diagnostics_match`, which no file answers any more, is asked of nobody.
+        (Each being literally true is the conductor's decision, `_author_quality_check`; the
+        gate's re-read of it went with issue #643.)"""
         with tempfile.TemporaryDirectory() as tmp:
             node_dir = self._post_execute_tree(Path(tmp))
             doc = json.loads((node_dir / "quality_check.json").read_text(encoding="utf-8"))
@@ -1604,7 +1593,6 @@ end program shallow_water2d_runner
             self.assertTrue(any("missing dependency module use" in v for v in violations))
             self.assertTrue(any("missing dependency operation call" in v for v in violations))
             self.assertTrue(any("forbidden runner output write detected" in v for v in violations))
-            self.assertTrue(any("must include spec.ir.yaml" in v for v in violations))
 
     def test_passes_with_dependency_use_and_case_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1635,35 +1623,6 @@ end program shallow_water2d_runner
 
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertEqual([], violations)
-
-    def test_the_whole_validator_binds_the_checked_row(self) -> None:
-        """Issue #589 PR-0: `validate`'s per-execution loop reaches `_validate_checked_row`. The
-        fixture's planted records pass; the checked row's record moved onto the certified
-        binary is refused through the whole validator."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
-            node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
-                        / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
-                        / "problem__shallow_water2d__0.3.0")
-            with _harness_validated_elsewhere():
-                clean = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertFalse(any("shapes[checked]" in v for v in clean), clean)
-            log = node_dir / "command_log.jsonl"
-            recs = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
-            for rec in recs:
-                if rec.get("command_id") == "cmd_checked":
-                    rec["command"][0] = rec["command"][0].replace("/bin_checked/", "/bin/")
-            log.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
-            with _harness_validated_elsewhere():
-                refused = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(any("shapes[checked].command_id" in v and "bare" in v
-                                for v in refused), refused)
 
     def test_broken_append_only_sibling_source_does_not_poison_in_scope_run(self) -> None:
         """post_execute structural SOURCE checks are scoped to the source the
@@ -1804,98 +1763,6 @@ end program shallow_water2d_runner
 
                     with self.assertRaisesRegex(ValueError, "names no source directory"):
                         validate(repo_root=repo_root, workspace_root="workspace")
-
-    def test_state_variables_shorthand_in_snapshot_schema_is_rejected(self) -> None:
-        """Regression: the `state_variables: [name, ...]` shorthand (variable
-        names only, no per-variable `shape_expr`) is no longer a valid form
-        for snapshot schemas. The previous wildcard-sentinel handling let
-        corrupted/wrong-rank state_snapshot payloads survive into pre_judge
-        because every shape comparison short-circuited to True. The contract
-        is now: `variables: [{name, shape_expr}, ...]` everywhere.
-
-        This test asserts:
-          (a) snapshot_schema.json with `state_variables` shorthand fails
-              validation with a specific 'shorthand is not supported' message;
-          (b) spec.ir.yaml with the same shorthand also fails with
-              the parallel violation on `raw_requirements.required_evidence`;
-          (c) the shape-validation path is no longer disabled — `_shape_matches_expr`
-              has no sentinel bypass."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'diagnostics only'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-
-            workspace = repo_root / "workspace"
-            node_safe = "problem__shallow_water2d__0.3.0"
-            pipeline_id = "shallow-water2d_20260415_001"
-            snapshots_dir = (
-                workspace / "pipelines" / node_safe / _TARGET_ID / pipeline_id
-                / "runs" / "run_test_001" / "problem__shallow_water2d__0.3.0"
-                / "raw" / "state_snapshots"
-            )
-            (snapshots_dir / "snapshot_schema.json").write_text(
-                json.dumps({
-                    "state_variables": ["h", "hu", "hv"],
-                    "time_variable": "time",
-                    "time_shape_expr": "scalar",
-                }),
-                encoding="utf-8",
-            )
-            derived_path = (
-                workspace / "ir" / node_safe / "shallow-water2d_20260415_001"
-                / "spec.ir.yaml"
-            )
-            derived = json.loads(derived_path.read_text(encoding="utf-8"))
-            io = derived.get("io_contract", derived)
-            for entry in io["raw_requirements"]["required_evidence"]:
-                if entry.get("artifact") == "state_snapshots":
-                    entry["schema"] = {
-                        "state_variables": ["h", "hu", "hv"],
-                        "time_variable": "time",
-                        "time_shape_expr": "scalar",
-                    }
-            derived_path.write_text(json.dumps(derived), encoding="utf-8")
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            # (a) snapshot_schema rejected
-            self.assertTrue(
-                any(
-                    "snapshot_schema.json" in v
-                    and "'state_variables' shorthand is not supported" in v
-                    for v in violations
-                ),
-                f"Expected snapshot_schema shorthand rejection; got: {violations}",
-            )
-            # (b) io_contract rejected
-            self.assertTrue(
-                any(
-                    "spec.ir.yaml" in v
-                    and "must not use 'state_variables' shorthand" in v
-                    for v in violations
-                ),
-                f"Expected io_contract shorthand rejection; got: {violations}",
-            )
 
     def test_shape_expr_schema_cache_invalidates_on_file_mtime_change(self) -> None:
         """Regression: long-lived processes must observe schema-content
@@ -7944,12 +7811,11 @@ end program shallow_water2d_runner
             )
             self.assertEqual([], violations)
 
-    def test_the_whole_validator_requires_every_execution_shape(self) -> None:
-        """Issue #512, at the validator's entry point rather than the check function: the
-        passing fixture's `quality_check.json` loses one SWEEP shape of the fixture target
-        (whose checked-in profile sweeps its thread count), selected by label — the last row is
-        the checked binary's since issue #589 PR-0, and dropping it would exercise that row's
-        absence instead — and the whole run names it."""
+    def test_the_whole_validator_passes_the_planted_fixture(self) -> None:
+        """The passing fixture — its quality check listing every execution shape of the fixture
+        target — is clean through the validator's entry point. (Whether the record lists every
+        shape and each holds is the conductor's decision, `_author_quality_check`; the gate's
+        re-read of it went with issue #643.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -7969,14 +7835,6 @@ end program shallow_water2d_runner
             paths = [q for q in (repo_root / "workspace" / "pipelines").rglob("quality_check.json")]
             self.assertEqual(len(paths), 1, paths)
             self.assertEqual(validate(repo_root=repo_root, workspace_root="workspace"), [])
-            quality = json.loads(paths[0].read_text(encoding="utf-8"))
-            sweep = [r["label"] for r in quality["shapes"]
-                     if r["label"] not in ("certified", "checked")]
-            self.assertTrue(sweep, quality["shapes"])
-            quality["shapes"] = [r for r in quality["shapes"] if r["label"] != sweep[-1]]
-            paths[0].write_text(json.dumps(quality), encoding="utf-8")
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(any("execution shapes are" in v for v in violations), violations)
 
     def test_detects_missing_launch_prompt_ref_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10808,402 +10666,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 violations,
             )
 
-    def test_run_program_rejects_executable_outside_source_build_id(self) -> None:
-        """The matched run_program record's executable must resolve under
-        `<pipeline>/binary/<source_binary_id>/bin/`. A trial_meta that claims
-        provenance for build A but executes a sibling build B's binary must
-        be rejected.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            pipeline_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-            )
-            node_dir = (
-                pipeline_dir / "runs" / "run_test_001" / "problem__shallow_water2d__0.3.0"
-            )
-            # Plant a sibling build whose binary the run actually used.
-            sibling_build = pipeline_dir / "binary" / "build_sibling_999" / "bin"
-            sibling_build.mkdir(parents=True, exist_ok=True)
-            (sibling_build / "simulate").write_text("sibling\n", encoding="utf-8")
-            # Rewrite the log record's cwd to point at the sibling bin/, but
-            # leave trial_meta.source_binary_id pointing at the (declared)
-            # canonical fixture build.
-            log_path = node_dir / "command_log.jsonl"
-            recs = [
-                json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()
-            ]
-            for rec in recs:
-                if rec.get("tool_name") == "run_program":
-                    rec["cwd"] = str(sibling_build)
-            log_path.write_text(
-                "\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n",
-                encoding="utf-8",
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "executable" in v and "must resolve under source_binary_id=" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    _NO_LAUNCH = object()
-    #: `prefix` value meaning "the whole command the record carries".
-    _WHOLE_COMMAND = object()
-
-    def _launch_prefix_tree(self, repo_root: Path, *, prefix, command_prefix,
-                            target_prefix=None, _real_seam: bool = False) -> list[str]:
-        """The minimal execution tree with `trial_meta.environment.launch.argv_prefix` set to
-        `prefix` (no `environment` at all when `_NO_LAUNCH`) and the run_program record's command led by
-        `command_prefix` (issue #307: a device trace is a launch prefix)."""
-        _seed_shape_expr_schema_into(repo_root)
-        _create_minimal_execution_tree(
-            repo_root,
-            dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-            model_text="module m\nimplicit none\nend module m\n",
-            runner_text="program r\nimplicit none\nend program r\n",
-            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-        )
-        node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
-                    / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
-                    / "problem__shallow_water2d__0.3.0")
-        trial_meta_path = node_dir / "trial_meta.json"
-        trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-        # The record in PRODUCTION's shape: the binary by its absolute path, run from the
-        # execute's run directory — not from the build's bin/, where a RELATIVE first argument
-        # would resolve under the build whichever argument the validator took for the binary
-        # (round 1: a mutant binding `command[0]` survived the fixture's `./simulate` in bin/).
-        binary = (node_dir.parents[2] / "binary" / trial_meta["source_binary_id"] / "bin"
-                  / "simulate")
-        self.assertTrue(binary.is_file(), binary)
-        run_cwd = repo_root / "workspace" / "tmp" / "arid-1" / "run"
-        run_cwd.mkdir(parents=True, exist_ok=True)
-        log_path = node_dir / "command_log.jsonl"
-        recs = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()]
-        for rec in recs:
-            # The certified run's record; the checked row's (`plant_checked_build`) stays.
-            if rec.get("command_id") == "cmd_run_001":
-                self.assertEqual(rec["command"][0], "./simulate")
-                rec["command"] = [*command_prefix, str(binary), *rec["command"][1:]]
-                rec["cwd"] = str(run_cwd)
-                if prefix is self._WHOLE_COMMAND:
-                    prefix = list(rec["command"])
-        log_path.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
-        if prefix is not self._NO_LAUNCH:
-            trial_meta["environment"] = {"launch": {"argv_prefix": prefix, "env": {}}}
-        _write_json(trial_meta_path, trial_meta)
-        # The fixture's target launches bare; `target_prefix` stands in for a target whose
-        # parallel backend runs its binary under one (the seam's answer, patched where the
-        # validator asks it). By default it is the recorded prefix, so a row varies the command.
-        if _real_seam:
-            return validate(repo_root=repo_root, workspace_root="workspace")
-        if target_prefix is None:
-            target_prefix = prefix if isinstance(prefix, list) else []
-        from unittest import mock
-        with mock.patch.object(vps.host_execution, "launch_argv_prefix", autospec=True,
-                               return_value=tuple(target_prefix)) as seam:
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-        if isinstance(prefix, list) and prefix and all(isinstance(a, str) for a in prefix):
-            seam.assert_called_with(_TP.parallel_backend, _TP.ranks)
-        return violations
-
-    @staticmethod
-    def _binding_violations(violations: list[str]) -> list[str]:
-        return [v for v in violations
-                if "must resolve under" in v or "launch prefix" in v
-                or "argv_prefix must be" in v]
-
-    def test_run_program_command_may_carry_the_recorded_launch_prefix(self) -> None:
-        """Issue #307: the binary is the first argument AFTER the recorded launch prefix, so a
-        traced run binds to its build like an untraced one."""
-        # RELATIVE, as the host writes it: resolved against the run directory, the prefix's
-        # first argument lies outside the build, so taking it for the binary is refused.
-        prefix = ["tracer", "profile", "-o", "kernel_trace"]
-        for recorded, carried in ((prefix, prefix), ([], []), (self._NO_LAUNCH, [])):
-            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
-                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
-                                                      command_prefix=carried)
-                self.assertEqual(self._binding_violations(violations), [])
-
-    def test_a_prefix_the_command_does_not_carry_is_a_violation(self) -> None:
-        """A recorded prefix the run_program command does not begin with is refused, and so is a
-        command carrying a prefix the record does not state: without it the prefix's first
-        argument is taken for the binary."""
-        tracer = "tracer"
-        for recorded, carried, needle in (
-                ([tracer, "profile"], [], "must begin with the recorded launch prefix"),
-                ([tracer, "profile"], [tracer, "other"],
-                 "must begin with the recorded launch prefix"),
-                ([], [tracer, "profile"], "must resolve under"),
-                (self._NO_LAUNCH, [tracer, "profile"], "must resolve under")):
-            with self.subTest(recorded=recorded, carried=carried), \
-                    tempfile.TemporaryDirectory() as tmp:
-                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
-                                                      command_prefix=carried)
-                self.assertTrue(any(needle in v for v in violations), violations)
-
-    def test_a_prefix_that_is_only_the_whole_command_names_no_binary(self) -> None:
-        """A command that IS the prefix has no binary after it: refused, not read past."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            violations = self._launch_prefix_tree(repo_root, prefix=self._WHOLE_COMMAND,
-                                                  command_prefix=[])
-            self.assertTrue(any("must resolve under" in v and "None" in v
-                                for v in violations), violations)
-
-    def test_a_recorded_prefix_that_is_not_the_targets_is_a_violation(self) -> None:
-        """Round 3 (disclosure axis): taken on the record's word, a recorded prefix lets any
-        program run in front of the build's binary — `[<other>]` or `["sh", "-c", …]` passed
-        where origin/main refused the same command. A non-empty prefix must be the one the
-        pipeline's target runs its binary under; an empty one needs no target answer."""
-        target = ["tracer", "profile", "-o", "kernel_trace"]
-        for recorded in (["/usr/bin/other"], ["sh", "-c", "exec \"$0\" \"$@\""],
-                         ["tracer", "profile"], [*target, "--extra"]):
-            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as tmp:
-                violations = self._launch_prefix_tree(Path(tmp), prefix=recorded,
-                                                      command_prefix=recorded,
-                                                      target_prefix=target)
-                self.assertTrue(any("is not the launch prefix of this pipeline's target" in v
-                                    for v in violations), violations)
-                self.assertFalse(any("must resolve under" in v for v in violations))
-        # The real seam answers the checked-in fixture target: it launches bare, so a recorded
-        # prefix is refused, and an empty one is not asked about.
-        from tools.host_execution import launch_argv_prefix
-        self.assertEqual(launch_argv_prefix(_TP.parallel_backend, _TP.ranks), ())
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
-            node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
-                        / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
-                        / "problem__shallow_water2d__0.3.0")
-            trial_meta = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
-            trial_meta["environment"] = {"launch": {"argv_prefix": ["./simulate"], "env": {}}}
-            _write_json(node_dir / "trial_meta.json", trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(any("is not the launch prefix of this pipeline's target ([])" in v
-                                for v in violations), violations)
-
-    def test_a_traced_target_binds_through_the_real_seam(self) -> None:
-        """Round 4: every other prefix row patches the seam, so none observed the validator
-        asking the REAL `launch_argv_prefix` with the TARGET's backend (a mutant asking it for
-        `openmp`, and one returning `()` from the seam, both survived). Here the pipeline's target
-        resolves to a traced backend and the seam is the real one: the traced run's own prefix
-        binds, a record carrying none is not asked about (every pre-#307 record of such a
-        target), and a target that does not resolve refuses a non-empty prefix."""
-        from unittest import mock
-        from tools.host_execution import launch_argv_prefix
-        from tools.tests.target_fixtures import profile_with
-        cuda = profile_with(parallel={"backend": "cuda"})
-        traced = list(launch_argv_prefix("cuda", 1))
-        self.assertTrue(traced)
-        # Issue #316: a launcher target's prefix carries ITS rank count, so the same launcher
-        # with another count is not the target's prefix.
-        mpi = profile_with(parallel={"backend": "mpi"},
-                           execution={"threads_per_rank": 1, "ranks": 4})
-        launched = list(launch_argv_prefix("mpi", 4))
-        other_count = list(launch_argv_prefix("mpi", 3))
-        # A one-rank launcher target runs under the launcher all the same, so a record of it
-        # with no prefix is not its run.
-        mpi1 = profile_with(parallel={"backend": "mpi"},
-                            execution={"threads_per_rank": 1, "ranks": 1})
-        self.assertTrue(launched)
-        self.assertNotEqual(launched, other_count)
-        for target, recorded, carried, refused in (
-                (cuda, traced, traced, False),
-                (cuda, [], [], False),
-                (cuda, self._NO_LAUNCH, [], False),
-                (None, traced, traced, True),
-                (mpi, launched, launched, False),
-                (mpi, other_count, other_count, True),
-                (mpi1, list(launch_argv_prefix("mpi", 1)), list(launch_argv_prefix("mpi", 1)),
-                 False),
-                (mpi1, [], [], False),
-                (mpi1, self._NO_LAUNCH, [], False)):
-            with self.subTest(target=None if target is None else target.parallel_backend,
-                              recorded=recorded if recorded is not self._NO_LAUNCH else "none"), \
-                    tempfile.TemporaryDirectory() as tmp, \
-                    mock.patch.object(vps, "_pipeline_target", return_value=target):
-                violations = self._real_seam_tree(Path(tmp), prefix=recorded,
-                                                  command_prefix=carried)
-                self.assertEqual(
-                    any("is not the launch prefix of this pipeline's target" in v
-                        for v in violations), refused, violations)
-                self.assertEqual(self._binding_violations(violations) != [], refused,
-                                 violations)
-                # The fixture's perf record states one rank: a launcher target running four is
-                # refused through `validate()` itself, and no other target is asked.
-                self.assertEqual(
-                    any("parallelism.mpi_ranks is" in v for v in violations),
-                    target is mpi, violations)
-                # An empty or absent prefix is refused for a launcher target only.
-                bare = recorded is self._NO_LAUNCH or recorded == []
-                self.assertEqual(
-                    any("environment.launch.argv_prefix is empty" in v for v in violations),
-                    bare and target in (mpi, mpi1), violations)
-
-    def _real_seam_tree(self, repo_root: Path, *, prefix, command_prefix) -> list[str]:
-        """`_launch_prefix_tree` without its seam patch: the validator asks the real one."""
-        return self._launch_prefix_tree(repo_root, prefix=prefix, command_prefix=command_prefix,
-                                        _real_seam=True)
-
-    def test_a_non_list_prefix_is_a_violation(self) -> None:
-        for bad in ("tracer profile", [1, "x"], {"a": 1}, None):
-            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
-                violations = self._launch_prefix_tree(Path(tmp), prefix=bad, command_prefix=[])
-                self.assertTrue(any("argv_prefix must be a list of strings" in v
-                                    for v in violations), violations)
-
-    def test_run_program_rejects_failed_record(self) -> None:
-        """A run_program record with ok!=true cannot serve as evidence."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            # Get the command_id the fixture used.
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            cmd_id = trial_meta["source_command_ref"]["run_threads_1"]["command_id"]
-            log_path = node_dir / "command_log.jsonl"
-            log_path.write_text(
-                json.dumps(
-                    {
-                        "command_id": cmd_id,
-                        "tool_name": "run_program",
-                        "command": ["./simulate", "spec.ir.yaml", "out"],
-                        "ok": False,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    f"run_program command_id={cmd_id}" in v
-                    and "ok must be true" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_run_quality_checks_rejects_failed_source_generation(self) -> None:
-        """source_source_id must point to a generation in pass state.
-
-        Pointing trial_meta at a failed/stale generation under the same
-        pipeline (even with a valid command_log.jsonl) must be rejected,
-        otherwise stale evidence credits the current execute run.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            pipeline_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-            )
-            node_dir = (
-                pipeline_dir / "runs" / "run_test_001" / "problem__shallow_water2d__0.3.0"
-            )
-            # Plant a stale generation in fail state with its own canonical log.
-            stale_gen_id = "gen_stale_001"
-            stale_dir = pipeline_dir / "source" / stale_gen_id
-            stale_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(
-                stale_dir / "source_meta.json",
-                {
-                    "attempt_count": 1,
-                    "verification_status": "fail",
-                    "last_fail_reason": "lint failed",
-                    "debug_mode": False,
-                    "context_isolated": True,
-                },
-            )
-            stale_src = stale_dir / "src"
-            stale_src.mkdir(parents=True, exist_ok=True)
-            stale_log_ref = (
-                f"workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                f"shallow-water2d_20260415_001/source/{stale_gen_id}/src/"
-                "command_log.jsonl"
-            )
-            (stale_src / "command_log.jsonl").write_text(
-                json.dumps(
-                    {
-                        "command_id": "cmd_quality_stale",
-                        "tool_name": "run_quality_checks",
-                        "cwd": str(stale_src),
-                        "command": ["make", "test"],
-                        "ok": True,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta["source_source_id"] = stale_gen_id
-            trial_meta["source_command_ref"]["run_quality_checks"] = {
-                "command_id": "cmd_quality_stale",
-                "tool_name": "run_quality_checks",
-                "command_log_ref": stale_log_ref,
-            }
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "verification_status='fail'" in v
-                    and stale_gen_id in v
-                    for v in violations
-                ),
-                violations,
-            )
-
     def test_run_quality_checks_rejects_sibling_generation_log(self) -> None:
         """Cross-phase canonical placement is bound strictly to source_source_id.
 
@@ -11275,73 +10737,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             self.assertTrue(
                 any(
                     "run_quality_checks command_id=cmd_quality_sibling" in v
-                    and "canonical command log placement" in v
-                    for v in violations
-                ),
-                violations,
-            )
-
-    def test_run_program_rejects_noncanonical_command_log_ref(self) -> None:
-        """Defense against forged run_program evidence at non-canonical paths.
-
-        A child agent that writes a synthetic JSONL under raw/ (which is
-        permitted as an execute output directory) and points
-        source_command_ref.run_threads_1.command_log_ref at it must be
-        rejected. The canonical placement for run_program is sibling of
-        trial_meta.json (in-phase canonical for execute).
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            node_dir = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-            )
-            # Plant a forged log under raw/ (a writable execute output directory).
-            forged_log = node_dir / "raw" / "forged_run.jsonl"
-            forged_log.parent.mkdir(parents=True, exist_ok=True)
-            forged_log.write_text(
-                json.dumps(
-                    {
-                        "command_id": "forged_cmd_001",
-                        "tool_name": "run_program",
-                        "command": ["./simulate", "spec.ir.yaml", "out"],
-                        "ok": True,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            # Repoint trial_meta source_command_ref to the forged log.
-            trial_meta_path = node_dir / "trial_meta.json"
-            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
-            trial_meta["source_command_ref"]["run_threads_1"] = {
-                "command_id": "forged_cmd_001",
-                "command_log_ref": (
-                    "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                    "shallow-water2d_20260415_001/runs/run_test_001/"
-                    "problem__shallow_water2d__0.3.0/raw/forged_run.jsonl"
-                ),
-            }
-            _write_json(trial_meta_path, trial_meta)
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any(
-                    "run_program command_id=forged_cmd_001" in v
                     and "canonical command log placement" in v
                     for v in violations
                 ),
@@ -11750,258 +11145,13 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 any("canonical command log placement" in v for v in violations),
                 violations)
 
-    def test_the_quality_check_lists_every_execution_shape_and_each_holds(self) -> None:
-        """Issue #512: `quality_check.json#shapes` lists exactly the target's execution shapes
-        (the certified one, then each of `execution.sweep`'s), in order, with each shape's
-        ranks, grid and threads, and every comparison with the serial reference holding; a
-        launcher target's harness reported each shape's rank count and grid. Driven over a
-        missing record, a missing / extra / reordered shape, a wrong declared member, each
-        failed comparison, and each wrong observation."""
-        from unittest import mock
-
-        from tools.tests.target_fixtures import FORTRAN_CPU, passing_shape_rows, profile_with
-        mpi = profile_with(parallel={"backend": "mpi"},
-                           execution={"threads_per_rank": 1, "ranks": 4, "process_grid": [2, 2],
-                                      "sweep": {"grids": [[4, 1], [1, 3]]}})
-
-        def run(target, shapes) -> list[str]:
-            with tempfile.TemporaryDirectory() as tmp:
-                node_dir = Path(tmp) / "node"
-                node_dir.mkdir()
-                doc = {"status": "pass"}
-                if shapes is not _ABSENT:
-                    doc["shapes"] = shapes
-                _write_json(node_dir / "quality_check.json", doc)
-                execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node_dir,
-                                              exec_dir=node_dir, pipeline_dir=Path(tmp))
-                violations: list[str] = []
-                with mock.patch.object(vps, "_pipeline_target", return_value=target):
-                    vps._validate_execution_shapes(Path(tmp), execution, violations)
-                return violations
-
-        for target in (FORTRAN_CPU, mpi):
-            with self.subTest(target=target.parallel_backend, row="clean"):
-                self.assertGreater(len(target.execution_shapes), 1)
-                self.assertEqual(run(target, passing_shape_rows(target)), [])
-        # A target with no sweep has one shape, the certified run's — and the checked binary's
-        # row after it, its compiler declaring checked flags (issue #589 PR-0).
-        plain = profile_with(execution={"threads_per_rank": 1})
-        self.assertEqual(run(plain, passing_shape_rows(plain)), [])
-        self.assertEqual([r["label"] for r in passing_shape_rows(plain)],
-                         ["certified", "checked"])
-
-        def edited(target, index, **changes):
-            rows = passing_shape_rows(target)
-            for key, value in changes.items():
-                if value is _ABSENT:
-                    rows[index].pop(key, None)
-                else:
-                    rows[index][key] = value
-            return rows
-
-        good = passing_shape_rows(mpi)
-        # The checked binary's row is last (issue #589 PR-0): the sweep cases below drop and
-        # swap SWEEP rows by label and keep it last, so each still exercises what it is named
-        # for (round 3: `good[:-1]` had become "the checked row dropped").
-        self.assertEqual([r["label"] for r in good],
-                         ["certified", "grid_4x1", "grid_1x3", "checked"])
-        refused = {
-            "absent": (mpi, _ABSENT, "shapes must be a list"),
-            "not a list": (mpi, {"certified": {}}, "shapes must be a list"),
-            "missing shape": (mpi, [r for r in good if r["label"] != "grid_1x3"],
-                              "execution shapes are"),
-            "checked dropped": (mpi, good[:-1], "execution shapes are"),
-            "extra shape": (mpi, good + [dict(good[1], label="grid_2x1")],
-                            "execution shapes are"),
-            "reordered": (mpi, [good[0], good[2], good[1], good[3]], "execution shapes are"),
-            "checked before a sweep": (mpi, [good[0], good[3], good[1], good[2]],
-                                       "execution shapes are"),
-            "certified dropped": (mpi, good[1:], "execution shapes are"),
-            "ranks": (mpi, edited(mpi, 1, ranks=3), "shapes[grid_4x1].ranks"),
-            "grid": (mpi, edited(mpi, 2, process_grid=[3, 1]), "shapes[grid_1x3].process_grid"),
-            "threads": (FORTRAN_CPU, edited(FORTRAN_CPU, 1, threads_per_rank=3),
-                        "shapes[threads_2].threads_per_rank"),
-            "run failed": (FORTRAN_CPU, edited(FORTRAN_CPU, 2, run_ok=False),
-                           "shapes[threads_3].run_ok must be true"),
-            "verdict absent": (mpi, edited(mpi, 0, verdict_available=_ABSENT),
-                               "shapes[certified].verdict_available must be true"),
-            "verdict": (mpi, edited(mpi, 2, verdict_match=False),
-                        "shapes[grid_1x3].verdict_match must be true"),
-            "state disagrees": (mpi, edited(mpi, 1, state_agreement={"status": "disagree"}),
-                                "shapes[grid_4x1].state_agreement.status is 'disagree'"),
-            "state unevaluable": (FORTRAN_CPU, edited(FORTRAN_CPU, 1,
-                                                      state_agreement={"status": "unevaluable"}),
-                                  "state_agreement.status is 'unevaluable'"),
-            "state not run": (FORTRAN_CPU, edited(FORTRAN_CPU, 1,
-                                                  state_agreement={"status": "not_run"}),
-                              "state_agreement.status is 'not_run'"),
-            "state absent": (mpi, edited(mpi, 0, state_agreement=_ABSENT),
-                             "state_agreement.status is None"),
-            "observed ranks": (mpi, edited(mpi, 2, observed_mpi_ranks=4),
-                               "shapes[grid_1x3]: the harness reported mpi_ranks=4"),
-            "observed grid": (mpi, edited(mpi, 1, observed_process_grid=[1, 4]),
-                              "process_grid=[1, 4]"),
-            "observed bool": (mpi, edited(mpi, 0, observed_mpi_ranks=True), "mpi_ranks=True"),
-            "declared bool": (FORTRAN_CPU, edited(FORTRAN_CPU, 0, ranks=True),
-                              "shapes[certified].ranks is True"),
-        }
-        for name, (target, shapes, needle) in refused.items():
-            with self.subTest(row=name):
-                violations = run(target, shapes)
-                self.assertTrue(any(needle in v for v in violations), violations)
-        # A target without a launcher is not asked what its harness observed.
-        self.assertEqual(run(FORTRAN_CPU, edited(FORTRAN_CPU, 1, observed_mpi_ranks=9)), [])
-        # Issue #512 (PR-4c): a backend that imposes a thread-block size — each shape's declared
-        # block, and the block its harness reported. The harness's own snapshot tie is not this
-        # driver's (no harness node here; `_validate_harness_reported_block` has its own).
-        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
-                           parallel={"backend": "cuda"},
-                           execution={"threads_per_rank": 1, "block_size": 256,
-                                      "sweep": {"block_size": [64, 128]}})
-        with mock.patch.object(vps, "_validate_harness_reported_block"):
-            self.assertEqual(run(gpu, passing_shape_rows(gpu)), [])
-            for name, (shapes, needle) in {
-                    "declared": (edited(gpu, 1, block_size=128), "shapes[block_64].block_size"),
-                    "declared absent": (edited(gpu, 0, block_size=_ABSENT),
-                                        "shapes[certified].block_size is None"),
-                    "observed": (edited(gpu, 2, observed_block_size=256),
-                                 "shapes[block_128]: the harness reported block_size=256"),
-                    "observed absent": (edited(gpu, 0, observed_block_size=_ABSENT),
-                                        "block_size=None"),
-                    "observed real": (edited(gpu, 1, observed_block_size=64.0),
-                                      "block_size=64.0"),
-                    }.items():
-                with self.subTest(row=name):
-                    violations = run(gpu, shapes)
-                    self.assertTrue(any(needle in v for v in violations), violations)
-            # A backend that imposes no block size is not asked what its harness observed.
-            self.assertEqual(run(FORTRAN_CPU, edited(FORTRAN_CPU, 1, observed_block_size=64)), [])
-        # Issue #512: on a target some shape of which runs more than one thread per rank, each
-        # shape's harness reports that shape's thread count — a constant (the profile's count, or
-        # 1) fails on every shape whose count differs. A target whose every shape runs one thread
-        # per rank cannot tell a constant 1 from an observation, and is not asked.
-        self.assertTrue(FORTRAN_CPU.thread_count_observable)
-        self.assertEqual(
-            sorted({s.threads_per_rank for s in FORTRAN_CPU.execution_shapes}), [2, 3, 4])
-        # A certified run at one thread with a swept count is observable too.
-        from_one = profile_with(execution={"threads_per_rank": 1,
-                                           "sweep": {"threads_per_rank": [2]}})
-        self.assertTrue(from_one.thread_count_observable)
-        for name, (target, shapes, needle) in {
-                "the profile's count": (FORTRAN_CPU,
-                                        edited(FORTRAN_CPU, 1, observed_threads_per_rank=4),
-                                        "shapes[threads_2]: the harness reported "
-                                        "threads_per_rank=4, and the shape ran 2"),
-                "one": (FORTRAN_CPU, edited(FORTRAN_CPU, 0, observed_threads_per_rank=1),
-                        "shapes[certified]: the harness reported threads_per_rank=1"),
-                "absent": (FORTRAN_CPU, edited(FORTRAN_CPU, 2, observed_threads_per_rank=_ABSENT),
-                           "shapes[threads_3]: the harness reported threads_per_rank=None"),
-                "real": (FORTRAN_CPU, edited(FORTRAN_CPU, 2, observed_threads_per_rank=3.0),
-                         "threads_per_rank=3.0"),
-                "bool": (from_one, edited(from_one, 0, observed_threads_per_rank=True),
-                         "threads_per_rank=True"),
-                "constant 1 under a sweep from one": (
-                    from_one, edited(from_one, 1, observed_threads_per_rank=1),
-                    "shapes[threads_2]: the harness reported threads_per_rank=1"),
-                }.items():
-            with self.subTest(row=f"threads {name}"):
-                self.assertEqual(run(target, passing_shape_rows(target)), [])
-                violations = run(target, shapes)
-                self.assertTrue(any(needle in v for v in violations), violations)
-        one_thread = profile_with(execution={"threads_per_rank": 1})
-        self.assertFalse(one_thread.thread_count_observable)
-        self.assertFalse(mpi.thread_count_observable)
-        self.assertEqual(run(one_thread, edited(one_thread, 0, observed_threads_per_rank=7)), [])
-        self.assertEqual(run(mpi, edited(mpi, 1, observed_threads_per_rank=_ABSENT)), [])
-
-    def test_a_launcher_run_reports_the_targets_rank_count(self) -> None:
-        """Issue #316: under a launcher, the run's performance record states the target's rank
-        count and the quality check records the run as that many ranks and the `make test`
-        re-run as one. A target without a launcher is not asked. Driven over each member
-        missing, of the wrong type and of the wrong value."""
-        from unittest import mock
-
-        from tools.tests.target_fixtures import profile_with
-        mpi = profile_with(parallel={"backend": "mpi"},
-                           execution={"threads_per_rank": 1, "ranks": 4})
-
-        def run(target, perf, quality) -> list[str]:
-            with tempfile.TemporaryDirectory() as tmp:
-                node_dir = Path(tmp) / "node"
-                node_dir.mkdir()
-                if perf is not None:
-                    _write_json(node_dir / "perf.json", perf)
-                if quality is not None:
-                    _write_json(node_dir / "quality_check.json", quality)
-                execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node_dir,
-                                              exec_dir=node_dir, pipeline_dir=Path(tmp))
-                violations: list[str] = []
-                with mock.patch.object(vps, "_pipeline_target", return_value=target):
-                    vps._validate_launched_ranks(Path(tmp), execution, violations)
-                return violations
-
-        def quality(reference, candidate):
-            return {"comparison": {"reference": {"ranks": reference},
-                                   "candidate": {"ranks": candidate}}}
-
-        good_perf = {"parallelism": {"mpi_ranks": 4, "process_grid": [4, 1]}}
-        self.assertEqual(run(mpi, good_perf, quality(4, 1)), [])
-        for perf, needle in (({"parallelism": {"mpi_ranks": 1, "process_grid": [4, 1]}},
-                              "mpi_ranks is 1"),
-                             ({"parallelism": {"mpi_ranks": True, "process_grid": [4, 1]}},
-                              "mpi_ranks is True"),
-                             ({"parallelism": {"process_grid": [4, 1]}}, "mpi_ranks is None")):
-            with self.subTest(perf=perf):
-                violations = run(mpi, perf, quality(4, 1))
-                self.assertEqual(len(violations), 1, violations)
-                self.assertIn(needle, violations[0])
-                self.assertIn("runs 4 rank(s) under mpi's launcher", violations[0])
-        # Issue #512: the grid the harness arranged the ranks in, with none imposed, is
-        # `[ranks, 1]`; any other grid, shape or member type is refused.
-        for grid in ([1, 4], [2, 2], [4], [4, 1, 1], [4.0, 1], [4, True], "4,1", None):
-            with self.subTest(grid=grid):
-                violations = run(mpi, {"parallelism": {"mpi_ranks": 4, "process_grid": grid}},
-                                 quality(4, 1))
-                self.assertEqual(len(violations), 1, violations)
-                self.assertIn(f"parallelism.process_grid is {grid!r}", violations[0])
-                self.assertIn("which the harness arranges as [4, 1]", violations[0])
-        for perf in ({"parallelism": {}}, {}, None, [4]):
-            with self.subTest(perf=perf):
-                violations = run(mpi, perf, quality(4, 1))
-                self.assertEqual(len(violations), 2, violations)
-                self.assertIn("mpi_ranks is None", violations[0])
-                self.assertIn("process_grid is None", violations[1])
-        # A profile that imposes a grid is held to it (the checked-in `fortran_cpu_mpi` imposes
-        # [2, 2]); the arrangement with none imposed is then the refused one.
-        mpi22 = profile_with(parallel={"backend": "mpi"},
-                             execution={"threads_per_rank": 1, "ranks": 4,
-                                        "process_grid": [2, 2]})
-        self.assertEqual(run(mpi22, {"parallelism": {"mpi_ranks": 4, "process_grid": [2, 2]}},
-                             quality(4, 1)), [])
-        for grid in ([4, 1], [1, 4], [2, 2, 1]):
-            with self.subTest(imposed=grid):
-                violations = run(mpi22, {"parallelism": {"mpi_ranks": 4, "process_grid": grid}},
-                                 quality(4, 1))
-                self.assertEqual(len(violations), 1, violations)
-                self.assertIn("imposes the process grid [2, 2] on its 4 rank(s)", violations[0])
-        for q, needle in ((quality(1, 1), "comparison.reference.ranks is 1, expected 4"),
-                          (quality(4, 4), "comparison.candidate.ranks is 4, expected 1"),
-                          (quality(4, True), "comparison.candidate.ranks is True"),
-                          ({"comparison": {}}, "comparison.reference.ranks is None"),
-                          (None, "comparison.reference.ranks is None")):
-            with self.subTest(quality=q):
-                self.assertTrue(any(needle in v for v in run(mpi, good_perf, q)))
-        # Not asked of a target without a launcher, nor of one that does not resolve (the
-        # target-resolution gate refuses that pipeline).
-        for target in (_TP, None):
-            with self.subTest(target=target and target.parallel_backend):
-                self.assertEqual(run(target, {}, None), [])
-
     def test_the_harness_self_test_reports_the_grid_it_was_launched_on(self) -> None:
         """Issue #512 (round 2): on the Validate run of the target's own harness, every case
         snapshot capturing the grid `__grid_dims` reports agrees with the launch grid, and one
         does — so a harness that echoes the imposed grid into perf.json while arranging its
-        ranks another way is refused. A physics node's snapshots are not read."""
+        ranks another way is refused. A physics node's snapshots are not read. (Through
+        `_validate_harness_reported_launch`, which asks it of a launcher target; the perf
+        record's own grid is the conductor's comparison since issue #643.)"""
         from unittest import mock
 
         from tools import target_profile as tp_mod
@@ -12010,8 +11160,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                              execution={"threads_per_rank": 1, "ranks": 4,
                                         "process_grid": [2, 2]})
         harness = "infrastructure/harness_x@0.2.0"
-        perf = {"parallelism": {"mpi_ranks": 4, "process_grid": [2, 2]}}
-        quality = {"comparison": {"reference": {"ranks": 4}, "candidate": {"ranks": 1}}}
         self.assertEqual(vps.HARNESS_GRID_SNAPSHOT_VARIABLES, ("p1", "p2"))
 
         def run(snaps: dict, node_key: str = harness) -> list[str]:
@@ -12019,8 +11167,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 node_dir = Path(tmp) / "node"
                 snap_dir = node_dir / "raw" / "state_snapshots"
                 (snap_dir / "initial").mkdir(parents=True)
-                _write_json(node_dir / "perf.json", perf)
-                _write_json(node_dir / "quality_check.json", quality)
                 for name, doc in snaps.items():
                     _write_json(snap_dir / f"{name}.json", doc)
                 execution = vps.NodeExecution(node_key=node_key, node_dir=node_dir,
@@ -12029,7 +11175,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 with mock.patch.object(vps, "_pipeline_target", return_value=mpi22), \
                         mock.patch.object(tp_mod, "harness_node_key_for_target",
                                           return_value=harness):
-                    vps._validate_launched_ranks(Path(tmp), execution, violations)
+                    vps._validate_harness_reported_launch(Path(tmp), execution, violations)
                 return violations
 
         good = {"l0_process_grid_pass": {"t": 0.0, "p1": 2.0, "p2": 2.0, "nranks": 4.0},
@@ -12055,6 +11201,22 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         self.assertEqual(run({"c0": {"t": 0.0, "p1": 7.0, "p2": 0.5}},
                              node_key="problem/x@0.1.0"), [])
         self.assertEqual(run({}, node_key="problem/x@0.1.0"), [])
+        # Wired into `validate()`'s per-execution loop: the planted run, read as the launcher
+        # target's harness, captures no grid.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+            with mock.patch.object(vps, "_pipeline_target", return_value=mpi22), \
+                    mock.patch.object(tp_mod, "harness_node_key_for_target",
+                                      return_value="problem/shallow_water2d@0.3.0"):
+                violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(any("no case snapshot of the harness self-test captures the grid"
+                                in v for v in violations), violations)
 
     def test_the_device_harness_self_test_reports_the_block_it_was_launched_with(self) -> None:
         """Issue #512 (PR-4c): on the Validate run of the target's own harness, on a target that
@@ -12062,11 +11224,12 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         `__block_size` reports carries the certified run's block, and one does — so a harness
         that echoes the imposed block into perf.json while returning another from
         `__block_size` (what the runner hands a consuming node's kernels) is refused. A physics
-        node's snapshots are not read."""
+        node's snapshots are not read. (Through `_validate_harness_reported_launch`, which asks
+        it of a target imposing a block size.)"""
         from unittest import mock
 
         from tools import target_profile as tp_mod
-        from tools.tests.target_fixtures import passing_shape_rows, profile_with
+        from tools.tests.target_fixtures import profile_with
         gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
                            parallel={"backend": "cuda"},
                            execution={"threads_per_rank": 1, "block_size": 256})
@@ -12078,8 +11241,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 node_dir = Path(tmp) / "node"
                 snap_dir = node_dir / "raw" / "state_snapshots"
                 (snap_dir / "initial").mkdir(parents=True)
-                _write_json(node_dir / "quality_check.json",
-                            {"status": "pass", "shapes": passing_shape_rows(target)})
                 for name, doc in snaps.items():
                     _write_json(snap_dir / f"{name}.json", doc)
                 execution = vps.NodeExecution(node_key=node_key, node_dir=node_dir,
@@ -12088,7 +11249,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 with mock.patch.object(vps, "_pipeline_target", return_value=target), \
                         mock.patch.object(tp_mod, "harness_node_key_for_target",
                                           return_value=harness):
-                    vps._validate_execution_shapes(Path(tmp), execution, violations)
+                    vps._validate_harness_reported_launch(Path(tmp), execution, violations)
                 return violations
 
         good = {"l0_block_size_pass": {"t": 0.0, "block_size": 256.0, "block_valid": 1.0},
@@ -25676,7 +24837,7 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             violations.count(f"{ir_path}: must be non-null yaml document"), 1, violations
         )
 
-    # --- post_execute: perf.json / quality_check.json -----------------
+    # --- post_execute: perf.json ------------------------------------------
 
     def _post_execute(self, tmp: str, name: str, body: str) -> tuple[Path, list[str]]:
         repo_root = self._tree(tmp)
@@ -25706,20 +24867,6 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
         with tempfile.TemporaryDirectory() as tmp:
             path, violations = self._post_execute(tmp, "perf.json", "not json")
         self.assertIn(f"{path}: invalid json", violations)
-
-    def test_post_execute_reports_an_unparsable_quality_check(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path, violations = self._post_execute(tmp, "quality_check.json", "not json")
-        self.assertIn(f"{path}: invalid json", violations)
-
-    def test_post_execute_reports_a_non_object_quality_check(self) -> None:
-        """GAP 1. Red on `origin/main`: `AttributeError: 'list' object has no attribute 'get'`
-        escaping `_validate_raw_evidence`, because `main()` catches only
-        `FortranStructureUnavailableError` / `RuntimeError`."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path, violations = self._post_execute(tmp, "quality_check.json", "[]")  # must not raise
-        self.assertIn(f"{path}: must be json object", violations)
-
 
 class ProcedureTypedSurfaceGateTests(unittest.TestCase):
     """Issue #266: a §5.1 with an `interfaces` prototype and a `{type: procedure, interface}`

@@ -72,8 +72,8 @@ and a sweep shape is compared with the reference by its state
   `No such file or directory: 'nsys'`, at a remote site `job script: nsys is missing or not
   executable` — both of which the launch probe refuses at start (§3). Every one of these is a
   transport `fail_closed`, which `--resume` retries (`docs/ORCHESTRATION.md` §Execution sites).
-- `trial_meta.json#environment.launch.argv_prefix` records the `nsys profile …` prefix, and the
-  post-execute gate binds the binary AFTER it to the node's build.
+- `trial_meta.json#environment.launch.argv_prefix` records the `nsys profile …` prefix the
+  conductor ran the node's build in front of.
 
 ## 2. What the summary says
 
