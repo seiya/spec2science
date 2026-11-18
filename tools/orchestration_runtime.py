@@ -5173,6 +5173,7 @@ REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"}
 # `reuse` of the producer session the decision had said to throw away.
 REVOCATION_REPAIR_STRATEGIES: frozenset[str] = frozenset({"reuse", "restart", "re_execute"})
 
+
 def _normalized_until_phase(token: Any) -> str | None:
     """`token` as a member of `STEP_KEYS_FOR_NODE_STATE`, or None.
 
