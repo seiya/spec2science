@@ -13782,25 +13782,20 @@ class Conductor:
                     f"<case_id>...` (the runner requires `--cases`); the binding is "
                     f"docs/backends/build_system/{build_system}/CONTROL_FILE.md §2, and see "
                     f"docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
-            # A re-run that exited non-zero (issue #674), named with its return code and its
-            # stderr under the bounds the first failed shape's quote takes. Last in the block,
-            # so the excerpt's tail cut keeps it: every later shape reports only that the
-            # reference failed first, and on a target with no further shape nothing else would.
+            # A re-run that exited non-zero (issue #674), named with its return code and the head
+            # and tail of its stderr (`_stderr_head_and_tail`, at most 2 000 characters). Last in
+            # the block, so the excerpt's tail cut keeps it: every later shape reports only that
+            # the reference failed first, and on a target with no further shape nothing else
+            # would.
             if not res_qc.get("ok") and not res_qc.get("error"):
                 block += (f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} "
                           f"re-run (the serial reference) failed (rc="
                           f"{res_qc.get('return_code')!r})")
                 qc_err = _stderr_head_and_tail(res_qc.get("stderr") or "")
-                head = qc_err["stderr_head"].splitlines()
-                rest = head[_EXCERPT_STDERR_HEAD:] + qc_err["stderr_tail"].splitlines()
-                shown = head[:_EXCERPT_STDERR_HEAD] + (
-                    ["..."] if len(rest) > _EXCERPT_STDERR_TAIL else []
-                ) + rest[-_EXCERPT_STDERR_TAIL:]
+                shown = (qc_err["stderr_head"].splitlines()
+                         + qc_err["stderr_tail"].splitlines())
                 if shown:
-                    block += "; its stderr:" + "".join(
-                        "\n    " + (ln if len(ln) <= _EXCERPT_LINE_CHARS
-                                     else ln[:_EXCERPT_LINE_CHARS - 3] + "...")
-                        for ln in shown)
+                    block += "; its stderr:" + "".join(f"\n    {ln}" for ln in shown)
             stderr += block
             # Classify the structural failure for classify_failure's execute branch (B1): the
             # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the
