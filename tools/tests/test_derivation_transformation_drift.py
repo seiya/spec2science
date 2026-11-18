@@ -1497,7 +1497,13 @@ PINNED_RENDER: dict[str, str] = {
     # `render_tuple()` against main efbf8454's: those two rows and no other.) The digest
     # `render-22` shipped with at efbf8454:
     "render-22@efbf8454": "f2f0743a57a193a72c37f1f247cd75adb999a9d86d7367629d302213d12fe3e6",
-    "render-22": "6d0a0b63e7fe4d33bd54891b80abd16841e7af1d8d73a59b2fb1696dd8fb9df4",
+    # render-22 re-pinned in place by issue #674, comment-only:
+    # `tools/backends/build_system/make/control_file.py`'s comment on `QUALITY_CHECK_PRESETS` no
+    # longer names `_validate_quality_check_commands`, which this issue deletes. (Measured by
+    # diffing `render_tuple()` against main 8adea1c4's: that row and no other.) The digest
+    # `render-22` shipped with at 8adea1c4:
+    "render-22@8adea1c4": "6d0a0b63e7fe4d33bd54891b80abd16841e7af1d8d73a59b2fb1696dd8fb9df4",
+    "render-22": "261f6cf76c11cfb212284d3935e5b9861238fd9f66093691c6cf3283fdb646b5",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1768,7 +1774,11 @@ PINNED_BUILD: dict[str, str] = {
     # `build_tuple()` against main efbf8454's: that row and no other.) The digest `build-5`
     # shipped with at efbf8454:
     "build-5@efbf8454": "c2c0b3fdaa83ad10495fb593b7dc5d377bc9b66512467c3e86103f9e8f240894",
-    "build-5": "84ee4b2a0e88983c82e36261b2f35dd1ed53b126a0d70c54510fbb84970c1457",
+    # build-5 re-pinned in place by issue #674, comment-only: the same `control_file.py` comment
+    # as render-22's entry. (Measured by diffing `build_tuple()` against main 8adea1c4's: that
+    # row and no other.) The digest `build-5` shipped with at 8adea1c4:
+    "build-5@8adea1c4": "84ee4b2a0e88983c82e36261b2f35dd1ed53b126a0d70c54510fbb84970c1457",
+    "build-5": "6c863e87d42895945743932411249bc43e5fa9a4f94f8d9490d5d6e49d2fec5b",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
