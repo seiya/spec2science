@@ -1882,16 +1882,14 @@ def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -
 
 def _stamp_certification(
     repo_root: Path,
-    orchestration_id: str,
     *,
-    node_key: str,
     step: str,
     required_outputs: Sequence[str],
     derivation: Any,
 ) -> dict[str, Any] | None:
-    """Write `artifact_hashes`, `output_hash`, the derivation record (`derivation_key`,
-    `derivation_inputs`, `derivation_transformation`) and, for generate and build,
-    `source_ir_id` into the phase's stage meta. Returns the stamped document, or `None` for a
+    """Write `artifact_hashes`, `output_hash` and the derivation record (`derivation_key`,
+    `derivation_inputs`, `derivation_transformation`) into the phase's stage meta. Returns the
+    stamped document, or `None` for a
     step outside `CERTIFYING_META_FILENAME_BY_STEP` (every phase is in it since issue #250).
 
     `derivation` is the record the conductor computed at PHASE START (`phase_derivation`,
@@ -1954,27 +1952,6 @@ def _stamp_certification(
     doc["derivation_inputs"] = derivation["derivation_inputs"]
     doc["derivation_transformation"] = list(derivation["transformation"])
 
-    if step_token in {"generate", "build"}:
-        # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
-        # `source_ir_id` (host-written by `_build_inproc`), but that write happens INSIDE the
-        # build child's window, so the child-window strip erases it — restoring it here is
-        # what keeps a successfully built binary bound (without this, every build reads
-        # `binary_not_bound` and Build/Validate could never be skipped again).
-        #
-        # Taken from the RESERVATION, not from the meta or the leaf: the reservation is what
-        # this orchestration is holding the compile phase to, so an artifact can never claim
-        # a lineage the run did not reserve.
-        node_safe = _node_key_to_safe(node_key.strip())
-        reserved_ir_id = _reserved_id(
-            _orchestration_root(repo_root, orchestration_id) / "reservations" / node_safe,
-            "compile")
-        if reserved_ir_id is None:
-            raise RuntimeError(
-                f"certification stamp: {step_token} cannot record source_ir_id — no compile "
-                f"reservation for {node_key}"
-            )
-        doc["source_ir_id"] = reserved_ir_id
-
     _write_json(meta_path, doc)
     return doc
 
@@ -2021,8 +1998,8 @@ def _strip_certification(
     ref when something was removed, else `None`.
 
     The stamp is host-written and always was; on the deleted agentic path the stage meta also
-    sat inside the verify leaf's write_root, so a leaf could put `artifact_hashes` /
-    `source_ir_id` there itself. That half is gone with the leaf's write authority (Z4, issue
+    sat inside the verify leaf's write_root, so a leaf could put `artifact_hashes` there
+    itself. That half is gone with the leaf's write authority (Z4, issue
     #171 — a pure leaf authors no file), and the function is not: the HOST stamps the keys
     before it knows the phase's outcome, so a phase that ends NON-pass would otherwise leave a
     meta claiming a certification no host ever issued, and the skip decision reads exactly
@@ -2055,7 +2032,7 @@ def _strip_certification(
 #: Every key `_stamp_certification` writes; `_strip_certification_keys` removes exactly these.
 _CERTIFICATION_STAMP_KEYS: tuple[str, ...] = (
     "artifact_hashes", "output_hash", "derivation_key", "derivation_inputs",
-    "derivation_transformation", "source_ir_id")
+    "derivation_transformation")
 
 
 def _strip_certification_keys(meta_path: Path) -> bool:
@@ -4803,7 +4780,7 @@ def _clear_stale_active_child_markers(
     reconciles a `running` prior too.
 
     Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
-    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
+    a live leaf loses its active-child marker mid-run. `docs/RUNBOOK.md`
     §3-1 records where the claim can degrade and what that costs.
 
     Removes the legacy active-child file and every per-arid marker, returning the cleared arids
@@ -4958,54 +4935,6 @@ def _protected_child_arids(repo_root: Path, orchestration_id: str) -> set[str]:
     # pruned like one. A `child_returns/` directory a past orchestration left behind is
     # no longer read.
     return protected
-
-
-def _reset_stale_child_running_node_steps(
-    repo_root: Path, orchestration_id: str
-) -> list[dict[str, str]]:
-    """Reset any node/step left at `child_running` by an abandoned launch.
-
-    `record_launch` transitions the node/step to `child_running`; an abandoned launch
-    (host died mid-flight) leaves it there even after its active-child marker is
-    cleared. The phase gates authorize child work when the node/step is
-    `child_running`; issue #171 PR-2 deleted the last of those gates, so what a stale
-    `child_running` leaves is a RECORD that disagrees with the workspace rather than a live
-    authority. A resume still resets it: the completion vouch and the `--stage pre_judge` audit
-    read phase_state, and an abandoned child left running there describes a run that is not
-    happening. Any `child_running` node/step is then stale → reset to
-    `not_started`; the resumed re-launch transitions it back to `child_running` for the real new
-    child. Returns the reset [{node_key_safe, step}].
-
-    THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
-    this function verifies nothing — it resets every `child_running` node/step in
-    `phase_state.json` to `not_started` unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
-    and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
-    CLAIM (an advisory `flock` under `~/.spec2science/start_claims/`, released by the OS when the
-    holding process dies) rather than by the recorded status. A terminal status still implies it;
-    a `running` status no longer contradicts it, which is why `resume_orchestration` now
-    reconciles a `running` prior too.
-
-    Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
-    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
-    §3-1 records where the claim can degrade and what that costs.
-    """
-    doc = _load_phase_state(repo_root, orchestration_id)
-    if not isinstance(doc, dict):
-        return []
-    node_states = doc.get("node_states")
-    if not isinstance(node_states, dict):
-        return []
-    reset: list[dict[str, str]] = []
-    for node_safe, steps in node_states.items():
-        if not isinstance(steps, dict):
-            continue
-        for step_key, state in list(steps.items()):
-            if state == "child_running":
-                steps[step_key] = "not_started"
-                reset.append({"node_key_safe": str(node_safe), "step": str(step_key)})
-    if reset:
-        _write_phase_state(repo_root, orchestration_id, doc)
-    return reset
 
 
 def _runs_jsonl_lock_path(repo_root: Path, orchestration_id: str) -> Path:
@@ -5244,30 +5173,6 @@ REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"}
 # `reuse` of the producer session the decision had said to throw away.
 REVOCATION_REPAIR_STRATEGIES: frozenset[str] = frozenset({"reuse", "restart", "re_execute"})
 
-# Validate's deliverables, as basenames under `runs/<run_id>/<node_key_safe>/`. Until issue
-# #250 (PR-1) Validate was the one phase with NO entry in `CERTIFYING_META_FILENAME_BY_STEP`,
-# so it got no `artifact_hashes` byte-pin and no revocable meta, and its certification rested
-# entirely on what `_phase_certified` reads. Reading only the verdict and the gate record let a
-# phase that DIED mid-write certify: `aggregate_verdict.json` and `post_judge_meta.json` are
-# written before the rest, so an attempt that stopped between them and `validate_meta.json` left
-# a chain that read as complete, and a `--resume` then recorded `skipped_certified` — which
-# clause (e) of the completion vouch reads as an EXEMPTION from the latest-attempt check.
-# `validate_meta.json` now carries the stamp (`_stamp_certification`, over exactly these
-# deliverables minus the meta itself), and since PR-2 of issue #250 the predicate reads the
-# stamp — a missing deliverable cannot re-hash — so this list's remaining reader is the
-# coupling test below.
-#
-# COUPLED to `workflow_conductor.phase_required_outputs(..., "validate")` by
-# `test_validate_certifying_deliverables_match_the_declared_outputs`, so adding a deliverable
-# there without deciding about it here fails rather than silently narrowing what certifies.
-VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES: tuple[str, ...] = (
-    "aggregate_verdict.json",
-    "verdict.json",
-    "summary.json",
-    "semantic_review.json",
-    "validate_meta.json",
-)
-
 
 def _normalized_until_phase(token: Any) -> str | None:
     """`token` as a member of `STEP_KEYS_FOR_NODE_STATE`, or None.
@@ -5310,8 +5215,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
     if reached:
         invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
 
-
-PARALLEL_NODES_ENV_VAR = "SPEC2SCIENCE_ALLOW_PARALLEL_NODES"
 
 STEP_KEYS_FOR_NODE_STATE: tuple[str, ...] = (
     "compile",
@@ -6012,56 +5915,6 @@ def pre_phase_launch(
     return merged
 
 
-def pre_orchestration_start(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    event: str,
-) -> dict[str, Any]:
-    """A pre-workflow-start hook applied idempotently at the `init` / `preflight` entry."""
-    ws = repo_root / "workspace"
-    created_ws: str | None = None
-    if not ws.exists():
-        ws.mkdir(parents=True, exist_ok=True)
-        created_ws = "created_workspace_root"
-    parallel_explicit = os.environ.get(PARALLEL_NODES_ENV_VAR, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    orch_root = _orchestration_root(repo_root, orchestration_id)
-    orch_root.mkdir(parents=True, exist_ok=True)
-    meta_path = orch_root / "orchestration_meta.json"
-    # The read-modify-write of `orchestration_meta.json` is under the same lock
-    # `mark_dependency_readiness` and `write_preflight`'s own readiness block take: this
-    # hook runs at the START of `write_preflight`, before that block, and unlocked it
-    # could read the meta, lose the race to a concurrent `mark-dependency-readiness`, and
-    # write its stale copy back — the verified `dependency_readiness` gone, and the
-    # readiness block that follows then initialising a fail-closed record over it (an
-    # audit-record clobber; the launch gate recomputes live and decided nothing from it).
-    # Measured as an intermittent CI failure of
-    # `test_concurrent_preflight_and_mark_do_not_clobber_verified` (issue #250 PR-3).
-    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
-        meta: dict[str, Any] = {}
-        if meta_path.is_file():
-            try:
-                loaded = _read_json(meta_path)
-            except (OSError, json.JSONDecodeError):
-                loaded = None
-            if isinstance(loaded, dict):
-                meta = loaded
-        meta.setdefault("parallel_nodes_explicit", parallel_explicit)
-        meta.setdefault("parallel_nodes_policy", "sequential_default")
-        parallel_nodes_explicit_persisted = meta["parallel_nodes_explicit"]
-        _write_json(meta_path, meta)
-    detail = {
-        "event": event,
-        "workspace_bootstrap": created_ws,
-        "parallel_nodes_explicit": parallel_nodes_explicit_persisted,
-    }
-    return {"status": "pass", "hook": "pre_orchestration_start", **detail}
-
-
 # An id interpolated directly into a repo-relative path is constrained to an explicit
 # allowlist rather than a denylist: only `[A-Za-z0-9_-]` (the superset of the canonical `run_` /
 # `src_` id forms). This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but
@@ -6501,15 +6354,14 @@ LEAF_ENV_ALLOWED_PREFIXES = ("SPEC2SCIENCE_",)
 # Inside the prefix but deliberately dropped. `SPEC2SCIENCE_HOME` is the deprecated alias for
 # codex's configuration home; like `CODEX_HOME` it must reach the leaf through the bwrap
 # profile's `--setenv` alone, so that the home the leaf reads is the home whose settings
-# were SHA-pinned. The conductor still READS it (to raise on a conflict with CODEX_HOME)
-# — it just does not forward it.
+# were SHA-pinned. The preflight still READS it (`_probe_codex_home_writable` refuses a
+# conflict with CODEX_HOME) — no leaf launch forwards it.
 LEAF_ENV_PREFIX_EXCEPTIONS = ("SPEC2SCIENCE_HOME",)
 
-# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling, the
-# auto-memory closure, and the closure of the CLI's nonessential traffic (telemetry, update
-# checks; issue #534 step 4 — inside the leaf's network namespace each would be a refused
-# route, logged as one).
-CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling and the
+# closure of the CLI's nonessential traffic (telemetry, update checks; issue #534 step 4 —
+# inside the leaf's network namespace each would be a refused route, logged as one).
+CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS",
                           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 
 # NAMED EXCLUSIONS — decided, not overlooked (2026-08-20). The proxy / TLS families
@@ -9291,8 +9143,8 @@ def resume_orchestration(
     # enable. The exclusive claim answers it directly instead: a driver that is gone does not
     # hold its claim, so a resume that GOT here already knows nothing else is driving this run.
     # The crash reconciliations below therefore have to run for a `running` prior as well, or a
-    # resume recovers the status and leaves the dead child's markers, orphan edges and stale
-    # `child_running` phase state behind it. A status the runtime does not write (only a
+    # resume recovers the status and leaves the dead child's markers and orphan edges behind
+    # it. A status the runtime does not write (only a
     # hand-run `init --status` / `set-status --status` stores one) reconciles the same way; its
     # refusal went in issue #643.
     #
@@ -9350,11 +9202,11 @@ def resume_orchestration(
     # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
     # check in _validate_orchestration_completion_for_pass. Idempotent.
     pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
-    # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
-    # child is live, and a phase_state that says otherwise misdescribes the run to the
-    # completion vouch and the `--stage pre_judge` audit. The phase-state init below
-    # preserves node_states, so this reset survives into the resumed run.
-    reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
+    # A stale `child_running` the abandoned launch left in phase_state is NOT reset: no reader
+    # tells it from `not_started` (the completion vouch and the pre_judge audit read
+    # `skipped_certified`, write_step_result reads `child_finished`, and a transition reads no
+    # from-state), and the re-launch overwrites it. The reset and its
+    # `resume_reset_stale_child_running` log event went in issue #643 PR-5.
     # The `driver` block is GONE (issue #177): nothing reads it any more, and a record that
     # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
@@ -9420,23 +9272,8 @@ def resume_orchestration(
             {
                 "ts": _utc_now_iso(),
                 "event": "resume_cleared_stale_active_child",
-                "from": "child_running",
-                "to": "not_started",
                 "note": "stale active_child markers cleared for checkpoint resume",
                 "cleared_active_child_arids": cleared_active_child,
-            },
-        )
-    if reset_child_running:
-        _append_phase_state_log(
-            repo_root,
-            orchestration_id,
-            {
-                "ts": _utc_now_iso(),
-                "event": "resume_reset_stale_child_running",
-                "from": "child_running",
-                "to": "not_started",
-                "note": "stale child_running node/step authority reset for checkpoint resume",
-                "reset_node_steps": reset_child_running,
             },
         )
     return meta
@@ -12091,8 +11928,6 @@ def init_orchestration(
             # across re-init / resume, so the recorded SHA stays the source that
             # produced the run rather than being overwritten by a later HEAD.
             for key in (
-                "parallel_nodes_explicit",
-                "parallel_nodes_policy",
                 "repo_revision",
                 "invocation",
             ):
@@ -12211,7 +12046,6 @@ def init_orchestration(
         status="running",
     )
 
-    pre_orchestration_start(repo_root, orchestration_id, event="init")
     return meta
 
 
@@ -12222,7 +12056,6 @@ def write_preflight(
 ) -> dict[str, Any]:
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
-    pre_orchestration_start(repo_root, orchestration_id, event="preflight")
 
     stored = dict(payload)
     if "probed_at" not in stored:
@@ -13506,8 +13339,6 @@ def write_step_result(
     if str(result.get("status", "")).strip().lower() == "pass":
         _stamp_certification(
             repo_root,
-            orchestration_id,
-            node_key=node_key,
             step=step_token,
             required_outputs=_declared_outputs,
             derivation=result.get("derivation"),
@@ -13587,9 +13418,9 @@ def revoke_artifact(
     bookkeeping, and a COLD re-run reads none of it; the revocation is what `check-phase-certified`
     consults, so it is what carries the decision into every later run.
 
-    Downstream phases need no revocation of their own: each binds to the id of the phase above
-    it (`source_ir_id` / `source_source_id` / `trial_meta.source_binary_id`), so a re-derived
-    phase leaves them unbound. A phase whose meta was never written is a `noop` — there is
+    Downstream phases need no revocation of their own: each binds the output hash of the phase
+    above it in its derivation key, so a re-derived phase whose output differs moves their
+    keys. A phase whose meta was never written is a `noop` — there is
     nothing to revoke, which is not an error. (Validate certified no meta until issue #250
     PR-1 gave it `validate_meta.json`; every phase certifies one now.)
 

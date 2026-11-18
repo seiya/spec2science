@@ -157,12 +157,14 @@ class StageMetaTypeViolationsTests(unittest.TestCase):
 
 
 class CertificationKeyTypeTests(unittest.TestCase):
-    """Issue #177: the two keys `write_step_result` stamps on a pass. They are type-checked
+    """Issue #177: the `artifact_hashes` key `write_step_result` stamps on a pass. It is type-checked
     here rather than only at the writer because `_phase_certified` REFUSES a phase whose
     hashes do not re-compute — a structurally wrong stamp would read as a tampered
     deliverable and send the operator hunting for a change nobody made."""
 
     def test_a_conformant_stamp_is_accepted(self) -> None:
+        # `source_ir_id` is no longer stamped (issue #643 PR-5); a meta certified before that
+        # still carries it, and it stays type-clean.
         meta = dict(_conformant(),
                     artifact_hashes={"workspace/ir/s/i1/spec.ir.yaml": "sha256:" + "a" * 64},
                     source_ir_id="i1")
@@ -204,13 +206,6 @@ class CertificationKeyTypeTests(unittest.TestCase):
                 violations = stage_meta_type_violations(meta, step_token="compile")
                 self.assertEqual(len(violations), 1)
                 self.assertIn("a/b.f90", violations[0])
-
-    def test_source_ir_id_must_be_a_non_empty_string(self) -> None:
-        for bad in ("", "   ", 1, None, ["i1"]):
-            with self.subTest(value=bad):
-                meta = dict(_conformant(), source_ir_id=bad)
-                self.assertEqual(stage_meta_type_violations(meta, step_token="generate"),
-                                 ["source_ir_id must be non-empty string"])
 
     def test_the_keys_are_optional(self) -> None:
         """A meta that carries neither is type-clean. It is simply not CERTIFIED — which is

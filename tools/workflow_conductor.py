@@ -206,10 +206,12 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     "build": (None,),
     # validate wraps the LLM judge in two deterministic conductor-in-process gates,
     # mirroring the compile/generate deterministic-interleave model:
-    #   - pre_judge  (Conductor._pre_judge_inproc):  the pre-spawn dependency-DAG readiness
-    #     check (a --with-deps closure not built+validated in its own pipeline). Runs BEFORE
-    #     execute so a cold judge is never spawned for an incomplete closure. A failure is a
-    #     non-physics integrity blocker -> fail_closed (no judge has run).
+    #   - pre_judge  (Conductor._pre_judge_inproc):  records `pre_judge_meta.json` as `pass`
+    #     and checks nothing. The pre-spawn dependency-DAG readiness check (a --with-deps
+    #     closure not built+validated in its own pipeline) is `run_phase`'s, before any
+    #     substep (`_judge_pre_spawn_dag_block`), so a cold judge is never spawned for an
+    #     incomplete closure; it fails the phase closed (issue #643 PR-5 removed the duplicate
+    #     check `_pre_judge_inproc` also ran).
     #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
     #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
     #     nor an MCP grant. Since Z3 (issue #169) it holds no TOOLS either — it is a pure
@@ -287,7 +289,6 @@ BUILD_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     "compile_error": ("generate", "reuse"),
     "link_error": ("generate", "reuse"),
     "make_error": ("generate", "restart"),
-    "dependency_violation": ("generate", "restart"),
     "validate_post_build_violation": ("generate", "restart"),
 }
 
@@ -309,11 +310,9 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 
 # Gate categories that are TERMINAL (fail_closed), NOT a warm Generate.generate retry: the
 # failing condition is one the Generate leaf cannot repair by re-authoring its source, so retrying is
-# futile. `stale_dependency_ir` — the node's OWN certified IR predating the current contract (the
-# §5.1 carrier surface, or since issue #238 an io_contract rule) reached Generate.gate on a resume
-# that skipped Compile; the fix is a re-certification, not a re-author. Since #238 readiness
-# (`_ir_certification`) refuses such an IR before Generate is reached, so this category is the
-# gate-side backstop; `--resume` re-derives the IR through Compile.
+# futile. (`stale_dependency_ir`, the node's own certified IR predating the current contract,
+# left with its exit code in issue #643 PR-5: readiness (`_ir_certification`) refuses such an IR
+# before Generate is reached.)
 # `static_frontend_unavailable` — the Fortran structure front end (`tools/backends/language/fortran/structure.py`,
 # tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
 # have nothing to read; no source the leaf can author changes that, and a warm retry would spend
@@ -338,7 +337,7 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `lint_finding_unattributed` — the gate could not place a finding on either side of that
 # partition. Assuming the leaf is how this whole class hides, so it fails closed instead.
 GATE_FAILURE_TERMINAL: frozenset[str] = frozenset(
-    {"stale_dependency_ir", "static_frontend_unavailable",
+    {"static_frontend_unavailable",
      "host_rendered_lint_findings", "host_authored_artifact_violation",
      "lint_finding_unattributed"}
 )
@@ -355,7 +354,6 @@ _GATE_CATEGORY_CANON_ORDER: tuple[str, ...] = (
     "lint_finding_unattributed",
     "workspace_root_violation",
     "post_generate_violation",
-    "stale_dependency_ir",
     "static_frontend_unavailable",
     "host_authored_artifact_violation",
 )
@@ -549,11 +547,11 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 }
 
 # Validate.execute STRUCTURAL failure categories that are TERMINAL (fail_closed), NOT any warm
-# route out of the table above. Both name a condition NO leaf can repair by re-authoring source:
+# route out of the table above. Each names a condition NO leaf can repair by re-authoring source:
 # `static_frontend_unavailable` is an uninstalled structure front end on the machine running
-# the gate (see `GATE_FAILURE_TERMINAL` above), `stale_dependency_ir` a certified IR the leaf
-# does not own. `_execute_inproc` records
-# them from the post_execute validator's dedicated exit codes (3 / 4), which no leaf can write.
+# the gate (see `GATE_FAILURE_TERMINAL` above). `_execute_inproc` records
+# each from the post_execute validator's dedicated exit codes (3 / 5 / 6), which no leaf can
+# write. (`stale_dependency_ir`, exit code 4, left in issue #643 PR-5.)
 #
 # DELIBERATELY A SEPARATE SET FROM `GATE_FAILURE_TERMINAL`, not an alias of it: that one is the
 # Generate.gate subsystem's contract and this one is Validate.execute's, and the two are free to
@@ -590,22 +588,9 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `--rederive generate` for it. `Generate.gate`'s presence floor does not stop either before the
 # run — it asks only that a kernel exist; verify G6 is the one rule there, for the first. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
-    {"stale_dependency_ir", "static_frontend_unavailable",
+    {"static_frontend_unavailable",
      "host_authored_artifact_violation", "device_kernels_absent"}
 )
-
-# The categories `GATE_FAILURE_TERMINAL` carries that Validate.execute has no counterpart for.
-# Named HERE rather than written out again in a test, so the test compares two definitions
-# instead of restating one (a restated set drifts, and this pair already has a comment saying
-# so). Both are produced by the Generate.gate lint attribution (issue #112); execute runs no
-# linter, so neither can reach `_execute_inproc`.
-GATE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset(
-    {"host_rendered_lint_findings", "lint_finding_unattributed"}
-)
-
-# The categories `VALIDATE_EXECUTE_FAILURE_TERMINAL` carries that Generate.gate has no
-# counterpart for: a run's device trace exists only at Validate.execute (issue #307).
-EXECUTE_ONLY_TERMINAL_CATEGORIES: frozenset[str] = frozenset({"device_kernels_absent"})
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
 # no-category `validate_execute_fail` restart reason and of the per-test predicate reasons
@@ -942,7 +927,8 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
       - empty (a FAIL with no parseable category) -> escalate("gate_fail_no_category")
       - any TERMINAL category present             -> fail_closed (dominates a co-occurring warm
                                                      category; the leaf cannot re-author its way
-                                                     out of its node's stale certified IR)
+                                                     out of a machine or host-authored-file
+                                                     condition)
       - any UNKNOWN category present              -> escalate (a novel category the tables do not
                                                      cover; the diagnostician decides)
       - all categories known + non-terminal       -> retry ("generate", "reuse")
@@ -954,9 +940,8 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
         return RouteDecision("escalate", reason="gate_fail_no_category")
     reason = "gate_" + "+".join(ordered)
     if any(c in GATE_FAILURE_TERMINAL for c in ordered):
-        # No warm retry: the node's own stale certified IR (or any terminal category) is not
-        # repairable by re-authoring source. Fail closed so the operator re-certifies instead of
-        # exhausting Generate retries. Terminal dominates any co-occurring warm category.
+        # No warm retry: a terminal category is not repairable by re-authoring source. Fail
+        # closed so the operator fixes the condition instead of exhausting Generate retries. Terminal dominates any co-occurring warm category.
         return RouteDecision("fail_closed", reason=reason)
     unknown = [c for c in ordered if c not in GATE_FAILURE_ROUTING]
     if unknown:
@@ -969,13 +954,14 @@ def classify_gate_failure(categories: list[str] | None) -> RouteDecision:
 
 
 def classify_compile_static_failure(failure_category: str | None) -> RouteDecision:
+    # The one writer (`_compile_static_inproc`) records the literal `compile_static_violation`
+    # with every `fail`, so a missing category is a host defect, not a leaf's: the measured
+    # case is a `pass` meta the freshness gate of `determine_substep_status` reads as stale.
+    # Breakage it reports: without it the lookup below fails on `None` with no name.
     if not failure_category:
-        return RouteDecision("escalate", reason="compile_static_fail_no_category")
-    routed = COMPILE_STATIC_FAILURE_ROUTING.get(failure_category)
-    if routed is None:
-        return RouteDecision("escalate",
-                             reason=f"compile_static_unknown_category:{failure_category}")
-    target, strategy = routed
+        raise RuntimeError("compile_static_fail_no_category: compile.static failed and its "
+                           "meta names no failure_category (a stale `pass` meta?)")
+    target, strategy = COMPILE_STATIC_FAILURE_ROUTING[failure_category]
     return RouteDecision("retry", target_phase=target, repair_strategy=strategy,
                          reason=f"compile_static_{failure_category}")
 
@@ -984,8 +970,11 @@ def classify_compile_static_failure(failure_category: str | None) -> RouteDecisi
 # records no failure category (issue #114). Both substeps can fail for a reason their meta does
 # not name — the measured case is a `pre_judge` whose meta says `status: "pass"` but whose
 # deliverable failed the freshness gate in `determine_substep_status` — and naming that failure
-# after the one violation the substep DOES classify (`pre_judge_dag_incomplete`) writes a record
-# that is false, and points the operator at a dependency closure the same record shows complete.
+# after a violation the substep did not record (issue #114's case was `pre_judge_dag_incomplete`,
+# which the substep classified until issue #643 PR-5 removed its copy of the DAG check, which
+# `run_phase` already ran before any substep) writes a
+# record that is false, and points the operator at a dependency closure the same record shows
+# complete.
 VALIDATE_GATE_NO_CATEGORY_SUFFIX = "_failed_without_category"
 # ... and when the meta is absent or unreadable altogether: the substep failed and left no record
 # of why. Distinct from the above so the two are greppable apart (an absent meta usually means the
@@ -1010,8 +999,9 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
     since it is a pure function callers may reach with anything. Four outcomes:
 
       - a recorded `failure_category` -> `validate_<category>`, the shape the run_phase branch
-        already used, which is also what preserves the one historic spelling
-        (`pre_judge_dag_incomplete` -> `validate_pre_judge_dag_incomplete`);
+        already used. Only `post_judge` records one today: `pre_judge` writes `pass` and checks
+        nothing since issue #643 PR-5, and `run_phase` names the DAG failure
+        `validate_pre_judge_dag_incomplete` itself, before any substep;
       - a meta whose own `status` is `pass`, with no category
         -> `validate_<substep>_deliverable_not_freshly_written`. This is NOT a vague answer: it
         is the one thing the state can mean. `determine_substep_status` fails a gate substep iff
@@ -1042,9 +1032,10 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
         if str(meta.get("status") or "").strip() == "pass":
             return f"validate_{substep}{VALIDATE_GATE_STALE_DELIVERABLE_SUFFIX}"
         return f"validate_{substep}{VALIDATE_GATE_NO_CATEGORY_SUFFIX}"
-    # `validate_pre_judge_dag_incomplete`, the one historic spelling this function has to
-    # preserve, is what this line already produces for that category — an explicit branch for
-    # it would be an equivalent mutant (round 1 confirmed: deleting one left every test green).
+    # No category needs an explicit branch: `validate_pre_judge_dag_incomplete`, the historic
+    # spelling, is produced by `run_phase` directly since issue #643 PR-5, and was what this
+    # line produced for it before (round 1 of #114 confirmed an explicit branch an equivalent
+    # mutant).
     return f"validate_{category}"
 
 
@@ -1632,17 +1623,11 @@ def build_launch_request(
     # satisfied) but it produces nothing and reads nothing from disk, so every phase-specific
     # must-read and output set below is skipped for it.
     #
-    # MEASURED, so the next reader does not have to guess which half is load-bearing: of the
-    # four places `diagnose` is consulted below, only `deterministic` changes the payload a
-    # PURE diagnose request comes out with. Building all four phases' requests with the skips
-    # and again with them neutralised differs on `deterministic` for `build` and on NOTHING
-    # else, because the pure override at the end empties `allowed_output_paths` and the three
-    # skill fields anyway. The `deterministic` one is required — a `build` diagnostician IS a
-    # leaf, and `leaf_mode=pure` with `deterministic=True` is refused at validation. The other
-    # three are kept for the reason a fail-safe is kept rather than the reason a check is: they
-    # state that this launch claims no read, they cost nothing, and they are what a diagnose
-    # launch that is NOT pure would need. They are NOT pinned, and cannot be through this
-    # function's return value.
+    # Of the two places `diagnose` is consulted below, only `deterministic` changes the payload
+    # a PURE diagnose request comes out with: a `build` diagnostician IS a leaf, and
+    # `leaf_mode=pure` with `deterministic=True` is refused at validation. The `build` branch's
+    # skip changes nothing, because the pure override at the end empties
+    # `allowed_output_paths` anyway.
     diagnose = substep == DIAGNOSE_SUBSTEP
     # `deterministic` means "this substep runs in-process, with no leaf". The diagnostician IS
     # a leaf, so it is never deterministic — including on `build`, whose PHASE is in-process
@@ -1687,11 +1672,13 @@ def build_launch_request(
         # carries the accounting of its one remaining oddity.
         req["runner_host_authored"] = True
 
+    # Only the deterministic substeps list their outputs below. Every LLM substep and the
+    # diagnostician is a workshop leaf, which authors nothing: the `pure_leaf` override at the
+    # end sets its list to `[]` (the per-substep lists these branches used to spell for them
+    # had no reader, issue #643).
     if step == "compile":
         req["dependency_ref"] = f"{spec}/deps.yaml"
-        if diagnose:
-            pass
-        elif substep == "static":
+        if substep == "static":
             # Deterministic in-process compile gate: the conductor authors
             # compile_static_meta.json (the only freshness-gated deliverable) from
             # validate_workspace_root + validate_pipeline_semantics --stage compile.
@@ -1699,47 +1686,11 @@ def build_launch_request(
             req["allowed_output_paths"] = [
                 f"{refs.ir_ref}/compile_static_meta.json",
             ]
-        else:
-            # generate/verify LLM substeps read the NL spec + tests + deps. spec.ir.yaml is a
-            # must-read only for verify (generate authors it).
-            #
-            # `dependency_graph.json` is a must-read for GENERATE only, and it is not optional:
-            # since issue #175 the node's direct dependency set is the sidecar's
-            # `all_nodes − self − transitive_deps`, NOT the `deps.yaml` declaration (a `profile`
-            if substep == "verify":
-                # Compile.verify authors NOTHING in spec.ir.yaml — all 5 sections (incl.
-                # io_contract) are authored by Compile.generate and the deterministic
-                # Compile.static gate validated the IR before verify runs. Verify's sole write
-                # is ir_meta.json (verification_status), so the IR cannot be mutated post-gate
-                # (which would bypass --stage compile). spec.ir.yaml stays a must-read (verify
-                # reads it to check), but is NOT a write target.
-                req["allowed_output_paths"] = [
-                    f"{refs.ir_ref}/ir_meta.json",
-                ]
-            else:  # generate authors the IR + its meta
-                # dependency_graph.json is deliberately NOT listed: the derived
-                # closure/topo graph is conductor-authored at Compile phase start
-                # (_write_dependency_graph); compile.generate authors only the IR's
-                # direct_deps. Keeping it out of allowed_output_paths (and the
-                # file-tool set derived from it) makes the sidecar leaf-non-writable.
-                req["allowed_output_paths"] = [
-                    f"{refs.ir_ref}/spec.ir.yaml",
-                    f"{refs.ir_ref}/ir_meta.json",
-                ]
     elif step == "generate":
         req["source_id"] = refs.source_id
         req["dependency_ref"] = refs.ir_ref
         src = refs.source_dir()
-        if diagnose:
-            pass
-        elif substep == "generate":
-            # The generate leaf is pure since Z4 (issue #171): it authors nothing; the host
-            # writes the sources from the document it returns, and the build control file and
-            # lineage.json itself. Its output set is empty here as well as in the pure override below —
-            # the list of leaf-authored sources this branch used to spell (one language's names
-            # and one build system's control file) had no reader (issue #424 PR-2).
-            req["allowed_output_paths"] = []
-        elif substep == "gate":
+        if substep == "gate":
             # Deterministic in-process gate: the conductor authors gate_meta.json (the single
             # freshness-gated deliverable, unioning the lint / syntax / static checkers). The
             # lint and syntax checkers both append to the canonical src/command_log.jsonl, so it
@@ -1753,19 +1704,6 @@ def build_launch_request(
             req["allowed_output_paths"] = [
                 f"{src}/gate_meta.json",
                 f"{src}/src/command_log.jsonl",
-            ]
-        else:  # verify
-            # Verify's SOLE write is source_meta.json (verification_status): it inspects the
-            # producer sources (model / runner|checks / Makefile) but never rewrites them — a
-            # fail requests regeneration under a NEW source_id (SKILL workflow-generate-verify
-            # Scope + Rule 3), never an in-place edit. Those sources were certified by the
-            # deterministic lint / syntax / static gates that run BEFORE verify and never re-run,
-            # so listing them (or the Makefile / command_log) here would let a verify turn smuggle
-            # an uncertified source into Build. Narrowed to source_meta.json on ALL turns; the
-            # runtime pins verify's write_root to the same file (a structural second layer under
-            # the pattern-based file-tool guard).
-            req["allowed_output_paths"] = [
-                f"{src}/source_meta.json",
             ]
     elif step == "build":
         req["source_id"] = refs.source_id
@@ -1789,10 +1727,9 @@ def build_launch_request(
         req["run_id"] = refs.run_id
         req["dependency_ref"] = refs.pipeline_ref
         rundir = refs.run_node_dir()
-        if diagnose:
-            pass
-        elif substep == "pre_judge":
-            # Deterministic pre-spawn dependency-DAG readiness gate. The conductor authors
+        if substep == "pre_judge":
+            # Deterministic substep that records `pass` and checks nothing (the dependency-DAG
+            # readiness gate is `run_phase`'s, before any substep). The conductor authors
             # pre_judge_meta.json (the only freshness-gated deliverable) in-process; no leaf,
             # no must-read, no run evidence yet.
             req["allowed_output_paths"] = [f"{rundir}/pre_judge_meta.json"]
@@ -1816,8 +1753,7 @@ def build_launch_request(
                 f"{rundir}/trial_meta.json",
                 f"{rundir}/quality_check.json",
                 # R2: execute authors verdict.json deterministically (the host's predicates over
-                # the captures), so the judge leaf authors only semantic_review.json. Moved out
-                # of the judge's allowed_output_paths (below).
+                # the captures), so the judge leaf authors only semantic_review.json.
                 f"{rundir}/verdict.json",
             ]
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
@@ -1845,17 +1781,6 @@ def build_launch_request(
                 f"{refs.source_dir()}/src/command_log.jsonl",
             ]
             req["allowed_output_paths"] = outs
-        elif substep == "judge":
-            # R2: the judge authors ONLY semantic_review.json. verdict.json (per_test +
-            # failure_class) is now deterministically host-authored at execute from the IR
-            # predicates over the captures; the deterministically-derivable aggregate_verdict /
-            # summary / validate_meta are conductor-authored in post_judge (G6,
-            # _author_derived_validate_artifacts). The judge is a pure semantic pass.
-            req["allowed_output_paths"] = [
-                f"{rundir}/semantic_review.json",
-            ]
-    else:  # pragma: no cover - guarded by SUBSTEPS keys
-        raise ValueError(f"unknown step: {step}")
 
     # Orientation-only dependency facts for the LLM leaves that benefit (generate's
     # semantic authoring, validate.judge's dependency-PASS review). Deterministic phases
@@ -1879,21 +1804,6 @@ def build_launch_request(
     if exemplar and step == "generate" and substep == "generate":
         req["exemplar"] = exemplar
     req.update(rep)
-    # A verify substep's allowed_output_paths is already narrowed to exactly its stage-meta file
-    # on ALL turns (compile.verify -> ir_meta.json, generate.verify -> source_meta.json, above),
-    # so a verify_meta_schema repair turn — which re-authors ONLY that meta — needs no special-case
-    # narrowing here: the normal list already IS the meta. The THREE write-authorization layers this
-    # comment used to describe — `allowed_file_tool_paths` into the output-manifest write guard, the
-    # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
-    # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
-    # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
-    # branch. So the narrowing above is dead for both verify substeps, which are pure; it
-    # survives for a deterministic launch, where `determine_substep_status` reads the list
-    # (record-launch no longer matches it against the phase contract, issue #643). The hazard the three layers were defence in depth
-    # against — a source rewritten on a verify turn, which would
-    # reach Build uncertified, the lint/syntax/static gates having already run and never re-running
-    # — is refused by the sandbox itself, not merely by the hook. The constraint therefore does not
-    # rely on the findings text (which the slim renderer fences as untrusted data anyway).
     # Slim warm-resume repair turn: when the conductor has decided the producer session is
     # resumable (warm_resume) AND this is a reuse repair carrying findings, mark the request
     # so the runtime renders the findings-only slim prompt.
@@ -1907,8 +1817,7 @@ def build_launch_request(
     # lineage's tree), the lineage the launch belongs to and the provider whose tool surface its
     # prompt states, and EMPTY write/skill fields. `allowed_output_paths` is forced empty (the
     # host writes every artifact from the tree's snapshot AFTER the child window closes), and
-    # the three skill fields are declared empty (no SKILL exists to read). Applied LAST so it
-    # overrides the generate branch's leaf-authored output set. On a warm-resume repair the
+    # the three skill fields are declared empty (no SKILL exists to read). On a warm-resume repair the
     # lineage already holds the context, so pure_context is omitted (the validator exempts it
     # for a warm+reuse+findings request); a cold launch carries it. Every caller that passes
     # `pure_leaf=True` passes a lineage and its entry's provider too.
@@ -2475,8 +2384,8 @@ LEAF_STDOUT_RECORD_TRUNCATED_LABEL = "leaf_stdout_record_truncated"
 # rather than spelled at each call site because an operator greps for them (the capture and
 # tail markers are named in `docs/RUNBOOK.md`; the read-error ones are diagnostics that only
 # show up in a post-mortem), and because NONE of them may match a `_LEAF_INFRA_ERROR_PATTERNS`
-# entry — a leaf able to write one could claim an infra tag it did not earn. The set is what
-# `_LEAF_CONDUCTOR_MARKER_LABELS` below makes testable in one place.
+# entry — a leaf able to write one could claim an infra tag it did not earn. The test that
+# pins this reads every module-level `LEAF_*_LABEL` name, so keep that spelling.
 # How many structured terminal events (`error` / `turn.failed`) a codex leaf's diagnostics
 # retain. These are spliced into `stderr` AFTER every stream budget has been applied, so
 # without a bound of their own they are the one capture on either backend that a leaf can
@@ -2493,12 +2402,6 @@ LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL = "leaf_stdout_capture_truncated"
 LEAF_STDERR_CAPTURE_TAIL_LABEL = "leaf_stderr_capture_tail"
 LEAF_STDERR_READ_ERROR_LABEL = "leaf_stderr_read_error"
 LEAF_STDOUT_READ_ERROR_LABEL = "leaf_stdout_read_error"
-_LEAF_CONDUCTOR_MARKER_LABELS = (
-    LEAF_STDOUT_RECORD_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TRUNCATED_LABEL,
-    LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TAIL_LABEL,
-    LEAF_STDERR_READ_ERROR_LABEL, LEAF_STDOUT_READ_ERROR_LABEL,
-    LEAF_FAILURE_EVENTS_TRUNCATED_LABEL,
-)
 
 
 def _leaf_stdout_record_truncated_marker(limit: int) -> str:
@@ -3998,10 +3901,6 @@ class Conductor:
     _compile_claim: contextlib.ExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.llm_config is None:
-            raise TypeError(
-                "Conductor requires llm_config: the leaf-model authority is the only thing "
-                "that says which provider and model each leaf launches")
         self._resolve_claude_model_aliases()
         # Codex writes its bookkeeping through the JSON-transaction helper, so a crashed prior
         # run may leave a half-applied transaction to roll forward. Keyed on "does ANY entry
@@ -4127,15 +4026,10 @@ class Conductor:
 
 
     def _codex_pinned_model(self, entry: ResolvedLeafEntry | None = None) -> str:
-        """Return the operator-selected Codex model for THIS leaf, never a mutable leaf claim."""
-        model = (entry if entry is not None else self.entry_for(None, None)).model.strip()
-        if not model or model.lower() == "codex":
-            raise ValueError(
-                "Codex workflow leaves require an explicit model slug: set `model:` on this "
-                "leaf's entry or in `defaults`. The generic 'codex' alias cannot provide "
-                "authoritative provenance"
-            )
-        return model
+        """Return the operator-selected Codex model for THIS leaf, never a mutable leaf claim.
+        A blank slug or the generic `codex` alias is refused before the run by
+        `LlmConfig.validate_runnable` (`llm_config_codex_cli_requires_model`)."""
+        return (entry if entry is not None else self.entry_for(None, None)).model.strip()
 
     def _codex_model_provenance(self, entry: ResolvedLeafEntry) -> tuple[str, str]:
         """The model a codex leaf is recorded as having run, and the provenance that says why.
@@ -4188,18 +4082,11 @@ class Conductor:
         `ResolvedLeafEntry` carries no `(phase, substep)`. A PRODUCING launch takes its
         wrapper's endpoint as `mcp_config_json` (`leaf_contract.workshop_leaf_flags`,
         `leaf_contract.codex_workshop_overrides`); a READING launch (a judging substep, or the
-        diagnostician) is served no endpoint, so it takes none and the reading flag set. Either
-        combination the other way round is refused: a leaf would hold the wrapper under a
-        reading contract or lack it under a producing one.
+        diagnostician) is served no endpoint, so it takes none and the reading flag set. Both
+        callers derive `reading` and the endpoint from the same predicate.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         base = _provider_command_base(entry)
-        if reading == (mcp_config_json is not None):
-            raise ValueError(
-                "leaf_command: a producing workshop launch takes its wrapper's mcp_config_json "
-                "and a reading one takes none (reading="
-                f"{reading!r}, mcp_config_json="
-                f"{'given' if mcp_config_json is not None else 'absent'})")
         if entry.provider == "claude_cli":
             # `-p` runs non-interactively, and `workshop_leaf_flags` below is the whole of the
             # leaf's surface beyond the model selection: the file tools its kind is served, the
@@ -4228,40 +4115,38 @@ class Conductor:
             from tools.leaf_contract import workshop_leaf_flags
             flags += workshop_leaf_flags(mcp_config_json, reading=reading)
             return [*base, *flags, "-p"]
-        if entry.provider == "codex_cli":
-            # JSONL is mandatory: thread.started is the sole authoritative Codex
-            # session identity, and the warm resume of every repair turn is keyed on it.
-            model = self._codex_pinned_model(entry)
-            # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
-            # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
-            # would leave the gate green on a CLI that dropped it. Codex has no `--effort`
-            # flag; the reasoning level is a config override on both subcommands.
-            effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
-                            if entry.effort else [])
-            # codex's `workspace-write` sandbox: its shell and patch tool write inside the
-            # working directory, which the lineage profile makes the tree (issue #534 step 2
-            # PR-2), and the wrapper's endpoint on a producing launch
-            # (`leaf_contract.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
-            # sends it with `strict: true` hardcoded). `--skip-git-repo-check`: the tree is not
-            # a git checkout, and codex refuses an untrusted non-git cwd before any API call
-            # without it (measured on codex-cli 0.154.0, rc 1). `codex exec resume` has no
-            # `--sandbox`, so resume re-pins the policy through the `sandbox_mode` override both
-            # subcommands share; passing `--sandbox` there aborts the turn at argv parsing.
-            # `-` is the documented stdin sentinel for the positional prompt on BOTH
-            # subcommands; an omitted positional on `resume` would be read as the session id.
-            from tools.leaf_contract import codex_workshop_overrides
-            overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
-            if resume_session_id:
-                return [*base, "exec", "resume", "--model", model, resume_session_id,
-                        *effort_flags, "--ignore-rules",
-                        "--config", 'sandbox_mode="workspace-write"',
-                        "--skip-git-repo-check", *overrides, "--json", "-"]
-            return [*base, "exec", "--model", model, *effort_flags,
-                    "--ignore-rules", "--sandbox", "workspace-write",
+        # codex_cli: the other CLI provider (`llm_config.CLI_PROVIDERS`). An HTTP entry never
+        # reaches here: `spawn_leaf` refuses it and `_launch_setting_surface` returns first.
+        # JSONL is mandatory: thread.started is the sole authoritative Codex
+        # session identity, and the warm resume of every repair turn is keyed on it.
+        model = self._codex_pinned_model(entry)
+        # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
+        # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
+        # would leave the gate green on a CLI that dropped it. Codex has no `--effort`
+        # flag; the reasoning level is a config override on both subcommands.
+        effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
+                        if entry.effort else [])
+        # codex's `workspace-write` sandbox: its shell and patch tool write inside the
+        # working directory, which the lineage profile makes the tree (issue #534 step 2
+        # PR-2), and the wrapper's endpoint on a producing launch
+        # (`leaf_contract.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
+        # sends it with `strict: true` hardcoded). `--skip-git-repo-check`: the tree is not
+        # a git checkout, and codex refuses an untrusted non-git cwd before any API call
+        # without it (measured on codex-cli 0.154.0, rc 1). `codex exec resume` has no
+        # `--sandbox`, so resume re-pins the policy through the `sandbox_mode` override both
+        # subcommands share; passing `--sandbox` there aborts the turn at argv parsing.
+        # `-` is the documented stdin sentinel for the positional prompt on BOTH
+        # subcommands; an omitted positional on `resume` would be read as the session id.
+        from tools.leaf_contract import codex_workshop_overrides
+        overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
+        if resume_session_id:
+            return [*base, "exec", "resume", "--model", model, resume_session_id,
+                    *effort_flags, "--ignore-rules",
+                    "--config", 'sandbox_mode="workspace-write"',
                     "--skip-git-repo-check", *overrides, "--json", "-"]
-        raise ValueError(
-            f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
-            f"backend); this substep must not have reached spawn_leaf")
+        return [*base, "exec", "--model", model, *effort_flags,
+                "--ignore-rules", "--sandbox", "workspace-write",
+                "--skip-git-repo-check", *overrides, "--json", "-"]
 
     @staticmethod
     def _feed_prompt_stdin(process: Any, prompt_text: str) -> threading.Thread | None:
@@ -4305,15 +4190,47 @@ class Conductor:
         thread.start()
         return thread
 
-    def _bwrap_enabled(self) -> bool:
-        """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap only).
+    def _sandboxed_argv(self, argv: list[str], child_arid: str,
+                        entry: ResolvedLeafEntry) -> list[str]:
+        """`argv` wrapped in the bwrap sandbox that record-launch already built for `child_arid`.
 
-        Since issue #171 PR-2 it is the ONLY thing that confines a leaf: the terminal FS-diff
-        that audited a leaf's writes after the fact is deleted, so an unconfined leaf would be
-        unconfined and unaudited both. A host that cannot sandbox the leaf therefore fails
-        closed at launch rather than running it. The method is retained as a single seam for
-        the call sites; it always returns True."""
-        return True
+        bwrap leaf sandboxing is unconditionally MANDATORY (Linux+bwrap only). Since issue #171
+        PR-2 it is the ONLY thing that confines a leaf: the terminal FS-diff that audited a
+        leaf's writes after the fact is deleted, so an unconfined leaf would be unconfined and
+        unaudited both. A host that cannot sandbox the leaf therefore fails closed at launch
+        rather than running it. A method of its own so a test can launch a leaf unwrapped (the
+        constant-True `_bwrap_enabled` seam it replaces went in issue #643 PR-5)."""
+        # Fail closed: enforcement is mandatory and record-launch records
+        # sandbox_enforced=true, so ANY leaf without a usable profile — a missing or
+        # invalid one (older orchestration resumed, corrupted/deleted file) — must
+        # NOT silently fall back to an unconfined launch.
+        profile = self._sandbox_profile_for(child_arid)
+        if profile is None:
+            raise SandboxEnforcementError(
+                "bwrap enforcement is mandatory but no usable sandbox profile is "
+                f"available for this leaf (child_arid={child_arid!r}); refusing to "
+                "launch unconfined (fail-closed)")
+        # The one admitted profile is a WORKSHOP lineage's (issue #534), admitted by its
+        # exact shape, fail-closed: `leaf_mode: workshop` and rw binds that are exactly the
+        # lineage's own `config/` and `tree/` — siblings under one lineage home, outside the
+        # checkout — with the tree as its working directory. Asserted at the spawn site
+        # rather than left to follow from today's callers: a guard that rests on the caller
+        # set goes quiet the moment a new caller appears. The READ-ONLY profile of the
+        # deleted pure leaf (issue #534 PR-J4-b) is one of the shapes it refuses.
+        if not _admissible_leaf_profile(profile, entry, self.repo_root):
+            raise SandboxEnforcementError(
+                f"the sandbox profile for {child_arid!r} is not a workshop lineage's "
+                "(exactly its config/ and tree/ writable); a leaf has no repository write "
+                "authority, so any other writable profile is a host defect (fail-closed)")
+        from tools.orchestration_runtime import render_bwrap_command
+        try:
+            return render_bwrap_command(profile=profile, command_argv=argv)
+        except ValueError as exc:
+            # A profile the renderer refuses (a shape it checks, a bad file
+            # mapping, …) must also fail closed as a sandbox error, not bubble
+            # up as a generic conductor error.
+            raise SandboxEnforcementError(
+                f"sandbox profile for {child_arid} is invalid: {exc}") from exc
 
     def _sandbox_profile_for(self, child_arid: str) -> dict[str, Any] | None:
         """The bwrap profile record-launch wrote for this child, or None."""
@@ -4373,20 +4290,12 @@ class Conductor:
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
-        if cancel_event is not None and entry.provider not in ("claude_cli", "codex_cli"):
-            raise ValueError(f"spawn_leaf cancel_event is a CLI leaf's (provider "
-                             f"{entry.provider!r})")
         if entry.is_http:
             # An HTTP entry has no process to spawn: its workshop leaf runs in the host's own
             # tool-use loop (`_spawn_workshop_turn` -> `tools/llm_workshop_loop.py`). The pure
             # HTTP transport this used to hand it to went in issue #534 PR-J4-b.
             raise ValueError(f"spawn_leaf launches a CLI leaf; provider {entry.provider!r} "
                              f"runs in the host loop")
-        if timeout_seconds is not None and (
-                isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
-                or timeout_seconds < 1):
-            raise ValueError(f"spawn_leaf timeout_seconds must be an integer >= 1 (got "
-                             f"{timeout_seconds!r})")
         if timeout_seconds is not None:
             # The same sanity ceiling the environment cap is clamped to: a deadline past it
             # cannot be handed to a selecting wait.
@@ -4406,38 +4315,7 @@ class Conductor:
         # Applies to both claude and codex — both get a profile at launch. EVERY leaf now has
         # a record-launch profile keyed by its own child_arid, the diagnostician included
         # (issue #169); there is no in-process profile and no caller-supplied one.
-        if self._bwrap_enabled():
-            # Fail closed: enforcement is mandatory and record-launch records
-            # sandbox_enforced=true, so ANY leaf without a usable profile — a missing or
-            # invalid one (older orchestration resumed, corrupted/deleted file) — must
-            # NOT silently fall back to an unconfined launch.
-            profile = self._sandbox_profile_for(child_arid)
-            if profile is None:
-                raise SandboxEnforcementError(
-                    "bwrap enforcement is mandatory but no usable sandbox profile is "
-                    f"available for this leaf (child_arid={child_arid!r}); refusing to "
-                    "launch unconfined (fail-closed)")
-            # The one admitted profile is a WORKSHOP lineage's (issue #534), admitted by its
-            # exact shape, fail-closed: `leaf_mode: workshop` and rw binds that are exactly the
-            # lineage's own `config/` and `tree/` — siblings under one lineage home, outside the
-            # checkout — with the tree as its working directory. Asserted at the spawn site
-            # rather than left to follow from today's callers: a guard that rests on the caller
-            # set goes quiet the moment a new caller appears. The READ-ONLY profile of the
-            # deleted pure leaf (issue #534 PR-J4-b) is one of the shapes it refuses.
-            if not _admissible_leaf_profile(profile, entry, self.repo_root):
-                raise SandboxEnforcementError(
-                    f"the sandbox profile for {child_arid!r} is not a workshop lineage's "
-                    "(exactly its config/ and tree/ writable); a leaf has no repository write "
-                    "authority, so any other writable profile is a host defect (fail-closed)")
-            from tools.orchestration_runtime import render_bwrap_command
-            try:
-                argv = render_bwrap_command(profile=profile, command_argv=argv)
-            except ValueError as exc:
-                # A profile the renderer refuses (a shape it checks, a bad file
-                # mapping, …) must also fail closed as a sandbox error, not bubble
-                # up as a generic conductor error.
-                raise SandboxEnforcementError(
-                    f"sandbox profile for {child_arid} is invalid: {exc}") from exc
+        argv = self._sandboxed_argv(argv, child_arid, entry)
         try:
             if entry.provider == "codex_cli":
                 # `resume` is derived from the caller's own argument, not sniffed out of
@@ -4483,11 +4361,9 @@ class Conductor:
             # profile rather than letting a raw OSError bubble up as a generic
             # conductor_error: every "leaf cannot be sandboxed" condition terminalizes
             # consistently as a sandbox-enforcement failure.
-            if self._bwrap_enabled():
-                raise SandboxEnforcementError(
-                    f"cannot launch sandboxed leaf — executable not found "
-                    f"(bwrap missing on this host?): {exc}") from exc
-            raise
+            raise SandboxEnforcementError(
+                f"cannot launch sandboxed leaf — executable not found "
+                f"(bwrap missing on this host?): {exc}") from exc
         self._feed_prompt_stdin(process, prompt_text)
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
         # be armed: a deterministic substep never reaches spawn_leaf, and the usage-limit wait
@@ -5643,15 +5519,14 @@ class Conductor:
         leaf-non-writable managed path). Overwritten each compile attempt, so it never stales.
 
         Returns the resolved surface list (also written) so run_phase can thread it into the
-        compile.generate launch payload without re-reading. Best-effort: a missing/unreadable graph
-        yields `[]` and writes no sidecar (L3 then inert); an unresolvable dep yields an
-        `unresolved` entry. Called only for the compile phase (whose producer is the IR)."""
+        compile.generate launch payload without re-reading. The graph is the one
+        `_write_dependency_graph` wrote just before (or the phase already failed closed), and the
+        node's library declarations were decided by the driver before any phase, so neither read
+        is guarded: an error here escapes `run_phase` as a host error. An unresolvable dep yields
+        an `unresolved` entry. Called only for the compile phase (whose producer is the IR)."""
         from tools.orchestration_runtime import _resolve_component_dep_surface
         graph_path = self.repo_root / refs.ir_ref / "dependency_graph.json"
-        try:
-            graph = json.loads(graph_path.read_text(encoding="utf-8"))
-        except Exception:
-            return []
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
         surface = _resolve_component_dep_surface(self.repo_root, refs.node_key, graph)
         doc: dict[str, Any] = {
             "generated_by": "workflow_conductor._write_dependency_surface",
@@ -5661,11 +5536,8 @@ class Conductor:
         # The external libraries the node declares (issue #644): ids, modules, procedures.
         # Present only when it declares one, so no other node's sidecar changes.
         from tools import external_library as xl
-        try:
-            declared = [xl.load_declaration(self.repo_root, i)
-                        for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
-        except xl.LibraryDeclarationError:
-            declared = []   # the spec-input gate refused it before any phase
+        declared = [xl.load_declaration(self.repo_root, i)
+                    for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
         if declared:
             doc["libraries"] = [{"library_id": d.library_id, "modules": list(d.modules),
                                  "procedures": list(d.procedures)} for d in declared]
@@ -6126,18 +5998,12 @@ class Conductor:
         closure (the staged model source and its object rule are keyed on the bare spec_id);
         a same-spec_id clash (diamond) raises here (L6)."""
         from tools.orchestration_runtime import pipeline_closure_nodes
-        from tools.target_profile import TargetProfileError
         # The closure itself lives in `pipeline_closure_nodes`, so the derivation inputs (the
         # `closure[]` of the generate and build keys) derive the SAME closure from the SAME
         # sidecar and the same target. What stays here is this caller's own policy: the L6
         # guard below.
-        try:
-            closure = pipeline_closure_nodes(
-                self.repo_root, refs.ir_ref, refs.node_key, self.target)
-        except TargetProfileError as exc:
-            raise RuntimeError(
-                f"dependency closure of {refs.node_key}: the harness of target "
-                f"{self.target.target_id} does not resolve ({exc.detail})") from exc
+        closure = pipeline_closure_nodes(
+            self.repo_root, refs.ir_ref, refs.node_key, self.target)
         # L6 guard: the Model B staged source basename (the target language's
         # `model_basename(<spec_id>)`), its object rule in the control file, and the module
         # the dep's generated source publishes are all keyed on the bare spec_id
@@ -6169,11 +6035,8 @@ class Conductor:
         Neutral: the names are the declaration's (`spec/libraries/<id>.yaml`); how a language
         reaches a module or a procedure is its own fragment's."""
         from tools import external_library as xl
-        try:
-            declarations = [xl.load_declaration(self.repo_root, i)
-                            for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
-        except xl.LibraryDeclarationError as exc:
-            raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
+        declarations = [xl.load_declaration(self.repo_root, i)
+                        for i in xl.node_library_ids(self.repo_root, refs.spec_path)]
         return xl.facts_text(declarations)
 
     def _closure_libraries(self, refs: NodeRefs) -> list[Any]:
@@ -6185,11 +6048,8 @@ class Conductor:
         driver decides it before any phase, so meeting it here is a host defect, transport
         fail_closed)."""
         from tools import external_library as xl
-        try:
-            declarations = xl.closure_declarations(
-                self.repo_root, refs.spec_path, self._dependency_closure_nodes(refs))
-        except xl.LibraryDeclarationError as exc:
-            raise RuntimeError(f"libraries of {refs.node_key}: {exc}") from exc
+        declarations = xl.closure_declarations(
+            self.repo_root, refs.spec_path, self._dependency_closure_nodes(refs))
         return xl.resolve_closure(self.repo_root, self.target, declarations)
 
     def _library_build_args(self, libraries: Sequence[Any], execute: Any) -> list[str]:
@@ -6216,16 +6076,11 @@ class Conductor:
         pipeline sees it for the run's target: the target's harness added as a direct
         dependency (`orchestration_runtime.with_target_harness`, issue #284). The one call every
         conductor reader of a node's post-Compile dependency SET goes through — `lineage.json`,
-        `binary_meta.dependency_check`, the pre_judge DAG check, the derived `aggregate_verdict`.
-        A harness the catalog no longer resolves raises RuntimeError (a build precondition)."""
+        `binary_meta.dependency_check`, the pre-spawn DAG readiness check
+        (`_judge_pre_spawn_dag_block`), the derived `aggregate_verdict`.
+        The launch gate resolved the target's harness before any phase."""
         from tools.orchestration_runtime import with_target_harness
-        from tools.target_profile import TargetProfileError
-        try:
-            return with_target_harness(block, self.repo_root, refs.node_key, self.target)
-        except TargetProfileError as exc:
-            raise RuntimeError(
-                f"dependency set of {refs.node_key}: the harness of target "
-                f"{self.target.target_id} does not resolve ({exc.detail})") from exc
+        return with_target_harness(block, self.repo_root, refs.node_key, self.target)
 
     def _dependency_closure(self, refs: NodeRefs) -> list[str]:
         """Dependency spec_ids in compile order (deepest first) — the `<dep>_model.o`/`.f90`
@@ -6326,17 +6181,10 @@ class Conductor:
         every requirement is unsatisfied.
 
         The resolution itself lives in the runtime (`harness_node_key_for`), because the
-        generate derivation inputs and the pipeline closure name the same harness. A harness the catalog no longer resolves (the launch gate resolved it, so a
-        catalog edited under the run) raises RuntimeError — a build precondition every caller
-        already routes to a fail-closed transport outcome, never a content retry."""
+        generate derivation inputs and the pipeline closure name the same harness. The launch
+        gate resolved it before any phase."""
         from tools.orchestration_runtime import harness_node_key_for
-        from tools.target_profile import TargetProfileError
-        try:
-            return harness_node_key_for(self.repo_root, node_key, self.target)
-        except TargetProfileError as exc:
-            raise RuntimeError(
-                f"harness of target {self.target.target_id} does not resolve for {node_key}: "
-                f"{exc.detail}") from exc
+        return harness_node_key_for(self.repo_root, node_key, self.target)
 
     def _build_leaf_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
@@ -6725,11 +6573,8 @@ class Conductor:
         spec_id = spec_id_of(refs.node_key)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         public_api = ir.get("public_api") if isinstance(ir, dict) else None
-        try:
-            text = module.render(spec_id, public_api if isinstance(public_api, dict) else {},
-                                 spec_kind=refs.node_key.partition("/")[0].strip())
-        except ValueError as exc:
-            raise RuntimeError(f"interface_header_unrenderable: {refs.node_key}: {exc}") from exc
+        text = module.render(spec_id, public_api if isinstance(public_api, dict) else {},
+                             spec_kind=refs.node_key.partition("/")[0].strip())
         return module.basename(spec_id), text
 
     def _bundle_source_names(self, refs: NodeRefs) -> list[str]:
@@ -6773,8 +6618,6 @@ class Conductor:
         # the record names one contract version (the workshop template counter it also carried
         # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
         # `workshop_prompt_contract_version`; its readers keep accepting both.
-        if leaf_mode != "workshop":
-            raise ValueError(f"bundle_meta leaf_mode must be workshop (got {leaf_mode!r})")
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
@@ -6875,11 +6718,12 @@ class Conductor:
         constraint applied, so it could inline a different catalog entry than the one the
         sidecar pinned — the same fact resolved twice, by two rules.
 
-        Resolution of the DIRECTORY is still best-effort per entry (an entry whose
-        `controlled_spec.md` cannot be read contributes a named line rather than failing the
-        substep): a profile the registry cannot resolve at all never reaches here, because
-        `_write_dependency_graph` fail-closes the phase on it first. The sentinel keeps the
-        value a NON-EMPTY string, which the launch validator requires of every declared key.
+        A profile the catalog does not resolve, or whose `controlled_spec.md` is missing, never
+        reaches here: the Compile derivation hashes each adopted profile's spec files at phase
+        start and fails the phase closed first. Any read error here (a file that exists and does
+        not decode) propagates, and the caller turns it into `pure_context_assembly_failed`. The
+        sentinel keeps the value a NON-EMPTY string, which the launch validator requires of
+        every declared key.
 
         A missing/unreadable sidecar RAISES, like `_leaf_repo_document` — the same disposition
         for the same reason, and the same recoverable `pure_context_assembly_failed`."""
@@ -6900,16 +6744,10 @@ class Conductor:
         sections: list[str] = []
         for pid in profile_ids:
             text = ""
-            try:
-                spec_ref = resolve_spec_ref_for(self.repo_root, "profile", pid)
-            except Exception:  # noqa: BLE001 — a registry outage is the graph builder's finding
-                spec_ref = None
+            spec_ref = resolve_spec_ref_for(self.repo_root, "profile", pid)
             if spec_ref:
-                try:
-                    text = (self.repo_root / spec_ref / "controlled_spec.md").read_text(
-                        encoding="utf-8")
-                except (OSError, UnicodeError):
-                    text = ""
+                text = (self.repo_root / spec_ref / "controlled_spec.md").read_text(
+                    encoding="utf-8")
             sections.append(f"# profile: {pid}\n\n"
                             + (text if text.strip()
                                else "(this profile is adopted by this node but the registry "
@@ -7227,18 +7065,7 @@ class Conductor:
         looked. The reviewer re-authors this file with its verdict (`_write_verify_ir_meta`)."""
         ir_dir = self.repo_root / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
-        ir_root = ir_dir.resolve()
-        target = ir_dir / "spec.ir.yaml"
-        # Defense-in-depth containment: every path here is host-composed from `refs`, so an
-        # escape means a caller handed this method refs it did not derive — fail closed loudly
-        # rather than writing outside the IR directory. (`_write_leaf_bundle_artifacts` carried
-        # the same refusal until issue #643 PR-4, WC2-68: the producer's acceptance,
-        # `logical_path_violations`, refuses its leaf-authored paths before it runs.)
-        if not target.resolve().is_relative_to(ir_root):
-            raise RuntimeError(
-                f"pure IR artifact {target.resolve()} resolves outside {ir_root} — "
-                "refusing to write")
-        target.write_text(self._leaf_ir_yaml(doc["ir"]), encoding="utf-8")
+        (ir_dir / "spec.ir.yaml").write_text(self._leaf_ir_yaml(doc["ir"]), encoding="utf-8")
         self._write_ir_meta(refs, verification_status="pending", last_fail_reason=None,
                             issue_severity=None, attempts=attempts)
 
@@ -7334,8 +7161,6 @@ class Conductor:
         # the record names one contract version (the workshop template counter it also carried
         # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
         # `workshop_prompt_contract_version`; its readers keep accepting both.
-        if leaf_mode != "workshop":
-            raise ValueError(f"{basename} leaf_mode must be workshop (got {leaf_mode!r})")
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
@@ -7813,7 +7638,8 @@ class Conductor:
         launched_monotonic: float
         #: The lineage record's `ended_by` after this launch (None: still open).
         ended_by: str | None
-        #: True when a wrapper result ended the leaf (`spawn_leaf(cancel_event=)`).
+        #: True when a wrapper result ended a CLI leaf (`spawn_leaf(cancel_event=)`); False on
+        #: an HTTP launch.
         cancelled: bool
         wrapper_calls: int
         model_turns: int | None
@@ -7881,11 +7707,8 @@ class Conductor:
             host_sources = set(seeds)
         for key, value in pure_context.items():
             if key == "runner_document":
-                runner = self._runner_basename(refs)
-                if runner not in seeds:
-                    raise RuntimeError(
-                        f"workshop seeds: the context carries the runner and {runner} is not "
-                        f"in {refs.source_dir()}/src")
+                # Seeded from `src/` above: the context builder read the same file
+                # (`pure_runner_document_missing` when it is absent).
                 continue
             expand = spec.workshop_seed_expanders.get(key)
             if expand is not None:
@@ -8021,9 +7844,8 @@ class Conductor:
         copied over the seeds (`workshop_tree.seed_from_snapshot`: a host-placed name is never
         copied back). Raises on a host precondition; the loop routes it fail_closed."""
         from tools.workshop_tree import seed_from_snapshot, seed_tree, write_lineage_record
+        # A cold preparation (`resume=False`) creates the home or raises.
         isolation = self._prepare_workshop_home(entry, lineage_id, resume=False)
-        if isolation is None:  # pragma: no cover - a cold preparation creates or raises
-            raise RuntimeError(f"workshop lineage {lineage_id}: no home was prepared")
         paths = self._workshop_paths(entry, isolation, lineage_id)
         paths.make_work_dirs()
         seed_tree(paths, seeds)
@@ -8348,7 +8170,6 @@ class Conductor:
             # identity is the inode the sandbox binds a few host calls later. Per launch, never
             # per lineage: a warm repair launch binds the file afresh.
             credential_identity = None if http else self._credential_identity(entry)
-            self._launch_instant(child_arid)
             launched_monotonic = time.monotonic()
             timeout_seconds, timeout_name = self._workshop_timeout(lineage.deadline)
             if http:
@@ -8377,14 +8198,9 @@ class Conductor:
             raise WorkshopEndpointNotStopped(
                 f"workshop wrapper endpoint of {child_arid}: {server.in_flight()} handler(s) "
                 "still running after stop; the tree is not snapshotted under a live operation")
+        # CLI only: an HTTP launch a wrapper result ended returns rc 0 after a tool call, so no
+        # reader below tells it from a clean one (its end is in the lineage record's `ended_by`).
         cancelled = cancel is not None and cancel.is_set()
-        if loop is not None:
-            # A wrapper result ended the lineage inside the host loop: the twin of the CLI's
-            # cancel event (the bound is already recorded by `run_wrapper_op`). NOT PINNED, and
-            # kept: such a launch returns rc 0, so nothing below reads a difference today; it
-            # keeps `_WorkshopTurn.cancelled` true to what happened for the next reader of it.
-            from tools.llm_workshop_loop import ENDED_BY_WRAPPER
-            cancelled = loop.ended == ENDED_BY_WRAPPER
         if not cancelled:
             if proc.timed_out:
                 end_lineage(paths, "lineage_timeout"
@@ -9147,16 +8963,8 @@ class Conductor:
         so the reviewer reads the same document the phase contract names."""
         from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
-        try:
-            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
-        try:
-            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
+        severity_rubric = _generate_verify_severity_rubric_section(
+            phase_doc_path.read_text(encoding="utf-8"))
         return {
             "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
@@ -9184,23 +8992,10 @@ class Conductor:
         than by the reviewer's recollection of it."""
         from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-        contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
-        try:
-            contract_text = contract_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
+        contract_text = (self.repo_root / RUNNER_OUTPUT_CONTRACT_REF).read_text(encoding="utf-8")
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
-        try:
-            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
-        try:
-            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
+        severity_rubric = _generate_verify_severity_rubric_section(
+            phase_doc_path.read_text(encoding="utf-8"))
         return {
             "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
@@ -9264,8 +9059,9 @@ class Conductor:
         asks whether the EVIDENCE supports the verdict. `phase_04_validate.md` — 40 KB of which
         the judge's part is the review contract, and that is the template's job; it also took 12
         commits in seven weeks, and a document edited that often is not a stable leaf input.
-        `pre_judge_meta.json` — a readiness status the conductor has already gated on, from which
-        the judge gains nothing.
+        `pre_judge_meta.json` — a constant `pass` the substep records without checking anything
+        (the readiness gate is `run_phase`'s, before any substep), from which the judge gains
+        nothing.
 
         EVERY read RAISES, as the `generate.verify` sibling's four node artifacts do since issue
         #467 (they degraded to `""` until then). No degradation may travel here: each document
@@ -9278,7 +9074,7 @@ class Conductor:
         `pure_context_assembly_failed` branch and aborting the conductor instead — the issue #168
         shape where a recoverable named outcome becomes a crash. Raising HERE keeps the named
         outcome.
-        `_run_leaf_reviewer_substep` turns the `RuntimeError` into a `pure_context_assembly_failed`
+        `_run_leaf_reviewer_substep` turns the exception into a `pure_context_assembly_failed`
         fail-closed outcome and spawns no leaf, which is the pure form of the SKILL's rule that
         the judge does not begin without its evidence.
 
@@ -9290,19 +9086,10 @@ class Conductor:
         paths = self._leaf_judge_document_refs(refs)
 
         def _read(key: str) -> str:
-            path = self.repo_root / paths[key]
-            try:
-                return path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
-                raise RuntimeError(f"pure_{key}_missing: {path}: {exc}") from exc
+            return (self.repo_root / paths[key]).read_text(encoding="utf-8")
 
-        contract_text = _read("runner_output_contract_document")
-        try:
-            runner_output_contract = _runner_output_contract_sections(contract_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                "pure_runner_output_contract_document_unsliceable: "
-                f"{paths['runner_output_contract_document']}: {exc}") from exc
+        runner_output_contract = _runner_output_contract_sections(
+            _read("runner_output_contract_document"))
 
         ir_text = _read("io_contract_document")
         try:
@@ -9357,8 +9144,6 @@ class Conductor:
         # the record names one contract version (the workshop template counter it also carried
         # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
         # `workshop_prompt_contract_version`; its readers keep accepting both.
-        if leaf_mode != "workshop":
-            raise ValueError(f"verdict_meta.json leaf_mode must be workshop (got {leaf_mode!r})")
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
@@ -9600,11 +9385,8 @@ class Conductor:
                  for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
         if outputs is None:
             return lines, "no per-command capture of the launch"
-        writable = _codex_shell_writable_root(Path(paths.config))
-        if writable is not None:
-            # `open_cold` refuses this before a launch; kept as the backstop, since the
-            # verdict below reads a file under it.
-            return lines, f"the lineage home is under {writable}, which a codex shell can write"
+        # The rollout lives under the lineage home, which `open_cold` refused before the launch
+        # if a codex shell could write it.
         scan = scan_launch(Path(paths.config), self._session_id_for_child(child_arid, entry))
         if scan.reason is not None:
             return lines, scan.reason
@@ -10317,25 +10099,11 @@ class Conductor:
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
-            # AUTO-MEMORY IS NOT A SETTING, so no settings-layer flag closes it: the CLI
-            # injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's FIRST
-            # USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
-            # variable. Measured on CLI 2.1.234 by capturing an agentic leaf's own request:
-            # without it the first message carried the operator's memory index — past runs,
-            # merged PRs, open issues and standing instructions — 25,011 bytes of `messages`
-            # against 8,990 with it. That is ambient context the repository does not declare,
-            # the run does not record and no artifact can reproduce; it is also a leaf reading
-            # `~/.claude`, and a leaf being handed PAST-RUN state, both of which the workflow
-            # forbids outright.
+            # No auto-memory variable (issue #643): a workshop leaf's config home is its own
+            # lineage's, so the operator's memory index is not in it, and a capture of a
+            # workshop leaf's first request (CLI 2.1.326) carried no memory text with the
+            # variable or without it, a memory file planted in the lineage's home included.
             #
-            # KEPT after Z4 (issue #171), when every claude leaf passed `--safe-mode`, which
-            # closes this path on its own: the variable and the flag are two independent arms
-            # of the same predicate, and this one costs one environment entry. A workshop leaf
-            # (issue #534; every leaf since PR-J4-b) does NOT pass `--safe-mode`, which would
-            # disable the wrapper's endpoint, so this arm is no longer redundant with it. Its
-            # measurement was taken against the agentic launch that no longer exists. Set here rather than on the argv because the CLI exposes
-            # no flag for it.
-            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
             # The CLI's nonessential traffic — telemetry, update checks — off (issue #534 step
             # 4): inside the leaf's network namespace each request would be a refused route in
             # `net_routes.jsonl` (measured on CLI 2.1.312: one Datadog intake CONNECT per
@@ -10347,21 +10115,11 @@ class Conductor:
             # leaf (issue #534) has its own, and it reaches the leaf the way a codex lineage home does — through the profile's
             # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`);
             # `leaf_env_from` keeps the host's spelling of it out of this dict.
-        elif entry.provider == "codex_cli":
-            # SPEC2SCIENCE_HOME was the historical private alias for CODEX_HOME. An operator
-            # who set BOTH to different homes has said two incompatible things, and the
-            # run must not pick one silently — so the conflict still raises. Read from
-            # the HOST environment, not from `env`: neither name survives the allowlist
-            # (both are on the single-route side), so `env` can no longer answer this.
-            canonical = (self.env.get("CODEX_HOME") or "").strip()
-            legacy = (self.env.get("SPEC2SCIENCE_HOME") or "").strip()
-            if canonical and legacy and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve():
-                raise SandboxEnforcementError("CODEX_HOME and deprecated SPEC2SCIENCE_HOME conflict")
-            # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
-            # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
-            # (`_prepare_codex_workshop_lineage`); a host-side spelling could name a
-            # different home than the one whose settings were SHA-pinned, and no
-            # host-side reader consumes `child_env["CODEX_HOME"]`.
+        # A codex leaf: neither `CODEX_HOME` nor the deprecated `SPEC2SCIENCE_HOME` survives
+        # the allowlist, and nothing is promoted into CODEX_HOME here: the home the leaf reads
+        # is the one `record_launch` PREPARED and the bwrap profile `--setenv`s
+        # (`_prepare_codex_workshop_lineage`). A conflict between the two host values is
+        # refused at preflight (`_probe_codex_home_writable`); this launch reads neither.
         elif entry.is_http:
             # An HTTP leaf's credential is named BY THE ENTRY (`api_key_env`), so the
             # allowlist cannot enumerate it — the configuration file chooses the name. It
@@ -10608,10 +10366,12 @@ class Conductor:
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
         elif phase == "validate" and substep == "pre_judge":
-            # Deterministic pre-spawn DAG readiness: the conductor-authored pre_judge_meta
-            # records whether every --with-deps closure node is built+validated in its own
-            # pipeline. A not-ready closure is status=fail with rc 0, so the substep fails
-            # here and classify_failure routes it to fail_closed (integrity blocker).
+            # The conductor-authored pre_judge_meta records `pass` unconditionally; the
+            # dependency-DAG readiness check is `run_phase`'s (`_judge_pre_spawn_dag_block`),
+            # before any substep. The substep fails here only when that meta is not a fresh
+            # `pass` (a stale or corrupted run directory); run_phase's skip-write branch then
+            # classifies it from the meta (`classify_validate_gate_failure`), and
+            # `classify_failure` raises if reached for it.
             meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / "pre_judge_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
@@ -11309,11 +11069,7 @@ class Conductor:
         if checked_flags:
             # The same bound sources, staged again: make compiles the closure FROM the object
             # directory it is handed, and the checked build has its own.
-            checked_bindings = self._stage_dependency_sources(refs, obj_checked, phase="build")
-            if checked_bindings != closure_bindings:
-                raise RuntimeError(
-                    f"checked build staging bound {checked_bindings!r}, and the build bound "
-                    f"{closure_bindings!r}; both stage the attempt's one binding")
+            self._stage_dependency_sources(refs, obj_checked, phase="build")
         from tools.host_execution import LOCAL_SITE, local_platform_record
         from tools.orchestration_runtime import (
             AUDIT_LOG_BASENAMES,
@@ -11551,10 +11307,6 @@ class Conductor:
             "status": "pass" if ok else "fail",
             "validation_stage": "post_build",
             "source_source_id": refs.source_id,
-            # The ir_id the linked source was generated from (a compile reopen re-numbers ir_id
-            # under the SAME pipeline, so this binds this binary to its exact origin IR — read by
-            # `_write_runner` to pin a consumer's harness runner against the same-lineage IR).
-            "source_ir_id": refs.ir_id,
             "build_system": build_system,
             # The target the binary was built for, and the compiler the build control file names
             # (the target profile's pin, else the host default; under a parallel backend's compiler
@@ -11654,8 +11406,7 @@ class Conductor:
             # NO terminal-exit-code branch here, unlike the post_generate / post_execute /
             # pre_judge gates. The post_build stage runs only the three build-control-file rules
             # over `src/`, which read source through the regex/logical-line helpers and never
-            # through the structure front end, and it does not reach the stale-IR emit site at
-            # all — so neither rc 3 nor rc 4 can arrive. Every non-zero code here is a
+            # through the structure front end — so rc 3 cannot arrive. Every non-zero code here is a
             # control-file violation the leaf repairs by re-authoring: Generate, cold
             # (`BUILD_FAILURE_ROUTING` routes `validate_post_build_violation` to `restart`).
             if gate.returncode != 0:
@@ -12146,10 +11897,6 @@ class Conductor:
         failure_excerpt: str | None = None
         skipped_reason: str | None = None
         stages: list[dict[str, Any]] = []
-        # OBSERVATION ONLY — which side of src/ the compiler findings are on. Recorded in
-        # gate_meta so the residual issue #112 leaves open on this checker is measured instead of
-        # asserted; nothing routes on it (see the comment at the probe below for why).
-        attribution: str | None = None
 
         node_sources = sorted(
             p for p in src_dir.iterdir()
@@ -12245,8 +11992,8 @@ class Conductor:
                                command_log_path: str | None = None) -> dict[str, Any]:
                     """Re-run THIS stage's adapter+flags over an isolated source set.
 
-                    The three attribution runs below (canary, dependency closure, leaf files)
-                    pass no `command_log_path`, so their log stays in the throwaway dir: they
+                    The two attribution runs below (canary, dependency closure) pass no
+                    `command_log_path`, so their log stays in the throwaway dir: they
                     certify nothing, and keeping them out of the node's canonical
                     <src>/command_log.jsonl keeps that log the record of the gate proper. The
                     model-alone probe passes the canonical log, because it CERTIFIES — its stage
@@ -12311,9 +12058,6 @@ class Conductor:
                         "language": language,
                         "stages": stages,
                         "skipped_reason": None,
-                        # A refused source NAME is the leaf's own output, so this early return
-                        # already knows the attribution without running a probe.
-                        "attribution": "leaf",
                         "failure_category": "syntax_error",
                         "failure_excerpt": str(exc),
                     }
@@ -12355,8 +12099,8 @@ class Conductor:
                     if model_src.is_file():
                         alone_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                                      / "syntax" / f"{compiler}_model_alone")
-                        # Reset, for the leaf probe's reason below: a residue from an earlier
-                        # attempt would make the set wider than what a consumer is staged.
+                        # Reset: a residue from an earlier attempt would make the set wider
+                        # than what a consumer is staged.
                         if alone_dir.exists():
                             shutil.rmtree(alone_dir)
                         alone_dir.mkdir(parents=True, exist_ok=True)
@@ -12390,7 +12134,6 @@ class Conductor:
                         if not alone_ok:
                             ok = False
                             failure_category = "syntax_error"
-                            attribution = "leaf"
                             alone_excerpt = ((alone.get("stdout", "") or "")
                                              + (alone.get("stderr", "") or ""))
                             block = (
@@ -12518,78 +12261,17 @@ class Conductor:
                                 f"Staged: "
                                 f"{', '.join(b['model_source_ref'] for b in staged_deps)}\n"
                                 + "\n".join(probe_excerpt.splitlines()[-40:]))
-                    # Attribution step 3 — WHICH SIDE of src/ is the finding on (issue #112)?
-                    # The two probes above answer "not the invocation" and "not the dependency
-                    # closure"; this one asks whether the leaf's OWN files fail on their own,
-                    # over the same argv, with the same staged closure.
-                    #
-                    # WHY THE ANSWER IS ONLY RECORDED, NOT ROUTED ON. The host-rendered runner
-                    # `use`s the leaf-authored model, so a diagnostic printed at a line
-                    # inside the runner can be caused by the LEAF having missed a published
-                    # signature — real, common, and repairable by exactly the warm retry this gate
-                    # already performs. "The leaf's files pass alone" therefore does NOT mean the
-                    # host is at fault; it means alone-vs-interaction cannot be told apart here,
-                    # and terminalizing would convert a leaf-fixable defect into a permanent
-                    # fail_closed. That is the same mistake the dependency-probe comment above
-                    # warns about, and it is why issue #112's "an unattributable finding fails
-                    # closed" is deliberately NOT applied to this checker: the lint checker
-                    # partitions files, which a compiler cannot, so only lint can decide it.
-                    #
-                    # The residual — a finding caused by the runner ALONE — is held at the
-                    # source instead: the language backend's own renderer test compiles AND lints
-                    # the rendered runner under this gate's exact flags and rule set (named in
-                    # `phase_02_generate.md`, which owns that pointer). What this probe adds is
-                    # that the
-                    # residual is now MEASURED on every failure rather than assumed, and the
-                    # count is what a later change would decide on.
-                    #
-                    # The excerpt is deliberately NOT narrowed to the leaf probe's output (the
-                    # lint checker does narrow its own): an interaction diagnostic is printed at
-                    # a runner line and is exactly what the leaf needs in order to fix its ABI.
-                    if attribution is None:
-                        leaf_only = [p for p in node_sources
-                                     if p.name not in self._host_rendered_src_names(refs)]
-                        if len(leaf_only) == len(node_sources):
-                            attribution = "leaf"
-                        else:
-                            leaf_dir = (self.repo_root / "workspace" / "tmp" / child_arid
-                                        / "syntax" / f"{compiler}_leaf_probe")
-                            # Reset, for the reason its LINT twin does (`_attribute_lint_findings`)
-                            # — `workspace/tmp/<agent_run_id>/` is a flat namespace with a
-                            # documented collision risk, and a residue here makes the probe fail,
-                            # which records `attribution="leaf"` where the truth is
-                            # `unattributed_interaction`. This arm routes nothing, so the cost is
-                            # a FALSE RECORD rather than a wrong verdict — but the record is what
-                            # a later change to this arm would decide on, so it has to be true.
-                            # The two probes were added by one change and only one got the reset;
-                            # a review round found the twin.
-                            if leaf_dir.exists():
-                                shutil.rmtree(leaf_dir)
-                            leaf_dir.mkdir(parents=True, exist_ok=True)
-                            for p in leaf_only:
-                                shutil.copy2(p, leaf_dir / p.name)
-                            for p in dep_files:
-                                shutil.copy2(p, leaf_dir / p.name)
-                            # The host files the leaf's sources INCLUDE — a staged file of a
-                            # suffix the compiler is not handed (a host-rendered header) — are
-                            # CONTEXT, as in the lint partition (`_attribute_lint_findings`):
-                            # without them the leaf's own files fail to compile alone, and the
-                            # record says `leaf` where the truth may be
-                            # `unattributed_interaction` (issue #289, R4-b PR-6: the checks
-                            # header and the node's published-surface header).
-                            host_names = self._host_rendered_src_names(refs)
-                            for p in src_dir.iterdir():
-                                if (p.is_file() and p.name in host_names
-                                        and p.suffix.lower() not in suffixes
-                                        and p.suffix.lower() in staged_suffixes):
-                                    shutil.copy2(p, leaf_dir / p.name)
-                            leaf_probe = _sub_check(leaf_dir)
-                            if leaf_probe.get("skipped"):
-                                attribution = "unprobed"
-                            elif not leaf_probe.get("ok"):
-                                attribution = "leaf"
-                            else:
-                                attribution = "unattributed_interaction"
+                    # Which side of src/ the finding is on is NOT decided here (issue #112): the
+                    # host-rendered runner `use`s the leaf-authored model, so a diagnostic
+                    # printed at a runner line can be the LEAF having missed a published
+                    # signature, repairable by exactly the warm retry this gate performs. The
+                    # lint checker partitions files, which a compiler cannot. The residual — a
+                    # finding caused by the runner ALONE — is held at the source: the language
+                    # backend's renderer test compiles and lints the rendered runner under this
+                    # gate's flags and rule set. (A leaf-only probe that RECORDED the answer,
+                    # `attribution`, routed nothing and went in issue #643.) The excerpt is not
+                    # narrowed: an interaction diagnostic printed at a runner line is exactly
+                    # what the leaf needs in order to fix its ABI.
                     ok = False
                     failure_category = "syntax_error"
                     tail = "\n".join(excerpt.splitlines()[-80:])
@@ -12617,7 +12299,6 @@ class Conductor:
             "language": language,
             "stages": stages,
             "skipped_reason": skipped_reason,
-            "attribution": attribution,
             "failure_category": failure_category,
             "failure_excerpt": failure_excerpt,
         }
@@ -12660,16 +12341,15 @@ class Conductor:
                 from tools.validate_pipeline_semantics import (
                     SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                     HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-                    STALE_DEPENDENCY_IR_EXIT_CODE,
                 )
                 status = "fail"
-                # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
-                # re-authoring its source. `stale_dependency_ir` is the node's own certified IR,
-                # which the leaf does not own (no gate emits its rc 4 since issue #643 PR-4; the
-                # arm remains); `static_frontend_unavailable` is an absent parser on the
-                # machine running the gate, without which the Fortran gates read NOTHING.
+                # TERMINAL conditions the leaf cannot repair by re-authoring its source:
+                # `static_frontend_unavailable` is an absent parser on the machine running the
+                # gate, without which the Fortran gates read NOTHING; `host_authored_artifact_
+                # violation` is a finding about a file this repository authors.
                 # classify_gate_failure fail_closes any union verdict carrying either
-                # (GATE_FAILURE_TERMINAL).
+                # (GATE_FAILURE_TERMINAL). (rc 4, a stale certified IR, went with issue #643
+                # PR-5; no gate emitted it after PR-4.)
                 #
                 # BOTH ARE CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
                 # answer this finding took five versions to reach. Most violations interpolate a
@@ -12687,8 +12367,6 @@ class Conductor:
                 # the gate's output to decide anything.
                 if pg.returncode == SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE:
                     failure_category = "static_frontend_unavailable"
-                elif pg.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
-                    failure_category = "stale_dependency_ir"
                 elif pg.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                     failure_category = "host_authored_artifact_violation"
                 else:
@@ -12742,10 +12420,9 @@ class Conductor:
                 capture_output=True, check=False)
             # NO terminal-exit-code branch here either, for a second reason on top of the
             # post_build one. `--stage compile` reads §5.1 and the IR through the regex-only
-            # signature helpers, never the structure front end, and the stale-IR emit site is
-            # not on its call graph — so neither rc 3 nor rc 4 arrives. And the routing would be
-            # wrong even if one did: at Compile the IR IS the artifact under repair, so a stale
-            # or drifted IR is exactly what a warm Compile retry is for, not a terminal verdict.
+            # signature helpers, never the structure front end — so rc 3 does not arrive. And a
+            # stale or drifted IR is exactly what a warm Compile retry is for: at Compile the IR
+            # IS the artifact under repair.
             if proc.returncode != 0:
                 status = "fail"
                 failure_category = "compile_static_violation"
@@ -13144,7 +12821,6 @@ class Conductor:
                               "threads_per_rank": 1, "ranks": 1,
                               "verdict": qc_verdict},
             },
-            "state_agreement_applies": certified["state_agreement"]["status"] != "not_applicable",
             "shapes": shapes,
             "notes": (f"conductor in-process: every execution shape's run_program "
                       f"({', '.join(r['label'] for r in shapes)}) compared with the {preset} "
@@ -13429,18 +13105,6 @@ class Conductor:
                 f"nothing at Build) — make it answer there, then rebuild: run this node as the "
                 f"target with --rederive build,validate")
 
-        # A binary whose Build made no checked binary while the target's compiler declares
-        # checked flags (a Build certified before issue #589 PR-0 cannot reach here: the build
-        # key moved with it) is the host's inconsistency, not the kernel's: refused before
-        # anything runs, rather than run as a missing program and routed to Generate.
-        if checked is not None and not checked_binary.is_file():
-            raise RuntimeError(
-                f"binary {refs.source_binary_id} has no checked binary at "
-                f"{self._rel(bin_dir.parent / 'bin_checked' / exe)}, and target "
-                f"{target.target_id}'s compiler declares checked flags; rebuild it: run "
-                f"this node as the target with "
-                f"--rederive build,validate")
-
         # Attribution only: the library records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
@@ -13449,19 +13113,14 @@ class Conductor:
         # the IR in place and a writer fix must reach a reused IR. Each file is replaced through a
         # temporary name of its own and the directory is never removed, since one IR directory
         # serves every target's pipeline and they run in parallel. Compile.static evaluated every
-        # case, so a refusal here is the host's inconsistency, not the kernel's.
+        # case, so a refusal here is the host's inconsistency, not the kernel's: it raises to the
+        # deterministic substep's transport `fail_closed`.
         from tools.primary_evidence import (
             CASE_INPUTS_DIRNAME,
-            PrimaryEvidenceError,
             write_case_inputs,
         )
 
-        try:
-            case_files = write_case_inputs(_read_yaml(ir_spec) or {}, ir_spec.parent)
-        except PrimaryEvidenceError as exc:
-            raise RuntimeError(
-                f"the case files of {refs.ir_ref} could not be written at Validate.execute: "
-                f"{exc}") from exc
+        case_files = write_case_inputs(_read_yaml(ir_spec) or {}, ir_spec.parent)
 
         # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
         # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3; `_run_raw_dirs`): the capture
@@ -13545,13 +13204,8 @@ class Conductor:
             case files (`write_continuation_inputs`), a copy of the IR beside them and the
             pre-created capture directories."""
             shape_dir = shape_dirs[label]
-            try:
-                files, refused = write_continuation_inputs(
-                    ir, shape_dir, restart_point_reader(shape_dir, target.output_format))
-            except PrimaryEvidenceError as exc:
-                raise RuntimeError(
-                    f"the continuation case files of {refs.ir_ref} could not be written at "
-                    f"Validate.execute: {exc}") from exc
+            files, refused = write_continuation_inputs(
+                ir, shape_dir, restart_point_reader(shape_dir, target.output_format))
             rdir = shape_dir / RESTART_DIRNAME
             for raw_dir in run_raw_dirs:
                 rdir.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
@@ -14032,14 +13686,6 @@ class Conductor:
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
-        # The repo revision THIS run's evidence (and, on the structural-failure branch below,
-        # its `failure_excerpt`) was produced under. The dev `--resume` directive compares it
-        # against the revision at resume time and declines to inject findings that a later
-        # source change may have invalidated (B4). Stamped on the failing run rather than read
-        # from `orchestration_meta.repo_revision`, which is frozen at the orchestration's first
-        # start and would drift permanently once any commit lands mid-run.
-        from tools.orchestration_runtime import _capture_repo_revision
-
         # The test profile the cases were authored under (issue #346): every `tests.md` §8 asks
         # for it in this record, which only the host writes. The value every case declares, and
         # `null` when a case lacks it or two cases disagree. A record: no gate and no verdict
@@ -14059,7 +13705,6 @@ class Conductor:
             "run_id": refs.run_id,
             "node_key": refs.node_key,
             **test_profile,
-            "repo_revision": _capture_repo_revision(self.repo_root),
             "pipeline_id": refs.pipeline_id,
             "source_source_id": refs.source_id,
             "source_binary_id": refs.source_binary_id,
@@ -14193,27 +13838,24 @@ class Conductor:
             # (cold-restart) kind.
             #
             # PRECEDENCE IS ROUTING-LOAD-BEARING at the top and report-quality only below it. The
-            # four leading branches read the post_execute validator's DEDICATED EXIT CODES, which
+            # three leading branches read the post_execute validator's DEDICATED EXIT CODES, which
             # say the failure is not the leaf's to repair: rc 3 is an uninstalled structure front
-            # end (a machine problem — the gates that need it read nothing), rc 4 a stale
-            # certified IR, rc 5 a file this repository authors, rc 6 a traced run none of whose
-            # kernels ran (below). All must dominate a co-occurring `quality_check`/snapshot symptom, because those
+            # end (a machine problem — the gates that need it read nothing), rc 5 a file this
+            # repository authors, rc 6 a traced run none of whose kernels ran (below). All must
+            # dominate a co-occurring `quality_check`/snapshot symptom, because those
             # symptoms are downstream of the same unrepairable condition and routing them warm
             # spends the leaf's budget re-authoring source that was never the cause. Below them
             # the three warm categories route identically: a gate report is the most specific,
             # a snapshot gap next, quality_check last.
             #
-            # rc 4 and rc 5 are UNREACHABLE from this stage today, for the same reason and with
-            # the same remedy. The stale-IR violation has two emit sites, both on the
-            # post_generate path only — `_validate_generated_signatures` (via
-            # `_validate_generate_outputs_for_generation`) and the io_contract wrap in
-            # `_validate_post_generate_stage_impl` (issue #238); the
-            # host-authored wrap has one construction site, in that same post_generate caller —
-            # post_execute reaches the runner gates through `_validate_runner_outputs`, which is
-            # a different caller and does not wrap (issue #112). Both are wired here anyway so
-            # that the day this stage reports one, it fails closed rather than arriving as a warm
-            # retry the leaf cannot converge on. rc 3 IS reachable: the front-end error is raised
-            # from the `problem` model gates that post_execute runs.
+            # rc 5 is UNREACHABLE from this stage today: the host-authored wrap has one
+            # construction site, in the post_generate caller — post_execute reaches the runner
+            # gates through `_validate_runner_outputs`, which is a different caller and does not
+            # wrap (issue #112). It is wired here anyway so that the day this stage reports one,
+            # it fails closed rather than arriving as a warm retry the leaf cannot converge on.
+            # rc 3 IS reachable: the front-end error is raised from the `problem` model gates
+            # that post_execute runs. (rc 4, a stale certified IR, went with issue #643 PR-5; no
+            # gate emitted it after PR-4.)
             #
             # rc 6 IS reachable, and is this stage's own: the traced run executed none of the
             # kernels the node defines (`_validate_device_kernel_execution`, issue #307).
@@ -14221,12 +13863,9 @@ class Conductor:
                 DEVICE_KERNELS_ABSENT_EXIT_CODE,
                 SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                 HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-                STALE_DEPENDENCY_IR_EXIT_CODE,
             )
             if gate.returncode == SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE:
                 failure_category = "static_frontend_unavailable"
-            elif gate.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
-                failure_category = "stale_dependency_ir"
             elif gate.returncode == HOST_AUTHORED_ARTIFACT_EXIT_CODE:
                 failure_category = "host_authored_artifact_violation"
             elif gate.returncode == DEVICE_KERNELS_ABSENT_EXIT_CODE:
@@ -14674,9 +14313,8 @@ class Conductor:
         dead leaf's command base, its declared model (passed exactly when the leaf's launch
         passes `--model`, so the reading is judged against the same per-model windows) and its
         filtered environment; `tools/usage_reset.py` owns the per-provider readers, so no
-        provider name is spelled here. The WHOLE body is guarded: `_child_env` can raise (a
-        `CODEX_HOME` / `SPEC2SCIENCE_HOME` conflict), and a raise here — after the dead attempt is
-        already finalized — must read as `probe_failed`, the schedule fallback, not crash the
+        provider name is spelled here. The WHOLE body is guarded: a raise here — after the dead
+        attempt is already finalized — must read as `probe_failed`, the schedule fallback, not crash the
         run. A provider that declares no reader is answered before the environment is built,
         so its reading is `no_source` rather than whatever building a probe it will never run
         might raise."""
@@ -14922,8 +14560,8 @@ class Conductor:
         pipeline directory. `refs` must name what the next phase builds against and where
         it writes, so every id the certification resolved is taken — `ir_id` and
         `pipeline_id` included — and the reservation records follow (`reserve_root`; the
-        reservation is where this run WRITES, `_stamp_certification` reads `source_ir_id`
-        from it, and `_revocable_stage_meta_path` resolves a revocation through it)."""
+        reservation is where this run WRITES, and `_revocable_stage_meta_path` resolves a
+        revocation through it)."""
         ir_id = cert.get("ir_id") or (str(cert["ir_ref"]).rsplit("/", 1)[-1]
                                       if cert.get("ir_ref") else None)
         if ir_id and str(ir_id) != refs.ir_id:
@@ -15186,9 +14824,11 @@ class Conductor:
     # the cross-pipeline dependency DAG) used to run INSIDE the LLM judge leaf as its final
     # step. It is hoisted to the conductor as two deterministic substeps wrapping the judge,
     # mirroring the G1/G2 deterministic-gate hoists one and two phases up:
-    #   - pre_judge  (`_pre_judge_inproc`, index 0): before running execute or spawning a COLD
-    #     judge, fail fast when a --with-deps dependency closure is not built+validated in its
-    #     own pipeline (via `_judge_pre_spawn_dag_block`). A failure is fail_closed.
+    #   - pre_judge  (`_pre_judge_inproc`, index 0): records `pre_judge_meta.json` as `pass`.
+    #     The readiness check it once ran — fail fast, before execute or a COLD judge, when a
+    #     --with-deps dependency closure is not built+validated in its own pipeline
+    #     (`_judge_pre_spawn_dag_block`) — is `run_phase`'s, before any substep, and is
+    #     fail_closed.
     #   - post_judge (`_post_judge_inproc`, index 3): after the judge returns its verdict, run
     #     `--stage pre_judge` and record `post_judge_meta.json` with a severity `disposition`;
     #     both graded classes (leaf/judge-authored conformance, and integrity) are
@@ -15212,7 +14852,7 @@ class Conductor:
         `<kind>/<spec_id>` tokens via `_dependency_expected_node_keys`) and consults the SAME
         cross-pipeline predicate
         (`_closure_node_validated_in_own_pipeline`), so anything blocked here would also
-        fail pre_judge — it never fails a run the post-gate would pass; it only saves the
+        fail that `--stage pre_judge` gate (run by `post_judge`) — it never fails a run the post-gate would pass; it only saves the
         wasted execute+judge cost when the closure is genuinely incomplete. Reading
         `all_nodes` directly (not `_dependency_closure_nodes`) also skips that helper's L6
         diamond guard, which is a Build/Model-B staging concern irrelevant to DAG readiness
@@ -15264,30 +14904,23 @@ class Conductor:
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
-        """Deterministic Validate.pre_judge: the pre-spawn dependency-DAG readiness gate,
-        promoted from a run_phase pre-loop branch to a recorded substep at index 0. Runs
-        BEFORE execute so a --with-deps closure that is not built+validated in its own
-        pipeline fails fast (no execute, no cold judge spawned). Authors pre_judge_meta.json;
-        a not-ready closure is a CONTENT failure (status=fail, rc 0) that classify_failure
-        routes to fail_closed (a non-physics integrity blocker — never warm-resumed, since no
-        judge has run). A single-node run (empty closure) passes with zero overhead."""
-        block = self._judge_pre_spawn_dag_block(refs)
-        status = "fail" if block is not None else "pass"
+        """Deterministic Validate.pre_judge, the recorded substep at index 0: it authors
+        `pre_judge_meta.json` with `status: pass` and checks nothing. The dependency-DAG
+        readiness check is `run_phase`'s, before any substep (`_judge_pre_spawn_dag_block`),
+        which fails the phase closed (`validate_pre_judge_dag_incomplete`) before this substep
+        is reached; the copy this body used to run was removed by issue #643 PR-5. The
+        substep stays because `SUBSTEPS`, `classify_validate_gate_failure` and the runtime
+        name it and its meta."""
         self._write_run_node_meta(refs, "pre_judge_meta.json", {
             "run_id": refs.run_id,
             "node_key": refs.node_key,
             "pipeline_id": refs.pipeline_id,
-            "status": status,
+            "status": "pass",
             "validation_stage": "pre_judge",
-            "failure_category": "pre_judge_dag_incomplete" if block else None,
-            "failure_excerpt": block,
+            "failure_category": None,
+            "failure_excerpt": None,
         })
-        if block is not None:
-            self.emit("judge_pre_spawn_blocked", node_key=refs.node_key, detail=block[:200])
-        # Content failure returns rc 0 so run_phase routes it via classify_failure ->
-        # fail_closed; determine_substep_status reads pre_judge_meta.status.
-        return {"returncode": 0, "stdout": "",
-                "stderr": ("[pre_judge dag incomplete]\n" + block) if block else ""}
+        return {"returncode": 0, "stdout": "", "stderr": ""}
 
     def _author_derived_validate_artifacts(self, refs: NodeRefs) -> None:
         """G6: deterministically author the derived Validate artifacts the judge leaf used
@@ -15336,8 +14969,8 @@ class Conductor:
             self_verdict = "pass"
 
         # Direct-dependency `blocked` rule. A dep counts as ready only when BOTH answers say
-        # so: the readiness predicate the pre_judge substep and the `--stage pre_judge` gate
-        # use (`_closure_node_validated_in_own_pipeline` — any binary-bound verdict in its own
+        # so: the readiness predicate the pre-launch DAG guard (`run_phase`) and the
+        # `--stage pre_judge` gate use (`_closure_node_validated_in_own_pipeline` — any binary-bound verdict in its own
         # pipeline is pass/xfail, version- and key-agnostic), AND its certified Validate output
         # resolves through `DerivationResolver.select` (`_resolve_dependency_facts`), which is
         # where its contribution (`xfail` or `pass`) is read. A dep that regressed to a newer
@@ -15346,23 +14979,17 @@ class Conductor:
         # before issue #643's S3 fix it folded as `pass`, which recorded a ready dep's `xfail`
         # as `pass` (ver_defects item 3).
         from tools.validate_pipeline_semantics import (
-            _closure_node_validated_in_own_pipeline,
-            _dependency_expected_node_keys, _normalize_node_key_token,
-            _read_dependency_graph_sidecar)
+            _closure_node_validated_in_own_pipeline, _normalize_node_key_token)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         dep = (ir.get("dependency") or {}) if isinstance(ir, dict) else {}
         if not isinstance(dep, dict):
             dep = {}
         # The immediate dependencies include the target's harness (issue #284), which the
-        # pre_judge DAG check has just required validated for this target.
+        # pre-launch DAG guard (`run_phase`) has required validated for this target.
         dep = self._pipeline_dependency_block(refs, dep)
         facts_by_token: dict[str, dict[str, Any]] = {}
         for fact in _resolve_dependency_facts(self.repo_root, refs.ir_ref, target=self.target):
-            try:
-                facts_by_token[_normalize_node_key_token(str(fact.get("node_key")))] = fact
-            except Exception:
-                continue
-        dependency_nodes: list[dict[str, Any]] = []
+            facts_by_token[_normalize_node_key_token(str(fact.get("node_key")))] = fact
         dep_counts = {"total": 0, "pass": 0, "xfail": 0, "fail": 0, "blocked": 0}
         blocking_direct_deps: list[str] = []
         not_validated: list[str] = []
@@ -15376,35 +15003,21 @@ class Conductor:
             if not isinstance(node_key, str) or not node_key.strip():
                 continue
             node_key = node_key.strip()
-            try:
-                token = _normalize_node_key_token(node_key)
-                ready = _closure_node_validated_in_own_pipeline(
-                    self.repo_root, token, self.target.target_id)
-            except Exception:
-                ready = False
-                token = None
-            fact = facts_by_token.get(token, {}) if token else {}
+            token = _normalize_node_key_token(node_key)
+            ready = _closure_node_validated_in_own_pipeline(
+                self.repo_root, token, self.target.target_id)
+            fact = facts_by_token.get(token, {})
             if not ready:
                 not_validated.append(node_key)
             elif not fact:
                 ready = False
                 verdict_unresolved.append(node_key)
-            # Display verdict = the dep's selected aggregate (informational; may show a
-            # regression), else pass/unknown per readiness.
+            # The dep's selected aggregate (may show a regression); read for its `xfail` alone.
             agg_ref = fact.get("aggregate_verdict_ref")
             display = ""
             if isinstance(agg_ref, str) and agg_ref.strip():
                 dep_doc = _read_json(self.repo_root / agg_ref) or {}
                 display = str(dep_doc.get("aggregate_verdict") or "").strip().lower()
-            if not display:
-                display = "pass" if ready else "unknown"
-            dependency_nodes.append({
-                "node_key": node_key,
-                "aggregate_verdict": display,
-                "ready": ready,
-                "pipeline_ref": fact.get("pipeline_ref"),
-                "run_id": fact.get("run_id"),
-            })
             dep_counts["total"] += 1
             if not ready:
                 blocking_direct_deps.append(node_key)
@@ -15421,7 +15034,7 @@ class Conductor:
         # aggregate_verdict: `blocked` when any immediate dep is not ready; else the transitive
         # fold (precedence blocked > fail > xfail > pass) over {self_verdict} + ready-dep
         # contributions. On the post_judge path the judge passed (self_verdict ∈ {pass,xfail})
-        # and the pre_judge gate found every dep ready, so this is ∈ {pass,xfail} unless a
+        # and the pre-launch DAG guard found every dep ready, so this is ∈ {pass,xfail} unless a
         # dep's certified verdict no longer resolves through `select`.
         blocked = bool(blocking_direct_deps)
         blocked_reason: str | None = None
@@ -15438,25 +15051,10 @@ class Conductor:
         else:
             aggregate_verdict = fold_inv[worst]
 
-        # dependency_set: the transitive closure node tokens (self excluded), from the
-        # conductor-authored dependency-graph sidecar (`all_nodes` lives there now, not the
-        # IR), matching the readiness check's derivation.
-        dependency_set: list[str] = []
-        try:
-            self_token = _normalize_node_key_token(refs.node_key)
-            graph = self._pipeline_dependency_block(
-                refs, _read_dependency_graph_sidecar(self.repo_root, refs.ir_ref) or {})
-            dependency_set = sorted(
-                t for t in _dependency_expected_node_keys(graph) if t != self_token)
-        except Exception:
-            dependency_set = []
-
         agg_doc: dict[str, Any] = {
             "aggregate_verdict": aggregate_verdict,
             "self_verdict": self_verdict,
             "blocked": blocked,
-            "dependency_set": dependency_set,
-            "dependency_nodes": dependency_nodes,
         }
         if blocked:
             agg_doc["blocked_reason"] = blocked_reason
@@ -15540,11 +15138,11 @@ class Conductor:
         `recoverable` used to warm-resume the judge in place; that mini-loop was deleted by
         issue #176 (no run ever reached it), so both graded classes terminalize.
 
-        Four exit codes are answered BEFORE the bullets are read at all, because they say the
+        Three exit codes are answered BEFORE the bullets are read at all, because they say the
         gate never reached a verdict about this run's conformance: rc 3 (the structure front end
-        is not installed), rc 4 (a stale certified IR), rc 5 (a file this repository authors)
-        and rc 6 (a traced run none of whose kernels executed, issue #307). Their bullets
-        describe a machine, IR, producer or device condition, and the severity rules classify by
+        is not installed), rc 5 (a file this repository authors) and rc 6 (a traced run none of
+        whose kernels executed, issue #307). Their bullets describe a machine, producer or
+        device condition, and the severity rules classify by
         artifact PATH — so left to the bullet path they would be classified as if they were
         conformance findings. All write `disposition: "fail_closed"` with
         their own `failure_category`, the same shape as the OSError launch-failure branch."""
@@ -15553,8 +15151,8 @@ class Conductor:
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
         self._author_derived_validate_artifacts(refs)
         # A `blocked` aggregate is an integrity blocker (`phase_04_validate.md`): the node is not
-        # certifiable in this run. On this path the pre_judge substep has already required every
-        # immediate dependency ready, so the fold blocks only when a dependency it admitted no
+        # certifiable in this run. On this path the pre-launch DAG guard (`run_phase`) has already
+        # required every immediate dependency ready, so the fold blocks only when a dependency it admitted no
         # longer resolves through `DerivationResolver.select` (revoked or re-keyed since). Without
         # this the run would certify the node with that aggregate, and later runs would adopt it.
         agg = _read_json(self.repo_root / refs.run_node_dir() / "aggregate_verdict.json") or {}
@@ -15601,13 +15199,13 @@ class Conductor:
         # TERMINAL EXIT CODES FIRST, and on the CODE rather than on any bullet: the bullets carry
         # leaf-chosen paths, and the severity rules below classify by path prefix, so a bullet
         # naming a judge-authored artifact would be graded `recoverable` — a judge-authored
-        # conformance finding — over what is really a machine problem or a stale certified IR.
-        # Neither is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
+        # conformance finding — over what is really a machine, producer or device problem.
+        # None is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
         #
-        # rc 4 and rc 5 are UNREACHABLE from this stage today: no gate emits rc 4 since issue
-        # #643 PR-4 (the arm remains), and rc 5 has a single construction site, reached only
-        # from post_generate. Both are wired so that the day a pre_judge gate reports one, it
-        # fails closed rather than being graded by the bullet rules. rc 3 IS
+        # rc 5 is UNREACHABLE from this stage today: it has a single construction site, reached
+        # only from post_generate. It is wired so that the day a pre_judge gate reports one, it
+        # fails closed rather than being graded by the bullet rules. (rc 4, a stale certified
+        # IR, went with issue #643 PR-5; no gate emitted it after PR-4.) rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
         # rc 6 (issue #307) is answered by a gate this stage runs too, over the same trace the
         # post_execute stage already passed, so it is reached only if the two stages disagree.
@@ -15615,11 +15213,9 @@ class Conductor:
             DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-            STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         terminal_category = {
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
-            STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
             HOST_AUTHORED_ARTIFACT_EXIT_CODE: "host_authored_artifact_violation",
             DEVICE_KERNELS_ABSENT_EXIT_CODE: "device_kernels_absent",
         }.get(gate.returncode)
@@ -15702,9 +15298,9 @@ class Conductor:
         # members that are not ready, transitive ones included.
         # `_dependency_ready` only checks DIRECT deps, whereas `_judge_pre_spawn_dag_block`
         # checks the full `dependency.all_nodes` closure, so this also catches transitive gaps
-        # the launch gate would miss. The deterministic `pre_judge` substep (index 0) re-runs
-        # the same check on the ready path and records `pre_judge_meta.json` (its in-body fail
-        # path is defensive — this pre-launch guard is the primary readiness check).
+        # the launch gate would miss. This is the one readiness check before the judge: the
+        # deterministic `pre_judge` substep (index 0) records `pre_judge_meta.json` as `pass`
+        # without repeating it (issue #643 PR-5).
         if phase == "validate":
             block = self._judge_pre_spawn_dag_block(refs)
             if block is not None:
@@ -15775,8 +15371,8 @@ class Conductor:
                     reason=f"compile_dependency_graph_{err['reason']}"))
             # Author the component-dep published-surface sidecar (L2) from the graph just written,
             # and thread it into the compile.generate launch so the leaf is SHOWN the real op-name
-            # catalog. Best-effort: a resolution gap yields `unresolved` entries; the L3 gate is
-            # inert where the surface is unresolved.
+            # catalog. A resolution gap yields `unresolved` entries; the L3 gate is inert where
+            # the surface is unresolved.
             dep_surface = tuple(self._write_dependency_surface(refs))
 
         # The DERIVATION this attempt runs under (issue #250): the phase's contract inputs
@@ -15960,8 +15556,10 @@ class Conductor:
         # warm-resumed judge that then physics-failed left a superseded attempt's
         # post_judge_meta behind), so the shape is no longer reachable; the gate still keys on
         # the index, which is the reading that does not depend on that. Cases:
-        #   - pre_judge (index 0): a --with-deps closure not built+validated. No judge ran, so
-        #     this preserves the historic pre-spawn terminal behavior (no step_result written).
+        #   - pre_judge (index 0): its meta is not a fresh `pass` (it records `pass`
+        #     unconditionally since issue #643 PR-5, so this is a stale or corrupted run
+        #     directory; an incomplete closure fails earlier, in `run_phase`'s pre-spawn check).
+        #     No judge ran, so no step_result is written.
         #   - post_judge (index 3): the `--stage pre_judge` gate failed with a `fail_closed`
         #     disposition — either graded class, integrity or judge-authored conformance, since
         #     issue #176. (An `escalate` disposition does NOT reach here; the `is_escalate`
@@ -16048,7 +15646,8 @@ class Conductor:
             "aggregate_verdict.json": f"{refs.run_node_dir()}/aggregate_verdict.json",
             # G5: the deterministic validate gate metas — post_judge_meta carries the
             # `violations` / `failure_excerpt` / `disposition` that drive a post_judge
-            # `unknown` escalate; pre_judge_meta carries the dependency-DAG readiness result.
+            # `unknown` escalate; pre_judge_meta is the constant `pass` the substep records
+            # (the dependency-DAG readiness check is `run_phase`'s and records no meta).
             "post_judge_meta.json": f"{refs.run_node_dir()}/post_judge_meta.json",
             "pre_judge_meta.json": f"{refs.run_node_dir()}/pre_judge_meta.json",
             "binary_meta.json": f"{refs.binary_dir()}/binary_meta.json",
@@ -16451,20 +16050,12 @@ class Conductor:
             # breaks on first failure, so the failed substep is index len-1.
             failed_substep = SUBSTEPS["validate"][len(outcomes) - 1]
             if failed_substep in ("pre_judge", "post_judge"):
-                # Both deterministic gate substeps are terminalized fail_closed by run_phase's
-                # skip-write branch BEFORE classify_failure is called, so this is defensive.
-                # It classifies the same way that branch does — from the substep's OWN meta
-                # (issue #114) — so the two can never disagree about what a failure was: a
-                # DAG-readiness failure keeps `validate_pre_judge_dag_incomplete`, a gate
-                # violation keeps `validate_pre_judge_violation`, and a failure whose meta
-                # records no category (or leaves no meta at all) is reported as exactly that
-                # rather than under the one violation the substep happens to classify.
-                fname = ("pre_judge_meta.json" if failed_substep == "pre_judge"
-                         else "post_judge_meta.json")
-                gate_meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / fname)
-                return RouteDecision(
-                    "fail_closed",
-                    reason=classify_validate_gate_failure(failed_substep, gate_meta))
+                # run_phase's skip-write branch classifies a failed gate substep from its own
+                # meta and returns before calling this (issue #643 PR-5 removed the copy here).
+                # Raised rather than fallen through: the branches below would route it as an
+                # execute or judge failure.
+                raise RuntimeError(f"classify_failure: a failed validate {failed_substep} is "
+                                   f"classified by run_phase, which did not return first")
             if failed_substep == "execute":
                 # R2: an execute failure now has two kinds, disambiguated by whether execute
                 # authored a verdict.json with a failure_class:
@@ -16532,12 +16123,12 @@ class Conductor:
                 # The trial_meta read is hoisted ABOVE the counter because the TERMINAL
                 # categories (`VALIDATE_EXECUTE_FAILURE_TERMINAL`) have to be answered before
                 # anything counts or escalates. A machine problem (no front end, a device none of
-                # whose kernels ran) or a stale certified IR is not evidence that the IR is
+                # whose kernels ran) or a host-authored file is not evidence that the IR is
                 # the wrong side of an IR-rooted mismatch, so counting it toward C2 would let two
                 # of them reopen Compile — rebuilding the IR and everything downstream over a
                 # condition no regeneration touches. It is not repairable by any leaf either, so
                 # neither the warm table below nor a cold restart applies: fail closed and let
-                # the operator fix the machine (or re-certify) and `--resume`.
+                # the operator fix the machine (or the producer) and `--resume`.
                 trial = _read_json(self.repo_root / refs.run_node_dir() / "trial_meta.json") or {}
                 category = trial.get("failure_category") if trial.get("status") == "fail" else None
                 if str(category or "") in VALIDATE_EXECUTE_FAILURE_TERMINAL:
@@ -16911,7 +16502,7 @@ class Conductor:
                 idx += 1
                 continue
 
-            decision = outcome.decision or RouteDecision("escalate", reason="no_decision")
+            decision = outcome.decision
             # The HOST's classification of this failure. The findings a repair carries are
             # selected by it, never by the diagnostician's free-text directive reason (issue #353).
             findings_reason = decision.reason
@@ -17033,11 +16624,10 @@ class Conductor:
                     and phase in ("compile", "generate")
                     and decision.action in ("retry", "reopen")
                     and decision.repair_strategy in ("reuse", "restart")):
-                trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
-                if trigger is None:
-                    self.set_status("fail", reason_code=f"{phase}_fail",
-                                    reason_detail="same_phase_reopen_no_trigger")
-                    return "fail"
+                # Every failed outcome `run_phase` returns with a retry / reopen decision lists
+                # its failed substep (the decisions it returns with an empty list are
+                # `fail_closed`, which returned above).
+                trigger = outcome.failed_substeps[-1]
                 # Read the findings excerpt BEFORE the revocation/rotation while refs still names
                 # the failed artifact (its {gate,compile_static}_meta.json failure_excerpt, or the
                 # verify meta last_fail_reason), selected by the host's route reason — the reason
@@ -17064,11 +16654,7 @@ class Conductor:
                 return "fail"
 
             # upstream target is certified -> reopen it (revoke + reset, and downstream).
-            trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
-            if trigger is None:
-                self.set_status("fail", reason_code=f"{phase}_fail",
-                                reason_detail="reopen_no_trigger")
-                return "fail"
+            trigger = outcome.failed_substeps[-1]
             # As in the same-phase branch: read the findings excerpt BEFORE the revocation,
             # while refs still names the failed artifact (a validate.execute structural failure
             # keeps its excerpt in the failed run's trial_meta.json, and the re-run rotates the
@@ -17613,7 +17199,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     local site. `local_site` is the `local` entry of the same `sites.yaml` (None: the default)."""
     root = Path(repo_root)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
-    # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
+    # otherwise launch `codex exec --model ''`, phases in.
     llm_config.validate_runnable()
     node_key, spec_path = resolve_node(root, spec_ref)
     if target_profile is None:

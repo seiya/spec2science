@@ -243,7 +243,10 @@ class PureJudgeContextTests(_Fixture):
         canonical pin. `_validate_leaf_launch_request_payload` counts a whitespace-only
         `pure_context` value as missing. What degrading actually buys is a refusal one frame
         later, inside `record_launch`, escaping this loop's named `pure_context_assembly_failed`
-        branch and aborting the conductor instead."""
+        branch and aborting the conductor instead.
+
+        Each read fails with its own `OSError`, which names the file (the `pure_{key}_missing`
+        labels went in issue #643)."""
         c = self.conductor()
         for key, rel in sorted(c._leaf_judge_document_refs(self.refs).items()):
             if key == "raw_evidence_excerpt_document":
@@ -252,13 +255,11 @@ class PureJudgeContextTests(_Fixture):
             moved = path.with_suffix(path.suffix + ".moved")
             path.rename(moved)
             with self.subTest(document=key):
-                with self.assertRaises(RuntimeError) as caught:
+                with self.assertRaises(OSError) as caught:
                     c._build_leaf_judge_context(self.refs)
-                # The EXACT name, not `"pure_" in ...`: the weaker form this replaced was
-                # green for any of the nine keys against any other key's message, so the
-                # names could have been swapped wholesale without a red row. The name is what
-                # reaches the operator through `pure_context_assembly_failed`.
-                self.assertIn(f"pure_{key}_missing", str(caught.exception))
+                # The EXACT path, so a read of another key's file cannot pass this row. The
+                # path is what reaches the operator through `pure_context_assembly_failed`.
+                self.assertIn(str(path), str(caught.exception))
             moved.rename(path)
 
     def test_an_absent_raw_directory_does_not_raise(self) -> None:
@@ -293,9 +294,10 @@ class PureJudgeContextTests(_Fixture):
     def test_an_unsliceable_runner_output_contract_raises(self) -> None:
         (self.repo / _RUNNER_OUTPUT_CONTRACT).write_text(
             "# Runner output contract\n\nno numbered sections here\n", encoding="utf-8")
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(ValueError) as caught:
             self.conductor()._build_leaf_judge_context(self.refs)
-        self.assertIn("unsliceable", str(caught.exception))
+        self.assertIn("runner-output contract has no '## 3.' section heading",
+                      str(caught.exception))
 
     def test_assembly_failure_spawns_no_leaf(self) -> None:
         (self.repo / self.refs.run_node_dir() / "verdict.json").unlink()

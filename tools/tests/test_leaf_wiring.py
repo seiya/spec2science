@@ -1169,7 +1169,7 @@ class PureRenderTests(unittest.TestCase):
                       "may be appended freely — so the phrase is pinned, not the token")
         sources = {
             "_generate_verify_severity_rubric_section": "workflow_conductor.py",
-            "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
+            "pure_context_assembly_failed": "workflow_conductor.py",
             "LEAF_PROMPT_CONTRACT_VERSION": "leaf_contract.py",
             "GENERATE_VERIFY_CONTRACT_VERSION": "leaf_contract.py",
         }
@@ -1245,23 +1245,6 @@ class PureRenderTests(unittest.TestCase):
         self.assertEqual(cursor, arid,
                          "the documented path resolves, but not to the failing substep's "
                          "agent_run_id, so `reopen-phase` would be given the wrong trigger")
-
-    def test_launch_prompt_reference_spells_both_rubric_fail_closed_names(self) -> None:
-        """The two `pure_severity_rubric_document_*` tags reach an operator only through the run
-        log and the `pure_context_assembly_failed` outcome, so the reference document is where
-        they are spelled out — the same argument the checks-contract pair is written under.
-
-        Coupled by requiring each name in BOTH the document and the module that raises it: a
-        rename that touches one side turns this red naming the side that moved.
-        """
-        repo_root = Path(ort.__file__).resolve().parents[1]
-        source = (repo_root / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
-        doc = (repo_root / "docs" / "workflow"
-               / "LAUNCH_PROMPT_REFERENCE.md").read_text(encoding="utf-8")
-        for name in ("pure_severity_rubric_document_missing",
-                     "pure_severity_rubric_document_unsliceable"):
-            self.assertIn(name, source, f"{name} is no longer raised by the conductor")
-            self.assertIn(name, doc, f"{name} is raised but not spelled for the operator")
 
     @classmethod
     def _rubric_slice(cls, repo_root: Path, step: str) -> str:

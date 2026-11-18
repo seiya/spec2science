@@ -51,7 +51,6 @@ from tools.orchestration_runtime import (
     init_orchestration,
     main,
     _project_terse_result,
-    pre_orchestration_start,
     pre_phase_launch,
     probe_execution_platform,
     prepare_launch_request_payload,
@@ -279,10 +278,9 @@ def _seed_generate_pass_outputs(repo_root: Path, meta_ref: str) -> list[str]:
     by the caller, which owns its content) plus the compile reservation, and return the
     `required_outputs` a PASSING generate step_result must declare.
 
-    Two reasons a bare `[meta_ref]` no longer stands in for a real generate: the
-    certification stamp refuses a phase that declares no hashable deliverable besides its
-    own meta, and it records `source_ir_id` from the orchestration's compile RESERVATION,
-    so a generate with no reserved IR cannot be certified to one."""
+    A bare `[meta_ref]` no longer stands in for a real generate: the certification stamp
+    refuses a phase that declares no hashable deliverable besides its own meta. The compile
+    reservation is the one a real run holds by the time Generate passes."""
     src_dir = (repo_root / meta_ref).parent / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "shallow_water2d_model.f90").write_text("module m\nend module m\n", encoding="utf-8")
@@ -338,9 +336,7 @@ def _seed_build_pass_outputs(repo_root: Path, *, binary_id: str = "bin_20260101_
     deliverable) into `binary_meta.json` before writing the result, and refuses a pass that
     declares no meta or whose declared deliverable is absent — so a fixture that names a
     binary it never wrote no longer stands in for a real build."""
-    # The compile reservation the certification stamp reads `source_ir_id` from — a build
-    # binds to the IR its source was generated from, and the reservation is what this
-    # orchestration is holding that to.
+    # The compile reservation a real build runs under.
     res = (repo_root / "workspace" / "orchestrations" / "orch_001" / "reservations"
            / "problem__shallow_water2d__0.3.0")
     res.mkdir(parents=True, exist_ok=True)
@@ -2968,6 +2964,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             cleared = [e for e in log_events if e.get("event") == "resume_cleared_stale_active_child"]
             self.assertEqual(len(cleared), 1)
             self.assertEqual(cleared[0].get("cleared_active_child_arids"), [child])
+            # The node step is not reset on resume (issue #643 PR-5), so the row names no
+            # `child_running` -> `not_started` transition.
+            self.assertNotIn("from", cleared[0])
+            self.assertNotIn("to", cleared[0])
 
     def test_resume_prunes_orphan_agent_graph_edge(self) -> None:
         """The abandoned child's agent_graph edge (written by record_launch before the
@@ -3238,44 +3238,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             children = [e["child_agent_run_id"] for e in edges]
             self.assertIn(invalid_child, children, "invalid-run child edge must be kept")
-
-    def test_resume_resets_stale_child_running_node_step(self) -> None:
-        """An abandoned launch leaves the node/step at `child_running`, which the phase
-        gates (apply-patch / MCP / run-gate) treat as authorization for child work.
-        A terminal-reset resume must reset it to `not_started` so the dead child's
-        capability is no longer phase-authorized (Codex P2)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_child_running"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            node = "component__demo__0.1.0"
-            # Simulate record_launch having set compile -> child_running.
-            ps = json.loads((root / "phase_state.json").read_text(encoding="utf-8"))
-            ps["node_states"] = {
-                node: {"compile": "child_running", "generate": "not_started",
-                       "build": "not_started", "validate": "not_started"}
-            }
-            (root / "phase_state.json").write_text(json.dumps(ps), encoding="utf-8")
-
-            update_orchestration_status(
-                repo_root=repo_root, orchestration_id=oid, status="fail",
-                reason_code="launch_incomplete_active_child", reason_detail="x",
-            )
-            resume_orchestration(repo_root, oid)
-
-            after = json.loads((root / "phase_state.json").read_text(encoding="utf-8"))
-            self.assertEqual(after["node_states"][node]["compile"], "not_started")
-            log_events = [
-                json.loads(line)
-                for line in (root / "phase_state_log.jsonl").read_text().splitlines()
-                if line.strip()
-            ]
-            reset = [e for e in log_events if e.get("event") == "resume_reset_stale_child_running"]
-            self.assertEqual(len(reset), 1)
-            self.assertEqual(
-                reset[0]["reset_node_steps"], [{"node_key_safe": node, "step": "compile"}]
-            )
 
     def test_resume_survives_malformed_step_result_during_prune(self) -> None:
         """A malformed/partial step_result.json must not abort checkpoint resume during
@@ -6867,8 +6829,8 @@ _CERT_PIPE_REF = f"workspace/pipelines/{_CERT_SAFE}/{_TARGET_ID}/spec-x_20260101
 def _setup_certifiable_generate(repo_root: Path, *, verification_status: str = "pass") -> None:
     """An orchestration positioned exactly where `write_step_result` is called for a passing
     generate phase: preflight launchable, the phase at `child_finished`, a recorded producing
-    substep publishing the source deliverables, and the compile reservation the certification
-    stamp reads `source_ir_id` from."""
+    substep publishing the source deliverables, and the compile reservation a real run
+    holds."""
     oid = "o1"
     init_orchestration(repo_root=repo_root, orchestration_id=oid)
     _mark_dependencies_ready(repo_root, oid)
@@ -7717,7 +7679,16 @@ class PhaseCertificationTests(unittest.TestCase):
             refs = self._certified(repo, through="validate")
             run_dir = repo / refs["run_node_dir"]
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)[0])
-            for name in ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES:
+            # Every deliverable the phase declares (`phase_required_outputs`); the runtime's own
+            # copy of the list had no other reader and went in issue #643 PR-5.
+            from tools.workflow_conductor import NodeRefs, phase_required_outputs
+            declared = sorted({ref.rsplit("/", 1)[-1] for ref in phase_required_outputs(
+                NodeRefs(target_id=_TARGET_ID, node_key=self._NK,
+                         spec_path="spec/component/spec_x", ir_id="i", pipeline_id="p",
+                         source_id="s", binary_id="b", run_id="r", source_binary_id="b"),
+                "validate")})
+            self.assertIn("validate_meta.json", declared)
+            for name in declared:
                 with self.subTest(missing=name):
                     path = run_dir / name
                     body = path.read_text("utf-8")
@@ -7732,19 +7703,6 @@ class PhaseCertificationTests(unittest.TestCase):
                     path.write_text(body, encoding="utf-8")
             # restored
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)[0])
-
-    def test_validate_certifying_deliverables_match_the_declared_outputs(self) -> None:
-        """Coupled to the conductor, not restated beside it. `phase_required_outputs` is what
-        the phase actually declares and what `write-step-result` proves present; if a
-        deliverable is added there and not here, certification silently stops covering it."""
-        from tools.workflow_conductor import NodeRefs, phase_required_outputs
-
-        refs = NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
-                        ir_id="i", pipeline_id="p", source_id="s", binary_id="b",
-                        run_id="r", source_binary_id="b")
-        declared = {ref.rsplit("/", 1)[-1]
-                    for ref in phase_required_outputs(refs, "validate")}
-        self.assertEqual(set(ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES), declared)
 
     def test_phase_certified_rejects_an_unknown_step(self) -> None:
         """A step outside the certified set is answered `unsupported_step` by `select`
@@ -8378,7 +8336,7 @@ class CertificationStampTests(unittest.TestCase):
             "p/binary/b1/binary_meta.json")
         self.assertEqual(refs, ["p/binary/b1/bin/exe"])
 
-    def test_write_step_result_pass_stamps_artifact_hashes_and_source_ir_id(self) -> None:
+    def test_write_step_result_pass_stamps_artifact_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             _setup_certifiable_generate(repo)
@@ -8398,8 +8356,6 @@ class CertificationStampTests(unittest.TestCase):
             self.assertEqual(list(doc["artifact_hashes"]), [model_ref])
             self.assertEqual(doc["artifact_hashes"][model_ref],
                              _compute_sha256(repo / model_ref))
-            # The IR binding comes from the RESERVATION, never from the leaf-authored meta.
-            self.assertEqual(doc["source_ir_id"], "spec-x_20260101_001")
             # The audit log is excluded from the stamp (Validate.execute appends to it).
             self.assertNotIn(log_ref, doc["artifact_hashes"])
 
@@ -8432,7 +8388,6 @@ class CertificationStampTests(unittest.TestCase):
             model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
             forged = json.loads((repo / meta_ref).read_text("utf-8"))
             forged["artifact_hashes"] = {model_ref: _compute_sha256(repo / model_ref)}
-            forged["source_ir_id"] = "spec-x_20260101_001"
             (repo / meta_ref).write_text(json.dumps(forged), encoding="utf-8")
             write_step_result(
                 repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
@@ -8444,7 +8399,6 @@ class CertificationStampTests(unittest.TestCase):
             )
             doc = json.loads((repo / meta_ref).read_text("utf-8"))
             self.assertNotIn("artifact_hashes", doc)
-            self.assertNotIn("source_ir_id", doc)
             # Everything else the leaf recorded is preserved — this strips a claim, not a file.
             self.assertEqual(doc["verification_status"], "fail")
             self.assertEqual(doc["source_id"], "src_c_001")
@@ -8465,7 +8419,7 @@ class CertificationStampTests(unittest.TestCase):
             outs = [refs["aggregate_verdict"], f"{node_dir}/verdict.json",
                     f"{node_dir}/summary.json", f"{node_dir}/semantic_review.json", meta_ref]
             doc = ort._stamp_certification(
-                repo, "o1", node_key="component/spec_x@0.1.0", step="validate",
+                repo, step="validate",
                 required_outputs=outs, derivation=_DERIVATION_RECORD)
             self.assertIsNotNone(doc)
             self.assertEqual(sorted(doc["artifact_hashes"]), sorted(outs[:-1]))
@@ -8510,24 +8464,6 @@ class CertificationStampTests(unittest.TestCase):
             result_path = (repo / "workspace/orchestrations/o1/steps"
                            / "component__spec_x__0.1.0/generate/orch_run_001/step_result.json")
             self.assertFalse(result_path.exists())
-
-    def test_write_step_result_pass_refuses_a_generate_without_a_compile_reservation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            _setup_certifiable_generate(repo)
-            (repo / "workspace/orchestrations/o1/reservations/component__spec_x__0.1.0"
-             / "compile.json").unlink()
-            meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
-            model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
-            with self.assertRaisesRegex(RuntimeError, "no compile reservation"):
-                write_step_result(
-                    repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
-                    agent_run_id="orch_run_001",
-                    payload={"status": "pass", "validation_stage": "post_generate",
-                             "derivation": _DERIVATION_RECORD,
-                             "required_outputs": [model_ref, meta_ref], "failed_substeps": [],
-                             "substep_agent_run_ids": ["substep_gen_verify_001"]},
-                )
 
 
 class CompletionVouchAttemptModelTests(unittest.TestCase):
@@ -9553,37 +9489,20 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
 
 
 class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
-    def test_write_preflight_persists_parallel_nodes_meta_without_init(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            orch = "preflight_only_orch"
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "1"}):
-                write_preflight(
-                    repo_root=repo,
-                    orchestration_id=orch,
-                    payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-                )
-            meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
-            self.assertTrue(meta_path.is_file())
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta.get("parallel_nodes_explicit"))
-            self.assertEqual(meta.get("parallel_nodes_policy"), "sequential_default")
-
-    def test_init_orchestration_merges_parallel_nodes_from_preflight_meta(self) -> None:
+    def test_init_orchestration_after_a_preflight(self) -> None:
+        """The standalone CLI's order (preflight, then init) still yields an initialized meta.
+        (The `parallel_nodes_*` fields this row also checked went in issue #643 PR-5.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "preflight_then_init"
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "true"}):
-                write_preflight(
-                    repo_root=repo,
-                    orchestration_id=orch,
-                    payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-                )
+            write_preflight(
+                repo_root=repo,
+                orchestration_id=orch,
+                payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
+            )
             init_orchestration(repo_root=repo, orchestration_id=orch)
             meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta.get("parallel_nodes_explicit"))
-            self.assertEqual(meta.get("parallel_nodes_policy"), "sequential_default")
             self.assertEqual(meta.get("orchestration_id"), orch)
 
     def test_init_orchestration_does_not_duplicate_orchestration_running_entry_on_reinit(self) -> None:
@@ -9728,24 +9647,6 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
                 if isinstance(item, dict) and str(item.get("agent_run_id", "")).strip() == child
             )
             self.assertEqual(terminal_entry.get("status"), "blocked")
-
-    def test_pre_orchestration_start_logs_persisted_parallel_nodes_explicit(self) -> None:
-        """The value kept by setdefault matches the detail for the hook return / log."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            orch = "orch_parallel_audit"
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "1"}):
-                out1 = pre_orchestration_start(repo, orch, event="init")
-            self.assertTrue(out1["parallel_nodes_explicit"])
-            meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
-            meta1 = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta1.get("parallel_nodes_explicit"))
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SPEC2SCIENCE_ALLOW_PARALLEL_NODES", None)
-                out2 = pre_orchestration_start(repo, orch, event="preflight")
-            self.assertTrue(out2["parallel_nodes_explicit"])
-            meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta2.get("parallel_nodes_explicit"), meta1.get("parallel_nodes_explicit"))
 
     def test_pre_phase_complete_judge_checks_rejects_pass_decision_with_fail(
         self,
@@ -13511,7 +13412,7 @@ class RecordTimeoutTests(unittest.TestCase):
                     "SPEC2SCIENCE_ORCHESTRATION_ID": "orch_to_001",
                     "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "substep_run_to_001",
                     "SPEC2SCIENCE_WORKFLOW_MODE": "1",
-                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
         with tempfile.TemporaryDirectory() as td:
             repo_root = Path(td)
             arid = self._setup_substep_launch(repo_root, child_env=dict(authored))
@@ -14545,8 +14446,9 @@ class RecordTimeoutTests(unittest.TestCase):
         """An operator who ran `deactivate-child` by hand and then reaches for
         `finalize-child` is refused: the marker is gone. The refusal must name that state and
         the remedy, and the remedy must work as printed: `--resume` (`resume_orchestration`),
-        with no manual terminalization first, prunes the unfinalized child's graph edge and its
-        `child_running` state, so the resumed run is not held by it."""
+        with no manual terminalization first, prunes the unfinalized child's graph edge, so the
+        resumed run is not held by it. (Its `child_running` phase state is left for the
+        re-launch to overwrite: no reader tells it from `not_started`, issue #643 PR-5.)"""
         from tools.orchestration_runtime import (
             deactivate_child_agent, finalize_child, resume_orchestration,
         )
@@ -14571,18 +14473,9 @@ class RecordTimeoutTests(unittest.TestCase):
                 graph = json.loads(graph_path.read_text(encoding="utf-8"))
                 return [e.get("child_agent_run_id") for e in graph.get("edges", [])]
 
-            state_path = graph_path.parent / "phase_state.json"
-
-            def _child_running() -> bool:
-                doc = json.loads(state_path.read_text(encoding="utf-8"))
-                return any(v == "child_running" for steps in doc.get("node_states", {}).values()
-                           for v in steps.values())
-
             self.assertIn(arid, _children())
-            self.assertTrue(_child_running())
             resume_orchestration(repo_root, "orch_to_001")
             self.assertNotIn(arid, _children())
-            self.assertFalse(_child_running())
 
 
 class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
@@ -16675,48 +16568,6 @@ class WritePreflightConcurrencyTests(unittest.TestCase):
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
             self.assertTrue(_orchestration_meta_lock_path(repo_root, "wpl").is_file())
-
-    def test_pre_orchestration_start_waits_for_the_meta_lock(self) -> None:
-        """The deterministic half of the row below (issue #250 PR-3, found as an intermittent
-        CI failure): `pre_orchestration_start` runs at the START of `write_preflight`, before
-        its locked readiness block, and its own read-modify-write of `orchestration_meta.json`
-        was unlocked — so a `mark-dependency-readiness` landing between its read and its write
-        was clobbered. Another thread holds the meta lock, writes `dependency_readiness` while
-        holding it, and releases; the hook must not have written before that, so the flags it
-        writes back are the ones the holder wrote."""
-        import threading
-        from tools.orchestration_runtime import (
-            _orchestration_meta_exclusive_lock, pre_orchestration_start,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="lk",
-                               spec_ref="spec/component/src")
-            meta_path = repo_root / "workspace" / "orchestrations" / "lk" / "orchestration_meta.json"
-            holding = threading.Event()
-            hook_returned = threading.Event()
-            saw_hook_return_while_held = []
-
-            def holder() -> None:
-                with _orchestration_meta_exclusive_lock(repo_root, "lk"):
-                    holding.set()
-                    # give the hook time to read the meta if it does not wait for the lock
-                    hook_returned.wait(0.5)
-                    saw_hook_return_while_held.append(hook_returned.is_set())
-                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    meta["dependency_readiness"] = {"direct_dependency_compile_readiness": True}
-                    meta_path.write_text(json.dumps(meta), encoding="utf-8")
-
-            t = threading.Thread(target=holder)
-            t.start()
-            holding.wait(5)
-            pre_orchestration_start(repo_root, "lk", event="preflight")
-            hook_returned.set()
-            t.join()
-            self.assertEqual(saw_hook_return_while_held, [False])  # the hook waited
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta["dependency_readiness"]["direct_dependency_compile_readiness"])
-            self.assertIn("parallel_nodes_policy", meta)  # and still did its own write
 
     def test_concurrent_preflight_and_mark_do_not_clobber_verified(self) -> None:
         """A concurrent write_preflight + mark_dependency_readiness must not
@@ -22766,7 +22617,7 @@ class DerivationInputsTests(unittest.TestCase):
                     self.assertEqual(rec["transformation"],
                                      list(tools_derivation.transformation_versions()[step]))
             doc = ort._stamp_certification(
-                repo, "o1", node_key=self._NK, step="compile",
+                repo, step="compile",
                 required_outputs=[f"{refs['ir_ref']}/spec.ir.yaml", refs["ir_meta"]],
                 derivation=record)
             self.assertEqual(doc["derivation_key"], record["derivation_key"])
@@ -22810,7 +22661,7 @@ class DerivationRecordStampTests(unittest.TestCase):
             doc = json.loads((repo / meta_ref).read_text("utf-8"))
             doc.update({"artifact_hashes": {"x": "sha256:" + "0" * 64}, "output_hash": "sha256:" + "1" * 64,
                         "derivation_key": "sha256:" + "2" * 64, "derivation_inputs": {},
-                        "derivation_transformation": ["t"], "source_ir_id": "leafwrote"})
+                        "derivation_transformation": ["t"]})
             (repo / meta_ref).write_text(json.dumps(doc), "utf-8")
             write_step_result(
                 repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
@@ -22820,7 +22671,7 @@ class DerivationRecordStampTests(unittest.TestCase):
                          "substep_agent_run_ids": ["substep_gen_verify_001"]})
             stripped = json.loads((repo / meta_ref).read_text("utf-8"))
             for key in ("artifact_hashes", "output_hash", "derivation_key", "derivation_inputs",
-                        "derivation_transformation", "source_ir_id"):
+                        "derivation_transformation"):
                 self.assertNotIn(key, stripped)
             self.assertEqual(stripped["verification_status"], "fail")
 
@@ -24021,7 +23872,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertIn("CLAUDE_CONFIG_DIR", profile["env"])
         profile["env"] = {**profile["env"],
                           "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
-                          "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+                          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         self.assertEqual(self._setenv_map(argv), profile["env"])
         # ...and a second CLI home is refused, not silently tolerated.

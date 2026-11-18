@@ -840,15 +840,12 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual((d.action, d.target_phase, d.repair_strategy),
                          ("retry", "generate", "reuse"))
         self.assertEqual(d.reason, "gate_syntax_error+lint_findings")
-        # The node's own stale certified IR is TERMINAL — the leaf cannot repair it, so no warm
-        # retry, and it DOMINATES a co-occurring warm category (reachability note: static runs
-        # only when lint+syntax passed, so this multi-category input cannot arise in practice —
-        # the test defends the classifier's totality).
-        d = wc.classify_gate_failure(["stale_dependency_ir"])
+        # A TERMINAL category DOMINATES a co-occurring warm category (reachability note: static
+        # runs only when lint+syntax passed, so this multi-category input cannot arise in
+        # practice — the test defends the classifier's totality). The stale-certified-IR
+        # category this row drove until issue #643 PR-5 left with its exit code.
+        d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
         self.assertEqual(d.action, "fail_closed")
-        d = wc.classify_gate_failure(["lint_findings", "stale_dependency_ir"])
-        self.assertEqual(d.action, "fail_closed")
-        self.assertIn("stale_dependency_ir", wc.GATE_FAILURE_TERMINAL)
         # An absent Fortran structure front end is terminal for the same reason and a different
         # owner: the machine running the gate lacks `tree-sitter` / `tree-sitter-fortran`, so no
         # source the leaf can author makes the three `problem` gates readable again.
@@ -893,6 +890,22 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual(wc.classify_gate_failure(["mystery"]).action, "escalate")
         self.assertEqual(wc.classify_gate_failure([]).reason, "gate_fail_no_category")
         self.assertEqual(wc.classify_gate_failure(None).reason, "gate_fail_no_category")
+
+    def test_compile_static_failure_routing(self) -> None:
+        """A missing compile.static category is a host defect (the one writer records
+        `compile_static_violation` with every `fail`), so it raises a named error rather than
+        routing; the known category routes to a warm same-phase reuse; an unknown category is
+        not in the table and fails on the lookup (`KeyError`), which is the behaviour pinned
+        here, not a route."""
+        for missing in (None, ""):
+            with self.assertRaises(RuntimeError) as ctx:
+                wc.classify_compile_static_failure(missing)
+            self.assertIn("compile_static_fail_no_category", str(ctx.exception), repr(missing))
+        d = wc.classify_compile_static_failure("compile_static_violation")
+        self.assertEqual((d.action, d.target_phase, d.repair_strategy, d.reason),
+                         ("retry", "compile", "reuse", "compile_static_compile_static_violation"))
+        with self.assertRaises(KeyError):
+            wc.classify_compile_static_failure("mystery")
 
     def test_dev_verify_severity_gate(self) -> None:
         self.assertEqual(wc.classify_verify_severity("none", "dev").action, "advance")
@@ -1341,6 +1354,15 @@ class _FakeConductor(wc.Conductor):
     # dedicated conductor tests that seed a real deps.yaml + catalog.
     def _write_dependency_graph(self, refs):  # type: ignore[override]
         return None
+
+    # Its sibling, for the same reason: the real surface author reads the graph the no-op above
+    # does not write, and it writes `<ir_ref>/dependency_surface.json`, which would litter the
+    # shared root and make the next attempt's `_claim_artifact_dir` (`not path.exists()`)
+    # rotate the IR id. The fake writes nothing and shows the leaf an empty surface. The real
+    # author is covered by `WriteDependencySurfaceTest`, which calls the real
+    # `Conductor._write_dependency_surface` unbound on a `_FakeConductor`.
+    def _write_dependency_surface(self, refs):  # type: ignore[override]
+        return []
 
     # Configurable `check-phase-certified` answer: (phase) -> dict. Default None keeps the
     # "not certified" answer every other test in this file was written against.
@@ -3252,46 +3274,6 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(
             wc.classify_gate_failure(["host_rendered_lint_findings"]).action, "fail_closed")
 
-    def test_ir_subject_static_finding_terminalizes_without_a_second_generate_launch(
-            self) -> None:
-        """ISSUE #238's ACCEPTANCE CRITERION, stated as a launch count — the #112 row above
-        for the other unwritable subject.
-
-        The measured incident (`orch_20260916T081200Z_5139f6c9`) spent FOUR `generate.generate`
-        launches on an io_contract finding whose subject was the node's own certified IR
-        (`evidence_ref 'raw/execution_trace.json'`, retired by PR #236 after the IR was
-        certified), and ended `generate exceeded 3`. The leaf has no write authority over the
-        IR, so no launch after the first could converge. Readiness now refuses such an IR before
-        Generate is reached (`_ir_certification`'s validator clause); this row pins the gate-side
-        BACKSTOP: when the finding does reach `generate.gate`, the validator answers rc 4
-        (`stale_dependency_ir`), and the node fails closed on the first attempt — exactly ONE
-        launch, no `reopen-phase`, no repair findings threaded."""
-        c = self._conductor()
-
-        def status_fn(phase, substep, n):
-            return "fail" if (phase == "generate" and substep == "gate") else "pass"
-
-        c.status_fn = status_fn
-        c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "fail_closed", reason="gate_stale_dependency_ir")
-        status = c.conduct(self._refs(), "generate")
-        self.assertNotEqual(status, "pass")
-        self.assertEqual([], [cap for s, cap in c.calls if s == "reopen-phase"])
-        gen_launches = [cap["--request-json"] for s, cap in c.calls
-                        if s == "record-launch"
-                        and cap.get("--request-json", {}).get("step") == "generate"
-                        and cap["--request-json"].get("substep") == "generate"]
-        self.assertEqual(len(gen_launches), 1)
-        self.assertNotIn("repair_findings", gen_launches[0])
-        gen_writes = [cap for s, cap in c.calls
-                      if s == "write-step-result" and cap["--step"] == "generate"]
-        self.assertEqual(len(gen_writes), 1)
-        # The reason the classifier actually produces for this category is the one used above.
-        self.assertEqual(
-            wc.classify_gate_failure(["stale_dependency_ir"]).reason, "gate_stale_dependency_ir")
-        self.assertEqual(
-            wc.classify_gate_failure(["stale_dependency_ir"]).action, "fail_closed")
-
     def test_structural_execute_failure_warm_reopens_generate_cross_phase(self) -> None:
         # B1 end to end (prod): a structural validate.execute failure cross-phase revokes
         # generate with a WARM reuse repair carrying the gate's findings. The findings must be
@@ -5082,11 +5064,10 @@ class TransportFailureTest(unittest.TestCase):
         self.assertNotIn("write-step-result", subs)
 
     def test_pre_judge_substep_dag_incomplete_fails_closed(self) -> None:
-        # Defensive in-substep path (a TOCTOU where the closure becomes unready between the
-        # pre-launch guard and the substep, or the fake bypasses the guard): the pre_judge
-        # substep (index 0) authors a FAIL pre_judge_meta, the loop breaks there (no
-        # execute/judge/post_judge), and the phase terminalizes fail_closed with NO
-        # write-step-result (skip-write + tombstone).
+        # run_phase's routing of a failed pre_judge substep whose meta records a category (the
+        # substep body writes `pass` only since issue #643 PR-5; a failed meta is seeded here):
+        # the loop breaks at index 0 (no execute/judge/post_judge), and the phase terminalizes
+        # fail_closed with NO write-step-result (skip-write + tombstone).
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -6108,35 +6089,11 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertEqual(env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "child-1")
         self.assertNotEqual(env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "ORCH")
 
-    def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
-        """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
-
-        The CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's first
-        user message unless safe-mode, `--bare`, or this variable is in force. A pure leaf
-        passed `--safe-mode` and was therefore always closed; an agentic leaf passed none of
-        them, and neither does a workshop leaf (the only leaf model since issue #534 PR-J4-b:
-        `--safe-mode` would disable its wrapper endpoint), so without this variable it is
-        handed the operator's memory index — past runs, merged PRs, open
-        issues, standing instructions. Issue #63's private home closes the same hole from the
-        other side (a fresh home has no memory file), and this variable is deliberately kept:
-        the two close it for different reasons, and a CLI that relocated the memory file
-        without relocating the home would reopen it. That is ambient context the repository does not declare
-        and the run cannot reproduce, it is a leaf reading `~/.claude`, and it is a leaf being
-        given past-run state: three separate things the workflow forbids.
-
-        Pinned in `_child_env` because the CLI exposes no flag for it, so unlike the other four
-        closures it cannot be pinned by the argv goldens."""
-        env = self._conductor("claude")._child_env("child-1")
-        self.assertEqual(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
-
     def test_child_env_does_not_set_leaf_max_output_tokens_for_codex(self) -> None:
         # codex configures its model limits on a different surface; a CLAUDE_* var there is at
         # best inert and at worst confusing.
         env = self._conductor("codex")._child_env("child-1")
         self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", env)
-        # Same for the auto-memory switch: codex has its own context surface, and a CLAUDE_*
-        # variable there says nothing.
-        self.assertNotIn("CLAUDE_CODE_DISABLE_AUTO_MEMORY", env)
 
     # -- the environment is RECONSTRUCTED, not inherited (issue #63, PR-B) ---------
 
@@ -6229,17 +6186,6 @@ class LeafChildEnvTest(unittest.TestCase):
         env = c._child_env("child-1")
         self.assertNotIn("SPEC2SCIENCE_HOME", env)
         self.assertEqual(env["SPEC2SCIENCE_KEPT"], "yes")   # the prefix still works
-
-    def test_codex_home_conflict_still_raises_after_the_filter(self) -> None:
-        """The conflict check reads two names the filter now drops, so it had to move to
-        the HOST environment. If it had been left reading `_child_env`'s own dict it
-        would have gone quietly dead — two incompatible operator settings, no complaint."""
-        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
-                         orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"CODEX_HOME": "/a/one", "SPEC2SCIENCE_HOME": "/b/two",
-                              "PATH": "/host/bin"})
-        with self.assertRaises(wc.SandboxEnforcementError):
-            c._child_env("child-1")
 
     def test_codex_home_is_not_promoted_from_the_legacy_alias(self) -> None:
         """The old code promoted `SPEC2SCIENCE_HOME` into `child_env["CODEX_HOME"]`. No
@@ -6745,9 +6691,8 @@ class LeafTransientRetryTest(unittest.TestCase):
                 self.assertIsNone(wait["reset_epoch"])
 
     def test_a_raising_probe_reads_as_probe_failed(self) -> None:
-        """`_read_usage_reset` guards its whole body: a `_child_env` raise (the CODEX_HOME /
-        SPEC2SCIENCE_HOME conflict) after the dead attempt is finalized is the schedule fallback,
-        not a crashed run."""
+        """`_read_usage_reset` guards its whole body: a `_child_env` raise after the dead
+        attempt is finalized is the schedule fallback, not a crashed run."""
         dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
         c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
 
@@ -8181,7 +8126,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             c._write_ir_meta(refs, verification_status="pass", last_fail_reason=None,
                              issue_severity=None, attempts=1)
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="compile",
+                root, step="compile",
                 required_outputs=wc.phase_required_outputs(refs, "compile"),
                 derivation=c._phase_derivation(refs, "compile"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "compile", target=_TP)
@@ -8196,7 +8141,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 refs, {"verification_status": "pass", "issue_severity": None,
                        "last_fail_reason": None}, attempts=1)
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="generate",
+                root, step="generate",
                 required_outputs=wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"),
                 derivation=c._phase_derivation(refs, "generate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate", target=_TP)
@@ -8224,7 +8169,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             # check that the stamp puts in what the predicate reads.
             ort._strip_certification_keys(root / refs.binary_dir() / "binary_meta.json")
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="build",
+                root, step="build",
                 required_outputs=wc.phase_required_outputs(refs, "build", exe_name=exe),
                 derivation=c._phase_derivation(refs, "build"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "build", target=_TP)
@@ -8267,7 +8212,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                 "pipeline_id": refs.pipeline_id, "verification_status": "pass",
                 "attempt_count": 1}), encoding="utf-8")
             ort._stamp_certification(
-                root, "o1", node_key=self.NODE_KEY, step="validate",
+                root, step="validate",
                 required_outputs=wc.phase_required_outputs(refs, "validate"),
                 derivation=c._phase_derivation(refs, "validate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "validate", target=_TP)
@@ -10225,12 +10170,6 @@ class LeafSpawnTest(unittest.TestCase):
                       [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
         self.assertIn("--skip-git-repo-check", argv)  # issue #227: the sandbox cwd is empty
 
-    def test_codex_leaf_rejects_generic_model_alias(self) -> None:
-        with self.assertRaisesRegex(ValueError, "explicit model slug"):
-            self._c(backend="codex", agent_model="codex").leaf_command(
-                self._c(backend="codex", agent_model="codex").entry_for("generate", "generate"),
-                session_id="a", **_leaf_kind("generate", "generate"))
-
     # --- codex JSONL stream handling -----------------------------------------
 
     def _codex_stream_result(self, lines: str, *, child_arid: str | None = "A",
@@ -10994,9 +10933,15 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_bwrap_always_enforced(self) -> None:
         # Phase-2 (Linux+bwrap-only): bwrap leaf sandboxing is unconditionally mandatory;
-        # there is no opt-out env value. _bwrap_enabled() always returns True.
-        self.assertTrue(self._c(env={})._bwrap_enabled())
-        self.assertTrue(self._c(env={"SPEC2SCIENCE_CONDUCTOR_BWRAP": "off"})._bwrap_enabled())
+        # there is no opt-out env value: with no recorded profile the launch is refused
+        # whatever the environment says. (The constant-True `_bwrap_enabled` this row read
+        # went in issue #643 PR-5.)
+        with tempfile.TemporaryDirectory() as tmp:
+            for env in ({}, {"SPEC2SCIENCE_CONDUCTOR_BWRAP": "off"}):
+                with self.subTest(env=env):
+                    c = self._c(repo_root=Path(tmp), env=env)
+                    with self.assertRaises(wc.SandboxEnforcementError):
+                        c._sandboxed_argv(["true"], "no-profile", c.entry_for(None, None))
 
     def test_spawn_leaf_wraps_in_bwrap(self) -> None:
         # With a recorded sandbox profile, the leaf argv is wrapped in
@@ -11778,7 +11723,7 @@ class LeafSpawnTest(unittest.TestCase):
                 "time.sleep(300)")
         c = self._c(repo_root=Path("/tmp"), env={},
                     llm_command=f"python3 -c {leaf!r}")
-        c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
         out = io.StringIO()
         # The budget has to cover CPython startup for a REAL `python3 -c` leaf, which is
         # routinely 100 ms+ on a loaded or cold host: below ~1 s the leaf is killed before it
@@ -11820,7 +11765,7 @@ class LeafSpawnTest(unittest.TestCase):
                 f"sys.stdout.write('o' * {blob}); sys.stdout.flush();"
                 f"sys.stderr.write('e' * {blob}); sys.stderr.flush()")
         c = self._c(repo_root=Path("/tmp"), env={}, llm_command=f"python3 -c {leaf!r}")
-        c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
         wc._pid_start_ticks(os.getpid())        # warm the lazy import (see the codex twin)
         tracemalloc.start()
         self.addCleanup(tracemalloc.stop)
@@ -11877,7 +11822,7 @@ class LeafSpawnTest(unittest.TestCase):
             script.write_text(source, encoding="utf-8")
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
-            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
                     patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
@@ -11910,7 +11855,7 @@ class LeafSpawnTest(unittest.TestCase):
             script.write_text(source, encoding="utf-8")
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
-            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             # As on the claude twin: the budget must cover real interpreter startup.
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 1.0), \
@@ -13398,7 +13343,7 @@ class LeafSpawnTest(unittest.TestCase):
 
                 c = self._c(backend=backend, agent_model="gpt-5.6-sol")
                 c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-                c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+                c._sandboxed_argv = lambda argv, *a: argv  # type: ignore[method-assign]
                 with patch.object(wc.subprocess, "Popen", _Popen), \
                         patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 5_000), \
                         patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
@@ -13810,7 +13755,12 @@ class LeafSpawnTest(unittest.TestCase):
                    wc._leaf_timeout_marker(7200, 7201.0),
                    wc._leaf_stdout_record_truncated_marker(2_000_000)]
         markers.append(wc._leaf_failure_events_marker())
-        for label in wc._LEAF_CONDUCTOR_MARKER_LABELS:
+        # Every module-level `LEAF_*_LABEL` (the `_LEAF_CONDUCTOR_MARKER_LABELS` tuple that
+        # listed them had no production reader and went in issue #643 PR-5).
+        labels = [v for k, v in vars(wc).items()
+                  if k.startswith("LEAF_") and k.endswith("_LABEL") and isinstance(v, str)]
+        self.assertEqual(len(labels), 7)
+        for label in labels:
             markers.append(f"[conductor] {label}: kept the first 1000 characters; "
                            "the leaf went on writing")
         self.assertGreaterEqual(len(markers), 10)
@@ -14712,15 +14662,54 @@ class WriteDependencySurfaceTest(unittest.TestCase):
                 {"node_key": "component/base@0.1.0",
                  "published_operations": [], "source": "unresolved"}])
 
-    def test_empty_when_no_graph(self) -> None:
+
+class WriteDependencySurfaceErrorsPropagateTest(unittest.TestCase):
+    """Issue #643 PR-5: `_write_dependency_surface` no longer swallows a graph-read error
+    (once `[]` and no sidecar) or a `LibraryDeclarationError` (once an empty library list).
+    Both now escape to `run_phase` as a host error. Driven on a real Conductor subclass that
+    does not override the method (`_FakeConductor` does)."""
+
+    _NK = "component/top@0.1.0"
+
+    def _conductor(self, repo: Path) -> _TargetedConductor:
+        return _TargetedConductor(repo_root=repo, orchestration_id="o",
+                                  orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                                  env={}, target_profile=_TP)
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(target_id=_TARGET_ID, node_key=self._NK,
+                           spec_path="spec/component/top", ir_id="i", pipeline_id="p")
+
+    def test_an_unreadable_graph_propagates(self) -> None:
+        for name, graph_text in (("absent", None), ("undecodable", "{not json")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                if graph_text is not None:
+                    (repo / refs.ir_ref).mkdir(parents=True)
+                    (repo / refs.ir_ref / "dependency_graph.json").write_text(graph_text)
+                with self.assertRaises((OSError, ValueError)):
+                    self._conductor(repo)._write_dependency_surface(refs)
+                self.assertFalse((repo / refs.ir_ref / "dependency_surface.json").exists())
+
+    def test_a_library_declaration_error_propagates(self) -> None:
+        from tools import external_library as xl
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            c = self._conductor(repo)
-            # No dependency_graph.json → best-effort empty, no sidecar written.
-            self.assertEqual(wc.Conductor._write_dependency_surface(c, refs), [])
-            self.assertFalse(
-                (repo / refs.ir_ref / "dependency_surface.json").exists())
+            (repo / refs.ir_ref).mkdir(parents=True)
+            (repo / refs.ir_ref / "dependency_graph.json").write_text("{}")
+            spec = repo / refs.spec_path
+            spec.mkdir(parents=True)
+            # A declared library with no declaration file under the scratch repository.
+            (spec / "deps.yaml").write_text(
+                "dependencies:\n  components: []\n  profiles: []\n"
+                "  libraries:\n    - {library_id: absent}\n")
+            with mock.patch.object(wc_runtime, "_resolve_component_dep_surface",
+                                   return_value=[]), \
+                    self.assertRaises(xl.LibraryDeclarationError):
+                self._conductor(repo)._write_dependency_surface(refs)
+            self.assertFalse((repo / refs.ir_ref / "dependency_surface.json").exists())
 
 
 class WriteLineageTest(unittest.TestCase):
@@ -14952,19 +14941,9 @@ class BuildLaunchRequestResolvedDependenciesTest(unittest.TestCase):
         # No `skill_must_read_refs` at all since Z4 (issue #171): no launch force-reads a
         # document, so the builder emits the key nowhere rather than emitting it empty.
         self.assertNotIn("skill_must_read_refs", cs_req)
-        # compile.generate authors the IR (spec.ir.yaml) + ir_meta.json.
-        gen_outs = self._build("compile", "generate", ())["allowed_output_paths"]
-        self.assertTrue(any(p.endswith("/spec.ir.yaml") for p in gen_outs))
-        self.assertTrue(any(p.endswith("/ir_meta.json") for p in gen_outs))
-        # compile.verify authors NOTHING in the IR (io_contract moved to generate; Compile.static
-        # gated it): its sole write is ir_meta.json, so it cannot mutate spec.ir.yaml post-gate.
-        ver_outs = self._build("compile", "verify", ())["allowed_output_paths"]
-        self.assertEqual([p for p in ver_outs if p.endswith("/ir_meta.json")], ver_outs)
-        self.assertFalse(any(p.endswith("/spec.ir.yaml") for p in ver_outs))
-        # Verify still READS spec.ir.yaml to check it, but not through a must-read list: it is
-        # a PURE leaf, and the host inlines the IR into its prompt as `ir_document`
-        # (`PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]`). The delivery moved with the
-        # leaf model in Z4 (issue #171); what stays true is that the IR is not a write target.
+        # Verify READS spec.ir.yaml to check it, but not through a must-read list: it is a
+        # workshop leaf, and the host seeds the IR as `ir_document`
+        # (`PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]`).
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         self.assertIn("ir_document", PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")])
 
@@ -16432,27 +16411,6 @@ class WriteRunnerTest(unittest.TestCase):
                     self.assertIn(initial, rendered)
                     self.assertNotIn(bare, rendered)
 
-    def test_build_launch_request_lists_no_source_for_either_shape(self) -> None:
-        # generate.generate is a pure leaf on every shape: it authors nothing, so neither the
-        # model nor the runner (runner-authoring node) is in its output set. The
-        # swap this row used to pin lived in a list no leaf read (issue #424 PR-2 deleted it);
-        # which source is a Generate DELIVERABLE is `phase_required_outputs`' answer, pinned by
-        # `test_phase_required_outputs_symmetry` below.
-        refs = self._refs()
-        for runner_host_authored in (True, False):
-            built = wc.build_launch_request(
-                refs, step="generate", substep="generate", orchestration_id="o",
-                orchestration_agent_run_id="ORCH", child_agent_run_id="c",
-                agent_model="m", workflow_mode="prod", runner_host_authored=runner_host_authored)
-            self.assertEqual(built["allowed_output_paths"], [], runner_host_authored)
-        # generate.verify writes ONLY source_meta.json — it inspects the sources, never rewrites
-        # them — so no runner / model appears in its output set at all.
-        ver = wc.build_launch_request(
-            refs, step="generate", substep="verify", orchestration_id="o",
-            orchestration_agent_run_id="ORCH", child_agent_run_id="c",
-            agent_model="m", workflow_mode="prod", runner_host_authored=True)
-        self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
-
     def test_phase_required_outputs_symmetry(self) -> None:
         """The phase's deliverables on both shapes (issue #250 made the host-rendered runner
         and the control file Generate deliverables — they are what Build compiles and what
@@ -16762,30 +16720,13 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
 
 class GenerateLeafAuthorizationTest(unittest.TestCase):
-    """A generate leaf authors nothing: the host writes src/ (the control file included), so
-    neither generate substep's launch lists a source among its outputs."""
+    """A generate leaf authors nothing: the host writes src/ (the control file included), and
+    the phase's deliverables are `phase_required_outputs`' answer."""
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/foo_bar@0.1.0", spec_path="spec/component/foo_bar",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
-
-    def _launch(self, refs: wc.NodeRefs, substep: str) -> dict:
-        return wc.build_launch_request(
-            refs, step="generate", substep=substep, orchestration_id="o",
-            orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev")
-
-    def test_generate_leaves_declare_no_source_output(self) -> None:
-        # Issue #424 PR-2 deleted the generate branch's leaf-authored list (model, runner or
-        # checks, the Makefile unless host-authored): every generate leaf is pure, so it was
-        # dead, and it spelled one language's and one build system's file names.
-        refs = self._refs()
-        self.assertEqual(self._launch(refs, "generate")["allowed_output_paths"], [])
-        # generate.verify writes ONLY source_meta.json — it inspects the sources, never
-        # rewrites them.
-        self.assertEqual(self._launch(refs, "verify")["allowed_output_paths"],
-                         [f"{refs.source_dir()}/source_meta.json"])
 
     def test_phase_required_outputs_declares_every_bundle_source(self) -> None:
         """A `helper` / `internal_module` bundle file is written to `src/` and compiled by the
@@ -17300,11 +17241,10 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertIn("closure_bindings", meta["dependency_check"])
             self.assertEqual(meta["dependency_check"]["closure_bindings"], [])
 
-    def test_build_inproc_stamps_source_ir_id(self) -> None:
-        # binary_meta.json records the origin ir_id (refs.ir_id) alongside source_source_id
-        # (refs.source_id). `_write_runner` binds the harness pin to source_ir_id, so a wrong
-        # constant here (e.g. source_id) would silently break the binding — distinct ir_id vs
-        # source_id values catch a swap.
+    def test_build_inproc_records_source_source_id(self) -> None:
+        # binary_meta.json records the source it was built from (refs.source_id); distinct
+        # ir_id vs source_id values catch a swap. `source_ir_id` is no longer written
+        # (issue #643 PR-5).
         import tempfile
         from unittest import mock
         build_runtime = _build_runtime()
@@ -17329,7 +17269,6 @@ class DeterministicBuildTest(unittest.TestCase):
                 c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
-            self.assertEqual(meta["source_ir_id"], "ir_20260707_007")
             self.assertEqual(meta["source_source_id"], "src_20260707_003")
 
     def test_execute_inproc_injects_spec_and_cases_env(self) -> None:
@@ -18383,48 +18322,26 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(decision.target_phase, "generate")
             self.assertEqual(decision.repair_strategy, "restart")
 
-    def test_classify_failure_gate_branches_read_the_meta_not_the_index(self) -> None:
-        # Issue #114: `classify_failure`'s pre_judge / post_judge branches are DEFENSIVE
-        # (run_phase's skip-write branch terminalizes both before classify_failure is called —
-        # driven and asserted in ValidateGateReasonFromMetaTest), but a defensive branch that
-        # names a violation the meta does not record is the very defect #114 is about. Drive
-        # the branches directly, one meta shape at a time.
+    def test_classify_failure_raises_on_a_failed_gate_substep(self) -> None:
+        # Issue #643 PR-5: run_phase's skip-write branch classifies a failed pre_judge /
+        # post_judge from its own meta and returns before classify_failure (driven in
+        # ValidateGateReasonFromMetaTest), so the copy here went. A failed gate substep that
+        # reaches classify_failure raises rather than falling through to the execute / judge
+        # routes below it.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
-            node_dir = repo / refs.run_node_dir()
-            node_dir.mkdir(parents=True, exist_ok=True)
             pj_fail = [wc.SubstepOutcome("pj", "fail", [], 0)]           # index 0 -> pre_judge
             post_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                          wc.SubstepOutcome("ex", "pass", [], 0),
                          wc.SubstepOutcome("jd", "pass", [], 0),
                          wc.SubstepOutcome("po", "fail", [], 0)]         # index 3 -> post_judge
-            for outcomes, fname, category, expected in (
-                    (pj_fail, "pre_judge_meta.json", "pre_judge_dag_incomplete",
-                     "validate_pre_judge_dag_incomplete"),
-                    (pj_fail, "pre_judge_meta.json", None,
-                     "validate_pre_judge_failed_without_category"),
-                    (post_fail, "post_judge_meta.json", "pre_judge_violation",
-                     "validate_pre_judge_violation"),
-                    (post_fail, "post_judge_meta.json", None,
-                     "validate_post_judge_failed_without_category")):
-                (node_dir / fname).write_text(
-                    json.dumps({"status": "fail", "failure_category": category}),
-                    encoding="utf-8")
-                d = c.classify_failure(refs, "validate", outcomes)
-                self.assertEqual(d.action, "fail_closed", (fname, category))
-                self.assertEqual(d.reason, expected, (fname, category))
-                (node_dir / fname).unlink()
-            # ... and with no meta on disk at all (the state the `or {}` used to hide).
-            self.assertEqual(
-                c.classify_failure(refs, "validate", pj_fail).reason,
-                "validate_pre_judge_meta_missing")
-            self.assertEqual(
-                c.classify_failure(refs, "validate", post_fail).reason,
-                "validate_post_judge_meta_missing")
+            for outcomes, substep in ((pj_fail, "pre_judge"), (post_fail, "post_judge")):
+                with self.assertRaisesRegex(RuntimeError, f"failed validate {substep}"):
+                    c.classify_failure(refs, "validate", outcomes)
 
     def _predicate_ir(self, n: int = 4) -> dict:
         """A `pass` test judging `u` and a guard test judging the `record` flag, as the corpus's
@@ -18851,25 +18768,22 @@ class DeterministicBuildTest(unittest.TestCase):
         # The two dev category sets this row also pinned are gone with issue #177: they belonged
         # to the `resume_directive`, which the revocation replaced (the decision is recorded on
         # the artifact, so no resume-time re-derivation reads a category set at all).
-        # The two sets DIVERGED in issue #112 and the difference is itself a definition
-        # (`GATE_ONLY_TERMINAL_CATEGORIES`), so this row compares two constants rather than
-        # restating either. Equality of the remainder is what used to be pinned; the difference
-        # is pinned by name, so adding a category to `GATE_FAILURE_TERMINAL` without deciding
-        # which side it belongs on still fails here.
-        # Issue #307 made the difference two-sided: `EXECUTE_ONLY_TERMINAL_CATEGORIES` names
-        # what the execute set carries that the gate set has no counterpart for.
+        # The two sets DIVERGED in issue #112: the categories the Generate.gate lint attribution
+        # produces have no Validate.execute counterpart (execute runs no linter). Issue #307
+        # made the difference two-sided: a run's device trace exists only at Validate.execute.
+        # Equality of the remainder is what is pinned, so adding a category to
+        # `GATE_FAILURE_TERMINAL` without deciding which side it belongs on still fails here.
+        # (The two differences were named constants with no production reader until issue
+        # #643 PR-5; they are this row's own literals now.)
+        gate_only = frozenset({"host_rendered_lint_findings", "lint_finding_unattributed"})
+        execute_only = frozenset({"device_kernels_absent"})
         self.assertEqual(
-            wc.GATE_FAILURE_TERMINAL - wc.GATE_ONLY_TERMINAL_CATEGORIES,
-            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL - wc.EXECUTE_ONLY_TERMINAL_CATEGORIES)
-        self.assertEqual(
-            frozenset(),
-            wc.GATE_ONLY_TERMINAL_CATEGORIES & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
-        self.assertEqual(
-            frozenset(),
-            wc.EXECUTE_ONLY_TERMINAL_CATEGORIES & wc.GATE_FAILURE_TERMINAL)
-        self.assertLess(wc.GATE_ONLY_TERMINAL_CATEGORIES, wc.GATE_FAILURE_TERMINAL)
-        self.assertLess(wc.EXECUTE_ONLY_TERMINAL_CATEGORIES,
-                        wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+            wc.GATE_FAILURE_TERMINAL - gate_only,
+            wc.VALIDATE_EXECUTE_FAILURE_TERMINAL - execute_only)
+        self.assertEqual(frozenset(), gate_only & wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+        self.assertEqual(frozenset(), execute_only & wc.GATE_FAILURE_TERMINAL)
+        self.assertLess(gate_only, wc.GATE_FAILURE_TERMINAL)
+        self.assertLess(execute_only, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
         # QUANTIFIED OVER BOTH SETS, not over the execute one alone. Splitting the terminal
         # categories in two made the gate-only half exempt from every assertion below, and a
         # review round measured it: adding `quality_check_mismatch` — a key of
@@ -18895,7 +18809,7 @@ class DeterministicBuildTest(unittest.TestCase):
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             self._seed_trial_meta(repo, refs, status="fail",
-                                  failure_category="stale_dependency_ir",
+                                  failure_category="static_frontend_unavailable",
                                   failure_excerpt="[execute fail]\nboom")
             for category in sorted(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL):
                 self.assertIsNone(
@@ -19222,21 +19136,26 @@ class DeterministicBuildTest(unittest.TestCase):
         # The post_execute validator answers dedicated exit codes for the two conditions no leaf
         # can repair by re-authoring source. `_execute_inproc` classifies on those codes, so the
         # gate's TEXT never decides. rc 3 is reachable here (the `problem` model gates raise the
-        # front-end error); rc 4 and rc 5 are not reachable from post_execute today — both are
-        # wired so the day a post_execute gate reports one it fails closed rather than arriving
-        # warm. rc 5 (issue #112) is a violation whose subject is a file this repository authors.
+        # front-end error); rc 5 is not reachable from post_execute today — it is wired so the
+        # day a post_execute gate reports one it fails closed rather than arriving warm. rc 5
+        # (issue #112) is a violation whose subject is a file this repository authors.
         # rc 6 (issue #307) is reachable here and nowhere earlier: the traced run executed none
-        # of the kernels the node defines.
+        # of the kernels the node defines. rc 4 (a stale certified IR) left the validator in
+        # issue #643 PR-5 and takes the generic category, as any unlisted code does.
         import tempfile
         from tools.validate_pipeline_semantics import (
             DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-            STALE_DEPENDENCY_IR_EXIT_CODE,
         )
+        with tempfile.TemporaryDirectory() as td:
+            _out, meta = self._b1_execute(
+                Path(td), self._B1_IR_MINIMAL,
+                gate_result=(4, "pipeline semantic validation: FAIL\n- boom"))
+        self.assertEqual(meta["failure_category"], "post_execute_violation")
+        self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING)
         for rc, expected in ((SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
-                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                               "host_authored_artifact_violation"),
                              (DEVICE_KERNELS_ABSENT_EXIT_CODE, "device_kernels_absent")):
@@ -19268,13 +19187,10 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_execute_inproc_forged_marker_at_rc_1_stays_a_warm_violation(self) -> None:
         # post_execute never had a text scan, and this pins that it did not grow one alongside
-        # the exit-code branches. Both markers are replayed inside an ordinary rc-1 gate report,
-        # in the interpolated-path shape a leaf controls.
+        # the exit-code branches. The marker is replayed inside an ordinary rc-1 gate report, in
+        # the interpolated-path shape a leaf controls.
         import tempfile
-        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
         payloads = (
-            f"pipeline semantic validation: FAIL\n- src/{STALE_DEPENDENCY_IR_MARKER}_model.f90: "
-            "declared state_variables missing in snapshot files",
             "pipeline semantic validation: FAIL\n- src/[fortran-structure-unavailable]_model.f90:"
             " declared state_variables missing in snapshot files",
         )
@@ -19469,22 +19385,6 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertIn(f"the {control_file.CONTROL_FILE_BASENAME} quality-check target", cause)
             self.assertIn("`<binary> --cases <spec> <case_id>...`", cause)
             self.assertIn("docs/backends/build_system/make/CONTROL_FILE.md §2", cause)
-
-    def test_execute_inproc_stamps_the_repo_revision(self) -> None:
-        """B4: the revision that produced this run's evidence is recorded beside the excerpt, so
-        the dev resume directive can refuse to inject findings a later source change invalidated.
-        Stamped on the failing RUN (not read from orchestration_meta, which freezes at first
-        start), which is what lets the guard self-correct after a re-run."""
-        import tempfile
-        from unittest import mock
-        rev = {"commit": "c" * 40, "dirty": False}
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch("tools.orchestration_runtime._capture_repo_revision",
-                            return_value=dict(rev)):
-                _o, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL,
-                                            gate_result=(1, "post_execute: bad shape"))
-            self.assertEqual(meta["repo_revision"], rev)
-            self.assertEqual(meta["failure_category"], "post_execute_violation")
 
     def test_execute_inproc_records_snapshot_deliverable_gap(self) -> None:
         # Gates clean and quality_check clean; the IR requires a per-case state snapshot the
@@ -19730,8 +19630,8 @@ class GateRoutingTerminalCategoryTests(unittest.TestCase):
 
     def test_the_category_this_row_couples_on_is_the_one_the_code_answers(self) -> None:
         """The rule is defined in the CODE; this file is checked against it, never the reverse."""
-        self.assertIn(self._HOST_CATEGORY, wc.GATE_ONLY_TERMINAL_CATEGORIES)
         self.assertIn(self._HOST_CATEGORY, wc.GATE_FAILURE_TERMINAL)
+        self.assertNotIn(self._HOST_CATEGORY, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
         self.assertEqual(
             "fail_closed", wc.classify_gate_failure([self._HOST_CATEGORY]).action)
 
@@ -20567,8 +20467,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
         The authorship predicates are NOT stubbed — issue #112's subject is which files the host
         authors, and a test that mocked that answer would pin the probe arithmetic while leaving
         the oracle unwitnessed. What the caller does stub is dependency STAGING, which needs a
-        certified harness on disk and is covered by its own rows; the syntax attribution's
-        question is about the node's own `src/`, not about the closure."""
+        certified harness on disk and is covered by its own rows; these rows' question is about
+        the node's own `src/`, not about the closure."""
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
@@ -20585,21 +20485,16 @@ class DeterministicSyntaxTest(unittest.TestCase):
         for name in ("adv1d_model.f90", "adv1d_helper.f90", "adv1d_runner.f90"):
             (src / name).write_text(f"! {name}\n", encoding="utf-8")
 
-    def _attributing_syntax(self, leaf_probe_ok: bool):
-        """A compiler stand-in: the main stage fails, and the leaf-only probe answers as told.
+    def _failing_whole_stage_syntax(self):
+        """A compiler stand-in: the main stage fails at a runner line, and the canary and the
+        dependency-closure probes pass.
 
         The probe directories are told apart by `project_dir`, which is how the real code tells
         them apart, so the stub answers the same question the compiler would."""
         def _fn(args):
             pd = str(args.get("project_dir", ""))
-            if pd.endswith("_leaf_probe"):
-                return {"ok": leaf_probe_ok, "return_code": 0 if leaf_probe_ok else 1,
-                        "command_id": "leaf-probe", "compiler": args["compiler"],
-                        "compiler_version": "GNU Fortran 13", "skipped": False,
-                        "stderr": "" if leaf_probe_ok else "Error: leaf-side diagnostic"}
             if pd.endswith(("_canary", "_deps_probe")):
-                # Both attribution probes that run BEFORE the leaf one must pass, or the gate
-                # raises there and the leaf probe is never reached.
+                # Both attribution probes must pass, or the gate raises there.
                 return {"ok": True, "return_code": 0, "command_id": "pre-probe",
                         "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
                         "skipped": False}
@@ -20609,35 +20504,14 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     "stderr": "adv1d_runner.f90:12: Error: whole-run diagnostic"}
         return _fn
 
-    def test_gate_syntax_check_records_a_leaf_attribution_without_changing_the_route(
-            self) -> None:
-        """The leaf's own files fail on their own: `attribution` says so, routing is unchanged."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
-            # closure (every physics node's closure holds its target's harness, issue #284).
-            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-            with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=False)):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["attribution"], "leaf")
-        self.assertEqual(out["failure_category"], "syntax_error")
-        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
-
-    def test_gate_syntax_check_records_an_unattributed_interaction_and_still_warm_retries(
+    def test_a_runner_line_diagnostic_still_warm_retries_with_the_whole_excerpt(
             self) -> None:
         """THE DELIBERATE RESIDUAL OF ISSUE #112, pinned so it cannot change by accident.
 
-        The leaf's files pass alone while the whole staged set fails, so the failure needs the
-        host-rendered runner. That does NOT mean the host is at fault: the runner `use`s the
-        leaf-authored model, so the diagnostic can be the leaf having missed a published
-        signature — repairable by exactly this warm retry. Unlike the lint checker, a compiler cannot
-        partition the files, so the gate records what it saw and keeps the retry.
+        A diagnostic printed at a line of the host-rendered runner does NOT mean the host is at
+        fault: the runner `use`s the leaf-authored model, so the diagnostic can be the leaf
+        having missed a published signature — repairable by exactly this warm retry. Unlike the
+        lint checker, a compiler cannot partition the files, so the gate keeps the retry.
 
         The excerpt must stay the WHOLE-RUN output: an interaction diagnostic is printed at a
         runner line and is precisely what the leaf needs in order to fix its own ABI. Narrowing
@@ -20649,44 +20523,19 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # Nothing staged AND nothing to stage: the row is about the node's own src/, not the
             # closure (every physics node's closure holds its target's harness, issue #284).
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-            with self._patch_syntax(self._attributing_syntax(leaf_probe_ok=True)):
+            with self._patch_syntax(self._failing_whole_stage_syntax()):
                 out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unattributed_interaction")
+        self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "syntax_error")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
         self.assertIn("whole-run diagnostic", out["failure_excerpt"])
 
-    def test_gate_syntax_check_needs_no_probe_when_the_host_authors_nothing(self) -> None:
-        """A node with no host-authored source: the answer is `leaf` without a probe run.
-
-        Spending a compiler run to learn what the authorship predicates already say would be
-        the same waste, one layer down."""
-        import tempfile
-        seen: list[str] = []
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()          # the plain fixture: no infra dep, no host-rendered file
-            self._seed(repo, refs)
-            c = self._conductor(repo)
-            base = self._attributing_syntax(leaf_probe_ok=True)
-
-            def _fn(args):
-                seen.append(str(args.get("project_dir", "")))
-                return base(args)
-
-            with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "leaf")
-        self.assertEqual([], [d for d in seen if d.endswith("_leaf_probe")])
-
     def test_gate_syntax_check_attributes_a_refused_source_name_to_the_leaf(self) -> None:
-        """The early return for a source NAME the tool refuses already knows the answer.
-
-        The leaf authored that name and can rename it, so the section must carry the same
-        `attribution` shape as every other return rather than omitting the key."""
+        """The early return for a source NAME the tool refuses: the leaf authored that name and
+        can rename it, so it is the leaf's content failure (`syntax_error`)."""
         import tempfile
         SyntaxSourceNameError = _build_runtime().SyntaxSourceNameError
         with tempfile.TemporaryDirectory() as td:
@@ -20695,7 +20544,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self._seed_m3c(repo, refs)
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
+            # Nothing staged AND nothing to stage: the row is about the node's own src/, not the
             # closure (every physics node's closure holds its target's harness, issue #284).
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
 
@@ -20705,7 +20554,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
             with self._patch_syntax(_raise):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
 
     def test_gate_syntax_check_refuses_a_nested_source_through_the_real_tool(self) -> None:
@@ -20729,150 +20577,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
             out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
         self.assertIn("build/x.f90", out["failure_excerpt"])
         self.assertIn("move every source file to the top level", out["failure_excerpt"])
         self.assertEqual(wc.classify_gate_failure([out["failure_category"]]).action, "retry")
-
-    def test_the_syntax_leaf_probe_is_isolated_and_carries_the_staged_closure(self) -> None:
-        """Two decisions of the syntax probe, both unwitnessed until a census asked.
-
-        The probe directory is RESET (its lint twin's row exists; this one had only a comment),
-        and the staged dependency closure is COPIED INTO IT. Both produce the same false record
-        when they break: the probe fails for a reason that is not the leaf's source — residue, or
-        a module the closure was supposed to supply — and `attribution` is written `"leaf"` where
-        the truth is `unattributed_interaction`. This arm routes nothing, so a wrong value is
-        silent by construction, and it is the field TODO says a later change will decide on.
-
-        Asserted on the DIRECTORY CONTENTS the probe was handed, because that is where both
-        decisions land."""
-        import tempfile
-        seen: dict[str, set[str]] = {}
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            stale = (repo / "workspace" / "tmp" / "child-1" / "syntax"
-                     / "gfortran_leaf_probe")
-            stale.mkdir(parents=True)
-            (stale / "stale_broken.f90").write_text("! residue\n", encoding="utf-8")
-            dep = repo / "deps" / "harness_mod.f90"
-            dep.parent.mkdir(parents=True, exist_ok=True)
-            dep.write_text("module harness_mod\nend module harness_mod\n", encoding="utf-8")
-            c = self._conductor(repo)
-            # Stage one dependency the way the real closure would, so the copy has something to
-            # carry; the staging itself has its own rows.
-            c._stage_dependency_sources = (  # type: ignore[assignment]
-                lambda r, d, **kw: (__import__("shutil").copy2(dep, d / dep.name), ["harness"])[1])
-            base = self._attributing_syntax(leaf_probe_ok=True)
-
-            def _fn(args):
-                pd = Path(str(args.get("project_dir", "")))
-                if pd.name.endswith("_leaf_probe"):
-                    seen["leaf"] = {p.name for p in pd.iterdir() if p.is_file()}
-                return base(args)
-
-            with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unattributed_interaction")
-        self.assertNotIn("stale_broken.f90", seen["leaf"])
-        self.assertIn("harness_mod.f90", seen["leaf"])
-        # The host-rendered runner is the file the probe exists to leave out.
-        self.assertNotIn("adv1d_runner.f90", seen["leaf"])
-
-    def test_the_syntax_leaf_probe_carries_the_host_headers_the_leaf_includes(self) -> None:
-        """A host-rendered HEADER is context the leaf's sources include, not a subject of the
-        probe (issue #289, R4-b PR-6): the `cuda_cpp` checks source includes the checks header
-        and the model its published-surface header, so a probe without them fails for a reason
-        that is not the leaf's source and records `leaf` falsely. Asserted on the directory the
-        probe was handed; the host-rendered runner still stays out."""
-        import tempfile
-        from unittest import mock
-        seen: dict[str, set[str]] = {}
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            src = repo / refs.source_dir() / "src"
-            (src / "adv1d_host.cuh").write_text("// host\n", encoding="utf-8")
-            (src / "adv1d_leaf.cuh").write_text("// not host\n", encoding="utf-8")
-            c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-            base = self._attributing_syntax(leaf_probe_ok=True)
-
-            def _fn(args):
-                pd = Path(str(args.get("project_dir", "")))
-                if pd.name.endswith("_leaf_probe"):
-                    seen["leaf"] = {p.name for p in pd.iterdir() if p.is_file()}
-                return base(args)
-
-            from tools.backends.language.fortran import syntax as fortran_syntax
-            with self._patch_syntax(_fn), mock.patch.object(
-                    fortran_syntax, "STAGED_SUFFIXES",
-                    (*fortran_syntax.STAGED_SUFFIXES, ".cuh")), mock.patch.object(
-                    wc.Conductor, "_host_rendered_src_names",
-                    return_value=frozenset({"adv1d_runner.f90", "adv1d_host.cuh",
-                                            "Makefile"})):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unattributed_interaction")
-        self.assertIn("adv1d_host.cuh", seen["leaf"])
-        self.assertNotIn("adv1d_leaf.cuh", seen["leaf"])  # not host: the probe copies no more
-        self.assertNotIn("adv1d_runner.f90", seen["leaf"])
-        self.assertNotIn("Makefile", seen["leaf"])
-
-    def test_a_skipped_leaf_probe_records_unprobed_rather_than_blaming_the_leaf(self) -> None:
-        """`unprobed` is a distinct answer from `leaf`, and only one of them is true.
-
-        A stage the tool declined to run said nothing about whose source is at fault. Recording
-        `leaf` there is a false record in the one field this arm produces."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._m3c_refs()
-            self._seed_m3c(repo, refs)
-            c = self._conductor(repo)
-            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
-            # Nothing staged AND nothing to stage: the row is about attribution, not the
-            # closure (every physics node's closure holds its target's harness, issue #284).
-            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
-
-            def _fn(args):
-                pd = str(args.get("project_dir", ""))
-                if pd.endswith("_leaf_probe"):
-                    return {"skipped": True, "reason": "no adapter on this host"}
-                if pd.endswith(("_canary", "_deps_probe")):
-                    return {"ok": True, "return_code": 0, "command_id": "c",
-                            "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
-                            "skipped": False}
-                return {"ok": False, "return_code": 1, "command_id": "sid",
-                        "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
-                        "skipped": False, "stderr": "adv1d_runner.f90:12: Error: boom"}
-
-            with self._patch_syntax(_fn):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertEqual(out["attribution"], "unprobed")
-        self.assertEqual(out["failure_category"], "syntax_error")
-
-    def test_every_syntax_section_carries_an_attribution_key(self) -> None:
-        """The key is part of the section's shape, not something only the failure paths add.
-
-        `gate_meta.json` is read by an operator and by the resume path; a key that appears only
-        sometimes reads as a missing measurement rather than as `None`."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            self._seed(repo, refs)
-            c = self._conductor(repo)
-            with self._patch_syntax(lambda args: {
-                    "ok": True, "return_code": 0, "command_id": "sid",
-                    "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
-                    "skipped": False}):
-                out = c._gate_syntax_check(refs, "child-1")
-        self.assertIn("attribution", out)
-        self.assertIsNone(out["attribution"])
 
     def test_gate_syntax_check_compile_error_is_content_fail(self) -> None:
         import tempfile
@@ -21378,7 +21086,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(kinds, ["stage", "model_alone"])
             self.assertEqual(out["status"], "pass")
-            self.assertIsNone(out["attribution"])
             self.assertTrue(alone_args[0]["command_log_path"].endswith("/src/command_log.jsonl"))
             # The consumer's build is what the probe stands for, so its argv is the stage's: only
             # the directory differs (the log path is the same canonical one).
@@ -21423,7 +21130,6 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 out = c._gate_syntax_check(refs, "child-1")
             self.assertEqual(out["status"], "fail")
             self.assertEqual(out["failure_category"], "syntax_error")
-            self.assertEqual(out["attribution"], "leaf")
             self.assertIn("model-alone check fail", out["failure_excerpt"])
             self.assertIn("internal_module", out["failure_excerpt"])
             self.assertIn("spec_x_private.mod", out["failure_excerpt"])
@@ -21905,16 +21611,11 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
                              payload)
 
-    def test_gate_static_check_maps_the_stale_ir_exit_code_to_a_terminal_category(self) -> None:
-        # The twin of the front-end mapping above, and for the same reason: the classification
-        # channel is the validator's EXIT CODE, imported from the module that sets it. The output
-        # text here still carries the human-facing marker, so a mapping that quietly went back to
-        # scanning it would pass this row — which is why the forgery row below exists too.
+    def test_gate_static_check_routes_a_retired_exit_code_as_an_ordinary_violation(self) -> None:
+        # Exit code 4 (a stale certified IR) left the validator in issue #643 PR-5, and with it
+        # this function's arm: a 4 is now an unlisted non-zero code, which takes the generic
+        # category and its warm route, as any other code without an arm does.
         import tempfile
-        from tools.validate_pipeline_semantics import (
-            STALE_DEPENDENCY_IR_EXIT_CODE,
-            STALE_DEPENDENCY_IR_MARKER,
-        )
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
@@ -21927,18 +21628,14 @@ class DeterministicStaticTest(unittest.TestCase):
                     return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
                 if script.endswith("validate_pipeline_semantics.py"):
                     return wc.subprocess.CompletedProcess(
-                        cmd, STALE_DEPENDENCY_IR_EXIT_CODE,
-                        "pipeline semantic validation: FAIL\n"
-                        f"- x_model.f90: {STALE_DEPENDENCY_IR_MARKER} the certified IR does not "
-                        "carry the controlled_spec §5.1 module parameters", "")
+                        cmd, 4, "pipeline semantic validation: FAIL\n- x_model.f90: boom", "")
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
                 out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["status"], "fail")
-        self.assertEqual(out["failure_category"], "stale_dependency_ir")
-        self.assertEqual("fail_closed",
-                         wc.classify_gate_failure([out["failure_category"]]).action)
+        self.assertEqual(out["failure_category"], "post_generate_violation")
+        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
 
     def test_gate_static_check_maps_the_host_authored_exit_code_to_a_terminal_category(
             self) -> None:
@@ -21982,8 +21679,8 @@ class DeterministicStaticTest(unittest.TestCase):
     def test_no_gate_output_text_can_forge_the_host_authored_classification(self) -> None:
         """The marker in a LEAF-CHOSEN path must not terminalize an ordinary content failure.
 
-        The twin of the stale-IR forgery row below, and the reason is identical: a violation
-        interpolates a path the leaf wrote, so a model source named after the marker would let a
+        The twin of the front-end marker's forgery row above, and the reason is identical: a
+        violation interpolates a path the leaf wrote, so a model source named after the marker would let a
         leaf convert its own warm-repairable finding into a dead run. rc 1 is the whole answer."""
         import tempfile
         from tools.validate_pipeline_semantics import HOST_AUTHORED_ARTIFACT_MARKER
@@ -22008,45 +21705,6 @@ class DeterministicStaticTest(unittest.TestCase):
                 out = c._gate_static_check(refs, "child-1")
         self.assertEqual(out["failure_category"], "post_generate_violation")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
-
-    def test_no_gate_output_text_can_forge_the_stale_ir_classification(self) -> None:
-        # THE DEFECT THIS BRANCH REPAIRS. The gate used to classify on `[stale-dependency-ir]`
-        # appearing anywhere in the validator's stdout, and a violation interpolates a path the
-        # LEAF chose — so naming a model source after the marker turned an ordinary, warm-
-        # retryable naming slip into a terminal verdict that killed a billed run. The four
-        # payloads are the front-end marker's full defeat history replayed against this marker
-        # (bare, after a newline, after a newline + `- `, and quoted at the start of a line), all
-        # at rc 1. With the classification keyed on the code the TEXT cannot matter, so this is an
-        # assertion about the channel and not another sample of the prose.
-        import tempfile
-        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER as marker
-        payloads = (
-            f"- src: model source {marker}_model.f90 present but must be named spec_x_model.f90",
-            f"- src: model source x\n{marker}_model.f90 present but must be named spec_x",
-            f"- src: model source x\n- {marker}_model.f90 present but must be named spec_x",
-            f"- {marker} a violation that merely quotes the marker at the start of a line",
-        )
-        for payload in payloads:
-            with tempfile.TemporaryDirectory() as td:
-                repo = Path(td)
-                refs = self._refs()
-                self._seed(repo, refs)
-                c = self._conductor(repo)
-
-                def run(cmd, _payload=payload, **kwargs):
-                    script = next((x for x in cmd if x.endswith(".py")), "")
-                    if script.endswith("validate_workspace_root.py"):
-                        return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
-                    if script.endswith("validate_pipeline_semantics.py"):
-                        return wc.subprocess.CompletedProcess(
-                            cmd, 1, f"pipeline semantic validation: FAIL\n{_payload}", "")
-                    raise AssertionError(f"unexpected subprocess: {cmd}")
-
-                with self._patch_run(run):
-                    out = c._gate_static_check(refs, "child-1")
-            self.assertEqual("post_generate_violation", out["failure_category"], payload)
-            self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
-                             payload)
 
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile
@@ -22226,7 +21884,6 @@ class DeterministicGateTest(unittest.TestCase):
             meta = json.loads((repo / refs.source_dir() / "gate_meta.json").read_text())
             self.assertEqual(meta["gate_status"], "fail")
             self.assertEqual(meta["failure_categories"], ["syntax_error"])
-            self.assertEqual(meta["checkers"]["syntax"]["attribution"], "leaf")
             self.assertLess(meta["failure_excerpt"].index("[syntax]"),
                             meta["failure_excerpt"].index("model-alone check fail"))
             self.assertEqual(meta["checkers"]["static"]["status"], "skipped")
@@ -22638,7 +22295,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["aggregate_verdict"], "pass")
             self.assertEqual(agg["self_verdict"], "pass")
             self.assertFalse(agg["blocked"])
-            self.assertEqual(agg["dependency_nodes"], [])
             summary = json.loads((rn / "summary.json").read_text())
             # counts equal the verdict.per_test aggregate (what the gate cross-checks)
             self.assertEqual(summary["counts"],
@@ -22653,34 +22309,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertTrue(vmeta["context_isolated"])
             self.assertIsNone(vmeta["last_fail_reason"])
             self.assertTrue(vmeta["judge_command_ref"].endswith("/semantic_review.json"))
-
-    def test_author_derived_dependency_set_records_the_targets_harness(self) -> None:
-        """`aggregate_verdict.json#dependency_set` is the pipeline closure (issue #284): the
-        sidecar lists no harness since R4-a PR-3, so the record carries it only through
-        `_pipeline_dependency_block` — the verdict-5 reason. Round 1 measured that dropping that
-        call survived every file that exercises the author; a record missing the harness is a
-        false record of what the pipeline was built against."""
-        import tempfile
-        from unittest import mock
-
-        from tools.tests.target_fixtures import FORTRAN_CPU
-        with tempfile.TemporaryDirectory() as td:
-            repo, refs = Path(td), self._refs()
-            c = self._conductor(repo, target=FORTRAN_CPU)
-            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
-            ir_dir = repo / refs.ir_ref
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "dependency_graph.json").write_text(json.dumps({
-                "node_key": refs.node_key,
-                "all_nodes": [{"node_key": refs.node_key, "topo_level": 0}],
-                "generated_by": "conductor"}), encoding="utf-8")
-            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            autospec=True, return_value=[]):
-                c._author_derived_validate_artifacts(refs)
-            agg = json.loads((repo / refs.run_node_dir() / "aggregate_verdict.json").read_text())
-            self.assertEqual(
-                agg["dependency_set"],
-                [f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}"])
 
     def test_aggregate_verdict_carries_no_cross_target_entry(self) -> None:
         """Issue #383, at the HANDLER: `aggregate_verdict.json` carries no `cross_target`
@@ -22764,11 +22392,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
             self.assertFalse(agg["blocked"])
             self.assertEqual(agg["aggregate_verdict"], "pass")
-            self.assertEqual(agg["dependency_nodes"][0]["node_key"], "component/dep@0.1.0")
-            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "pass")
-            self.assertTrue(agg["dependency_nodes"][0]["ready"])
-            # The target's harness is an immediate dependency too (issue #284).
-            self.assertEqual(agg["dependency_nodes"][1]["node_key"], _HARNESS_NK)
             # Readiness is asked for the RUN's target (issue #284): a dependency validated for
             # another target does not make this one's closure ready.
             self.assertEqual(
@@ -22803,7 +22426,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["aggregate_verdict"], "blocked")
             # The target's harness (issue #284) is not validated here either.
             self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0", _HARNESS_NK])
-            self.assertFalse(agg["dependency_nodes"][0]["ready"])
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["blocked"], 2)
 
@@ -22836,8 +22458,6 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             # aggregate stays pass (ready dep folds pass; its regressed latest verdict is
             # display-only), never contradicting the pass phase.
             self.assertEqual(agg["aggregate_verdict"], "pass")
-            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "fail")
-            self.assertTrue(agg["dependency_nodes"][0]["ready"])
 
     def test_author_derived_ready_dep_whose_verdict_does_not_resolve_is_not_pass(self) -> None:
         """Issue #643 S3 (ver_defects item 3): readiness (a version- and key-agnostic glob) can
@@ -22868,11 +22488,31 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0"])
             self.assertIn("certified verdict does not resolve", agg["blocked_reason"])
             self.assertNotIn("not built+validated", agg["blocked_reason"])
-            self.assertFalse(agg["dependency_nodes"][0]["ready"])
-            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "unknown")
             summary = json.loads((rn / "summary.json").read_text())
             self.assertEqual(summary["dependency_summary"]["blocked"], 1)
             self.assertEqual(summary["dependency_summary"]["pass"], 1)
+
+    def test_author_derived_a_raising_readiness_probe_propagates(self) -> None:
+        """Issue #643 PR-5 (WC5-41): a raise from the direct dependency's readiness probe is a
+        host defect (readiness reads host-written records), and it propagates — the attempt
+        ends in `_run_deterministic_substep`'s rc 1 transport fail_closed — rather than being
+        folded into a `blocked` aggregate. Neither certifies; no aggregate is written."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[]), \
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, side_effect=OSError("readiness probe")):
+                with self.assertRaisesRegex(OSError, "readiness probe"):
+                    c._author_derived_validate_artifacts(refs)
+            rn = repo / refs.run_node_dir()
+            self.assertFalse((rn / "aggregate_verdict.json").exists())
 
     def test_post_judge_fails_closed_on_a_blocked_aggregate_before_the_gate(self) -> None:
         """Issue #643 PR-3 round 2 (Codex P2): the fold above writes a `blocked` aggregate while
@@ -22949,27 +22589,21 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                                                min_mtime=p.stat().st_mtime - 100)[0], "fail")
 
     # -- _pre_judge_inproc -----------------------------------------------------
-    def test_pre_judge_inproc_pass_and_fail(self) -> None:
+    def test_pre_judge_inproc_records_pass(self) -> None:
+        # The readiness check is run_phase's, before any substep (issue #643 PR-5): the
+        # substep records `pass` and does not repeat it.
         import tempfile
         from unittest import mock
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
             c = self._conductor(repo)
-            # empty closure -> pass
-            with mock.patch.object(c, "_judge_pre_spawn_dag_block", lambda r: None):
+            with mock.patch.object(c, "_judge_pre_spawn_dag_block",
+                                   side_effect=AssertionError("not re-checked")):
                 out = c._pre_judge_inproc(refs, "child-pj")
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.run_node_dir() / "pre_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "pass")
-            # incomplete closure -> fail with dag category
-            with mock.patch.object(c, "_judge_pre_spawn_dag_block",
-                                   lambda r: "missing ['component/dep']"):
-                out = c._pre_judge_inproc(refs, "child-pj")
-            self.assertEqual(out["returncode"], 0)  # content failure, not transport
-            meta = json.loads((repo / refs.run_node_dir() / "pre_judge_meta.json").read_text())
-            self.assertEqual(meta["status"], "fail")
-            self.assertEqual(meta["failure_category"], "pre_judge_dag_incomplete")
 
     # -- _post_judge_inproc (subprocess -> post_judge_meta + disposition) ------
     def test_post_judge_pass_writes_pass_meta(self) -> None:
@@ -23039,9 +22673,9 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     def test_post_judge_terminal_exit_codes_fail_closed_before_bullet_classification(self) -> None:
         # The severity rules classify a violation by its artifact PATH, and here every bullet
         # names `semantic_review.json` — the recoverable shape, i.e. the judge's own artifact. Left
-        # to the bullet path, an uninstalled front end or a stale certified IR would spend the
-        # operator a terminal reason naming a conformance finding instead of the machine or IR
-        # condition that actually stopped the run. (Before issue #176 it ALSO cost the judge's
+        # to the bullet path, an uninstalled front end would spend the operator a terminal reason
+        # naming a conformance finding instead of the machine condition that actually stopped the
+        # run. (Before issue #176 it ALSO cost the judge's
         # warm-resume budget; no budget is spent now — the graded classes terminalize at once.)
         # The exit code
         # is read first, so the recoverable-looking bullet cannot reach the classifier.
@@ -23050,14 +22684,12 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             DEVICE_KERNELS_ABSENT_EXIT_CODE,
             SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
             HOST_AUTHORED_ARTIFACT_EXIT_CODE,
-            STALE_DEPENDENCY_IR_EXIT_CODE,
         )
         recoverable_bullet = ("pipeline semantic validation: FAIL\n"
                               "- workspace/runs/n/semantic_review.json: review_method must be "
                               "llm_semantic_review\n")
         for rc, expected in ((SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                               "static_frontend_unavailable"),
-                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir"),
                              (HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                               "host_authored_artifact_violation"),
                              (DEVICE_KERNELS_ABSENT_EXIT_CODE, "device_kernels_absent")):
@@ -23076,10 +22708,22 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(meta["disposition"], "fail_closed", rc)
             # The violations are still recorded, for observation only.
             self.assertTrue(any("review_method" in v for v in meta["violations"]), rc)
+        # rc 4 (a stale certified IR) left the validator in issue #643 PR-5: an unlisted code
+        # reaches the bullet classification like rc 1.
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
+            c = self._conductor(repo)
+            with self._patch_run(lambda cmd, **k: wc.subprocess.CompletedProcess(
+                    cmd, 4, recoverable_bullet, "")):
+                c._post_judge_inproc(refs, "child-post")
+            meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+        self.assertEqual(meta["failure_category"], "pre_judge_violation")
+        self.assertEqual(meta["disposition"], "fail_closed")
 
     def test_post_judge_forged_marker_bullet_at_rc_1_keeps_bullet_classification(self) -> None:
         # pre_judge never had a text scan, and this pins that it did not grow one alongside the
-        # exit-code branches. Both markers are replayed inside an ordinary rc-1 bullet, which a
+        # exit-code branches. The marker is replayed inside an ordinary rc-1 bullet, which a
         # scan-anywhere would turn into fail_closed — stranding a violation the judge can
         # actually repair. The marker rides in the MESSAGE rather than in the path, because the
         # severity rules key on the artifact path prefix: a forged FILENAME lands the bullet in
@@ -23088,8 +22732,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
         # `recoverable` classification's disposition since issue #176; `escalate` is still what
         # the forged filename would produce, so the row still separates the two.
         import tempfile
-        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
-        for marker in (STALE_DEPENDENCY_IR_MARKER, "[fortran-structure-unavailable]"):
+        for marker in ("[fortran-structure-unavailable]",):
             out = ("pipeline semantic validation: FAIL\n"
                    "- workspace/runs/n/semantic_review.json: review_method must be "
                    f"llm_semantic_review (found {marker}_review)\n")
@@ -23448,7 +23091,6 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertEqual([r["label"] for r in doc["shapes"]], ["certified", "threads_2"])
         self.assertEqual([r["threads_per_rank"] for r in doc["shapes"]], [4, 2])
         self.assertTrue(all(r["state_agreement"]["status"] == "agree" for r in doc["shapes"]))
-        self.assertTrue(doc["state_agreement_applies"])
         # The top level is the certified shape's, against a one-thread, one-process candidate.
         self.assertEqual(doc["comparison"]["reference"]["threads_per_rank"], 4)
         self.assertEqual(doc["comparison"]["candidate"]["threads_per_rank"], 1)
@@ -23731,7 +23373,6 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
             self._runs(self._run_dir("run", self.h), self._run_dir("t2", bumped)),
             ir=self._ir(cross=False))
         self.assertEqual(status, "pass")
-        self.assertFalse(doc["state_agreement_applies"])
         self.assertEqual(doc["shapes"][1]["state_agreement"], {"status": "not_applicable"})
 
     def test_a_launcher_shape_must_report_its_ranks_and_grid(self) -> None:
@@ -24067,21 +23708,6 @@ class VerifyMetaSchemaGateTests(unittest.TestCase):
                              orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             self.assertIsNone(c._read_repair_findings(refs, "verify_minor", "generate"))
 
-    # -- loop preconditions: only repair a meta THIS verify leaf authored -----------------
-
-    def test_build_launch_request_narrows_a_normal_verify_launch_too(self) -> None:
-        # generate.verify's output set is source_meta.json on EVERY turn (not just a meta-schema
-        # repair turn): it inspects the producer sources but never rewrites them. So an ordinary
-        # verify launch carries exactly the meta and nothing under src/.
-        refs = self._refs()
-        req = wc.build_launch_request(
-            refs, step="generate", substep="verify", orchestration_id="orch_x",
-            orchestration_agent_run_id="parent", child_agent_run_id="child-2",
-            agent_model="m", workflow_mode="dev")
-        self.assertEqual(req["allowed_output_paths"],
-                         [f"{refs.source_dir()}/source_meta.json"])
-        self.assertFalse([p for p in req["allowed_output_paths"] if p.endswith("_model.f90")])
-
 
 class LeafEntryThreadingTests(unittest.TestCase):
     """Issue #28 Phase 2: the leaf's model is a per-launch PARAMETER, not the run's identity.
@@ -24121,15 +23747,13 @@ class LeafEntryThreadingTests(unittest.TestCase):
         return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                             orchestration_agent_run_id="O", env={}, llm_config=cfg, **kw)
 
-    def test_a_conductor_without_a_configuration_refuses_to_be_built(self) -> None:
-        """There is no run-wide backend identity left to reconstruct one from, so `None` can
-        only mean a caller forgot. Inventing a configuration there would launch models nobody
-        chose, which is the failure this whole parameterization exists to prevent — and the
-        removed `--llm/--agent-model/--llm-command` trio is not a spelling that comes back."""
+    def test_the_removed_run_wide_backend_arguments_do_not_come_back(self) -> None:
+        """There is no run-wide backend identity: the removed `--llm/--agent-model/--llm-command`
+        trio is not a spelling a Conductor accepts. (Its `llm_config` is passed by both
+        constructors right after `validate_runnable`; the refusal of a `None` one went in
+        issue #643.)"""
         base = dict(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
                     orchestration_agent_run_id="O", env={})
-        with self.assertRaises(TypeError):
-            wc.Conductor(**base)
         for name in ("backend", "agent_model", "llm_command"):
             with self.assertRaises(TypeError, msg=name):
                 wc.Conductor(**base, llm_config=_sample_config("claude"), **{name: "claude"})

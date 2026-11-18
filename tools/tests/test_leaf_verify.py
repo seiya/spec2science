@@ -341,28 +341,29 @@ class PureVerifyContextTests(unittest.TestCase):
                          "unexplained. Note the shape this reads: a NON-value bullet must not "
                          "open `- `identifier`:` — write it without the colon.")
 
-    def test_missing_phase_02_raises_the_named_contract(self) -> None:
+    def test_missing_phase_02_raises(self) -> None:
         # Same disposition as the node artifacts, and for the same corrected reason: a
         # whitespace-only value is counted missing and raises, so degrading only defers the
-        # refusal one frame into `record_launch` (issue #169).
+        # refusal one frame into `record_launch` (issue #169). The read's own error names the
+        # file (the `pure_severity_rubric_document_missing` label went in issue #643).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo, stage_phase_02=False)
-            with self.assertRaises(RuntimeError) as cm:
+            with self.assertRaises(OSError) as cm:
                 _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
+            self.assertIn("phase_02_generate.md", str(cm.exception))
 
-    def test_non_utf8_phase_02_raises_the_named_contract(self) -> None:
+    def test_non_utf8_phase_02_raises(self) -> None:
+        # The decode error does not name the file (accepted in issue #643: a dev document).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_bytes(
                 b"#### Severity of a finding\n\xff\xfe\n## On-failure behavior\n")
-            with self.assertRaises(RuntimeError) as cm:
+            with self.assertRaises(UnicodeDecodeError):
                 _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
 
-    def test_unsliceable_phase_02_raises_the_named_contract(self) -> None:
+    def test_unsliceable_phase_02_raises_the_slicer_diagnosis(self) -> None:
         # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
         # the operator's repair is the document's headings, not a missing file. Driven by the
         # REAL document with its terminator heading removed, so the fixture is the failure an
@@ -375,9 +376,10 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_text(
                 real.replace("\n## On-failure behavior\n", "\n## Retry policy\n"),
                 encoding="utf-8")
-            with self.assertRaises(RuntimeError) as cm:
+            with self.assertRaises(ValueError) as cm:
                 _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_severity_rubric_document_unsliceable", str(cm.exception))
+            self.assertIn("phase_02_generate.md: '## Retry policy' follows the rubric, not "
+                          "'## On-failure behavior'", str(cm.exception))
 
 
 class NumberedSectionRangeTests(unittest.TestCase):
@@ -569,13 +571,13 @@ class PureVerifySubstepTests(unittest.TestCase):
         c, refs, oc = self._run([_envelope(_verdict("pass"))], stage_phase_02=False)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
-        self.assertIn("pure_severity_rubric_document_missing", oc.infra_error[1])
+        self.assertIn("phase_02_generate.md", oc.infra_error[1])
         self.assertEqual(_spawned(c), 0)  # no leaf was billed
         base = c.repo_root / refs.source_dir()
         self.assertFalse((base / "source_meta.json").exists())
         events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
         self.assertEqual(len(events), 1, c.events)
-        self.assertIn("pure_severity_rubric_document_missing", events[0]["detail"])
+        self.assertIn("phase_02_generate.md", events[0]["detail"])
 
     def test_a_missing_node_artifact_is_the_same_recorded_fail_closed_outcome(self) -> None:
         """Issue #467: the four node artifacts degraded to `""`, and the blank was refused one
@@ -607,30 +609,6 @@ class PureVerifySubstepTests(unittest.TestCase):
                     self.assertIn(marker, events[0]["detail"])
                 finally:
                     self._tmp.cleanup()
-
-    def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
-        """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
-
-        The three sites that take a launch instant read identically, and round 0's hunk
-        mutation reported this one killed in one run and surviving in another (the kill came
-        from a neighbouring failure under `-x`, not from an assertion about this line). An
-        identity against the probe `Conductor._launch_instant` writes for this attempt's arid
-        settles it: a `time.time()` reading is a different number, the two clocks differing by
-        up to one timer tick.
-
-        What this pins is PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted
-        by issue #176 with the mini-loop that was its only production consumer, so what the
-        resolver leaves on this path is the PROBE ITSELF — an operator's record of when this
-        attempt started, under the arid of the row it belongs to. This is that probe's only
-        witness on the reviewer loop: without it, a mutation dropping the `_launch_instant`
-        call from `_spawn_workshop_turn` is silent.
-        """
-        c, _refs, oc = self._run([_envelope(_verdict("pass"))])
-        self.assertEqual(oc.status, "pass")
-        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
-                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
-        self.assertTrue(probe.exists(), probe)
-        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
 
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """Mirror of the producer's regression pin (billed E2E, 2026-07-16).
@@ -1887,10 +1865,14 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         The unsliceable case is driven for the rubric too, because a document present but
         re-organized is the failure the slicer exists for and reads nothing like a missing file.
         Set identity against the context builder's own output is asserted last, so a document
-        added later is either given a row or shows up here."""
+        added later is either given a row or shows up here.
+
+        The two repository documents fail with the read's own `OSError`, which names the file
+        (their `pure_*` labels went in issue #643); the caller turns either form into the same
+        `pure_context_assembly_failed` outcome."""
         cases = {
-            "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": "pure_runner_output_contract_document_missing",
-            "docs/workflow/phases/phase_02_generate.md": "pure_severity_rubric_document_missing",
+            "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": "RUNNER_OUTPUT_CONTRACT.md",
+            "docs/workflow/phases/phase_02_generate.md": "phase_02_generate.md",
             # The node artifacts raise too since issue #467 (they degraded to "" before).
             f"{self.refs.spec_path}/controlled_spec.md": "pure_controlled_spec_document_missing",
             f"{self.refs.spec_path}/tests.md": "pure_tests_document_missing",
@@ -1903,20 +1885,22 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                 body = target.read_text(encoding="utf-8")
                 target.unlink()
                 try:
-                    with self.assertRaises(RuntimeError) as caught:
+                    with self.assertRaises((RuntimeError, OSError)) as caught:
                         self.c._build_leaf_harness_verify_context(self.refs)
                     self.assertIn(reason, str(caught.exception))
                 finally:
                     target.write_text(body, encoding="utf-8")
-        # ...and a rubric whose anchors moved is a DIFFERENT named failure, not a blank slot.
+        # ...and a rubric whose anchors moved is a DIFFERENT failure (the slicer's), not a
+        # blank slot.
         phase_doc = self.repo / "docs/workflow/phases/phase_02_generate.md"
         body = phase_doc.read_text(encoding="utf-8")
         phase_doc.write_text(body.replace("#### Severity of a finding", "#### Grading"),
                              encoding="utf-8")
         try:
-            with self.assertRaises(RuntimeError) as caught:
+            with self.assertRaises(ValueError) as caught:
                 self.c._build_leaf_harness_verify_context(self.refs)
-            self.assertIn("pure_severity_rubric_document_unsliceable", str(caught.exception))
+            self.assertIn("phase_02_generate.md has no '#### Severity of a finding'",
+                          str(caught.exception))
         finally:
             phase_doc.write_text(body, encoding="utf-8")
         # The rows above cover every document of the context; none degrades to "" (issue #467).

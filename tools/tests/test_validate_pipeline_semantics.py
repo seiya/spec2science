@@ -23999,7 +23999,8 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
     issue #110 as four launches ending `generate exceeded 3`.
 
     Every row here drives the REAL CLI in a REAL subprocess, for the same reason
-    `StaleDependencyIRExitCodeTests` does: the channel is the violation's Python TYPE, so a
+    the stale-IR channel's rows did (issue #643 removed that channel): the channel is the
+    violation's Python TYPE, so a
     helper-level assertion would stay green while an unwrapped `violations.append` or a list
     rebuild degraded production to exit code 1.
 
@@ -24010,10 +24011,11 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
     certified IR names no `controlled_spec`) has the IR as its subject and is left plain — the
     same subject-not-rule class issue #238 moved for the io_contract reader. It is unreachable
     on a real node past readiness (the compile-stage validator requires the ref), so it is
-    recorded here rather than wrapped; if it is ever wrapped, every row here answers 4.
+    recorded here rather than wrapped; if it is ever wrapped, every row here changes its answer.
     Its IR DOES carry a valid `io_contract`: before issue #238 the dirt was a missing one, and
     #238 made an IR-subject io_contract finding at post_generate the stale-IR class (rc 4, which
-    outranks rc 5), so that dirt would now decide every row here for the wrong reason.
+    outranked rc 5 until issue #643 removed both), so that dirt decided every row here for the
+    wrong reason.
     """
 
     _NODE_KEY = "component/advx@0.1.0"
@@ -24212,35 +24214,16 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
         self.assertFalse(any(isinstance(v, vps.HostAuthoredArtifactViolation)
                              for v in [str(v) for v in [wrapped]]))
 
-    def test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation(self) -> None:
-        """The precedence between the two terminal codes, driven rather than read.
-
-        Both are terminal, so routing is the same either way; what differs is which recovery the
-        operator is sent to. A stale certified IR invalidates the renderer's own INPUT, so
-        answering 4 first means nobody is told to fix a renderer when the real fix is a
-        re-certification (which re-renders anyway).
-
-        THE FIRST VERSION OF THIS ROW COULD NOT SEE A SWAP. It compared `inspect.getsource`
-        offsets of the two class NAMES inside `_main_dispatch` — and a COMMENT there names
-        `StaleDependencyIRViolation` before either arm, so the assertion held whatever order the
-        arms were in. Measured by a census reviewer: genuinely swapping the arms left this row
-        green. That is this repository's recorded substring-pin trap, reproduced in a row written
-        to prevent exactly this class of thing.
-
-        Both orders are asserted, and in a shape a swap must break: the mixed list answers the
-        stale code, and each type alone answers its own, so a mutant that drops or reorders an
-        arm changes one of the four."""
-        stale = vps.StaleDependencyIRViolation("ir: stale")
+    def test_the_exit_code_is_decided_by_the_violation_type(self) -> None:
+        """`_exit_code_for_violations` answers the host-authored code for a list carrying the
+        type, whatever plain violations co-occur, and 1 for plain violations alone; and it is the
+        function `_main_dispatch` calls. (The stale-IR half of this row, 4 over 5, went with the
+        code in issue #643 PR-5.)"""
         host = vps._as_host_authored("x_runner.f90: boom", "some.producer")
-        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                         vps._exit_code_for_violations([host, stale]))
-        # Order in the LIST must not decide it either — only the type precedence.
-        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                         vps._exit_code_for_violations([stale, host]))
         self.assertEqual(vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE,
                          vps._exit_code_for_violations([host, "an ordinary violation"]))
-        self.assertEqual(vps.STALE_DEPENDENCY_IR_EXIT_CODE,
-                         vps._exit_code_for_violations([stale, "an ordinary violation"]))
+        self.assertEqual(vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE,
+                         vps._exit_code_for_violations(["an ordinary violation", host]))
         self.assertEqual(1, vps._exit_code_for_violations(["an ordinary violation"]))
         # And the function `_main_dispatch` actually calls is this one — an extraction nothing
         # called would pin nothing.
@@ -24248,26 +24231,20 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
         self.assertIn("_exit_code_for_violations", inspect.getsource(vps._main_dispatch))
 
 
-class StaleDependencyIRExitCodeTests(unittest.TestCase):
-    """The terminal classification channel for a stale certified IR.
+class ValidatorExitCodeTests(unittest.TestCase):
+    """The validator's exit codes as the channel a caller classifies on.
 
-    The conductor used to decide this by scanning the validator's stdout for
-    ``STALE_DEPENDENCY_IR_MARKER``. Violations embed a LEAF-CHOSEN path, so a model file named
-    after the marker forged the terminal verdict and burned a billed run. The channel is now the
-    process exit code, written by the branch that knows and unwritable by any leaf.
-
-    No gate emits the type since issue #643 PR-4 removed its two `post_generate` emit sites (the
-    §5.1 surface guard and the io_contract wrap; readiness runs the same `--stage compile`
-    validator before any skip of Compile), and the rows that drove them through the real CLI went
-    with them. What stays: an ordinary post_generate finding answers 1 through the real CLI,
-    the compile stage returns the io_contract finding as a plain violation, and the exit-code
-    constants are documented and distinct (``_help`` calls ``main(["--help"])`` in-process).
+    This class held the stale-certified-IR channel (exit code 4) until issue #643: PR-4 removed
+    the type's two `post_generate` emit sites and PR-5 the code, the type and the marker. What
+    stays: an ordinary post_generate finding answers 1 through the real CLI, the compile stage
+    returns the io_contract finding as a plain violation, and the exit-code constants are
+    documented and distinct (``_help`` calls ``main(["--help"])`` in-process).
     """
 
     #: `_GOOD_SOURCE` with the metrics-basis writer's dummy renamed in header and declaration:
     #: an ORDINARY Generate.static finding (a drifted pinned interface line) whose subject is the
     #: leaf's own source, which a warm Generate retry can repair. Used where a row needs an
-    #: ordinary violation to co-occur with, or to stand alone against, the stale-IR class.
+    #: ordinary violation to stand alone.
     _DRIFTED_SOURCE = InfrastructureGeneratedSignatureGateTests._GOOD_SOURCE.replace(
         "  subroutine hx__write_metrics_basis(entries, &\n"
         "      n)\n"
@@ -24277,8 +24254,8 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         "    type(hx__h_named), intent(in) :: entries(:)\n"
         "    integer,           intent(in) :: count\n")
 
-    #: An io_contract the compile-stage reader accepts, so the IR-subject half of rc 4 stays
-    #: silent unless a row asks for it.
+    #: An io_contract the compile-stage reader accepts, so the io_contract finding stays silent
+    #: unless a row asks for it.
     _HEALTHY_IO_CONTRACT: dict = {
         "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
         "outputs": [{"name": "metric", "shape_expr": "scalar",
@@ -24375,21 +24352,17 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             violations = vps.validate_compile_stage(tmp, "workspace", ir_ref)
         hits = [v for v in violations if "names no raw-evidence artifact" in v]
         self.assertEqual(1, len(hits), violations)
-        self.assertFalse(any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations),
-                         violations)
-        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, hits[0])
 
     def test_ordinary_violations_keep_the_generic_failure_exit_code(self) -> None:
-        """Wrapping more than the stale-IR violation would route ordinary content failures —
-        which a warm Generate retry CAN repair — to a terminal fail_closed. The healthy IR
-        carries a valid io_contract here so the ONLY finding is the drifted source's."""
+        """An ordinary content failure — which a warm Generate retry CAN repair — answers 1,
+        not a terminal code. The healthy IR carries a valid io_contract here so the ONLY
+        finding is the drifted source's."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             _seed_shape_expr_schema_into(tmp)
             pipeline_dir, _ = self._seed_io_contract_ir(
                 tmp, evidence_ref="perf.json", source=self._DRIFTED_SOURCE)
             proc = self._run_cli(tmp, pipeline_dir)
-        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
         self.assertTrue([line for line in proc.stdout.splitlines() if line.startswith("- ")],
                         f"fixture must still fail on ordinary violations: {proc.stdout}")
         self.assertEqual(proc.returncode, 1, proc.stdout)
@@ -25469,14 +25442,11 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
             '25,1,1,1,1,1,1,0,"void update_kernel<float>(T1 *)"\n'
         self.assertEqual([], self._gate(sources=sources, csv_text=csv))
 
-    def test_the_absent_code_ranks_below_stale_ir_and_host_authored(self) -> None:
+    def test_the_absent_code_ranks_below_host_authored(self) -> None:
         absent = vps.DeviceKernelsAbsentViolation("kernel_trace.csv: none ran")
-        stale = vps.StaleDependencyIRViolation("ir: stale")
         host = vps._as_host_authored("x_runner.cu: boom", "some.producer")
         plain = "an ordinary violation"
         for violations, expected in (
-                ([absent, stale], vps.STALE_DEPENDENCY_IR_EXIT_CODE),
-                ([stale, absent], vps.STALE_DEPENDENCY_IR_EXIT_CODE),
                 ([absent, host], vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE),
                 ([host, absent], vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE),
                 ([plain, absent], vps.DEVICE_KERNELS_ABSENT_EXIT_CODE),

@@ -106,7 +106,7 @@ def stage_meta_type_violations(meta_data: dict[str, Any], *, step_token: str) ->
             violations.append(
                 "requires non-empty constraint_reason when context_isolated=false"
             )
-    # The two certification keys the host stamps on pass. Type-checked here — not merely in
+    # The certification key the host stamps on pass. Type-checked here — not merely in
     # the stamping writer — because `_phase_certified` REFUSES a phase whose hashes do not
     # re-compute, so a structurally wrong stamp would read as a tampered deliverable and send
     # the operator hunting for a change nobody made.
@@ -125,10 +125,6 @@ def stage_meta_type_violations(meta_data: dict[str, Any], *, step_token: str) ->
                     "artifact_hashes values must be 'sha256:<hex>' keyed by repo-relative "
                     f"path (offending keys: {sorted(bad)})"
                 )
-    if "source_ir_id" in meta_data:
-        source_ir_id = meta_data.get("source_ir_id")
-        if not isinstance(source_ir_id, str) or not source_ir_id.strip():
-            violations.append("source_ir_id must be non-empty string")
     # The derivation record (issue #250). Same reason as `artifact_hashes` above: a stamp the
     # key lookup cannot read would report a certified phase as stale.
     for key in ("output_hash", "derivation_key"):

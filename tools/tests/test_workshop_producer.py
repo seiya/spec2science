@@ -1394,14 +1394,6 @@ class SeedRefusalTests(_Base):
             _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertIn("tests.md", str(ctx.exception))
 
-    def test_a_context_carrying_the_runner_needs_it_in_src(self) -> None:
-        context = self.c._build_leaf_context(self.refs)
-        (self.repo / self.refs.source_dir() / "src"
-         / self.c._runner_basename(self.refs)).unlink()
-        with self.assertRaises(RuntimeError) as ctx:
-            _seeds(self.c, self.refs, context)
-        self.assertIn("runner", str(ctx.exception))
-
     def test_a_host_file_named_like_the_contract_is_refused(self) -> None:
         src = self.repo / self.refs.source_dir() / "src"
         (src / "CONTRACT.md").write_text("x", encoding="utf-8")

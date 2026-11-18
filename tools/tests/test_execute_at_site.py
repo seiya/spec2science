@@ -30,6 +30,7 @@ import tools.workflow_conductor as wc
 from tools.backends import registry
 from tools.execution_sites import Site
 from tools.host_execution import LOCAL_SITE, launch_shape, serial_execution_env
+from tools.primary_evidence import PrimaryEvidenceError
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID, profile_with
 from tools.tests.test_remote_execution import _SCP_SHIM, _SSH_SHIM
@@ -857,9 +858,8 @@ class CaseFilesAtExecuteTests(unittest.TestCase):
                                    side_effect=AssertionError("nothing runs")), \
                     mock.patch.object(_build_runtime(), "tool_run_quality_checks",
                                       side_effect=AssertionError("nothing runs")), \
-                    self.assertRaises(RuntimeError) as caught:
+                    self.assertRaises(PrimaryEvidenceError) as caught:
                 n.execute()
-            self.assertIn("could not be written at Validate.execute", str(caught.exception))
             self.assertIn("inputs.mode produced a non-finite value", str(caught.exception))
             self.assertFalse((n.repo / n.refs.ir_ref / "case_inputs").exists())
 
@@ -870,7 +870,7 @@ class CaseFilesAtExecuteTests(unittest.TestCase):
             (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(_NON_FINITE_IR, encoding="utf-8")
             result = n.substep()
             self.assertEqual(result.returncode, 1, result)
-            self.assertIn("could not be written at Validate.execute", result.stderr)
+            self.assertIn("inputs.mode produced a non-finite value", result.stderr)
 
 
 class DriverEvidencePromotionTests(unittest.TestCase):

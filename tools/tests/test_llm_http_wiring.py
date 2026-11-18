@@ -293,16 +293,6 @@ class HttpWorkshopWiringTests(_ChatDialect, _GenerateHarness, unittest.TestCase)
         assert outcome.infra_error is not None
         self.assertEqual(outcome.infra_error[0], "node_has_no_bundle_shape")
 
-    def test_the_launch_argv_builder_refuses_an_http_entry(self) -> None:
-        """Defense in depth: nothing should reach `leaf_command` with an HTTP entry, and if
-        anything did, building a CLI argv out of it is the wrong recovery — on either kind."""
-        c = self.wired([])
-        entry = c.entry_for("generate", "generate")
-        for kwargs in ({"reading": True}, {"mcp_config_json": "{}"}):
-            with self.subTest(**kwargs), self.assertRaises(ValueError) as ctx:
-                c.leaf_command(entry, **kwargs)
-            self.assertIn("launches no CLI leaf", str(ctx.exception))
-
     # --- an outer reopen whose target's record is damaged -------------------------------
 
     def test_a_damaged_launch_record_degrades_instead_of_raising(self) -> None:

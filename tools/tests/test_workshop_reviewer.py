@@ -1119,14 +1119,6 @@ class _CodexCutReadRows:
                          ("fail", 1, "workshop_lineage_setup_failed"))
         self.assertIn("a codex leaf's shell can write", outcome.infra_error[1])
         self.assertEqual(getattr(self.c, "spawns", []), [])
-        # The backstop, where the verdict is read.
-        paths = workshop_tree.LineagePaths(
-            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id="x",
-            orchestration_dir=self.repo, backend="codex")
-        turn = mock.Mock(command_outputs=[])
-        lines, reason = self.c._codex_cut_reads(turn, "x", None, paths)
-        self.assertEqual(lines, [])
-        self.assertIn("which a codex shell can write", reason)
         self.assertIsNone(wc._codex_shell_writable_root(Path("/var/tmp/x")))
         # Each root on its own: /tmp whatever the temp dir is, and the temp dir wherever it is.
         elsewhere = Path(tempfile.mkdtemp(dir="/var/tmp")).resolve()

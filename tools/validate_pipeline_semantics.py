@@ -5384,26 +5384,18 @@ def _exit_code_for_violations(violations: list[str]) -> int:
     through the function that consumes it gets moved somewhere it can be called; this is that
     move, and the test now builds a mixed list and reads the answer.
 
-    PRECEDENCE, and it is deliberate. A stale certified IR invalidates the renderer's own INPUT,
-    so a host-authored artifact being wrong is plausibly a consequence of it: answering 4 first
-    means an operator is never sent to fix a renderer when the real recovery is a
-    re-certification, which re-renders anyway. Both precede `1` so that either, co-occurring with
-    ordinary leaf-repairable violations, still routes TERMINAL — the leaf cannot clear them, so a
-    warm retry would spend the whole budget and fail anyway. The accepted cost is that the
-    co-findings lose their warm repair; they are still PRINTED, so they reach
-    `gate_meta.failure_excerpt` and the operator.
+    PRECEDENCE, and it is deliberate. 5 (a host-authored artifact) precedes `1` so that it,
+    co-occurring with ordinary leaf-repairable violations, still routes TERMINAL — the leaf cannot
+    clear it, so a warm retry would spend the whole budget and fail anyway. The accepted cost is
+    that the co-findings lose their warm repair; they are still PRINTED, so they reach
+    `gate_meta.failure_excerpt` and the operator. (4, a stale certified IR, preceded 5 until
+    issue #643 PR-5 removed it.)
 
-    No gate constructs a `StaleDependencyIRViolation` since issue #643 PR-4 (see
-    `STALE_DEPENDENCY_IR_EXIT_CODE`), so the 4-over-5 order is pinned on a hand-built list only
-    (`test_the_stale_ir_code_dominates_a_cooccurring_host_authored_violation`).
-
-    6 (no kernel ran on the device, issue #307) comes after both: a stale IR or a wrong
-    host-authored file is a cause the operator fixes FIRST, and either can be why the kernels did
-    not run. It precedes `1` for the same reason 4 and 5 do — a warm retry meets the same device.
-    Pinned by `test_the_absent_code_ranks_below_stale_ir_and_host_authored`.
+    6 (no kernel ran on the device, issue #307) comes after 5: a wrong host-authored file is a
+    cause the operator fixes FIRST, and can be why the kernels did not run. It precedes `1` for
+    the same reason 5 does — a warm retry meets the same device. Pinned by
+    `test_the_absent_code_ranks_below_host_authored`.
     """
-    if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
-        return STALE_DEPENDENCY_IR_EXIT_CODE
     if any(isinstance(v, HostAuthoredArtifactViolation) for v in violations):
         return HOST_AUTHORED_ARTIFACT_EXIT_CODE
     if any(isinstance(v, DeviceKernelsAbsentViolation) for v in violations):
@@ -7955,48 +7947,15 @@ def _validate_ir_module_parameters_against_section51(
                 f"'{spec_params[name]}'")
 
 
-# Sentinel embedded in a stale-IR violation so a HUMAN reader sees, in the
-# message itself, why retrying Generate is futile: the leaf cannot mutate the certified IR, so the
-# fix is a re-certification, not a re-author. It carries NO decision — the conductor routes this
-# failure as TERMINAL (fail_closed) on `STALE_DEPENDENCY_IR_EXIT_CODE` and on nothing in the text.
-STALE_DEPENDENCY_IR_MARKER = "[stale-dependency-ir]"
-
 #: `main`'s exit code when a language backend's source front end is unavailable (`registry.
 #: BackendFrontendUnavailable`) — an OPERATOR problem (an uninstalled package), never a content one.
 #: Distinct from 1 (violations found) and from
 #: argparse's 2, so a caller tells the three apart without reading a line of the output.
 SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE = 3
 
-#: `main`'s exit code when a violation's SUBJECT is the node's own certified IR, which predates
-#: the current contract: a `spec.ir.yaml` that `Compile.static` would reject today. The fix is a
-#: re-certification, never a re-authored model, so the conductor routes it TERMINAL. NO GATE
-#: EMITS IT since issue #643 PR-4: its two emit sites at `--stage post_generate` (the §5.1 surface
-#: guard in `_validate_generated_signatures` and the io_contract wrap, issue #238) re-ran
-#: `Compile.static`'s readers on the certified IR, and readiness (`check-phase-certified`'s
-#: compile clause, `orchestration_runtime._certified_ir_violations`) runs the same validator
-#: before any skip of Compile. The code, its type and the conductor's arms remain. Distinct from
-#: 0/1/2/3, so a caller tells all five apart without reading the output.
-STALE_DEPENDENCY_IR_EXIT_CODE = 4
-
-
-class StaleDependencyIRViolation(str):
-    """A violation string whose TYPE is the terminal-classification channel.
-
-    Violations embed a leaf-chosen path (``f"{loc}: ..."``), so any classification that scans the
-    validator's output text is forgeable by naming a model file after the marker. The failure's
-    type is not: a leaf writes bytes into the message, never a Python class. ``main`` maps the
-    presence of an instance in ``violations`` to :data:`STALE_DEPENDENCY_IR_EXIT_CODE`, and that
-    exit code is the only thing the conductor reads.
-
-    Subclassing ``str`` keeps the message byte-identical and equal to the plain string it wraps,
-    so every existing message pin and every consumer that formats violations is unaffected.
-
-    LIMIT: the channel lives in the object, so REBUILDING the ``violations`` list (``[str(v) for v
-    in violations]``, a JSON round-trip, ``sorted`` into new strings) silently drops it back to
-    exit code 1. No gate constructs one since issue #643 PR-4 (see
-    :data:`STALE_DEPENDENCY_IR_EXIT_CODE`), so no real-CLI row drives this type any more; the
-    sibling types' real-CLI rows cover the same channel.
-    """
+#: Exit code 4 was a stale certified IR (`stale_dependency_ir`). No gate emitted it after issue
+#: #643 PR-4 removed its two emit sites, and PR-5 removed the code, its violation type and the
+#: conductor's arms; the number is not reused, so 5 and 6 keep their meaning in old records.
 
 
 #: Sentinel embedded in a host-authored-artifact violation so a HUMAN reader sees, in the message
@@ -8016,7 +7975,7 @@ HOST_AUTHORED_ARTIFACT_EXIT_CODE = 5
 class HostAuthoredArtifactViolation(str):
     """A violation string whose TYPE says its subject is a file this repository authors.
 
-    Same channel design as :class:`StaleDependencyIRViolation`, for the same reason: violations
+    The channel design, and the reason for it: violations
     embed a leaf-chosen path (``f"{loc}: ..."``), so any classification that scans the validator's
     output text is forgeable by naming a model file after the marker. The failure's type is not —
     a leaf writes bytes into the message, never a Python class. ``main`` maps the presence of an
@@ -8050,7 +8009,7 @@ DEVICE_KERNELS_ABSENT_EXIT_CODE = 6
 class DeviceKernelsAbsentViolation(str):
     """A violation string whose TYPE says the traced run executed no kernel on the device.
 
-    Same channel as :class:`StaleDependencyIRViolation` and :class:`HostAuthoredArtifactViolation`:
+    Same channel as :class:`HostAuthoredArtifactViolation`:
     the message embeds a path, so nothing scans it; ``main`` maps the presence of an instance to
     :data:`DEVICE_KERNELS_ABSENT_EXIT_CODE`. Constructed at one site, the branch that read an
     empty kernel summary against a non-empty set of defined kernels. The same LIMIT holds: a
@@ -9120,17 +9079,16 @@ def main(argv: list[str] | None = None) -> int:
             "  2  argparse usage error\n"
             f"  {SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE}  the source-structure front end is not "
             "available on this machine — an OPERATOR problem\n"
-            f"  {STALE_DEPENDENCY_IR_EXIT_CODE}  a stale/corrupt certified IR — re-certify, do not "
-            "re-author (no gate emits it since issue #643 PR-4)\n"
             f"  {HOST_AUTHORED_ARTIFACT_EXIT_CODE}  a violation's subject is a file this "
             "repository authors, not the leaf — fix the producer\n"
             f"  {DEVICE_KERNELS_ABSENT_EXIT_CODE}  the traced run executed none of the kernels "
             "the node defines — check the device\n"
             "\n"
-            "A caller routes codes 3 to 6 TERMINAL: 3 and 5 name conditions no re-authored\n"
-            "source can clear (as 4 did), and 6 one whose measured cause is the site's device and\n"
-            "driver, which a retry meets again. They are answered by the branch that knows;\n"
-            "nothing in the output text carries the decision.\n"
+            "A caller routes codes 3, 5 and 6 TERMINAL: 3 and 5 name conditions no re-authored\n"
+            "source can clear, and 6 one whose measured cause is the site's device and driver,\n"
+            "which a retry meets again (4, a stale certified IR, is no longer answered). They\n"
+            "are answered by the branch that knows; nothing in the output text carries the\n"
+            "decision.\n"
         ),
     )
     parser.add_argument("--repo-root", default=".")
@@ -9306,8 +9264,8 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
             print(f"- {line}")
         # The TYPE decides, not the text (`_exit_code_for_violations`). This precedes the
         # `return 1` so that a host-authored or device-absent violation co-occurring with ordinary
-        # content violations still routes TERMINAL. (A stale certified IR routed the same way
-        # until issue #643 PR-4; no gate constructs `StaleDependencyIRViolation` since.)
+        # content violations still routes TERMINAL. (A stale certified IR routed the same way,
+        # as 4, until issue #643 PR-4 removed its emit sites and PR-5 its code.)
         return _exit_code_for_violations(violations)
 
     print("pipeline semantic validation: PASS")

@@ -599,16 +599,17 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
     def test_the_harness_is_the_targets_whatever_the_ir_lists(self) -> None:
         """Issue #284: the harness a non-infrastructure node negotiates against is the one its
         run's target names — an IR is not read at all, so a stale IR listing another harness
-        cannot move it — and a harness the catalog cannot resolve is a RuntimeError (a build
-        precondition), not a None that would narrow to an empty manifest."""
+        cannot move it — and a harness the catalog cannot resolve raises (the resolver's own
+        TargetProfileError; issue #643 PR-5 removed the RuntimeError rewrap), not a None that
+        would narrow to an empty manifest."""
+        from tools.target_profile import TargetProfileError
         from tools.tests.target_fixtures import profile_with
         nk = self.refs.node_key
         self.assertEqual(self.c._leaf_harness_node_key(nk), _HARNESS)
         self.c.target_profile = profile_with(
             harness={"infrastructure_id": "harness_not_in_catalog"})
-        with self.assertRaises(RuntimeError) as cm:
+        with self.assertRaises(TargetProfileError):
             self.c._leaf_harness_node_key(nk)
-        self.assertIn("does not resolve", str(cm.exception))
 
     def test_an_infrastructure_node_negotiates_against_its_own_manifest(self) -> None:
         """Issue #169: on the `harness` shape the leaf IS the harness, so the manifest it is
@@ -1012,26 +1013,6 @@ class PureProducerSubstepTests(unittest.TestCase):
             self.assertEqual(meta["per_attempt"][0]["agent_run_id"], row["agent_run_id"])
             self.assertEqual(meta["per_attempt"][0]["model"], row["agent_model"], label)
             self.assertEqual(row["agent_model_provenance"], "codex_launch_pinned", label)
-
-    def test_the_producer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
-        """Issue #113's resolver is used by THIS loop too, not only by `run_substep`.
-
-        PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted by issue #176 with
-        the mini-loop that was its only production consumer, so what the resolver leaves on this
-        path is the PROBE ITSELF — an operator's record, under the arid of the row it belongs
-        to, of the instant the attempt started. This is that probe's witness on the producer
-        loop: without it, a mutation dropping the `_launch_instant` call from
-        `_spawn_workshop_turn` is silent.
-
-        Round 0's hunk mutation found the producer loop unwitnessed while its reviewer sibling
-        was covered — the two took the instant on lines that read identically.
-        """
-        c, _refs, oc = self._run([_envelope(_valid_bundle())])
-        self.assertEqual(oc.status, "pass")
-        probe = (c.repo_root / "workspace" / "orchestrations" / c.orchestration_id
-                 / "agents" / oc.agent_run_id / wc.LAUNCH_INSTANT_PROBE_BASENAME)
-        self.assertTrue(probe.exists(), probe)
-        self.assertEqual(json.loads(probe.read_text())["agent_run_id"], oc.agent_run_id)
 
     def test_pure_pass_finalize_payload_satisfies_the_real_summary_validator(self) -> None:
         """The finalize payload a passing pure leaf produces must survive the REAL
@@ -3066,9 +3047,11 @@ class PureHarnessShapeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_runner_output_contract_document_missing", str(caught.exception))
-        with self.assertRaises(RuntimeError) as caught2:
+        # The reviewer's read carries no name of its own since issue #643: its `OSError`
+        # names the file.
+        with self.assertRaises(OSError) as caught2:
             self.c._build_leaf_harness_verify_context(self.refs)
-        self.assertIn("pure_runner_output_contract_document_missing", str(caught2.exception))
+        self.assertIn("RUNNER_OUTPUT_CONTRACT.md", str(caught2.exception))
 
     def test_both_contexts_raise_when_a_node_artifact_is_unreadable(self) -> None:
         """Issue #467: every node artifact either harness context reads RAISES the named
