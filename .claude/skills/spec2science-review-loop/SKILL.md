@@ -91,6 +91,20 @@ looking for a witness needs the pointer more than the history needs to be neat; 
 SHA that resolves, since an amended commit leaves a dangling one that looks fine locally and
 exists in no clone.
 
+**A cherry-pick whose conflict you resolve by hand keeps a message that describes the OTHER
+side.** When parallel implementing agents' commits are integrated by cherry-pick, each message
+was written against the agent's own branch; resolving a conflict changes the code and leaves
+that message describing what the agent's branch did. Issue #643 PR-4 resolved a conflicted
+block and continued with `git -c core.editor=true cherry-pick --continue`, which skips the
+editor: that commit claimed to keep an arm it deleted, the follow-up integration commit claimed
+a removal the earlier one had made, and a third commit, which picked cleanly, named a route an
+earlier group's pick had already removed. The disclosure round found all three after the push, when they could only be corrected
+in the PR body. **Rule: after resolving a conflicted pick, read `git diff --cached` against the
+message and run `git cherry-pick --continue` WITH the editor (or `git commit --amend` before the
+next pick) so the message says what the resolved diff does; and before the push, read every
+picked message for claims about code another group touched** (`references/round-conduct.md`
+§"Hand-resolved cherry-picks keep the agent's message").
+
 **`git commit --amend` for a message-only fix requires an empty index** (or `--only`); it
 silently absorbs whatever is staged (PR #58: an amend swallowed a file replacement, leaving a
 commit that claims work `git log -S` cannot find). **If it is unpushed you can fix it by

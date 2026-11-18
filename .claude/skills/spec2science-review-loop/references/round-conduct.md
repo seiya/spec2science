@@ -368,6 +368,27 @@ row green, with no other change. The paths were found by running the failing row
 reading its assertion. The rule in SKILL.md therefore puts the removal between taking the
 commits and the next suite run. Nothing in the diff points at the cause.
 
+## Hand-resolved cherry-picks keep the agent's message (issue #643 PR-4, PR #670, 2026-11-18)
+
+PR-4 was implemented by three parallel agents in worktrees and integrated by cherry-pick in
+the order A, B, C. C's U28 pick conflicted with B's U24 commit in one post_generate block of
+`tools/validate_pipeline_semantics.py`: B had kept an `exists()` guard and removed its
+`missing` arm, and C removed the io_contract re-read the guard protected. The block was
+resolved by hand by deleting it whole, and the pick was continued with
+`git -c core.editor=true cherry-pick --continue`, so the commit kept C's message. (B's U24
+pick also conflicted, in the test file, and was continued the same way.)
+Round 3's claim-check reviewer (D1), checking every claim at the commit that makes it, found
+three false records: C's U28 commit said it kept the `missing (ir_ref …)` arm and only dropped
+the io_contract call (it deleted the whole block; the arm was already gone in B's commit); the
+integration commit after it said "the block … goes" (it only narrowed a helper); and B's U25
+commit, which picked cleanly, named a route to a new raise through a key that A's earlier pick
+had already removed — a message written on a branch without the other groups' changes can be
+false after a clean pick too.
+Nothing else in the loop reads a message against its own diff, and the suite is green at every
+one of those commits, so the defect is invisible until a reviewer checks claims per commit. By
+then the branch was pushed, and the corrections went into the PR body. The rule in SKILL.md
+moves the check to the moment of resolution, when the message can still be edited.
+
 ## A billed run during the loop (issue #316 PR-4, PR #322, 2026-09-28)
 
 The adoption run (`advdiff1d_linear validate --with-deps` on `fortran_cpu_mpi`) was launched
