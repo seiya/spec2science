@@ -50,11 +50,10 @@ over 12 days. That figure was carried in from the planning session rather than r
 and no counting of this file's history reproduces it; the argument it supports is unaffected,
 but a refusal's own justification has to be checkable.) So hashing it would bump
 `LEAF_PROMPT_CONTRACT_VERSION` on most edits to it — and a bump
-has two side effects that reach work this pin has nothing to do with: `_resolve_exemplar_source`
-stops offering every sibling exemplar certified at an earlier version, and
-`validate_pipeline_semantics._validate_orchestration_hierarchy` refuses to `--resume` an
-orchestration across it. Editing a phase document would then break the generate side's exemplar
-selection and every in-flight run. Those documents are treated as the leaf's INPUT DATA — the same
+has a side effect that reaches work this pin has nothing to do with: `_resolve_exemplar_source`
+stops offering every sibling exemplar certified at an earlier version. (Until issue #643 a bump
+also refused a `--resume` across it, in the launch-record audit.) Editing a phase document would
+then break the generate side's exemplar selection. Those documents are treated as the leaf's INPUT DATA — the same
 category as `controlled_spec.md` and `tests.md`, which are inlined and unpinned for the same
 reason — not as its contract. The known cost is stated rather than argued away: an edit to the
 phase document DOES change what a compile leaf is told, and this pin will not see it.

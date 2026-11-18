@@ -51,7 +51,6 @@ try:
     )
     # leaf_contract is stdlib-only, so importing it here introduces no cycle.
     from tools.leaf_contract import (
-        LEAF_PROMPT_CONTRACT_VERSION,
         is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
@@ -92,7 +91,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
     from tools.leaf_contract import (
-        LEAF_PROMPT_CONTRACT_VERSION,
         is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
@@ -502,8 +500,6 @@ def _get_shape_expr_patterns(
 ) -> tuple[tuple[re.Pattern[str], ...], tuple[re.Pattern[str], ...]]:
     schema_path = _resolve_shape_expr_schema_path(repo_root)
     return _load_shape_expr_patterns_cached(str(schema_path))
-REQUIRED_WORKFLOW_STEPS = ("compile", "generate", "build", "validate")
-SUBSTEP_WORKFLOW_STEPS = frozenset({"compile", "generate", "validate"})
 AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 
 # Generate-stage static lint (build-runtime run_linter); see docs/workflow/WORKFLOW_CORE.md and docs/workflow/phases/phase_02_generate.md
@@ -7249,12 +7245,9 @@ def _resolve_pipeline_roots(
 
 def _validate_orchestration_hierarchy(
     workspace_path: Path,
-    executions: list[NodeExecution],
     violations: list[str],
-    in_flight_agent_run_ids: set[str] | None = None,
     current_orchestration_id: str | None = None,
 ) -> None:
-    in_flight_agent_run_ids = in_flight_agent_run_ids or set()
     orchestrations_root = workspace_path / "orchestrations"
     if not orchestrations_root.exists() or not orchestrations_root.is_dir():
         violations.append(
@@ -7271,16 +7264,12 @@ def _validate_orchestration_hierarchy(
         )
         return
 
-    node_safes = sorted({_pipeline_node_safe(execution.pipeline_dir) or ""
-                         for execution in executions})
-
     # Phase-4 D2: scope the cross-orchestration integrity scan to the CURRENT
     # orchestration (pre_judge passes --orchestration-id).
     # The conductor runs one orchestration per node (run_workflow `_run_node`), so
     # workspace/orchestrations/ accumulates the current run, its dependency runs,
     # AND debris from prior/crashed unrelated runs. The per-orchestration internal
-    # consistency checks below (dangling agent_graph edges, role-parent rules) must
-    # only police the run being judged: an unrelated crashed orchestration's
+    # consistency checks below must only police the run being judged: an unrelated crashed orchestration's
     # dangling edge previously failed a healthy run (a fresh run inherited foreign
     # debris). Dependencies are validated by their OWN pre_judge + the conductor's
     # workflow_launch_check readiness gate, so they need not be re-policed here.
@@ -7294,29 +7283,6 @@ def _validate_orchestration_hierarchy(
         )
         return
     orchestration_dirs = scoped
-    # Restrict coverage to the node(s) this orchestration actually produced, so
-    # scoping to one dir does not spuriously flag a dependency node's steps as
-    # missing (their step_results live in the dependency's own orchestration).
-    # Intersect UNCONDITIONALLY — even when this orchestration has no steps dir
-    # (own_node_safes empty): leaving node_safes unnarrowed would retain the other
-    # executions' nodes and demand their step_results of this single scoped dir,
-    # defeating the scoping. An orchestration genuinely missing its steps still
-    # fails closed via the per-orchestration "steps_root: missing" check below.
-    own_steps_root = scoped[0] / "steps"
-    own_node_safes = (
-        {p.name for p in own_steps_root.iterdir() if p.is_dir()}
-        if own_steps_root.is_dir() else set()
-    )
-    node_safes = sorted(set(node_safes) & own_node_safes)
-
-    step_coverage = {
-        (node_safe, step): False
-        for node_safe in node_safes
-        for step in REQUIRED_WORKFLOW_STEPS
-    }
-    has_orchestration_role = False
-    has_step_role = False
-    has_substep_role = False
 
     for orchestration_dir in orchestration_dirs:
         # An outstanding UNAUTHORIZED WRITE marker was refused here until PR-2 of issue #171.
@@ -7330,70 +7296,7 @@ def _validate_orchestration_hierarchy(
         graph_path = orchestration_dir / "agent_graph.json"
         runs_path = orchestration_dir / "agent_runs.jsonl"
         preflight_path = orchestration_dir / "preflight.json"
-        graph_edges: list[tuple[int, str, str]] = []
         run_records: dict[str, dict[str, Any]] = {}
-        run_roles: dict[str, str] = {}
-        seen_context_ids: dict[str, str] = {}
-
-        # In-flight tolerance for the self-judging exception ONLY.
-        #
-        # record-launch appends a child's agent_graph edge BEFORE the child runs,
-        # while the child's agent_runs.jsonl entry and its step_result.json are
-        # written only AFTER it returns. The Validate.judge substep runs --stage
-        # pre_judge from inside its own (still-executing) run, so its own edge and
-        # the validate step_result are necessarily unrecorded at that moment.
-        #
-        # The ONLY trustworthy proof that a run is genuinely in-flight RIGHT NOW
-        # is the live caller declaring its own agent_run_id: a static artifact
-        # (an active_children marker, the single-active-child pointer) cannot be
-        # distinguished from a stale leftover after a crash/partial cleanup, and
-        # such markers are not written for every backend. We therefore exempt
-        # exactly the agent_run_id(s) the caller passes via
-        # --in-flight-agent-run-id, and only after verifying from the persisted
-        # launch request that each is the validate/judge substep (so the flag can
-        # never be used to suppress unrelated missing-record violations). Nothing
-        # is exempted by marker presence alone — an orphaned edge with no
-        # live-caller declaration still fails, fail-closed.
-        inflight_exempt_arids: set[str] = set()
-        inflight_exempt_node_safe: dict[str, str] = {}
-        # Populated by the agent_graph edge scan below with the subset of
-        # declared in-flight arids that are ACTUALLY observed as a dangling edge
-        # (child present in agent_graph.json but not yet in agent_runs.jsonl).
-        # Only these get the validate step_result exemption — a flag naming an
-        # arid with a plausible launch request but no dangling edge (stale /
-        # mistyped / cross-orchestration) must not suppress anything.
-        observed_inflight_dangling: set[str] = set()
-        for raw_arid in in_flight_agent_run_ids:
-            arid = raw_arid.strip()
-            if not arid:
-                continue
-            req_path = orchestration_dir / "launches" / f"{arid}.request.json"
-            try:
-                req_doc = _read_json(req_path)
-            except (OSError, json.JSONDecodeError):
-                continue
-            if not isinstance(req_doc, dict):
-                continue
-            step_name = req_doc.get("step")
-            substep_name = req_doc.get("substep")
-            node_key = req_doc.get("node_key")
-            # The live caller running --stage pre_judge is either the judge leaf itself
-            # (historic, self-judging) or the deterministic post_judge substep (G3 split:
-            # post_judge runs the gate AFTER the judge returns, so post_judge's own
-            # agent_graph edge is the dangling in-flight one). Accept both validate substeps;
-            # any other (step, substep) declared in-flight is ignored so the flag can never
-            # suppress unrelated missing-record violations.
-            if not (
-                isinstance(step_name, str) and step_name.strip().lower() == "validate"
-                and isinstance(substep_name, str)
-                and substep_name.strip().lower() in ("judge", "post_judge")
-            ):
-                continue
-            inflight_exempt_arids.add(arid)
-            if isinstance(node_key, str) and node_key.strip():
-                node_safe = _node_key_to_safe(node_key.strip())
-                if node_safe is not None:
-                    inflight_exempt_node_safe[arid] = node_safe
 
         for required in (meta_path, graph_path, runs_path, preflight_path):
             if not required.exists():
@@ -7401,61 +7304,6 @@ def _validate_orchestration_hierarchy(
 
         # The contents of `preflight.json` are not re-read here: it is host-written, and every
         # launch is gated on the same document by `_preflight_launch_refusals` (issue #643).
-
-        if meta_path.exists():
-            try:
-                meta = _read_json(meta_path)
-            except json.JSONDecodeError:
-                violations.append(f"{meta_path}: invalid json")
-            else:
-                if not isinstance(meta, dict):
-                    violations.append(f"{meta_path}: must be json object")
-                else:
-                    orchestration_id = meta.get("orchestration_id")
-                    if not isinstance(orchestration_id, str) or not orchestration_id.strip():
-                        violations.append(
-                            f"{meta_path}:orchestration_id must be non-empty string"
-                        )
-
-        if graph_path.exists():
-            try:
-                graph = _read_json(graph_path)
-            except json.JSONDecodeError:
-                violations.append(f"{graph_path}: invalid json")
-            else:
-                if not isinstance(graph, dict):
-                    violations.append(f"{graph_path}: must be json object")
-                else:
-                    edges = graph.get("edges")
-                    if not isinstance(edges, list) or not edges:
-                        violations.append(f"{graph_path}:edges must be non-empty list")
-                    else:
-                        for idx, edge in enumerate(edges):
-                            if not isinstance(edge, dict):
-                                violations.append(f"{graph_path}:edges[{idx}] must be object")
-                                continue
-                            parent = edge.get("parent_agent_run_id")
-                            child = edge.get("child_agent_run_id")
-                            relation = edge.get("relation_type")
-                            if not isinstance(parent, str) or not parent.strip():
-                                violations.append(
-                                    f"{graph_path}:edges[{idx}].parent_agent_run_id must be non-empty string"
-                                )
-                            if not isinstance(child, str) or not child.strip():
-                                violations.append(
-                                    f"{graph_path}:edges[{idx}].child_agent_run_id must be non-empty string"
-                                )
-                            if not isinstance(relation, str) or not relation.strip():
-                                violations.append(
-                                    f"{graph_path}:edges[{idx}].relation_type must be non-empty string"
-                                )
-                            if (
-                                isinstance(parent, str)
-                                and parent.strip()
-                                and isinstance(child, str)
-                                and child.strip()
-                            ):
-                                graph_edges.append((idx, parent.strip(), child.strip()))
 
         if runs_path.exists():
             lines = [line.strip() for line in runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -7500,50 +7348,8 @@ def _validate_orchestration_hierarchy(
                     violations.append(f"{runs_path}:line {idx + 1} missing agent role")
                     continue
                 run_records[run_id] = item
-                run_roles[run_id] = role_l
-
-                if role_l == "orchestration":
-                    has_orchestration_role = True
-                elif role_l == "step":
-                    has_step_role = True
-                elif role_l == "substep":
-                    has_substep_role = True
 
                 if role_l in {"step", "substep"}:
-                    parent = item.get("parent_agent_run_id")
-                    if not isinstance(parent, str) or not parent.strip():
-                        violations.append(
-                            f"{runs_path}:line {idx + 1} missing parent_agent_run_id for {role_l}"
-                        )
-                    backend = item.get("agent_backend")
-                    if not isinstance(backend, str) or not backend.strip():
-                        violations.append(
-                            f"{runs_path}:line {idx + 1} missing agent_backend for {role_l}"
-                        )
-                    model = item.get("agent_model")
-                    if not isinstance(model, str) or not model.strip():
-                        violations.append(
-                            f"{runs_path}:line {idx + 1} missing agent_model for {role_l}"
-                        )
-                    context_id = item.get("context_id")
-                    if not isinstance(context_id, str) or not context_id.strip():
-                        violations.append(
-                            f"{runs_path}:line {idx + 1} missing context_id for {role_l}"
-                        )
-                    else:
-                        context_token = context_id.strip()
-                        previous = seen_context_ids.get(context_token)
-                        if previous is not None and previous != run_id:
-                            violations.append(
-                                f"{runs_path}:line {idx + 1} context_id must be unique across step/substep ({context_token})"
-                            )
-                        else:
-                            seen_context_ids[context_token] = run_id
-                    context_isolated = item.get("context_isolated")
-                    if context_isolated is not True:
-                        violations.append(
-                            f"{runs_path}:line {idx + 1} context_isolated must be true for {role_l}"
-                        )
                     agent_session_id = item.get("agent_session_id")
                     if not isinstance(agent_session_id, str) or not agent_session_id.strip():
                         violations.append(
@@ -7556,9 +7362,6 @@ def _validate_orchestration_hierarchy(
 
                     expected_launch_prefix = (
                         f"workspace/orchestrations/{orchestration_dir.name}/launches/"
-                    )
-                    expected_agent_prefix = (
-                        f"workspace/orchestrations/{orchestration_dir.name}/agents/{run_id}/dialogs/"
                     )
                     launch_refs: dict[str, str] = {}
                     for key in (
@@ -7633,37 +7436,10 @@ def _validate_orchestration_hierarchy(
                                                and _leaf_contract_is_workshop_request(
                                                    req_payload_for_launch))
                                 if is_pure or is_workshop:
-                                    # Independent audit of the persisted pure record (tamper /
-                                    # drift detection) of the value invariants the conductor
-                                    # stamps at launch.
-                                    # (1) prompt_contract_version must equal the transport's
-                                    # contract, in BOTH the structured request and the rendered
-                                    # prompt line; an obsolete/forged version passing the audit
-                                    # would let a stale-contract producer look compliant.
-                                    req_version = (
-                                        req_payload_for_launch.get("prompt_contract_version")
-                                        if isinstance(req_payload_for_launch, dict) else None
-                                    )
-                                    # ONE counter since issue #534 PR-J4-b: a workshop record
-                                    # carried its own (`workshop-N`) through PR-J4-a, and one
-                                    # stamped so fails here — the `--resume` barrier the
-                                    # retirement is (docs/RUNBOOK.md).
-                                    expected_version = LEAF_PROMPT_CONTRACT_VERSION
-                                    mode_word = "workshop" if is_workshop else "pure"
-                                    if req_version != expected_version:
-                                        violations.append(
-                                            f"{runs_path}:line {idx + 1} {mode_word} launch "
-                                            f"request prompt_contract_version must be "
-                                            f"{expected_version!r} (got {req_version!r})"
-                                        )
-                                    expected_version_line = (
-                                        f"prompt_contract_version: {expected_version}"
-                                    )
-                                    if expected_version_line not in launch_text:
-                                        violations.append(
-                                            f"{runs_path}:line {idx + 1} pure launch prompt must "
-                                            f"carry {expected_version_line!r}"
-                                        )
+                                    # (1) — the record's `prompt_contract_version` against the
+                                    # current constant — went in issue #643: the constant is in no
+                                    # derivation key (issue #574), so a `--resume` across a bump
+                                    # runs as a fresh run would.
                                     # (2) and (3) — the OUTPUT MANIFEST's absence, the CAPABILITY's
                                     # `mode: pure_readonly` / `write_roots: []` / `mcp_permissions: []`, and the
                                     # READ MANIFEST's deny-all `allowed_read_roots` — were audited here until PR-2
@@ -7732,56 +7508,19 @@ def _validate_orchestration_hierarchy(
                                                 f"{pure_orefs!r})"
                                             )
 
-                    for key in ("agent_result_ref", "agent_summary_ref"):
-                        agent_ref = item.get(key)
-                        if not isinstance(agent_ref, str) or not agent_ref.strip():
-                            violations.append(
-                                f"{runs_path}:line {idx + 1} missing {key} for {role_l}"
-                            )
-                            continue
-                        ref_token = agent_ref.strip()
-                        if not ref_token.startswith(expected_agent_prefix):
-                            violations.append(
-                                f"{runs_path}:line {idx + 1} {key} must start with {expected_agent_prefix} ({ref_token})"
-                            )
-                            continue
+                    summary_ref = item.get("agent_summary_ref")
+                    if isinstance(summary_ref, str) and summary_ref.strip():
+                        ref_token = summary_ref.strip()
                         agent_path = workspace_path.parent / ref_token
-                        if not agent_path.exists():
+                        if not agent_path.is_file():
                             violations.append(
-                                f"{runs_path}:line {idx + 1} {key} target not found ({ref_token})"
+                                f"{runs_path}:line {idx + 1} agent_summary_ref target must be file ({ref_token})"
                             )
-                            continue
-                        if key == "agent_result_ref":
-                            try:
-                                result_payload = _read_json(agent_path)
-                            except json.JSONDecodeError:
-                                violations.append(
-                                    f"{agent_path}: agent result must be valid json object"
-                                )
-                            else:
-                                if not isinstance(result_payload, dict):
-                                    violations.append(
-                                        f"{agent_path}: agent result must be json object"
-                                    )
-                                else:
-                                    result_run_id = result_payload.get("agent_run_id")
-                                    if (
-                                        not isinstance(result_run_id, str)
-                                        or result_run_id.strip() != run_id
-                                    ):
-                                        violations.append(
-                                            f"{agent_path}:agent_run_id must equal agent_runs agent_run_id ({run_id})"
-                                        )
                         else:
-                            if not agent_path.is_file():
-                                violations.append(
-                                    f"{runs_path}:line {idx + 1} {key} target must be file ({ref_token})"
-                                )
-                                continue
                             summary_text = agent_path.read_text(encoding="utf-8", errors="ignore")
                             if not summary_text.strip():
                                 violations.append(
-                                    f"{runs_path}:line {idx + 1} {key} target must be non-empty ({ref_token})"
+                                    f"{runs_path}:line {idx + 1} agent_summary_ref target must be non-empty ({ref_token})"
                                 )
                             elif not _has_informative_agent_summary(summary_text):
                                 violations.append(
@@ -7855,14 +7594,6 @@ def _validate_orchestration_hierarchy(
                                         violations.append(
                                             f"{response_path}:launch_reply_ref must equal agent_runs launch_reply_ref ({reply_ref})"
                                         )
-                                    launch_reply = response_payload.get("launch_reply")
-                                    if (
-                                        isinstance(launch_reply, str)
-                                        and re.fullmatch(r"[^\n]+ launched\.", launch_reply.strip()) is not None
-                                    ):
-                                        violations.append(
-                                            f"{response_path}: launch_reply must not be generic launched-only text"
-                                        )
                                     # The `agents/<arid>/dialogs/child.response.json`
                                     # mirror this block required to equal the response went
                                     # in issue #447 (D3): the launches response IS the record.
@@ -7873,289 +7604,13 @@ def _validate_orchestration_hierarchy(
                             f"{runs_path}:line {idx + 1} context_id must not be sequential placeholder ({context_id})"
                         )
 
-        # A child recorded ONLY in `agent_runs_invalid.jsonl` is a terminal attempt whose
-        # payload was refused (an unauthorized write, a malformed terminal record).
-        # `record-launch` wrote its `agent_graph` edge before the run, and
-        # `_prune_orphan_agent_graph_edges` deliberately KEEPS that edge. Since issue #177 the
-        # edge is tolerated on the strength of the invalid-log record alone: a failed attempt
-        # needs no consumer, so there is no tombstone to require a conjunction with. What the
-        # exemption does NOT relax is the hierarchy — a substep can never be a parent.
-        invalid_arids: set[str] = set()
-        invalid_runs_path = orchestration_dir / "agent_runs_invalid.jsonl"
-        if invalid_runs_path.is_file():
-            try:
-                invalid_lines = invalid_runs_path.read_text(encoding="utf-8").splitlines()
-            except OSError:
-                invalid_lines = []
-            for raw_invalid in invalid_lines:
-                token = raw_invalid.strip()
-                if not token:
-                    continue
-                try:
-                    invalid_item = json.loads(token)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(invalid_item, dict):
-                    continue
-                invalid_arid = invalid_item.get("agent_run_id")
-                if isinstance(invalid_arid, str) and invalid_arid.strip():
-                    invalid_arids.add(invalid_arid.strip())
-
-        for edge_idx, parent_id, child_id in graph_edges:
-            parent_role = run_roles.get(parent_id)
-            child_role = run_roles.get(child_id)
-            if parent_role is None:
-                violations.append(
-                    f"{graph_path}:edges[{edge_idx}] parent_agent_run_id not found in agent_runs.jsonl ({parent_id})"
-                )
-                continue
-            if child_role is None:
-                if child_id in inflight_exempt_arids:
-                    # The live judge declared this run as its own in-flight
-                    # agent_run_id (--in-flight-agent-run-id) and the launch
-                    # request confirms it is the validate/judge substep; its
-                    # agent_runs entry is appended only after it returns. Record
-                    # the graph evidence so the validate step_result exemption
-                    # below requires this same dangling edge.
-                    #
-                    # We exempt ONLY the missing-child record. The parent role is
-                    # already known from agent_runs.jsonl and must still be valid:
-                    # a substep can never be a parent, regardless of the in-flight
-                    # child, so keep failing closed on that malformed hierarchy.
-                    observed_inflight_dangling.add(child_id)
-                    if parent_role == "substep":
-                        violations.append(
-                            f"{graph_path}:edges[{edge_idx}] substep must not be parent role"
-                        )
-                    continue
-                if child_id in invalid_arids:
-                    # A terminal attempt diverted to `agent_runs_invalid.jsonl`. The kept edge is
-                    # tolerated HERE, because this scan checks graph integrity and the divert
-                    # covers far more than the write audit (a session-id mismatch, a missing
-                    # sandbox profile, an empty `output_refs`). The landed-write case — an
-                    # outstanding `violations/<arid>.unauthorized_write_violation.json` — used
-                    # to be refused by the completion vouch's clause (c), anchored on a path
-                    # that the terminal write-audit diff did not exempt and that survived the
-                    # pruning of this edge. THAT WHOLE ROUTE IS GONE with issue #171 PR-2: a
-                    # pure leaf has no write authority to exceed, so there is no diff, no
-                    # marker and no clause (c). What the divert still covers is the list above,
-                    # none of which leaves bytes behind — which is why tolerating the edge is
-                    # still right, and now for the simpler reason.
-                    #
-                    # As with the in-flight exemption above, this tolerates ONLY the
-                    # missing-child record. The parent role is known from agent_runs.jsonl and
-                    # the hierarchy invariant still holds: a substep can never be a parent.
-                    if parent_role == "substep":
-                        violations.append(
-                            f"{graph_path}:edges[{edge_idx}] substep must not be parent role"
-                        )
-                    continue
-                violations.append(
-                    f"{graph_path}:edges[{edge_idx}] child_agent_run_id not found in agent_runs.jsonl ({child_id})"
-                )
-                continue
-            if parent_role == "orchestration" and child_role not in {"step", "substep"}:
-                violations.append(
-                    f"{graph_path}:edges[{edge_idx}] orchestration parent must connect to step or substep child"
-                )
-            if parent_role == "step" and child_role != "substep":
-                violations.append(
-                    f"{graph_path}:edges[{edge_idx}] step parent must connect to substep child"
-                )
-            if parent_role == "substep":
-                violations.append(
-                    f"{graph_path}:edges[{edge_idx}] substep must not be parent role"
-                )
-
-        # The in-flight judge's own validate step_result.json is written only
-        # after it returns. Exempt the validate step from the missing-result
-        # check ONLY for a declared in-flight judge that was actually observed as
-        # a dangling agent_graph edge (graph evidence it is the live, not-yet-
-        # recorded child). Without that evidence — a stale/mistyped arid, or a
-        # judge that already has an agent_runs entry — a missing validate
-        # step_result is a real gap and must surface rather than be masked.
-        for arid, node_safe in inflight_exempt_node_safe.items():
-            if arid not in observed_inflight_dangling:
-                continue
-            key = (node_safe, "validate")
-            if key in step_coverage:
-                step_coverage[key] = True
-
-        for run_id, role_l in run_roles.items():
-            item = run_records[run_id]
-            parent = item.get("parent_agent_run_id")
-            if role_l == "step":
-                if not isinstance(parent, str) or not parent.strip():
-                    continue
-                parent_role = run_roles.get(parent.strip())
-                if parent_role not in {None, "orchestration"}:
-                    violations.append(
-                        f"{runs_path}:agent_run_id={run_id} step parent must be orchestration role"
-                    )
-            if role_l == "substep":
-                if not isinstance(parent, str) or not parent.strip():
-                    continue
-                parent_role = run_roles.get(parent.strip())
-                if parent_role not in {None, "step", "orchestration"}:
-                    violations.append(
-                        f"{runs_path}:agent_run_id={run_id} substep parent must be orchestration or step role"
-                    )
-
-        steps_root = orchestration_dir / "steps"
-        if not steps_root.exists() or not steps_root.is_dir():
-            violations.append(f"{steps_root}: missing")
-            continue
-
-        # A phase this orchestration SKIPPED as certified wrote no step_result here: the
-        # artifact it stands on was certified by another run, and `check-phase-certified`
-        # recorded the skip as `skipped_certified` in `phase_state.json` (docs/ORCHESTRATION.md
-        # §43) — a host record no leaf writes. The completion vouch reads the same state to
-        # exempt the phase from its latest-attempt clause; this census reads it for the same
-        # reason, or a run whose Compile / Generate stood certified while Validate ran (a
-        # `--rederive build`, a cold run over a node certified through Build) would refuse its
-        # own pre_judge for step_results it correctly never wrote.
-        skipped_certified: set[tuple[str, str]] = set()
-        try:
-            phase_state = json.loads(
-                (orchestration_dir / "phase_state.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            phase_state = None
-        node_states = phase_state.get("node_states") if isinstance(phase_state, dict) else None
-        if isinstance(node_states, dict):
-            for ns, states in node_states.items():
-                if not isinstance(states, dict):
-                    continue
-                for st, value in states.items():
-                    if value == "skipped_certified":
-                        skipped_certified.add((str(ns), str(st)))
-        for key in skipped_certified:
-            if key in step_coverage:
-                step_coverage[key] = True
-
-        for node_safe in node_safes:
-            for step in REQUIRED_WORKFLOW_STEPS:
-                step_dir = steps_root / node_safe / step
-                if not step_dir.exists() or not step_dir.is_dir():
-                    continue
-                result_files = sorted(step_dir.glob("*/step_result.json"))
-                if result_files:
-                    step_coverage[(node_safe, step)] = True
-                    for result_path in result_files:
-                        executor_run_id = result_path.parent.name
-                        executor_role = run_roles.get(executor_run_id)
-                        if executor_role is None:
-                            violations.append(
-                                f"{result_path}: parent directory must match existing executor agent_run_id ({executor_run_id})"
-                            )
-                        elif step in SUBSTEP_WORKFLOW_STEPS and executor_role not in {"orchestration", "step"}:
-                            violations.append(
-                                f"{result_path}: parent directory must be orchestration or step role agent_run_id ({executor_run_id})"
-                            )
-                        elif step not in SUBSTEP_WORKFLOW_STEPS and executor_role != "step":
-                            violations.append(
-                                f"{result_path}: parent directory must be step role agent_run_id ({executor_run_id})"
-                            )
-                        step_run_record = run_records.get(executor_run_id, {})
-                        run_step = step_run_record.get("step")
-                        if executor_role == "step" and isinstance(run_step, str) and run_step.strip().lower() != step:
-                            violations.append(
-                                f"{result_path}: step directory name ({step}) does not match agent_runs step field ({run_step})"
-                            )
-                        run_node_key = step_run_record.get("node_key")
-                        if isinstance(run_node_key, str) and run_node_key.strip():
-                            run_node_safe = _node_key_to_safe(run_node_key)
-                            if run_node_safe is not None and run_node_safe != node_safe:
-                                violations.append(
-                                    f"{result_path}: node_key mismatch between step_result path ({node_safe}) and agent_runs ({run_node_key})"
-                                )
-                        try:
-                            result_data = _read_json(result_path)
-                        except json.JSONDecodeError:
-                            violations.append(f"{result_path}: invalid json")
-                            continue
-                        if not isinstance(result_data, dict):
-                            violations.append(f"{result_path}: must be json object")
-                            continue
-                        required_outputs = result_data.get("required_outputs")
-                        failed_substeps = result_data.get("failed_substeps")
-                        if not isinstance(required_outputs, list):
-                            violations.append(
-                                f"{result_path}:required_outputs must be list"
-                            )
-                        if not isinstance(failed_substeps, list):
-                            violations.append(
-                                f"{result_path}:failed_substeps must be list"
-                            )
-                        executor = result_data.get("executor_agent_run_id")
-                        if not isinstance(executor, str) or not executor.strip():
-                            violations.append(
-                                f"{result_path}:executor_agent_run_id must be non-empty string"
-                            )
-                        elif executor.strip() != executor_run_id:
-                            violations.append(
-                                f"{result_path}:executor_agent_run_id must match step_result directory agent_run_id"
-                            )
-                        substep_run_ids = result_data.get("substep_agent_run_ids")
-                        if not isinstance(substep_run_ids, list):
-                            violations.append(
-                                f"{result_path}:substep_agent_run_ids must be list"
-                            )
-                        elif step in SUBSTEP_WORKFLOW_STEPS and not substep_run_ids:
-                            violations.append(
-                                f"{result_path}:substep_agent_run_ids must be non-empty list for {step}"
-                            )
-                        else:
-                            for sub_idx, sub_id in enumerate(substep_run_ids):
-                                if not isinstance(sub_id, str) or not sub_id.strip():
-                                    violations.append(
-                                        f"{result_path}:substep_agent_run_ids[{sub_idx}] must be non-empty string"
-                                    )
-                                    continue
-                                sub_item = run_records.get(sub_id.strip())
-                                sub_role = run_roles.get(sub_id.strip())
-                                if sub_role != "substep":
-                                    violations.append(
-                                        f"{result_path}:substep_agent_run_ids[{sub_idx}] must reference substep role run"
-                                    )
-                                    continue
-                                parent = sub_item.get("parent_agent_run_id")
-                                if not isinstance(parent, str) or parent.strip() != executor_run_id:
-                                    violations.append(
-                                        f"{result_path}:substep_agent_run_ids[{sub_idx}] parent_agent_run_id must equal executor_agent_run_id"
-                                    )
-
-    if not has_orchestration_role:
-        violations.append(
-            f"{orchestrations_root}: agent_runs.jsonl must include orchestration role"
-        )
-    if not has_step_role:
-        step_required = any(
-            covered and step not in SUBSTEP_WORKFLOW_STEPS
-            for (_, step), covered in step_coverage.items()
-        )
-        if step_required:
-            violations.append(
-                f"{orchestrations_root}: agent_runs.jsonl must include step role"
-            )
-    if not has_substep_role:
-        substep_required = any(
-            covered and step in SUBSTEP_WORKFLOW_STEPS
-            for (_, step), covered in step_coverage.items()
-        )
-        if substep_required:
-            violations.append(
-                f"{orchestrations_root}: agent_runs.jsonl must include substep role"
-            )
-
-    missing_step_results = [
-        f"{node_safe}/{step}"
-        for (node_safe, step), covered in sorted(step_coverage.items())
-        if not covered
-    ]
-    if missing_step_results:
-        violations.append(
-            f"{orchestrations_root}: missing step_result.json for {missing_step_results}"
-        )
+    # What this audit no longer reads (issue #643): the `agent_graph.json` edges and their role
+    # hierarchy, the step/substep row fields `record_agent_run` composes, the agent result
+    # record, the step_result census and its locations. Each is written by the host alone, and
+    # the completion vouch (`orchestration_runtime._validate_orchestration_completion_for_pass`)
+    # re-checks the graph edges and the certification of every reserved node at `set-status
+    # pass`. So the in-flight exemption a live post_judge needed for its own dangling edge
+    # went too, with `--in-flight-agent-run-id`.
 
 
 def _resolve_ir_dir(repo_root: Path, workspace_root: str, raw_ir_ref: str) -> Path:
@@ -11034,7 +10489,6 @@ def validate(
     require_llm_review: bool = True,
     require_orchestration: bool = False,
     run_ids: set[str] | None = None,
-    in_flight_agent_run_ids: set[str] | None = None,
     current_orchestration_id: str | None = None,
     require_verdict: bool = True,
 ) -> list[str]:
@@ -11046,7 +10500,6 @@ def validate(
             require_llm_review,
             require_orchestration,
             run_ids,
-            in_flight_agent_run_ids,
             current_orchestration_id,
             require_verdict,
         )
@@ -11059,7 +10512,6 @@ def _validate_impl(
     require_llm_review: bool,
     require_orchestration: bool,
     run_ids: set[str] | None = None,
-    in_flight_agent_run_ids: set[str] | None = None,
     current_orchestration_id: str | None = None,
     require_verdict: bool = True,
 ) -> list[str]:
@@ -11132,9 +10584,7 @@ def _validate_impl(
     if require_orchestration:
         _validate_orchestration_hierarchy(
             workspace_path=workspace_path,
-            executions=executions,
             violations=violations,
-            in_flight_agent_run_ids=in_flight_agent_run_ids,
             current_orchestration_id=current_orchestration_id,
         )
 
@@ -11445,27 +10895,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--in-flight-agent-run-id",
-        action="append",
-        help=(
-            "agent_run_id of a run that is genuinely executing right now and "
-            "therefore has not yet appended its agent_runs.jsonl entry / "
-            "step_result.json. Can be repeated. Effective only for --stage "
-            "pre_judge: the Validate.judge substep passes its OWN agent_run_id so "
-            "the self-judging exception (its own agent_graph edge + the validate "
-            "step_result, both written only after it returns) is not mis-flagged. "
-            "Each id is exempted only after the persisted launch request confirms "
-            "it is the validate/judge substep; an orphaned edge with no matching "
-            "--in-flight-agent-run-id still fails (fail-closed)."
-        ),
-    )
-    parser.add_argument(
         "--orchestration-id",
         help=(
             "orchestration_id of the run being judged. Effective only for --stage "
             "pre_judge: scopes the cross-orchestration integrity scan to this single "
-            "orchestration so an unrelated crashed/prior orchestration's debris (a "
-            "dangling agent_graph edge) cannot fail a healthy run. Dependencies are "
+            "orchestration so an unrelated crashed/prior orchestration's debris "
+            "cannot fail a healthy run. Dependencies are "
             "validated by their own pre_judge + the launch-check readiness gate. The scan "
             "covers this orchestration only, so pre_judge needs it."
         ),
@@ -11556,11 +10991,6 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     require_llm_review=True,
                     require_orchestration=True,
                     run_ids=run_ids,
-                    in_flight_agent_run_ids=(
-                        set(args.in_flight_agent_run_id)
-                        if args.in_flight_agent_run_id
-                        else None
-                    ),
                     current_orchestration_id=(
                         args.orchestration_id.strip()
                         if args.orchestration_id and args.orchestration_id.strip()

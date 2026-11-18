@@ -132,7 +132,6 @@ def _normalize_rel_posix(path_token: str) -> str:
 TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 # Phases that run via substep agents (the orchestration agent aggregates and is the
 # step_result executor). Build is the only no-substep phase (step agent is the executor).
-# Mirrors SUBSTEP_WORKFLOW_STEPS in tools/validate_pipeline_semantics.py.
 SUBSTEP_AWARE_STEPS = frozenset({"compile", "generate", "validate"})
 # Idempotency target of `set-status`. A status once in this set rejects both a same-value and an
 # other-terminal transition, except for the permitted promotion (fail -> fail_closed). Appending the

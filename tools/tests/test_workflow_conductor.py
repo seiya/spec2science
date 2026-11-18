@@ -22496,13 +22496,13 @@ class PostJudgeClassifierTest(unittest.TestCase):
     """G4: post_judge severity classification of free-text `--stage pre_judge` violations."""
 
     def test_every_line_led_by_the_bare_orchestrations_root_is_unrecoverable(self) -> None:
-        """Read from the validator's source, so a seventh line of the form is red here until it
+        """Read from the validator's source, so a third line of the form is red here until it
         is counted. A leaf writes none of these records, so no repair of the judge's reaches
         them; an operator's `--resume` still may."""
         source = (Path(wc.__file__).parent / "validate_pipeline_semantics.py").read_text(
             encoding="utf-8")
         tails = re.findall(r'f"\{orchestrations_root\}: ([^"]*)"', source)
-        self.assertEqual(len(tails), 6, tails)
+        self.assertEqual(len(tails), 2, tails)
         for root in ("workspace/orchestrations", "/abs/repo/workspace/orchestrations"):
             for tail in tails:
                 with self.subTest(root=root, tail=tail):
@@ -22538,12 +22538,12 @@ class PostJudgeClassifierTest(unittest.TestCase):
 
     def test_unrecoverable_integrity(self) -> None:
         for line in (
-            "workspace/orchestrations/orch_x/agent_graph.json:edges[3] child not found",
-            "workspace/orchestrations/orch_x/steps/n/validate/x/step_result.json: missing",
+            "workspace/orchestrations/orch_x/agent_graph.json: missing",
+            "workspace/orchestrations/orch_x/agent_runs.jsonl:line 3 missing started_at",
             "workspace/pipelines/x/lineage.json: node pipelines not issued",
             "copy_based_artifact_reuse detected: workspace/...",
             "dependency DAG incomplete for x; missing node workflows ['a']",
-            "workspace/orchestrations/orch_x: agent_runs.jsonl must include substep role",
+            "workspace/orchestrations/orch_x/orchestration_meta.json: missing",
         ):
             self.assertEqual(wc.classify_post_judge_violations([line]), "unrecoverable", line)
 
@@ -22554,7 +22554,7 @@ class PostJudgeClassifierTest(unittest.TestCase):
         self.assertEqual(
             wc.classify_post_judge_violations([
                 "workspace/runs/n/semantic_review.json: review_method must be llm_semantic_review",
-                "workspace/orchestrations/o/agent_graph.json: dangling edge",
+                "workspace/orchestrations/o/agent_graph.json: missing",
             ]), "unrecoverable")
         # A single unknown forces escalation over a recoverable (no optimistic warm resume).
         self.assertEqual(
@@ -23105,15 +23105,15 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "pre_judge_violation", marker)
             self.assertEqual(meta["disposition"], "fail_closed", marker)
 
-    def test_post_judge_emits_scoped_args_with_both_in_flight(self) -> None:
-        # post_judge runs --stage pre_judge scoped to its own run, declaring BOTH the judge and
-        # the post_judge (self) arids in-flight (post_judge's own graph edge is dangling).
+    def test_post_judge_emits_scoped_args(self) -> None:
+        # post_judge runs --stage pre_judge scoped to its own orchestration and run. It declares
+        # no arid in-flight: the validator no longer accepts the flag (issue #643), and passing
+        # it would be an argparse usage error (rc 2) on every run.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
             c = self._conductor(repo)
-            c._pending_judge_arid = {refs.node_key: "child-judge"}
             seen = {}
 
             def run(cmd, **k):
@@ -23126,9 +23126,8 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("--stage") + 1], "pre_judge")
             self.assertEqual(cmd[cmd.index("--pipeline-root") + 1], refs.pipeline_ref)
             self.assertEqual(cmd[cmd.index("--run-id") + 1], "run_1")
-            inflight = [cmd[i + 1] for i, t in enumerate(cmd) if t == "--in-flight-agent-run-id"]
-            self.assertIn("child-post", inflight)
-            self.assertIn("child-judge", inflight)
+            self.assertEqual(cmd[cmd.index("--orchestration-id") + 1], c.orchestration_id)
+            self.assertNotIn("--in-flight-agent-run-id", cmd)
 
     # -- _judge_pre_spawn_dag_block (multi-node fail / single-node skip) -------
     def _patch_closure_validated(self, fn):

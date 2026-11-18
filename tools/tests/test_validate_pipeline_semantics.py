@@ -8280,116 +8280,6 @@ end program shallow_water2d_runner
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(any("execution shapes are" in v for v in violations), violations)
 
-    def test_detects_non_isolated_step_context_when_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            _create_minimal_orchestration_tree(repo_root)
-
-            runs_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "agent_runs.jsonl"
-            )
-            lines = [line for line in runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-            items = [json.loads(line) for line in lines]
-            for item in items:
-                if item.get("agent_run_id") == "step_run_build_001":
-                    item["context_isolated"] = False
-                    break
-            runs_path.write_text(
-                "\n".join(json.dumps(item, ensure_ascii=False) for item in items) + "\n",
-                encoding="utf-8",
-            )
-
-            violations = validate(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                require_orchestration=True, current_orchestration_id="orch_test_001",
-            )
-            self.assertTrue(
-                any("context_isolated must be true for step" in v for v in violations)
-            )
-
-    def test_detects_missing_agent_summary_ref_when_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            _create_minimal_orchestration_tree(repo_root)
-
-            runs_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "agent_runs.jsonl"
-            )
-            lines = [line for line in runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-            items = [json.loads(line) for line in lines]
-            for item in items:
-                if item.get("agent_run_id") == "step_run_build_001":
-                    item.pop("agent_summary_ref", None)
-                    break
-            runs_path.write_text(
-                "\n".join(json.dumps(item, ensure_ascii=False) for item in items) + "\n",
-                encoding="utf-8",
-            )
-
-            violations = validate(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                require_orchestration=True, current_orchestration_id="orch_test_001",
-            )
-            self.assertTrue(
-                any("missing agent_summary_ref for step" in v for v in violations)
-            )
-
     def test_detects_missing_launch_prompt_ref_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -8601,7 +8491,7 @@ end program shallow_water2d_runner
                 any("agent.summary.txt must include status and output_refs or failure reason" in v for v in violations)
             )
 
-    def test_detects_fabricated_orchestration_pattern_with_generic_launch_reply_and_sequential_ids(self) -> None:
+    def test_detects_sequential_placeholder_session_and_context_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -8633,7 +8523,6 @@ end program shallow_water2d_runner
             response_path = orch_root / "launches" / "step_run_build_001.response.json"
             response_payload = json.loads(response_path.read_text(encoding="utf-8"))
             response_payload["agent_session_id"] = "session_1_1"
-            response_payload["launch_reply"] = "problem/shallow_water2d@0.3.0 build step launched."
             _write_json(response_path, response_payload)
 
             runs_path = orch_root / "agent_runs.jsonl"
@@ -8656,9 +8545,6 @@ end program shallow_water2d_runner
                 repo_root=repo_root,
                 workspace_root="workspace",
                 require_orchestration=True, current_orchestration_id="orch_test_001",
-            )
-            self.assertTrue(
-                any("launch_reply must not be generic launched-only text" in v for v in violations)
             )
             self.assertTrue(
                 any("agent_session_id must not be sequential placeholder" in v for v in violations)
@@ -9375,136 +9261,16 @@ end program shallow_water2d_runner
             with self.subTest(src=src):
                 self.assertEqual([], run(src))
 
-    def test_detects_missing_plan_step_result_when_orchestration_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            _create_minimal_orchestration_tree(repo_root)
-            step_result = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "steps"
-                / "problem__shallow_water2d__0.3.0"
-                / "compile"
-                / "orch_run_001"
-                / "step_result.json"
-            )
-            step_result.unlink()
-            violations = validate(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                require_orchestration=True, current_orchestration_id="orch_test_001",
-            )
-            self.assertTrue(any("missing step_result.json" in v and "problem__shallow_water2d__0.3.0/compile" in v for v in violations))
-
-    def test_detects_missing_graph_child_run_when_orchestration_required(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-            _create_minimal_orchestration_tree(repo_root)
-            runs_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "agent_runs.jsonl"
-            )
-            items = [
-                json.loads(line)
-                for line in runs_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            items = [
-                item for item in items if item.get("agent_run_id") != "substep_run_validate_execute_001"
-            ]
-            runs_path.write_text(
-                "\n".join(json.dumps(item, ensure_ascii=False) for item in items) + "\n",
-                encoding="utf-8",
-            )
-            violations = validate(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                require_orchestration=True, current_orchestration_id="orch_test_001",
-            )
-            self.assertTrue(
-                any("child_agent_run_id not found in agent_runs.jsonl" in v for v in violations)
-            )
-
-    _INFLIGHT_NODE_SAFE = "problem__shallow_water2d__0.3.0"
-
-    def _violations_with_removed_child(
+    def _pre_judge_violations(
         self,
         repo_root: Path,
         *,
-        removed_arid: str | None = None,
-        in_flight_arids: list[str] | None = None,
-        remove_validate_step_result: bool = False,
-        phantom_judge_request_arid: str | None = None,
-        reparent_removed_child_to: str | None = None,
-        divert_removed_child_to_invalid: bool = False,
         seed_foreign_crashed: bool = False,
         current_orchestration_id: str = "orch_test_001",
     ) -> list[str]:
-        """Build the minimal execution + orchestration tree, optionally drop
-        ``removed_arid`` from agent_runs.jsonl (leaving its agent_graph edge
-        dangling) and/or delete the validate step_result.json, then run pre_judge
-        passing ``in_flight_arids`` as --in-flight-agent-run-id declarations.
-
-        ``phantom_judge_request_arid`` writes a validate/judge launch request for
-        an arid that is NOT present in agent_graph.json or agent_runs.jsonl — a
-        stale/mistyped/cross-orchestration id with no dangling edge — to verify it
-        cannot trigger any exemption.
-
-        ``divert_removed_child_to_invalid`` re-appends the removed child's row to
-        agent_runs_invalid.jsonl (the terminal-payload-validation diversion, e.g. an
-        unauthorized write) — modelling a terminal attempt whose payload was refused and
-        which never re-recorded, whose kept agent_graph edge must be REFUSED."""
+        """Build the minimal execution + orchestration tree and run the pre_judge audit over
+        ``current_orchestration_id``. ``seed_foreign_crashed`` adds an unrelated orchestration
+        left as debris by a crashed run."""
         _seed_shape_expr_schema_into(repo_root)
         model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
@@ -9529,384 +9295,32 @@ end program shallow_water2d_runner
             run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
         )
         _create_minimal_orchestration_tree(repo_root)
-        orch_root = repo_root / "workspace" / "orchestrations" / "orch_test_001"
-        runs_path = orch_root / "agent_runs.jsonl"
-        items = [
-            json.loads(line)
-            for line in runs_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        removed_items = [
-            item for item in items if item.get("agent_run_id") == removed_arid
-        ] if removed_arid is not None else []
-        if removed_arid is not None:
-            items = [item for item in items if item.get("agent_run_id") != removed_arid]
-        runs_path.write_text(
-            "\n".join(json.dumps(item, ensure_ascii=False) for item in items) + "\n",
-            encoding="utf-8",
-        )
-        if divert_removed_child_to_invalid and removed_items:
-            (orch_root / "agent_runs_invalid.jsonl").write_text(
-                "\n".join(json.dumps(item, ensure_ascii=False) for item in removed_items)
-                + "\n",
-                encoding="utf-8",
-            )
-        if reparent_removed_child_to is not None and removed_arid is not None:
-            graph_path = orch_root / "agent_graph.json"
-            graph = json.loads(graph_path.read_text(encoding="utf-8"))
-            for edge in graph.get("edges", []):
-                if edge.get("child_agent_run_id") == removed_arid:
-                    edge["parent_agent_run_id"] = reparent_removed_child_to
-            _write_json(graph_path, graph)
-        if remove_validate_step_result:
-            (
-                orch_root / "steps" / self._INFLIGHT_NODE_SAFE / "validate"
-                / "orch_run_001" / "step_result.json"
-            ).unlink()
-        if phantom_judge_request_arid is not None:
-            _write_json(
-                orch_root / "launches" / f"{phantom_judge_request_arid}.request.json",
-                {
-                    "agent_run_id": phantom_judge_request_arid,
-                    "role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "validate",
-                    "substep": "judge",
-                },
-            )
         if seed_foreign_crashed:
-            # A second, UNRELATED orchestration left as debris by a prior/crashed run:
-            # well-formed except for a dangling agent_graph edge (a child present in
-            # agent_graph.json but absent from agent_runs.jsonl). The conductor runs one
+            # A second, UNRELATED orchestration left as debris by a prior/crashed run: it never
+            # wrote its agent_runs.jsonl, a fact the audit still reads. The conductor runs one
             # orchestration per node, so such debris accumulates under
             # workspace/orchestrations/ and previously failed a fresh healthy run.
             _create_minimal_orchestration_tree(
                 repo_root, orchestration_id="orch_foreign_001"
             )
-            foreign_runs = (
+            (
                 repo_root / "workspace" / "orchestrations" / "orch_foreign_001"
                 / "agent_runs.jsonl"
-            )
-            foreign_items = [
-                json.loads(line)
-                for line in foreign_runs.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            foreign_items = [
-                it for it in foreign_items
-                if it.get("agent_run_id") != "step_run_build_001"
-            ]
-            foreign_runs.write_text(
-                "\n".join(json.dumps(it, ensure_ascii=False) for it in foreign_items)
-                + "\n",
-                encoding="utf-8",
-            )
+            ).unlink()
         return validate(
             repo_root=repo_root,
             workspace_root="workspace",
             require_orchestration=True,
-            in_flight_agent_run_ids=set(in_flight_arids) if in_flight_arids else None,
             current_orchestration_id=current_orchestration_id,
         )
 
-    @staticmethod
-    def _has_dangling_edge(violations: list[str], arid: str) -> bool:
-        """Any refusal of this arid AS AN EDGE CHILD, whatever the wording.
-
-        This used to pin one exact sentence, and that made it dodgeable: when the invalid-log
-        branch started appending a DIFFERENTLY worded violation, the row that asserted the edge
-        was tolerated went on passing against a validator that now refused it. Matching on the
-        axis (`child_agent_run_id` + the arid) rather than on one message keeps a reworded
-        refusal visible to every row that reads this."""
-        return any("child_agent_run_id" in v and arid in v for v in violations)
-
-    @staticmethod
-    def _has_missing_validate_step_result(violations: list[str]) -> bool:
-        return any(
-            "missing step_result.json for" in v and "/validate" in v for v in violations
-        )
-
-    def test_pre_judge_rejects_legacy_records_missing_parent_and_model(self) -> None:
-        """Pre-caa10ab records (missing parent_agent_run_id / agent_model) make the
-        orchestration-hierarchy gate fail. The automatic backfill that used to heal
-        them was deleted by issue #176 (such a record is refused earlier, by
-        `llm_config_legacy_flags_removed`); this pins the refusal that remains."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            # Build a clean, passing execution + orchestration tree.
-            self._violations_with_removed_child(repo)
-            orch_root = repo / "workspace" / "orchestrations" / "orch_test_001"
-            runs_path = orch_root / "agent_runs.jsonl"
-            items = [
-                json.loads(line)
-                for line in runs_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            # Degrade a step + two substep records to the pre-fix shape.
-            legacy = {
-                "step_run_build_001",
-                "substep_run_compile_generate_001",
-                "substep_run_compile_verify_001",
-            }
-            for item in items:
-                if item.get("agent_run_id") in legacy:
-                    item.pop("parent_agent_run_id", None)
-                    item.pop("agent_model", None)
-            runs_path.write_text(
-                "\n".join(json.dumps(item, ensure_ascii=False) for item in items) + "\n",
-                encoding="utf-8",
-            )
-
-            before = validate(
-                repo_root=repo,
-                workspace_root="workspace",
-                require_orchestration=True, current_orchestration_id="orch_test_001",
-            )
-            self.assertTrue(
-                any("missing parent_agent_run_id" in v for v in before), before
-            )
-            self.assertTrue(any("missing agent_model" in v for v in before), before)
-
-    def test_a_phase_skipped_as_certified_owes_no_step_result(self) -> None:
-        """A phase this orchestration skipped as certified (`phase_state.json` records
-        `skipped_certified`, the host record `check-phase-certified` writes — issue #250 PR-2
-        measured the refusal on a `--rederive build` run whose Compile / Generate stood
-        certified) wrote no step_result here, and the census must not demand one. The
-        exemption is keyed on the RECORDED state and on nothing else: a step merely missing
-        its result stays refused, and a state other than `skipped_certified` exempts nothing."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch_root = repo_root / "workspace" / "orchestrations" / "orch_test_001"
-            state_path = orch_root / "phase_state.json"
-
-            def _drive(state: str | None) -> list[str]:
-                if state_path.is_file():
-                    doc = json.loads(state_path.read_text(encoding="utf-8"))
-                else:
-                    doc = {"orchestration_id": "orch_test_001", "current_state": "preflight_passed"}
-                node_states = doc.setdefault("node_states", {}).setdefault(
-                    self._INFLIGHT_NODE_SAFE, {})
-                node_states.pop("validate", None)
-                if state is not None:
-                    node_states["validate"] = state
-                _write_json(state_path, doc)
-                return validate(repo_root=repo_root, workspace_root="workspace",
-                                require_orchestration=True, current_orchestration_id="orch_test_001")
-
-            # The tree with its validate step_result deleted: refused as missing ...
-            self._violations_with_removed_child(repo_root, remove_validate_step_result=True)
-            self.assertTrue(self._has_missing_validate_step_result(_drive(None)))
-            # ... a state that is not the skip exempts nothing ...
-            self.assertTrue(self._has_missing_validate_step_result(_drive("child_finished")))
-            # ... and the recorded skip is the one thing that does.
-            self.assertFalse(self._has_missing_validate_step_result(_drive("skipped_certified")))
-
-    def test_inflight_judge_tolerated_with_explicit_flag(self) -> None:
-        """When the live judge declares its own agent_run_id via
-        --in-flight-agent-run-id, its not-yet-recorded edge AND its not-yet-written
-        validate step_result are tolerated."""
-        judge_arid = "substep_run_validate_judge_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=judge_arid,
-                in_flight_arids=[judge_arid],
-                remove_validate_step_result=True,
-            )
-            self.assertFalse(
-                self._has_dangling_edge(violations, judge_arid),
-                msg=f"declared in-flight judge edge must be tolerated; got: {violations}",
-            )
-            self.assertFalse(
-                self._has_missing_validate_step_result(violations),
-                msg=f"declared in-flight judge validate step_result must be tolerated; got: {violations}",
-            )
-
-    def test_dangling_judge_edge_without_flag_is_not_tolerated(self) -> None:
-        """Fail-closed: a dangling judge edge / missing validate step_result with
-        NO --in-flight-agent-run-id declaration is NOT tolerated (this is the
-        crash / stale-marker / wrong-backend case — no live caller vouches for it)."""
-        judge_arid = "substep_run_validate_judge_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=judge_arid,
-                in_flight_arids=None,
-                remove_validate_step_result=True,
-            )
-            self.assertTrue(
-                self._has_dangling_edge(violations, judge_arid),
-                msg=f"undeclared dangling judge edge must NOT be tolerated; got: {violations}",
-            )
-            self.assertTrue(
-                self._has_missing_validate_step_result(violations),
-                msg=f"undeclared missing validate step_result must NOT be tolerated; got: {violations}",
-            )
-
-    def test_in_flight_flag_for_non_judge_arid_does_nothing(self) -> None:
-        """The flag exempts only the validate/judge substep: declaring a non-judge
-        arid (e.g. execute) must NOT suppress its orphaned-edge violation."""
-        execute_arid = "substep_run_validate_execute_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=execute_arid,
-                in_flight_arids=[execute_arid],
-            )
-            self.assertTrue(
-                self._has_dangling_edge(violations, execute_arid),
-                msg=f"in-flight flag must not exempt a non-judge child; got: {violations}",
-            )
-
-    def test_in_flight_flag_does_not_mask_missing_validate_result_once_judge_recorded(
-        self,
-    ) -> None:
-        """The step_result exemption is gated on the judge being genuinely
-        unrecorded. If the judge already has an agent_runs entry, a missing
-        validate step_result is a real gap and must still surface even when its
-        arid is (stale-ly) passed via the flag."""
-        judge_arid = "substep_run_validate_judge_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=None,  # judge stays recorded in agent_runs
-                in_flight_arids=[judge_arid],
-                remove_validate_step_result=True,
-            )
-            self.assertTrue(
-                self._has_missing_validate_step_result(violations),
-                msg=f"missing validate step_result must surface once judge is recorded; got: {violations}",
-            )
-
-    def test_in_flight_flag_without_dangling_edge_does_not_mask_missing_validate_result(
-        self,
-    ) -> None:
-        """The validate step_result exemption requires graph evidence: a flag that
-        names a validate/judge arid which is NOT an actual dangling edge (stale /
-        mistyped / cross-orchestration — it has a launch request but no edge in
-        agent_graph.json) must NOT suppress the missing validate step_result."""
-        phantom_judge = "substep_run_validate_judge_phantom"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=None,  # all real runs recorded; no dangling edge
-                in_flight_arids=[phantom_judge],
-                remove_validate_step_result=True,
-                phantom_judge_request_arid=phantom_judge,
-            )
-            self.assertTrue(
-                self._has_missing_validate_step_result(violations),
-                msg=(
-                    "a declared in-flight judge with no dangling edge must not mask "
-                    f"the missing validate step_result; got: {violations}"
-                ),
-            )
-
-    def test_in_flight_judge_edge_with_substep_parent_still_fails(self) -> None:
-        """The in-flight exemption suppresses ONLY the missing-child record. The
-        parent role is known from agent_runs.jsonl, so a malformed edge whose
-        parent is a substep must still fail closed even when the (in-flight) judge
-        child is exempted."""
-        judge_arid = "substep_run_validate_judge_001"
-        substep_parent = "substep_run_compile_generate_001"  # a recorded substep
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=judge_arid,
-                in_flight_arids=[judge_arid],
-                reparent_removed_child_to=substep_parent,
-            )
-            # The missing-child record itself is still tolerated...
-            self.assertFalse(
-                self._has_dangling_edge(violations, judge_arid),
-                msg=f"in-flight judge missing-child record should be tolerated; got: {violations}",
-            )
-            # ...but the substep-parent hierarchy violation must surface.
-            self.assertTrue(
-                any("substep must not be parent role" in v for v in violations),
-                msg=f"substep-parent edge must still fail closed; got: {violations}",
-            )
-
-    def test_pre_judge_tolerates_an_invalid_log_child_edge(self) -> None:
-        """This scan checks graph INTEGRITY. A terminal attempt whose payload was refused lives
-        only in `agent_runs_invalid.jsonl` and its edge is deliberately kept; tolerating it here
-        is right because `record_agent_run` diverts on EVERY `ValueError` from terminal
-        validation — a session-id mismatch, a missing sandbox profile, an empty `output_refs` —
-        and refusing them all would wedge an honest run permanently.
-
-        The case that used to justify the OTHER half of this reasoning — a landed unauthorized
-        write, refused by the completion vouch's clause (c) and anchored on
-        `violations/<arid>.unauthorized_write_violation.json` rather than on this edge — no
-        longer exists: issue #171 PR-2 deleted the write audit, the marker and that clause,
-        because a pure leaf has no write authority to exceed. The tolerance above stands on
-        the divert list alone, and every member of it leaves nothing behind."""
-        execute_arid = "substep_run_validate_execute_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=execute_arid,
-                divert_removed_child_to_invalid=True,
-            )
-            self.assertFalse(
-                self._has_dangling_edge(violations, execute_arid),
-                msg=("a child diverted to agent_runs_invalid.jsonl must not trip the "
-                     f"dangling-edge check; got: {violations}"),
-            )
-
-    def test_pre_judge_still_fails_a_child_in_neither_log(self) -> None:
-        """The safety the exemption rests on: a child recorded in NEITHER log is an
-        arbitrarily corrupt edge and must still fail closed."""
-        execute_arid = "substep_run_validate_execute_001"
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=execute_arid,
-                divert_removed_child_to_invalid=False,
-            )
-            self.assertTrue(
-                self._has_dangling_edge(violations, execute_arid),
-                msg=(
-                    "a child in neither agent_runs.jsonl nor agent_runs_invalid.jsonl must "
-                    f"fail the dangling-edge check; got: {violations}"
-                ),
-            )
-
-    def test_superseded_invalid_edge_with_substep_parent_still_fails(self) -> None:
-        """An invalid-log child edge is refused on its own axis since issue #177, and the
-        HIERARCHY invariant is refused SEPARATELY and on top of it: a substep can never be a
-        parent, whatever the child's record says. The two must not collapse into one — a
-        reviewer reading only the first violation would otherwise conclude the malformed
-        hierarchy was what got caught, and a later widening of the child rule would take the
-        hierarchy check with it silently."""
-        execute_arid = "substep_run_validate_execute_001"
-        substep_parent = "substep_run_compile_generate_001"  # a recorded substep
-        with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
-                Path(tmp),
-                removed_arid=execute_arid,
-                divert_removed_child_to_invalid=True,
-                reparent_removed_child_to=substep_parent,
-            )
-            # The missing-child record is tolerated; the HIERARCHY invariant is not. The two
-            # must not collapse into one — a later widening of the child rule would otherwise
-            # take the hierarchy check with it silently.
-            self.assertFalse(
-                self._has_dangling_edge(violations, execute_arid),
-                msg=f"the missing-child record should be tolerated; got: {violations}",
-            )
-            # ...but the substep-parent hierarchy violation must surface.
-            self.assertTrue(
-                any("substep must not be parent role" in v for v in violations),
-                msg=f"substep-parent edge must still fail closed; got: {violations}",
-            )
-
     def test_pre_judge_scoped_ignores_foreign_crashed_orchestration(self) -> None:
         """Phase-4 D2: --orchestration-id scopes the integrity scan to the run being
-        judged, so an unrelated crashed orchestration's dangling edge no longer fails
+        judged, so an unrelated crashed orchestration's debris no longer fails
         the healthy current run. The current orchestration is itself well-formed, so
         the scoped validation reports no violation referencing the foreign debris."""
         with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
+            violations = self._pre_judge_violations(
                 Path(tmp),
                 seed_foreign_crashed=True,
                 current_orchestration_id="orch_test_001",
@@ -9930,7 +9344,7 @@ end program shallow_water2d_runner
         """Phase-4 D2: a --orchestration-id naming a non-existent orchestration must
         fail closed (the run being judged must be present), not silently pass."""
         with tempfile.TemporaryDirectory() as tmp:
-            violations = self._violations_with_removed_child(
+            violations = self._pre_judge_violations(
                 Path(tmp),
                 current_orchestration_id="orch_does_not_exist",
             )
@@ -9940,41 +9354,6 @@ end program shallow_water2d_runner
                     for v in violations
                 ),
                 msg=f"missing current orchestration must fail closed; got: {violations}",
-            )
-
-    def test_pre_judge_scoped_narrows_node_safes_even_when_own_steps_empty(self) -> None:
-        """Phase-4 D2 regression: node_safes must be intersected with the scoped
-        orchestration's own nodes UNCONDITIONALLY. If the scoped orchestration has no
-        steps dir, leaving node_safes unnarrowed would retain the OTHER executions'
-        nodes (e.g. dependencies) and demand their step_results of this single scoped
-        dir — defeating the scoping. The orchestration genuinely missing its steps must
-        still fail closed via the per-orchestration "steps_root: missing" check, but
-        must NOT emit a per-node "missing step_result.json for [...]" that lists nodes
-        this orchestration does not own."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._violations_with_removed_child(repo_root)  # build healthy tree
-            shutil.rmtree(
-                repo_root / "workspace" / "orchestrations" / "orch_test_001" / "steps"
-            )
-            violations = validate(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                require_orchestration=True,
-                current_orchestration_id="orch_test_001",
-            )
-            # Still fails closed on the genuinely-missing steps dir...
-            self.assertTrue(
-                any(v.endswith("/steps: missing") for v in violations),
-                msg=f"missing steps dir must fail closed; got: {violations}",
-            )
-            # ...but must NOT demand step_results for nodes not owned by this orch.
-            self.assertFalse(
-                any("missing step_result.json for" in v for v in violations),
-                msg=(
-                    "scoping must narrow node_safes to the orchestration's own nodes "
-                    f"even when it has no steps; got: {violations}"
-                ),
             )
 
     def test_validate_compile_stage_passes_for_resolved_plan_directory(self) -> None:
@@ -15410,7 +14789,7 @@ class OrchestrationHierarchySweepTest(unittest.TestCase):
                 (workspace / "orchestrations" / name / "hooks").mkdir(parents=True)
                 violations: list = []
                 _validate_orchestration_hierarchy(
-                    workspace_path=workspace, executions=[], violations=violations,
+                    workspace_path=workspace, violations=violations,
                     current_orchestration_id=name)
                 self.assertTrue(
                     any(name in str(v) and "orchestration_meta.json" in str(v)
@@ -15422,7 +14801,7 @@ class OrchestrationHierarchySweepTest(unittest.TestCase):
             (workspace / "orchestrations").mkdir(parents=True)
             violations = []
             _validate_orchestration_hierarchy(
-                workspace_path=workspace, executions=[], violations=violations,
+                workspace_path=workspace, violations=violations,
                 current_orchestration_id=None)
             self.assertTrue(
                 any("no orchestration run found" in str(v) for v in violations), violations)
@@ -26291,48 +25670,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self.assertTrue([v for v in self._workshop_violations(repo_root)
                              if "carries no network block" in v and "start a fresh run" in v])
 
-    def test_a_workshop_record_carrying_the_retired_workshop_counter_is_flagged(self) -> None:
-        """The `--resume` barrier of issue #534 PR-J4-b: a workshop record carried its own
-        counter (`workshop-N`) through PR-J4-a, and the audit now holds every record to the one
-        surviving constant, so a `workshop-9` record in the current orchestration is a violation
-        — in the request and, independently, in the prompt line. `workshop-9` is a frozen
-        history literal: the constant that held it is gone."""
-        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
-        self.assertNotEqual(LEAF_PROMPT_CONTRACT_VERSION, "workshop-9")
-        # The control: the record as written now passes the version checks.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root)
-            self.assertEqual([v for v in self._workshop_violations(repo_root)
-                              if "prompt_contract_version" in v], [])
-        # The request alone stamped with the retired counter.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root)
-            self._edit_launch(repo_root, "request", prompt_contract_version="workshop-9")
-            found = [v for v in self._workshop_violations(repo_root)
-                     if "prompt_contract_version" in v]
-            self.assertEqual(len(found), 1, found)
-            self.assertIn("workshop launch request prompt_contract_version must be "
-                          f"{LEAF_PROMPT_CONTRACT_VERSION!r} (got 'workshop-9')", found[0])
-        # The prompt line alone stamped with it (the request is current).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_workshop(repo_root)
-            prompt_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.prompt.txt"
-            text = prompt_path.read_text(encoding="utf-8")
-            line = f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}"
-            self.assertIn(line, text)
-            prompt_path.write_text(text.replace(line, "prompt_contract_version: workshop-9"),
-                                   encoding="utf-8")
-            found = [v for v in self._workshop_violations(repo_root)
-                     if "prompt_contract_version" in v]
-            self.assertEqual(len(found), 1, found)
-            self.assertIn(f"must carry {line!r}", found[0])
-
     def test_the_lineage_home_table_is_the_runtime_s(self) -> None:
         from tools import llm_config
         from tools import orchestration_runtime as ort_
@@ -26350,34 +25687,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self.assertEqual(backend, llm_config.PROVIDER_BACKEND_TOKENS[provider])
             else:
                 self.assertEqual(backend, "http")
-
-    def test_pure_record_obsolete_contract_version_flagged(self) -> None:
-        # Tolerance (the workshop twin is
-        # `test_a_workshop_record_carrying_the_retired_workshop_counter_is_flagged`).
-        # The audit re-checks the prompt_contract_version VALUE (request + prompt), not just the
-        # marker name — an obsolete/forged version in a persisted record must be caught.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pure(repo_root)
-            root = self._orch_root(repo_root)
-            req_path = root / "launches" / f"{self._ARID}.request.json"
-            req = json.loads(req_path.read_text(encoding="utf-8"))
-            req["prompt_contract_version"] = "pure-OBSOLETE"
-            req_path.write_text(json.dumps(req), encoding="utf-8")
-            prompt_path = root / "launches" / f"{self._ARID}.prompt.txt"
-            # Reference the constant, not a `pure-1` literal: a version bump would turn a literal
-            # into a no-op replace, leaving the prompt line at the CURRENT version — the assertion
-            # below would then pass on the request-json violation alone and the prompt-line check
-            # would be silently dead.
-            from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
-            prompt_path.write_text(
-                prompt_path.read_text(encoding="utf-8").replace(
-                    f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}",
-                    "prompt_contract_version: pure-OBSOLETE"),
-                encoding="utf-8")
-            self.assertTrue(
-                any("prompt_contract_version" in v for v in self._pure_violations(repo_root)))
 
     # ----------------------------------------------------------------------------------
     # PR-2 of Z4 (issue #171): the records this sweep used to demand are no longer written.

@@ -812,7 +812,7 @@ COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 #                     host-authored artifact defect (verdict.json / the post_judge-derived
 #                     aggregate_verdict.json / summary.json / validate_meta.json). Re-running the
 #                     judge cannot fix these. Sources: _validate_orchestration_hierarchy
-#                     (agent_graph.json / step_result.json / an orchestrations/ root), the
+#                     (agent_graph.json / an orchestrations/ root), the
 #                     cross-pipeline DAG check (lineage.json / the literal DAG messages), and the
 #                     host-authored verdict/derived artifacts.
 #   - unknown       : anything else (incl. execute-authored evidence) -> `escalate`. G5 wired the
@@ -826,7 +826,7 @@ _POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
 _POST_JUDGE_UNRECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "agent_graph.json", "step_result.json", "lineage.json", "verdict.json",
     "aggregate_verdict.json", "summary.json", "validate_meta.json",
-    # `_validate_orchestration_hierarchy` leads six integrity lines with the bare root, which the
+    # `_validate_orchestration_hierarchy` leads two integrity lines with the bare root, which the
     # `"orchestrations/"` test below does not match. A leaf-chosen leading token is a bundle
     # `logical_path`, which the extension allowlist confines to a source suffix.
     "orchestrations",
@@ -15594,14 +15594,9 @@ class Conductor:
         {status, violations, disposition}.
 
         Scoped to this run (`--pipeline-root`/`--run-id`) so historically-broken sibling
-        pipelines cannot fail an otherwise-conformant node. `--in-flight-agent-run-id` names
-        BOTH the judge substep (recorded+returned) AND this post_judge substep's own arid:
-        post_judge's agent_graph edge is written by record_launch but its agent_runs.jsonl
-        row is appended only after this body returns, so its own edge is dangling RIGHT NOW
-        and must be declared in-flight or `_validate_orchestration_hierarchy` flags it (the
-        gate's in-flight filter accepts substep ∈ {judge, post_judge}). The judge arid is
-        declared too (harmless: it is already recorded, so it is a no-op that documents the
-        live judge region).
+        pipelines cannot fail an otherwise-conformant node. (No arid is declared in-flight any
+        more: the launch-record audit stopped reading `agent_graph.json` edges in issue #643, so
+        this substep's own still-dangling edge is not a finding.)
 
         disposition: recoverable and unrecoverable alike -> fail_closed; unknown -> escalate
         (run_phase turns it into an escalate RouteDecision in prod; dev keeps fail_closed).
@@ -15637,13 +15632,9 @@ class Conductor:
             })
             return {"returncode": 0, "stdout": "",
                     "stderr": f"[post_judge aggregate blocked] {agg.get('blocked_reason')}"}
-        judge_arid = getattr(self, "_pending_judge_arid", {}).get(refs.node_key, "")
         cmd = ["python3", "tools/validate_pipeline_semantics.py", "--stage", "pre_judge",
                "--orchestration-id", self.orchestration_id,
-               "--pipeline-root", refs.pipeline_ref, "--run-id", str(refs.run_id),
-               "--in-flight-agent-run-id", child_arid]
-        if judge_arid:
-            cmd += ["--in-flight-agent-run-id", judge_arid]
+               "--pipeline-root", refs.pipeline_ref, "--run-id", str(refs.run_id)]
         try:
             gate = subprocess.run(
                 cmd, cwd=self.repo_root, env=self.env, text=True,
@@ -15910,11 +15901,6 @@ class Conductor:
                       elapsed_seconds=round(time.monotonic() - substep_started, 2))
             outcomes.append(oc)
             if phase == "validate" and substep == "judge":
-                # post_judge (the next substep) runs `--stage pre_judge` and must declare the
-                # judge's arid in-flight; stash it before post_judge is dispatched.
-                if not hasattr(self, "_pending_judge_arid"):
-                    self._pending_judge_arid: dict[str, str] = {}
-                self._pending_judge_arid[refs.node_key] = oc.agent_run_id
                 # G6: track judge attempts for validate_meta.attempt_count (best-effort; not
                 # gate-validated). One judge launch per phase attempt; nothing re-runs it
                 # within the attempt since issue #176.
