@@ -891,6 +891,22 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual(wc.classify_gate_failure([]).reason, "gate_fail_no_category")
         self.assertEqual(wc.classify_gate_failure(None).reason, "gate_fail_no_category")
 
+    def test_compile_static_failure_routing(self) -> None:
+        """A missing compile.static category is a host defect (the one writer records
+        `compile_static_violation` with every `fail`), so it raises a named error rather than
+        routing; the known category routes to a warm same-phase reuse; an unknown category is
+        not in the table and fails on the lookup (`KeyError`), which is the behaviour pinned
+        here, not a route."""
+        for missing in (None, ""):
+            with self.assertRaises(RuntimeError) as ctx:
+                wc.classify_compile_static_failure(missing)
+            self.assertIn("compile_static_fail_no_category", str(ctx.exception), repr(missing))
+        d = wc.classify_compile_static_failure("compile_static_violation")
+        self.assertEqual((d.action, d.target_phase, d.repair_strategy, d.reason),
+                         ("retry", "compile", "reuse", "compile_static_compile_static_violation"))
+        with self.assertRaises(KeyError):
+            wc.classify_compile_static_failure("mystery")
+
     def test_dev_verify_severity_gate(self) -> None:
         self.assertEqual(wc.classify_verify_severity("none", "dev").action, "advance")
         # minor (both modes): warm (reuse) SAME-PHASE producer repair — not tolerated, not fail.
