@@ -1745,8 +1745,8 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
         self.assertEqual(refs.ir_ref, f"workspace/ir/{refs.safe}/ir_1")
 
     def test_the_reason_code_is_in_the_runtime_allowlist(self) -> None:
-        """`set-status` refuses a fail_closed reason code outside `FAIL_CLOSED_REASON_CODES`, so
-        a terminal the conductor cannot record is a terminal the operator never sees."""
+        """The conductor records this terminal under its own code, which is a member of
+        `FAIL_CLOSED_REASON_CODES`, the vocabulary the operator's RUNBOOK routes by."""
         self.assertIn("revocation_not_landed", ort.FAIL_CLOSED_REASON_CODES)
 
     def test_the_writerless_noncanonical_code_is_not_in_the_runtime_allowlist(self) -> None:
@@ -2462,8 +2462,8 @@ class LaunchCheckRefusalTest(unittest.TestCase):
         self.assertNotIn("record-launch", [sub for sub, _ in c.calls])
 
     def test_a_refusal_code_outside_the_allowlist_keeps_the_code_in_the_detail(self) -> None:
-        """`backend_not_probed` is a launch-check code the runtime refuses for `fail_closed`;
-        it is carried under the generic conductor code and LEADS the detail."""
+        """`backend_not_probed` is a launch-check code outside `FAIL_CLOSED_REASON_CODES`; the
+        conductor carries it under the generic conductor code and it LEADS the detail."""
         self.assertNotIn("backend_not_probed", wc.FAIL_CLOSED_REASON_CODES)
         c = self._conductor("backend_not_probed")
         result, events = self._conduct(c)
@@ -3119,8 +3119,8 @@ class ConductRoutingTest(unittest.TestCase):
         )
 
     def test_conductor_fail_closed_codes_are_allowlisted(self) -> None:
-        # Every reason_code the conductor uses for set-status fail_closed must be in the
-        # runtime's FAIL_CLOSED_REASON_CODES, or set-status rejects it (→ crash).
+        # Every reason_code the conductor uses for set-status fail_closed is a member of the
+        # runtime's FAIL_CLOSED_REASON_CODES, the vocabulary the operator's RUNBOOK routes by.
         from tools.orchestration_runtime import FAIL_CLOSED_REASON_CODES
         for code in ("leaf_transport_error", "retry_budget_exhausted",
                      "conductor_phase_fail_closed", "sandbox_enforcement_violation",

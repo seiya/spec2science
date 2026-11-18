@@ -15955,8 +15955,8 @@ class Conductor:
         # session limit) the decision tables cannot classify — route straight to fail_closed
         # so the operator can --resume. This is checked BEFORE write_step_result: a transport
         # failure leaves no canonical evidence (e.g. a judge that died with no
-        # semantic_review.json), so writing the step_result would crash on the
-        # post_phase_complete judge gate instead of cleanly failing closed. Skipping the write
+        # semantic_review.json), so writing the step_result would crash on its missing
+        # deliverable instead of cleanly failing closed. Skipping the write
         # leaves the attempt's already-terminalized agents without a step_result, and since
         # issue #177 that costs nothing to clean up: a terminal arid no step_result vouches is
         # simply a failed attempt. It used to need a tombstone for every one of them, or a later
@@ -17009,9 +17009,8 @@ class Conductor:
                 decision = self.escalate(refs, phase, outcome)
             if decision.action == "fail_closed":
                 reason = decision.reason or ""
-                # Map to an allowlisted FAIL_CLOSED_REASON_CODES value (the runtime
-                # rejects any other code for fail_closed); the specific routing reason is
-                # preserved in reason_detail.
+                # Map to a FAIL_CLOSED_REASON_CODES value (the vocabulary the operator's RUNBOOK
+                # routes by); the specific routing reason is preserved in reason_detail.
                 if reason.startswith("leaf_transport_error"):
                     reason_code = "leaf_transport_error"
                 elif "sandbox" in reason:

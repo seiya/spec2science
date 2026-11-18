@@ -5323,11 +5323,12 @@ FAIL_CLOSED_REASON_CODES = {
     "phase_body_started_before_launch",
     "dependency_not_ready",
     "downstream_artifact_not_ready",
-    "post_phase_complete_violation",
     "parallel_nodes_not_explicitly_allowed",
     "sandbox_enforcement_violation",
     # Conductor (deterministic driver) terminal failure modes. The conductor is the
-    # canonical driver, so its fail_closed terminalizations must use allowlisted codes:
+    # canonical driver; it maps each fail_closed terminalization onto one of these codes and
+    # carries the specific reason in reason_detail (`set-status` no longer refuses another code
+    # since issue #643; the vocabulary is what the operator's RUNBOOK routes by):
     #   - leaf_transport_error: a leaf process crashed / hit a token limit / transport,
     #     or was killed by the conductor at the per-leaf cap (tag `leaf_timeout`).
     #   - retry_budget_exhausted: a phase exceeded its cross-phase reopen budget.
@@ -12870,8 +12871,8 @@ def record_launch(
             # `_launch_setting_surface` already returns `{}` for exactly this launch; this is
             # the sandbox half of the same statement.
             #
-            # `record_agent_run`'s terminal check requires `sandbox_runtime == "bwrap"` for a
-            # non-HTTP row, so it takes this as its second exemption. Stamped on the RESPONSE,
+            # `record_agent_run` stamps `sandbox_runtime: "bwrap"` on a non-HTTP row unless this
+            # marks it in-process, so it takes this as its second exemption. Stamped on the RESPONSE,
             # like the HTTP one and for the same reason: the response is host-authored and
             # outside every read-write bind of a leaf's sandbox, so a leaf cannot claim it.
             request_payload.setdefault("leaf_transport", "in_process")
@@ -12918,8 +12919,7 @@ def record_launch(
                 response_payload.setdefault("sandbox_enforced", True)
                 response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
                 response_payload.setdefault("sandbox_command", rendered)
-                # The leaf ran in a network namespace (issue #534 step 4); `record_agent_run`
-                # requires this value on every row it requires `sandbox_runtime: bwrap` on.
+                # The leaf ran in a network namespace (issue #534 step 4).
                 response_payload["sandbox_network"] = SANDBOX_NETWORK_NAMESPACE
             except Exception as exc:
                 _write_sandbox_enforcement_violation(
