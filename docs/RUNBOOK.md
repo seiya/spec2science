@@ -240,9 +240,10 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 A run that goes past `Compile` and whose closure declares an `external library` (`docs/GLOSSARY.md`;
 the declaration is `docs/SPEC.md` requirement 16, the site's `libraries:` entry
 `docs/ORCHESTRATION.md` §Execution sites) is decided by `tools/run_workflow.py` after the checks
-above and before any `phase` of the node runs. A run that reaches `Build` also reads the `oracle`s (`docs/SPEC.md`
-requirement 17) of the node and of every closure member, each declared for the target's language,
-and asks their libraries with the closure's. An `oracle_at_remote_site`, `oracle_declaration_invalid`,
+above and before any `phase` of the node runs. The same verdict reads the `oracle`s (`docs/SPEC.md` requirement 17),
+each declared for the target's language — every closure member's on a run past `Compile`, since
+members are driven to `Validate`, and the node's own on a run that reaches `Build` — and asks
+their libraries with the closure's. An `oracle_at_remote_site`, `oracle_declaration_invalid`,
 `library_unavailable` or `site_library_unresolved` row that an oracle alone answers carries
 `oracle_of`, the spec directory of the node that declares it, and so does a member's
 `dependency_runs` row: under `--with-deps` a member that is unavailable by its own oracle makes its

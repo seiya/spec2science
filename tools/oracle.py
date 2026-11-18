@@ -41,8 +41,8 @@ _BUILD_ID = re.compile(r"[a-z0-9_]+")
 
 #: The startup refusal of a declaration that does not have the closed shape.
 DECLARATION_INVALID = "oracle_declaration_invalid"
-#: The startup refusal of an oracle that links no library at a remote site: the host builds and
-#: runs an oracle at the local site only, as it does an external library.
+#: The startup refusal of an applying oracle at a remote site, whatever it links: the host builds
+#: and runs an oracle at the local site only, as it does an external library.
 REMOTE_SITE = "oracle_at_remote_site"
 
 

@@ -114,7 +114,8 @@ class OracleDeclarationTest(_OracleFixture):
             "builds empty": {**good, "builds": []},
             "build not a mapping": {**good, "builds": ["default"]},
             "build key unknown": {**good, "builds": [{"id": "a", "libraries": [], "x": 1}]},
-            "build id": {**good, "builds": [{"id": "A-1", "libraries": []}]},
+            # a valid prefix, so a `match` in place of `fullmatch` would take it
+            "build id": {**good, "builds": [{"id": "a-1", "libraries": []}]},
             "build id twice": {**good, "builds": [{"id": "a", "libraries": [], "cases": ["c1"]},
                                                   {"id": "a", "libraries": []}]},
             "library undeclared": {**good, "builds": [{"id": "a", "libraries": ["zz"]}]},
@@ -349,6 +350,7 @@ class OracleVerdictTest(_OracleFixture):
         self.assertIsNone(self.verdict())
         write_sites(self.repo, self.dirs, libraries="      vend:\n")
         self.assertIsNone(self.verdict(until="Generate"))
+        self.assertEqual(self.verdict(until="Build")["status"], "library_unavailable")
         verdict = self.verdict()
         assert verdict is not None
         self.assertEqual((verdict["status"], verdict["reason"], verdict["library_id"],
@@ -429,8 +431,13 @@ class OracleVerdictTest(_OracleFixture):
             assert verdict is not None
             self.assertEqual((verdict["reason"], verdict["oracle_of"]),
                              (oracle.REMOTE_SITE, dep))
-            # A run that does not reach Build does not read it.
-            self.assertIsNone(self.verdict(SPEC, [dep], until="Generate"))
+            # A closure member's oracle is read by a Generate run too: its members are driven
+            # to Validate, and their Build keys carry it.
+            verdict = self.verdict(SPEC, [dep], until="Generate")
+            assert verdict is not None
+            self.assertEqual((verdict["reason"], verdict["oracle_of"]),
+                             (oracle.REMOTE_SITE, dep))
+            self.assertIsNone(self.verdict(SPEC, [dep], until="Compile"))
         finally:
             shutil.rmtree(targets)
 
@@ -460,10 +467,26 @@ class OracleVerdictTest(_OracleFixture):
         for until in ("Compile", "Generate"):
             with self.subTest(until=until):
                 self.assertIsNone(self.verdict(until=until))
-        verdict = self.verdict()
-        assert verdict is not None
-        self.assertEqual((verdict["status"], verdict["reason"], verdict["oracle_of"]),
-                         ("fail", oracle.DECLARATION_INVALID, SPEC))
+        for until in ("Build", "Validate"):
+            with self.subTest(until=until):
+                verdict = self.verdict(until=until)
+                assert verdict is not None
+                self.assertEqual((verdict["status"], verdict["reason"], verdict["oracle_of"]),
+                                 ("fail", oracle.DECLARATION_INVALID, SPEC))
+
+    def test_a_closure_member_s_malformed_declaration_names_the_member(self) -> None:
+        """Read by every run past Compile (the member is driven to Validate), and the event
+        names the member's directory, not the run's node."""
+        dep = "spec/component/dep"
+        (self.repo / dep).mkdir(parents=True, exist_ok=True)
+        self.write_oracle("language: fortran\nbuilds: nonsense\n", spec=dep)
+        self.assertIsNone(self.verdict(SPEC, [dep], until="Compile"))
+        for until in ("Generate", "Validate"):
+            with self.subTest(until=until):
+                verdict = self.verdict(SPEC, [dep], until=until)
+                assert verdict is not None
+                self.assertEqual((verdict["reason"], verdict["spec_ref"], verdict["oracle_of"]),
+                                 (oracle.DECLARATION_INVALID, SPEC, dep))
 
 
 if __name__ == "__main__":

@@ -4855,11 +4855,11 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     the post-build checks run (`missing_required_host_tools`). A closure that does not resolve
     is left to the gates that report it.
 
-    The libraries an `oracle` reaches (issue #680) — the node's own and every closure member's,
-    each declared for the target's language — are decided with the closure's, and an event a
-    library of an oracle alone causes names the oracle's node (`oracle_of`). A malformed
-    declaration is `fail`, `oracle_declaration_invalid`, and an oracle that links no library at
-    a remote site is `fail`, `oracle_at_remote_site`; neither is read on a Compile-only run."""
+    The `oracle`s (issue #680) — every closure member's, and the node's own on a run that reaches
+    Build, each declared for the target's language — are read here: a malformed declaration is
+    `fail`, `oracle_declaration_invalid`, and an applying oracle at a remote site is `fail`,
+    `oracle_at_remote_site`, whatever it links. Their libraries are decided with the closure's,
+    and an event a library of an oracle alone causes names the oracle's node (`oracle_of`)."""
     from tools import external_library as xl
     from tools import oracle as oracle_mod
     from tools.execution_sites import SitesConfigError
@@ -4878,30 +4878,29 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     except xl.LibraryDeclarationError as exc:
         return {"status": "fail", "reason": "library_declaration_invalid", "detail": str(exc),
                 "spec_ref": spec_ref}
-    # The oracles (issue #680) of the node and of every closure member, each where the target's
-    # language is its own: a member with an oracle cannot be certified without it, and a node
-    # cannot be certified without its members. Read only by a run that reaches Build, where the
-    # oracle is first built and keyed: no Compile or Generate key carries it.
+    # The oracles (issue #680), each where the target's language is its own: a member with an
+    # oracle cannot be certified without it, and a node cannot be certified without its members.
+    # A closure member's is read by every run past Compile, since its members are driven to
+    # Validate (`_required_dependency_stages`) and their Build keys carry it; the node's own only
+    # by a run that reaches Build, since no Compile or Generate key carries it.
     from tools.target_profile import NON_BUILDING_PHASES
     language = str(target_profile.toolchain["language"])
+    reaches_build = _normalize_phase(until_phase).lower() not in NON_BUILDING_PHASES
     oracles: list[Any] = []
-    if _normalize_phase(until_phase).lower() not in NON_BUILDING_PHASES:
-        for ref in (spec_ref, *(n["spec_ref"] for n in ordered)):
-            try:
-                declared = oracle_mod.load(repo_root, ref, language)
-            except oracle_mod.OracleDeclarationError as exc:
-                return {"status": "fail", "reason": oracle_mod.DECLARATION_INVALID,
-                        "detail": str(exc), "spec_ref": spec_ref, "oracle_of": ref}
-            if declared is not None:
-                oracles.append(declared)
+    for ref in ((spec_ref,) if reaches_build else ()) + tuple(n["spec_ref"] for n in ordered):
+        try:
+            declared = oracle_mod.load(repo_root, ref, language)
+        except oracle_mod.OracleDeclarationError as exc:
+            return {"status": "fail", "reason": oracle_mod.DECLARATION_INVALID,
+                    "detail": str(exc), "spec_ref": spec_ref, "oracle_of": ref}
+        if declared is not None:
+            oracles.append(declared)
     if oracles:
         # An oracle is built and run at the local site only, whatever it links. Breakage
-        # without it: the run would stop at Build after Compile and Generate were billed.
-        try:
-            site = xl.site_for_target(repo_root, target_profile.target_id)
-        except (SitesConfigError, TargetProfileError) as exc:
-            return {"status": "fail", "reason": "sites_config_invalid", "detail": str(exc),
-                    "spec_ref": spec_ref}
+        # without it, once Build builds the oracle (issue #680's next pull request): the run
+        # would stop at Build after Compile and Generate were billed. `_sites_rejection` has
+        # already loaded this sites.yaml, so it does not raise here.
+        site = xl.site_for_target(repo_root, target_profile.target_id)
         if not site.is_local:
             return {"status": "fail", "reason": oracle_mod.REMOTE_SITE,
                     "site": site.site_id, "target_id": target_profile.target_id,
