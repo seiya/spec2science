@@ -970,7 +970,18 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # for a rule they satisfy. (Measured by diffing `compile_documents_tuple()` against main
     # efbf8454's: that row and no other.) The digest `compile-docs-38` shipped with at efbf8454:
     "compile-docs-38@efbf8454": "b11a65b6977d3a7ab8d4886e9b8fb1e9eb9fdf7c2ef7de44a2ed31c14ce05b26",
-    "compile-docs-38": "443705f57de79df0fa9679bc97f4494fe8518ee834ebc24cdff52c4eb25d8433",
+    # compile-docs-38 re-pinned in place by issue #661 (operator decision O1, 2026-11-18):
+    # `phase_01_compile.md` says the `direct_deps` consistency gate compares each key with its
+    # `@version` and drops "version drift is soft (the Build compile is the backstop)" — no such
+    # backstop exists, the build closure is derived from the graph. The rule is stricter, and
+    # every IR the previous text certified still satisfies it: over `workspace/ir/` (797 IRs,
+    # 1,005 `direct_deps` keys, measured at this commit's parent) 0 keys are not a host key
+    # exactly, so no IR is authored differently and a bump would re-derive every node's Compile
+    # for a rule they already satisfy. (Measured by diffing `compile_documents_tuple()` against
+    # main 7a9af525's: the `phase_contract_document` row alone.) The digest `compile-docs-38`
+    # shipped with at 7a9af525:
+    "compile-docs-38@7a9af525": "443705f57de79df0fa9679bc97f4494fe8518ee834ebc24cdff52c4eb25d8433",
+    "compile-docs-38": "7f8365c96cc429ae5dc78a91e0ebcc210d3a1a95ef4e70a4cef5f47bfd18aa03",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

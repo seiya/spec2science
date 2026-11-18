@@ -562,6 +562,23 @@ def _normalize_node_key_token(raw: str) -> str:
     return f"{kind.strip()}/{spec_id}"
 
 
+def _versioned_node_key_token(raw: str) -> str:
+    """`<kind>/<spec_id>@<version>` with each part stripped (no `@` when the token has none):
+    the canonical node_key the dependency-surface sidecar is keyed by and the membership gate
+    looks an entry up by (`_called_dep_key`). The consistency gate compares `direct_deps` keys
+    in this form (issue #661), so a key it accepts is a key the membership gate finds. A token
+    with no `/`, or with an empty kind or spec_id, is returned stripped."""
+    token = raw.strip()
+    if "/" not in token:
+        return token
+    kind, body = token.split("/", 1)
+    spec_id, sep, version = body.partition("@")
+    kind, spec_id = kind.strip(), spec_id.strip()
+    if not kind or not spec_id:
+        return token
+    return f"{kind}/{spec_id}" + (f"@{version.strip()}" if sep else "")
+
+
 def _node_safe_to_node_key(node_safe: str) -> str | None:
     """Restore `<spec_kind>__<spec_id>__<spec_version>` to `<spec_kind>/<spec_id>@<spec_version>`.
 
@@ -4508,27 +4525,26 @@ def _called_dep_key(node_key: Any) -> tuple[str, str, str] | None:
     """`(kind, spec_id, canonical node_key)` of a direct-dependency token whose kind a model
     CALLS (`_CALLED_DEP_KIND_PREFIXES`), else None.
 
-    The token is read exactly as `_normalize_node_key_token` reads it — the token stripped, the
-    kind and the spec_id each stripped — because that is the reader that decides whether the
-    entry IS the host's direct dependency (`_validate_compile_dependency_consistency`). Until the
+    The kind and the spec_id are read as `_normalize_node_key_token` reads them — the token
+    stripped, each part stripped — and the canonical node_key is `_versioned_node_key_token`'s,
+    the form in which `_validate_compile_dependency_consistency` decides whether the entry IS
+    the host's direct dependency (issue #661: `@version` included). Until the
     system tier's review round 1 the operations gates and `_component_dep_spec_ids` tested the
     prefix on the raw or stripped token instead, so `"problem /m@0.1.0"` (or `"component /…"`)
     passed the consistency gate as the member and was read by none of the gates that ask what
     the member's `operations` are and whether the model calls it. The canonical node_key is
     `<kind>/<spec_id>@<version>` with each part stripped (no `@` when the token has none), the
-    form the dependency-surface sidecar is keyed by."""
+    form the dependency-surface sidecar is keyed by and the consistency gate compares."""
     if not isinstance(node_key, str) or "/" not in node_key:
         return None
     kind, body = node_key.strip().split("/", 1)
     kind = kind.strip()
     if f"{kind}/" not in _CALLED_DEP_KIND_PREFIXES:
         return None
-    spec_id, sep, version = body.partition("@")
-    spec_id = spec_id.strip()
+    spec_id = body.partition("@")[0].strip()
     if not spec_id:
         return None
-    canonical = f"{kind}/{spec_id}" + (f"@{version.strip()}" if sep else "")
-    return kind, spec_id, canonical
+    return kind, spec_id, _versioned_node_key_token(node_key)
 
 
 def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[str]:
@@ -6130,7 +6146,10 @@ def _validate_component_dep_operations_membership(
     real names here to converge.
 
     Inert (skip) when: the sidecar file is absent (a legacy tree / a non-conductor-driven
-    compile), a dep has NO sidecar entry (an unresolved graph edge), or its entry's ``source`` is
+    compile), a dep has NO sidecar entry (a key that is not one of the graph's direct
+    dependencies, which ``_validate_compile_dependency_consistency`` — run first — has already
+    refused: the sidecar holds an entry for every called direct dependency of the graph), or its
+    entry's ``source`` is
     ``unresolved`` (the surface could not be resolved — never manufacture a violation from a
     resolution gap). A sidecar that is unreadable, or an entry whose ``published_operations`` is
     the wrong shape, is fail-closed. The skip→fail-closed asymmetry is a deliberate rollout
@@ -6185,17 +6204,15 @@ def _validate_component_dep_operations_membership(
         if len(declared) != len(ops):
             continue  # malformed entry — handled by _validate_component_dep_operations
 
-        # Exact-node_key lookup (incl. `@version`): the sidecar is keyed by the graph's resolved
-        # node_keys. A version-drifted `direct_deps` entry — which the version-AGNOSTIC
-        # `_validate_compile_dependency_consistency` would still pass — finds no entry and this
-        # gate goes inert (fail-open, consistent with the tracked rollout affordance); the leaf is
-        # shown the full versioned node_key in the injected catalog, so a drift is unlikely.
-        # The lookup key is the CANONICAL spelling (`_called_dep_key`): a key respelled with
-        # inner whitespace names the same member to the consistency gate, so it names the same
-        # sidecar entry here.
+        # Lookup by the CANONICAL versioned key (`_called_dep_key`, `_versioned_node_key_token`):
+        # the sidecar is keyed by the graph's resolved node_keys, one entry per called direct
+        # dependency (`orchestration_runtime._resolve_component_dep_surface`), and the
+        # consistency gate, which runs first, compares `direct_deps` keys in the same form
+        # (issue #661). So a key with no entry here is one that gate has already refused — a
+        # drifted or missing `@version` included — and the stage fails on that finding.
         surface = surface_by_key.get(called[2])
         if not isinstance(surface, dict):
-            continue  # inert: no sidecar entry (unresolved graph edge / legacy)
+            continue  # inert: not a key of the graph — reported by the consistency gate
         source_tag = str(surface.get("source") or "").strip()
         if source_tag == "unresolved":
             continue  # inert: surface could not be resolved — not a violation
@@ -7905,11 +7922,16 @@ def _validate_compile_dependency_consistency(
     A violation is a content failure routed (via ``classify_compile_static_failure``) back to
     ``compile.generate`` for a warm reopen (the LLM re-authors ``direct_deps`` to match
     ``deps.yaml``). Checks: sidecar present + parseable; ``all_nodes`` well-formed with the self
-    node present and every ``transitive_deps`` node in ``all_nodes``; and the version-agnostic
-    ``(kind, spec_id)`` set of IR ``direct_deps`` equals the host directly-required set
-    ``{all_nodes} − {self} − {transitive}``. Version drift is deliberately NOT flagged here
-    (soft — the gfortran/link backstop catches a wrong dependency version at Build; the sidecar
-    pins the resolved version)."""
+    node present and every ``transitive_deps`` node in ``all_nodes``; and the set of IR
+    ``direct_deps`` keys equals the host directly-required set
+    ``{all_nodes} − {self} − {transitive}``, each key read as ``_versioned_node_key_token``
+    reads it — ``@version`` included, the form the dependency-surface sidecar is keyed by, so a
+    key this gate accepts is one ``_validate_component_dep_operations_membership`` finds (issue
+    #661: a drifted or missing version used to pass here and turn that gate inert, and no Build
+    backstop exists — the build closure is derived from the graph, not from the IR). The IR's
+    own ``dependency.node_key`` is compared by ``(kind, spec_id)`` only: its readers take the
+    kind and the id and nothing decides by its version, so a check on it would defend
+    nothing."""
     sidecar_path = ir_dir / "dependency_graph.json"
     if not sidecar_path.is_file():
         violations.append(
@@ -7925,7 +7947,8 @@ def _validate_compile_dependency_consistency(
         violations.append(f"{sidecar_path}: dependency_graph.json must be a JSON object")
         return
 
-    self_token = _normalize_node_key_token(str(graph.get("node_key") or ""))
+    graph_self = str(graph.get("node_key") or "")
+    self_token = _versioned_node_key_token(graph_self)
     all_nodes = graph.get("all_nodes")
     if not isinstance(all_nodes, list) or not all_nodes:
         violations.append(f"{sidecar_path}: all_nodes must be a non-empty list")
@@ -7941,7 +7964,7 @@ def _validate_compile_dependency_consistency(
             violations.append(
                 f"{sidecar_path}: all_nodes[{nk!r}] topo_level must be a non-negative int")
             return
-        all_tokens.add(_normalize_node_key_token(nk))
+        all_tokens.add(_versioned_node_key_token(nk))
     if not self_token or self_token not in all_tokens:
         violations.append(
             f"{sidecar_path}: node_key {graph.get('node_key')!r} not present in all_nodes")
@@ -7955,7 +7978,7 @@ def _validate_compile_dependency_consistency(
         if not (isinstance(nk, str) and nk.strip()):
             violations.append(f"{sidecar_path}: transitive_deps entry missing node_key")
             return
-        tok = _normalize_node_key_token(nk)
+        tok = _versioned_node_key_token(nk)
         if tok not in all_tokens:
             violations.append(
                 f"{sidecar_path}: transitive_deps node {nk!r} not present in all_nodes")
@@ -7975,7 +7998,7 @@ def _validate_compile_dependency_consistency(
     dep = dep if isinstance(dep, dict) else {}
     ir_self = dep.get("node_key")
     if isinstance(ir_self, str) and ir_self.strip():
-        if _normalize_node_key_token(ir_self) != self_token:
+        if _normalize_node_key_token(ir_self) != _normalize_node_key_token(graph_self):
             violations.append(
                 f"{ir_dir / 'spec.ir.yaml'}: dependency.node_key {ir_self!r} disagrees with "
                 f"dependency_graph.json node_key {graph.get('node_key')!r}")
@@ -7986,7 +8009,7 @@ def _validate_compile_dependency_consistency(
     for entry in ir_direct:
         nk = entry.get("node_key") if isinstance(entry, dict) else entry
         if isinstance(nk, str) and nk.strip():
-            ir_direct_tokens.add(_normalize_node_key_token(nk))
+            ir_direct_tokens.add(_versioned_node_key_token(nk))
 
     if ir_direct_tokens != host_direct:
         missing = sorted(host_direct - ir_direct_tokens)
@@ -7994,7 +8017,8 @@ def _validate_compile_dependency_consistency(
         violations.append(
             f"{ir_dir / 'spec.ir.yaml'}: dependency.direct_deps disagrees with the "
             f"deterministic dependency closure (deps.yaml via dependency_graph.json); "
-            f"missing direct deps {missing}; unexpected direct deps {extra}")
+            f"missing direct deps {missing}; unexpected direct deps {extra} — copy each "
+            f"node_key from dependency_graph.json exactly, @version included")
 
 
 def _validate_profile_selection(

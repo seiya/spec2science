@@ -13747,23 +13747,55 @@ class CompileDependencyConsistencyTests(unittest.TestCase):
             self.assertIn("component/c1", violations[0])
             self.assertIn("profile/pr", violations[0])
 
-    def test_version_drift_is_soft_not_flagged(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ir_dir = Path(tmp)
-            # IR pins @0.2.0 but the closure resolved @0.1.0: version-agnostic gate accepts it
-            # (gfortran/link backstop catches a wrong version at Build).
-            self._seed(
-                ir_dir,
-                ir_dependency={"node_key": "component/top@0.1.0",
-                               "direct_deps": [{"node_key": "component/mid@0.2.0"}]},
-                sidecar={"node_key": "component/top@0.1.0",
-                         "all_nodes": [
-                             {"node_key": "component/mid@0.1.0", "topo_level": 0},
-                             {"node_key": "component/top@0.1.0", "topo_level": 1}],
-                         "transitive_deps": [], "generated_by": "conductor"})
-            violations: list[str] = []
-            _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
-            self.assertEqual(violations, [])
+    _DRIFT_SIDECAR = {"node_key": "component/top@0.1.0",
+                      "all_nodes": [
+                          {"node_key": "component/mid@0.1.0", "topo_level": 0},
+                          {"node_key": "component/top@0.1.0", "topo_level": 1}],
+                      "transitive_deps": [], "generated_by": "conductor"}
+
+    def test_a_key_with_another_version_or_none_is_refused(self) -> None:
+        """Issue #661: each `direct_deps` key is compared `@version` included. The gate used to
+        read keys version-agnostically ("version drift is soft — the Build backstop catches
+        it"), and no such backstop exists: the build closure is derived from the graph. A drifted
+        or missing version passed here and turned the membership gate inert, because the
+        dependency-surface sidecar is keyed by the versioned key. Each spelling gives ONE
+        violation naming the host's key missing and the written key unexpected, and the message
+        says how to converge."""
+        for written in ("component/mid@0.2.0", "component/mid", "component/mid@",
+                        "component/mid@0.1.0@x"):
+            with self.subTest(written=written), tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                self._seed(ir_dir,
+                           ir_dependency={"node_key": "component/top@0.1.0",
+                                          "direct_deps": [{"node_key": written}]},
+                           sidecar=self._DRIFT_SIDECAR)
+                violations: list[str] = []
+                _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn("missing direct deps ['component/mid@0.1.0']", violations[0])
+                self.assertIn(f"unexpected direct deps [{written!r}]", violations[0])
+                self.assertIn("@version included", violations[0])
+
+    def test_the_node_s_own_key_is_compared_by_kind_and_id(self) -> None:
+        """The IR's own `dependency.node_key` keeps the `(kind, spec_id)` comparison: its
+        readers take the kind and the id, and nothing decides by its version, so a leaf gains
+        nothing from drifting it (issue #661's plan, "not added"). A later tightening is then a
+        decision, not an accident; a different id is still refused."""
+        for own, refused in (("component/top@9.9.9", False), ("component/top", False),
+                             ("component/other@0.1.0", True)):
+            with self.subTest(own=own), tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                self._seed(ir_dir,
+                           ir_dependency={"node_key": own,
+                                          "direct_deps": [{"node_key": "component/mid@0.1.0"}]},
+                           sidecar=self._DRIFT_SIDECAR)
+                violations: list[str] = []
+                _validate_compile_dependency_consistency(Path(tmp), ir_dir, violations)
+                if refused:
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertIn("dependency.node_key", violations[0])
+                else:
+                    self.assertEqual(violations, [])
 
     def test_missing_sidecar_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -19163,8 +19195,9 @@ class ProblemDependencyCallGateTests(unittest.TestCase):
 class RespelledDependencyKeyTests(unittest.TestCase):
     """A direct-dependency token with whitespace around its kind or spec_id (review round 1 of
     the system tier's PR-S1, sec-M1). The consistency gate (V4) reads it as the member through
-    `_normalize_node_key_token`; every gate that asks what the member's `operations` are must
-    then read it as the member too (`_called_dep_key`). Before the fix `"problem /m@0.1.0"` (and
+    `_versioned_node_key_token` (`_normalize_node_key_token` until issue #661); every gate that
+    asks what the member's `operations` are must then read it as the member too
+    (`_called_dep_key`). Before the fix `"problem /m@0.1.0"` (and
     its `component /` twin, pre-existing at 0b22e6a5) passed V4 and was read by neither V4c-i nor
     V4c-ii, so an empty or fabricated `operations` cleared Compile.static by respelling."""
 
@@ -19228,6 +19261,55 @@ class RespelledDependencyKeyTests(unittest.TestCase):
                 if expected is not None:
                     self.assertEqual(vps._normalize_node_key_token(raw),
                                      f"{expected[0]}/{expected[1]}")
+                    # The key V4 compares (issue #661) is the key V4c-ii looks up.
+                    self.assertEqual(vps._versioned_node_key_token(raw), expected[2])
+
+    def test_a_key_the_consistency_gate_accepts_is_one_the_membership_gate_finds(self) -> None:
+        """Issue #661: for every spelling of the member's key, a fabricated operation is
+        refused by V4 or by V4c-ii — never by neither. Before the fix V4 read keys
+        version-agnostically and V4c-ii looked the sidecar up by the versioned key, so
+        `@0.9.9`, no version, a trailing `@` and a double `@` passed V4 and found no entry, and
+        `m__bogus` cleared both."""
+        templates = self.SPELLINGS + ("{k}/{s}@0.9.9", "{k}/{s}", "{k}/{s}@", "{k}/{s}@0.1.0@x")
+        for kind in ("problem", "component"):
+            for template in templates:
+                spelled = template.format(k=kind, s="m")
+                with self.subTest(kind=kind, spelled=spelled):
+                    bogus = self._gates(kind, spelled, ["m__bogus"])
+                    self.assertTrue(
+                        bogus["V4"] or any("m__bogus" in v for v in bogus["V4c-ii"]), bogus)
+
+    def test_a_drifted_key_is_refused_at_the_compile_static_entry(self) -> None:
+        """The same through `validate_compile_ir_dir`, the Compile.static entry (pin at the
+        handler, not the helper): a drifted `@version` with a fabricated operation is reported
+        by the consistency gate; the exact key's fabricated operation, by the membership gate —
+        the control that the entry runs both."""
+        def entry(spelled: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                ir_dir = root / "workspace" / "ir" / "problem__top__0.1.0" / "i_001"
+                ir_dir.mkdir(parents=True)
+                member = "component/m@0.1.0"
+                (ir_dir / "dependency_graph.json").write_text(json.dumps({
+                    "node_key": "problem/top@0.1.0",
+                    "all_nodes": [{"node_key": member, "topo_level": 0},
+                                  {"node_key": "problem/top@0.1.0", "topo_level": 1}],
+                    "transitive_deps": []}), encoding="utf-8")
+                (ir_dir / "dependency_surface.json").write_text(json.dumps({"dependencies": [
+                    {"node_key": member, "published_operations": ["m__step"],
+                     "source": "ir_public_api"}]}), encoding="utf-8")
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                    "meta": {"spec_id": "top", "spec_kind": "problem"},
+                    "dependency": {"node_key": "problem/top@0.1.0", "direct_deps": [
+                        {"node_key": spelled, "kind": "component",
+                         "operations": ["m__bogus"]}]}}), encoding="utf-8")
+                return vps.validate_compile_ir_dir(root, ir_dir)
+        drifted = entry("component/m@0.9.9")
+        self.assertTrue(any("direct_deps disagrees" in v and "'component/m@0.9.9'" in v
+                            for v in drifted), drifted)
+        exact = entry("component/m@0.1.0")
+        self.assertFalse(any("direct_deps disagrees" in v for v in exact), exact)
+        self.assertTrue(any("m__bogus" in v for v in exact), exact)
 
 
 class ProblemDepOperationsEqualMemberSurfaceTests(unittest.TestCase):
@@ -19616,7 +19698,9 @@ class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
         self.assertEqual(v, [])
 
     def test_missing_sidecar_entry_inert(self) -> None:
-        # A component dep with no sidecar entry at all (unresolved graph edge) is skipped.
+        # A component dep with no sidecar entry at all is skipped here: such a key is not one of
+        # the graph's direct dependencies, which the consistency gate (run first) refuses
+        # (issue #661).
         v = self._run(
             [{"node_key": "component/dep_base@0.1.0", "kind": "component",
               "operations": ["dep_base__apply"]}],

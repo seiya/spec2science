@@ -129,8 +129,7 @@
       "fortran-subroutine": 6
     },
     "tools/validate_pipeline_semantics.py": {
-      "compiler-driver": 1,
-      "fortran": 9,
+      "fortran": 8,
       "fortran-subroutine": 3,
       "fortran-suffix": 2,
       "make-control-file": 2,
