@@ -9255,11 +9255,14 @@ end program shallow_water2d_runner
         repo_root: Path,
         *,
         seed_foreign_crashed: bool = False,
+        live_substep_arid: str | None = None,
         current_orchestration_id: str = "orch_test_001",
     ) -> list[str]:
         """Build the minimal execution + orchestration tree and run the pre_judge audit over
         ``current_orchestration_id``. ``seed_foreign_crashed`` adds an unrelated orchestration
-        left as debris by a crashed run."""
+        left as debris by a crashed run. ``live_substep_arid`` models the validate substep that
+        runs the gate while it is still executing: its `agent_runs.jsonl` row is not appended
+        yet (its `agent_graph` edge is), and the validate `step_result.json` is not written."""
         _seed_shape_expr_schema_into(repo_root)
         model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
@@ -9284,6 +9287,21 @@ end program shallow_water2d_runner
             run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
         )
         _create_minimal_orchestration_tree(repo_root)
+        if live_substep_arid is not None:
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_test_001"
+            runs_path = orch_root / "agent_runs.jsonl"
+            rows = [json.loads(line) for line in
+                    runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            kept = [row for row in rows if row.get("agent_run_id") != live_substep_arid]
+            assert len(kept) == len(rows) - 1, "the fixture must record the live substep"
+            runs_path.write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in kept) + "\n",
+                encoding="utf-8")
+            graph = json.loads((orch_root / "agent_graph.json").read_text(encoding="utf-8"))
+            assert any(edge.get("child_agent_run_id") == live_substep_arid
+                       for edge in graph["edges"]), "its edge must stay, dangling"
+            (orch_root / "steps" / "problem__shallow_water2d__0.3.0" / "validate"
+             / "orch_run_001" / "step_result.json").unlink()
         if seed_foreign_crashed:
             # A second, UNRELATED orchestration left as debris by a prior/crashed run: it never
             # wrote its agent_runs.jsonl, a fact the audit still reads. The conductor runs one
@@ -9328,6 +9346,17 @@ end program shallow_water2d_runner
                 violations, [],
                 msg=f"scoped validation of a healthy current run must be clean; got: {violations}",
             )
+
+    def test_the_live_validate_substep_s_own_unrecorded_run_is_no_finding(self) -> None:
+        """The gate runs inside Validate's `post_judge` substep, whose own `agent_runs.jsonl` row
+        and the validate `step_result.json` are written only after it returns, while its
+        `agent_graph` edge already stands. No arid is declared in-flight any more (issue #643
+        removed `--in-flight-agent-run-id` with the edge audit), so the audit must not read that
+        state as a finding: a healthy run otherwise fails its own post_judge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            violations = self._pre_judge_violations(
+                Path(tmp), live_substep_arid="substep_run_validate_judge_001")
+            self.assertEqual(violations, [], violations)
 
     def test_pre_judge_scoped_missing_current_orchestration_fails_closed(self) -> None:
         """Phase-4 D2: a --orchestration-id naming a non-existent orchestration must

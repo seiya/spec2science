@@ -586,25 +586,11 @@ def _normalize_node_key_token(raw: str) -> str:
     return f"{kind.strip()}/{spec_id}"
 
 
-def _node_key_to_safe(node_key: str) -> str | None:
-    token = node_key.strip()
-    if "/" not in token or "@" not in token:
-        return None
-    spec_kind, tail = token.split("/", 1)
-    spec_id, spec_version = tail.rsplit("@", 1)
-    spec_kind = spec_kind.strip()
-    spec_id = spec_id.strip()
-    spec_version = spec_version.strip()
-    if not spec_kind or not spec_id or not spec_version:
-        return None
-    return f"{spec_kind}__{spec_id}__{spec_version}"
-
-
 def _node_safe_to_node_key(node_safe: str) -> str | None:
     """Restore `<spec_kind>__<spec_id>__<spec_version>` to `<spec_kind>/<spec_id>@<spec_version>`.
 
-    The inverse of `_node_key_to_safe`. Because `spec_kind` / `spec_version` do not contain `__`,
-    the value re-joining the leading token as `spec_kind`, the trailing token as `spec_version`,
+    The inverse of `orchestration_runtime._node_key_to_safe`. Because `spec_kind` /
+    `spec_version` do not contain `__`, the value re-joining the leading token as `spec_kind`, the trailing token as `spec_version`,
     and the middle (re-joined with `__`) is `spec_id` (the `__` inside `spec_id` is also restored).
     """
     parts = node_safe.split("__")
