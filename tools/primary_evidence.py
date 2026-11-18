@@ -669,8 +669,8 @@ def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str
     quantity is `run.n_step` (`zero_step_closure_ref`), and its `<ref>` is the accepted
     counterpart of `loop.n_step` (``state.closure_refs``). The same text on an `xfail` test,
     with another ref (review round 1, R1-9) or under another quantity (review round 3, R3-1),
-    reads no kernel fact and is refused like any other predicate. The schema gate asks it
-    through `fixed_form`."""
+    reads no kernel fact and is refused like any other predicate. The schema gate and the
+    evaluator ask it through `fixed_form` (the evaluator through `cases_read`)."""
     if not isinstance(state, StateReads) or not state.loop or not isinstance(pred, dict):
         return False
     test_id = pred.get("test_id")
