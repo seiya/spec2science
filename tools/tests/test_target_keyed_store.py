@@ -401,7 +401,9 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
 
 
 class ValidatorReadsTheTargetTests(unittest.TestCase):
-    def test_a_stage_pipeline_root_must_carry_a_target(self) -> None:
+    def test_the_validator_reads_the_per_target_pipeline_tree(self) -> None:
+        # (The refusal of a `--pipeline-root` without a target segment went in issue #643: the
+        # conductor composes that argument from its refs.)
         import tools.validate_pipeline_semantics as vps
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -409,13 +411,7 @@ class ValidatorReadsTheTargetTests(unittest.TestCase):
             legacy = repo / f"workspace/pipelines/{_SAFE}/spec-x_20260101_001"
             good.mkdir(parents=True)
             legacy.mkdir(parents=True)
-            self.assertEqual(
-                vps._resolve_pipeline_dir_for_stage(repo, "workspace", str(good)),
-                good.resolve())
-            with self.assertRaises(ValueError):
-                vps._resolve_pipeline_dir_for_stage(repo, "workspace", str(legacy))
-            with self.assertRaises(ValueError):
-                vps._resolve_pipeline_roots(repo, "workspace", [str(legacy)])
+            self.assertEqual(vps._resolve_pipeline_roots(repo, [str(good)]), [good.resolve()])
             # The whole-workspace sweep reads the per-target tree only.
             self.assertEqual(vps._pipeline_targets(repo / "workspace", None), [good])
 

@@ -250,10 +250,6 @@ CROSS_TARGET_JUDGMENT_PHRASE = "The cross-target judgment is applied"
 #: The line of a `tests.md` test definition that lists the judgments the test makes (issue #582,
 #: `docs/TESTS.md` §Description format): one line in the definition, opening with the key.
 TEST_QUANTITIES_LINE = re.compile(r"^[-*]?\s*`?quantities`?\s*:\s*(.*)$")
-#: The `reported` line of a `tests.md` (issue #582 review): it named the snapshot variables the
-#: operation reported as a run-wide reduction. Issue #589 retired the class, and this pattern is
-#: kept as the DETECTOR that refuses the line at Compile (`_tests_md_reported_lines`).
-TEST_REPORTED_LINE = re.compile(r"^[-*]?\s*`?reported`?\s*:\s*(.*)$")
 # Bundled schema lives next to this validator; used as the canonical fallback
 # when no target repo_root is in scope (tests, ad-hoc invocation) and as the
 # default canonical reference for the validator's pinned rules.
@@ -579,14 +575,6 @@ def _workshop_profile_violations(profile: dict) -> list[str]:
     return []
 
 
-def _normalize_workspace_root_token(workspace_root: str) -> str:
-    token = workspace_root.strip().replace("\\", "/")
-    token = token.lstrip("./")
-    while "//" in token:
-        token = token.replace("//", "/")
-    return token.rstrip("/")
-
-
 def _normalize_node_key_token(raw: str) -> str:
     token = raw.strip()
     if "/" not in token:
@@ -658,21 +646,6 @@ def _is_multidim_problem_node_key(node_key: str) -> bool:
 
 def _is_multidim_problem_node(execution: NodeExecution) -> bool:
     return _is_multidim_problem_node_key(execution.node_key)
-
-
-def _extract_first_output_block(lowered: str, output_name: str) -> str | None:
-    start = -1
-    for marker in (f"/{output_name}", f"'{output_name}'", f'"{output_name}"'):
-        start = lowered.find(marker)
-        if start >= 0:
-            break
-    if start < 0:
-        return None
-
-    close_idx = lowered.find("close(", start)
-    if close_idx < 0:
-        return lowered[start:]
-    return lowered[start:close_idx]
 
 
 @dataclass
@@ -2247,7 +2220,7 @@ def _validate_generate_outputs(
     multidim_spec_id = (
         (_spec_id_from_node_key(execution.node_key) or execution.node_key)
         if _is_multidim_problem_node(execution) else None)
-    init_member_ids = _init_publishing_member_ids(repo_root, execution, violations)
+    init_member_ids = _init_publishing_member_ids(repo_root, execution)
     for model_file in model_files:
         source_reading.model_source_gates(
             node_key=execution.node_key,
@@ -3427,19 +3400,6 @@ def _parse_test_expected_outcomes_from_tests_md(
             continue
         out[tid] = value
     return out, problems
-
-
-def _tests_md_reported_lines(tests_path: Path) -> list[tuple[int, str]] | None:
-    """Every line of ``tests_path`` that `TEST_REPORTED_LINE` matches, as ``(line number,
-    text)``, over the WHOLE file (inside a test definition or not), or None when the file
-    cannot be read. Issue #589 retired the `reported` class: the line is refused wherever it
-    stands, and this is its detector."""
-    try:
-        text = tests_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None
-    return [(n, line.strip()) for n, line in enumerate(text.splitlines(), start=1)
-            if TEST_REPORTED_LINE.match(line.strip())]
 
 
 #: The `history` lines of a `tests.md` whose node runs a time loop (issue #589; a stride per
@@ -5008,12 +4968,6 @@ def _required_raw_evidence(
                 required.discard(artifact)
             else:
                 required.add(artifact)
-        return required
-
-    if raw_requirements.get("state_snapshot_required") is True:
-        required.add("state_snapshots")
-    elif raw_requirements.get("state_snapshot_required") is False:
-        required.discard("state_snapshots")
     return required
 
 
@@ -5038,10 +4992,8 @@ def _state_snapshot_required(repo_root: Path, execution: NodeExecution) -> bool:
             if isinstance(item_required, bool):
                 return item_required
             return True
-
-    value = raw_requirements.get("state_snapshot_required")
-    if isinstance(value, bool):
-        return value
+    # The flat `raw_requirements.state_snapshot_required` key is a legacy spelling no writer
+    # emits and nothing reads since issue #643.
     return default_required
 
 
@@ -5450,11 +5402,6 @@ def _validate_io_contract_file(
                 violations.append(
                     f"{contract_path}:io_contract.outputs[{idx}].shape_expr must resolve to a single referenced state_snapshots variable/time_variable shape"
                 )
-
-    if "numerical_kernel_contract" in contract:
-        violations.append(
-            f"{contract_path}:numerical_kernel_contract must not appear in spec.ir.yaml; move generation contract to spec.ir.yaml"
-        )
 
 
 def _validate_io_contract_schema(
@@ -5945,14 +5892,10 @@ def _validate_algorithm_contract_file(
 def _validate_algorithm_contract_schema(
     repo_root: Path, execution: NodeExecution, violations: list[str]
 ) -> None:
+    # A missing ref or file is reported once, by `_validate_io_contract_schema`, which `validate`
+    # runs on the same execution beside this.
     contract_path = _ir_document_path_for_execution(repo_root, execution)
-    if contract_path is None:
-        violations.append(
-            f"{execution.pipeline_dir / 'lineage.json'}: ir_ref missing; cannot resolve spec.ir.yaml"
-        )
-        return
-    if not contract_path.exists():
-        violations.append(f"{contract_path}: missing")
+    if contract_path is None or not contract_path.exists():
         return
     _validate_algorithm_contract_file(
         repo_root,
@@ -6029,7 +5972,7 @@ def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[s
 
 
 def _init_publishing_member_ids(
-    repo_root: Path, execution: NodeExecution, violations: list[str],
+    repo_root: Path, execution: NodeExecution,
 ) -> tuple[str, ...]:
     """The spec_ids of the node's `problem/` direct dependencies whose OWN §5.1 publishes
     `<member>__init` (the system tier, Part 2), read by `_member_procedure_names` from the
@@ -6038,8 +5981,9 @@ def _init_publishing_member_ids(
 
     The members are the ones `_component_dep_spec_ids` reads (the certified IR's
     `direct_deps`, which the consistency gate ties to the host's dependency graph). A member
-    whose §5.1 cannot be read is a violation here and is passed on as an `__init` publisher, so
-    the placement gate runs for it too: fail-closed both ways."""
+    whose §5.1 cannot be read is passed on as an `__init` publisher, so the placement gate runs
+    for it too (fail-closed). Its unreadable §5.1 is the operator's spec, which the spec input
+    check refuses at launch (`spec_input_gates.problem_dependency_surface_violation`)."""
     if not execution.node_key.startswith("problem/"):
         return ()
     dep_data = _dependency_resolved_for_execution(repo_root, execution)
@@ -6055,14 +5999,8 @@ def _init_publishing_member_ids(
             members.add(called[1])
     out: list[str] = []
     for member in sorted(members):
-        names, detail = _member_procedure_names(repo_root, member)
-        if names is None:
-            violations.append(
-                f"problem member {member!r}: its §5.1 procedure set cannot be read ({detail}), "
-                f"so where its `__init` may be called cannot be decided; the placement gate is "
-                f"applied as if it published one (fail-closed)")
-            out.append(member)
-        elif f"{member}__init" in names:
+        names, _detail = _member_procedure_names(repo_root, member)
+        if names is None or f"{member}__init" in names:
             out.append(member)
     return tuple(out)
 
@@ -6084,7 +6022,6 @@ def _dep_node_key_tokens(node: Any) -> list[str]:
 
 def _with_pipeline_harness(
     repo_root: Path, dep_data: dict[str, Any], node_key: str, pipeline_dir: Path,
-    violations: list[str],
 ) -> dict[str, Any]:
     """``dep_data`` as the pipeline at ``pipeline_dir`` sees it: the harness of the pipeline's
     target added as a direct dependency and a closure node
@@ -6092,20 +6029,17 @@ def _with_pipeline_harness(
     graph without it; the conductor's pre_judge DAG check and derived aggregate add it the same
     way, so the DAG-completeness gate asks about the harness exactly as it did when ``deps.yaml``
     declared it. A pipeline whose target does not resolve is left as it is — it is refused by
-    ``_validate_pipeline_targets_resolve`` in the same stage — and a harness the catalog cannot
-    resolve is a violation here rather than a node silently dropped from the DAG."""
+    ``_validate_pipeline_targets_resolve`` in the same stage.
+
+    A harness the catalog cannot resolve RAISES (``TargetProfileError``) rather than dropping the
+    harness from the DAG: the conductor resolved the same harness for this pipeline at its phase
+    start (``_write_lineage``) and at pre_judge, so a failure here is a host invariant broken —
+    the operator's profile or catalog changed under the run — not a leaf outcome."""
     target = _pipeline_target(repo_root, pipeline_dir)
     if target is None:
         return dep_data
     from tools.orchestration_runtime import with_target_harness
-    from tools.target_profile import TargetProfileError
-    try:
-        return with_target_harness(dep_data, repo_root, node_key, target)
-    except TargetProfileError as exc:
-        violations.append(
-            f"{pipeline_dir / 'lineage.json'}: the harness of target {target.target_id} does not "
-            f"resolve ({exc.detail}), so the dependency DAG cannot be checked against it")
-        return dep_data
+    return with_target_harness(dep_data, repo_root, node_key, target)
 
 
 def _dependency_expected_node_keys(dep_data: dict[str, Any]) -> set[str]:
@@ -6142,13 +6076,6 @@ def _dependency_expected_node_keys(dep_data: dict[str, Any]) -> set[str]:
     return expected
 
 
-def _dependency_run_token(dep_data: dict[str, Any]) -> str | None:
-    resolved_at = dep_data.get("resolved_at")
-    if isinstance(resolved_at, str) and resolved_at.strip():
-        return resolved_at.strip()
-    return None
-
-
 _NODE_KEY_TOKEN_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -6171,9 +6098,7 @@ def _closure_node_validated_in_own_pipeline(
     (``--pipeline-root`` / ``--run-id``) therefore does NOT contain the dependency's pipeline, so
     the DAG-completeness check below would wrongly flag a genuinely-completed dependency as a
     missing node workflow / plan / pipeline. A dependency that has its own VALIDATED pipeline is a
-    completed workflow — accept it cross-pipeline. Only the ``resolved_at``-token-less
-    ("validation scope") branch consults this; the per-token branch keeps its strict, single-scope
-    semantics.
+    completed workflow — accept it cross-pipeline.
 
     Requiring the full built+validated chain (not a bare ``binary_meta`` field) is deliberate:
     it means only a node that genuinely completed its own ``compile→build→validate`` excuses the
@@ -7209,38 +7134,21 @@ def _source_fingerprint(repo_root: Path, execution: NodeExecution) -> SourceFing
     )
 
 
-def _resolve_pipeline_roots(
-    repo_root: Path, workspace_root: str, raw_values: list[str] | None
-) -> list[Path] | None:
+def _resolve_cli_path(repo_root: Path, raw: str) -> Path:
+    """A `--pipeline-root` / `--ir-ref` argument as a resolved path, relative to the repository
+    root unless absolute. The conductor composes both from its own refs; an operator who types
+    one names the directory to read. (Its containment refusals went in issue #643: they policed
+    only that operator argument.)"""
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    return candidate.resolve()
+
+
+def _resolve_pipeline_roots(repo_root: Path, raw_values: list[str] | None) -> list[Path] | None:
     if not raw_values:
         return None
-
-    workspace_path = repo_root / workspace_root
-    pipelines_path = workspace_path / "pipelines"
-    roots: list[Path] = []
-    for raw in raw_values:
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = repo_root / candidate
-        candidate = candidate.resolve()
-        try:
-            candidate.relative_to(workspace_path.resolve())
-        except ValueError:
-            raise ValueError(
-                f"pipeline_root must be under {workspace_path}: {candidate}"
-            ) from None
-        try:
-            candidate.relative_to(pipelines_path.resolve())
-        except ValueError:
-            raise ValueError(
-                f"pipeline_root must be under {pipelines_path}: {candidate}"
-            ) from None
-        if _pipeline_node_safe(candidate) is None:
-            raise ValueError(
-                f"pipeline_root must be {pipelines_path}/<node_key_safe>/<target_id>/"
-                f"<pipeline_id> (a pipeline is built for one target, issue #284): {candidate}")
-        roots.append(candidate)
-    return roots
+    return [_resolve_cli_path(repo_root, raw) for raw in raw_values]
 
 
 def _validate_orchestration_hierarchy(
@@ -7613,58 +7521,6 @@ def _validate_orchestration_hierarchy(
     # went too, with `--in-flight-agent-run-id`.
 
 
-def _resolve_ir_dir(repo_root: Path, workspace_root: str, raw_ir_ref: str) -> Path:
-    workspace_path = (repo_root / workspace_root).resolve()
-    candidate = Path(raw_ir_ref)
-    if not candidate.is_absolute():
-        candidate = (repo_root / candidate).resolve()
-    else:
-        candidate = candidate.resolve()
-    try:
-        candidate.relative_to(workspace_path.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"ir_ref must be under {workspace_path}: {candidate}"
-        ) from exc
-    ir_root = workspace_path / "ir"
-    try:
-        candidate.relative_to(ir_root.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"ir_ref must be under {ir_root}: {candidate}"
-        ) from exc
-    return candidate
-
-
-def _resolve_pipeline_dir_for_stage(
-    repo_root: Path, workspace_root: str, raw_pipeline_ref: str
-) -> Path:
-    workspace_path = (repo_root / workspace_root).resolve()
-    candidate = Path(raw_pipeline_ref)
-    if not candidate.is_absolute():
-        candidate = (repo_root / candidate).resolve()
-    else:
-        candidate = candidate.resolve()
-    try:
-        candidate.relative_to(workspace_path.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"pipeline_root must be under {workspace_path}: {candidate}"
-        ) from exc
-    pipelines_root = workspace_path / "pipelines"
-    try:
-        candidate.relative_to(pipelines_root.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"pipeline_root must be under {pipelines_root}: {candidate}"
-        ) from exc
-    if _pipeline_node_safe(candidate) is None:
-        raise ValueError(
-            f"pipeline_root must be {pipelines_root}/<node_key_safe>/<target_id>/<pipeline_id> "
-            f"(a pipeline is built for one target, issue #284): {candidate}")
-    return candidate
-
-
 def _plan_dependency_node_key(ir_dir: Path) -> str | None:
     """The node_key of the node this IR belongs to, as the compile stage sees it.
 
@@ -7726,20 +7582,12 @@ def _validate_compile_stage_impl(
     workspace_root: str,
     ir_ref: str,
 ) -> list[str]:
-    normalized_workspace_root = _normalize_workspace_root_token(workspace_root)
-    if normalized_workspace_root != "workspace":
-        return [f"workspace_root must be exactly 'workspace' (given: {workspace_root})"]
-    try:
-        ir_dir = _resolve_ir_dir(repo_root, workspace_root, ir_ref)
-    except ValueError as exc:
-        return [str(exc)]
-    return _validate_compile_ir_dir_impl(repo_root, ir_dir)
+    return _validate_compile_ir_dir_impl(repo_root, _resolve_cli_path(repo_root, ir_ref))
 
 
 def validate_compile_ir_dir(repo_root: Path, ir_dir: Path) -> list[str]:
-    """The `Compile.static` validators over an IR directory the caller names, WITHOUT the
-    `--stage compile` resolution that confines it to `workspace/ir/`: the body
-    `validate_compile_stage` runs after that resolution, called directly.
+    """The `Compile.static` validators over an IR directory the caller names: the body
+    `validate_compile_stage` runs after resolving `--ir-ref`, called directly.
 
     Its caller is a `compile.generate` `workshop leaf`'s `check_ir` (issue #534 step 2), which
     holds a host-normalized copy of the leaf's IR in a scratch directory under its lineage home
@@ -7763,10 +7611,9 @@ def _validate_compile_ir_dir_impl(repo_root: Path, ir_dir: Path) -> list[str]:
         _validate_io_contract_file(repo_root, derived_path, violations)
         direct_spec_vars = _extract_spec_var_names(derived_path)
 
+    # The same file as `derived_path`, whose absence is reported once, above.
     algo_path = ir_dir / "spec.ir.yaml"
-    if not algo_path.exists():
-        violations.append(f"{algo_path}: missing")
-    else:
+    if algo_path.exists():
         nk = _plan_dependency_node_key(ir_dir)
         _validate_algorithm_contract_file(
             repo_root,
@@ -8757,29 +8604,15 @@ def _validate_published_surface(
     # a leaf reaches `compile.generate` AND `generate.generate` done without transcribing §5.1 at
     # all, which is the whole of what issue #153 cause A exists to prevent.
     #
-    # Two checks, because they fail in different circumstances and the weaker one must not be
-    # skipped when the stronger cannot answer:
-    #
-    # (1) CONTAINMENT. The document may not live inside the leaf's write root. This is expressed
-    #     against `ir_dir` rather than against a literal workspace path so it holds whatever the
-    #     layout is, and it is the check that still works when the registry cannot answer.
-    # (2) IDENTITY. When the operator-authored registry knows this `(spec_kind, spec_id)`, the ref
-    #     must resolve to exactly the file it names. Every certified IR in the tree already carries
-    #     that path verbatim, so this refuses nothing that exists today.
+    # IDENTITY. The operator-authored registry knows this `(spec_kind, spec_id)` (it answered the
+    # kind above), and the ref must resolve to exactly the file it names. Every certified IR in the
+    # tree already carries that path verbatim, so this refuses nothing that exists today. (A
+    # CONTAINMENT refusal of a ref inside the IR directory stood before it until issue #643: the
+    # identity check refuses that decoy too, and the registry always answers by this point.)
     try:
         cs_resolved = cs_path.resolve()
-        ir_resolved = Path(ir_dir).resolve()
     except OSError:  # pragma: no cover - a path the filesystem refuses to resolve
-        cs_resolved, ir_resolved = cs_path, Path(ir_dir)
-    if cs_resolved == ir_resolved or ir_resolved in cs_resolved.parents:
-        violations.append(
-            f"{derived_path}:meta.source_refs.controlled_spec ({cs_ref}) resolves INSIDE the IR "
-            f"directory, which is the `compile.generate` leaf's write root on the AGENTIC path "
-            f"(a `pure-function leaf` writes nothing, and this gate wants the same answer for it) "
-            f"— the {kind} public_api "
-            "would be pinned against a document the leaf itself can author, which is not a pin. "
-            "Point it at the operator-authored controlled_spec under the spec tree")
-        return
+        cs_resolved = cs_path
     expected = _catalog_controlled_spec_path(repo_root, kind, spec_id)
     if expected is None:
         # The registry answered the kind (above), so a miss here is an entry with no
@@ -9181,32 +9014,15 @@ def _validate_ir_module_parameters_against_section51(
         # The §5.1↔IR MATCH key: the language's own case rule.
         return identifier_key(name.strip())
 
-    # Build the §5.1 name->value map (keyed by the language's key), but FAIL CLOSED on a duplicate name
-    # rather than collapsing it (a plain dict comprehension keeps the last value). A repeated §5.1
-    # module parameter cannot be pinned coherently: an identical duplicate would be accepted against a
-    # single IR/source declaration, and a differing duplicate (`dp = float64` and `dp = float32`, or
-    # the case-only `dp`/`DP`) would pass this map yet require BOTH contradictory `integer, parameter`
-    # lines in the source at Generate.static (which renders the full list, un-deduped) — an
-    # unsatisfiable contract that wedges Generate. Catch it here at Compile with a clear message.
-    # Both callers render §5.1 first (`_parse_canonical_interface_from_controlled_spec`), and the
-    # struct validator's one name space refuses a duplicate there and returns, so this check is
-    # defense in depth that no row reaches through a caller today.
-    spec_params: dict[str, Any] = {}
-    spec_seen: set[str] = set()
-    spec_dupe_names: list[str] = []
-    for mp in _section51_module_parameters(cs_path, signatures):
-        if _dupe_key(mp["name"]) in spec_seen:
-            spec_dupe_names.append(_dupe_key(mp["name"]))
-        else:
-            spec_seen.add(_dupe_key(mp["name"]))
-            spec_params[_norm_name(mp["name"])] = mp["value"]
-    for name in sorted(set(spec_dupe_names)):
-        violations.append(
-            f"{cs_path}: §5.1 declares module parameter '{name}' more than once (case-insensitively) "
-            "— each module parameter must be declared once (a duplicate collapses the value pin and "
-            "can require contradictory declarations in the generated source at Generate.static)")
-    if spec_dupe_names:
-        return
+    # The §5.1 name->value map (keyed by the language's key). A §5.1 that declares a module
+    # parameter twice (case-insensitively) never reaches here: both callers render §5.1 first
+    # (`_parse_canonical_interface_from_controlled_spec`), whose one name space refuses the
+    # duplicate (`collides with`) and returns. (This function refused it a second time until
+    # issue #643.)
+    spec_params: dict[str, Any] = {
+        _norm_name(mp["name"]): mp["value"]
+        for mp in _section51_module_parameters(cs_path, signatures)
+    }
 
     if "module_parameters" not in public_api:
         if spec_params:
@@ -9611,10 +9427,8 @@ def _validate_tests_and_predicates(
       to be valued by some predicate of the test). The leaf copies the line, so the comparison is
       against the spec rather than against anything the leaf wrote for itself. No gate parses a
       threshold; whether an expression measures the judgment is ``Compile.verify`` V3's.
-    - A ``tests.md`` ``reported:`` line (``TEST_REPORTED_LINE``) is refused (issue #589: the
-      class is retired, and a run-wide quantity is the host's reduction over ``series`` /
-      ``history``), and gate (m): the ``history:`` line against ``drive``
-      (``_history_line_violations``).
+    - Gate (m): the ``history:`` line against ``drive`` (``_history_line_violations``). (A
+      ``reported:`` line, a form issue #589 retired, is not read.)
     - Cross-target transcription (issue #324): a cross-target predicate is no judgment of the
       verdict, so its set is pinned separately — every test whose ``tests.md`` definition contains
       ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one, and no other test carries one
@@ -9781,13 +9595,6 @@ def _validate_tests_and_predicates(
                     "must equal the `expected_outcome:` line of its tests.md definition "
                     f"({outcomes[tid]!r})")
 
-    # Issue #589: the `reported` class is retired, so its line is refused wherever it stands.
-    for lineno, line in _tests_md_reported_lines(tests_path) or []:
-        violations.append(
-            f"{derived_path}:tests.md ({tests_path}) line {lineno}: a `reported:` line is refused "
-            f"({line!r}) — the class is retired (issue #589): a run-wide quantity is the host's "
-            "reduction over the series / history captures, never a value the operation returns "
-            "(docs/TESTS.md)")
     # Gate (m): the `history:` line against `drive`.
     for msg in _history_line_violations(tests_path, ir):
         violations.append(f"{derived_path}:{msg}")
@@ -10366,15 +10173,7 @@ def _validate_post_generate_stage_impl(
     source_id: str | None,
 ) -> list[str]:
     violations: list[str] = []
-    normalized_workspace_root = _normalize_workspace_root_token(workspace_root)
-    if normalized_workspace_root != "workspace":
-        return [f"workspace_root must be exactly 'workspace' (given: {workspace_root})"]
-    try:
-        pipeline_dir = _resolve_pipeline_dir_for_stage(
-            repo_root, workspace_root, pipeline_ref
-        )
-    except ValueError as exc:
-        return [str(exc)]
+    pipeline_dir = _resolve_cli_path(repo_root, pipeline_ref)
 
     _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
     node_key, ir_ref = _lineage_node_key_and_ir_ref(pipeline_dir)
@@ -10454,15 +10253,7 @@ def _validate_post_build_stage_impl(
     source_id: str | None,
 ) -> list[str]:
     violations: list[str] = []
-    normalized_workspace_root = _normalize_workspace_root_token(workspace_root)
-    if normalized_workspace_root != "workspace":
-        return [f"workspace_root must be exactly 'workspace' (given: {workspace_root})"]
-    try:
-        pipeline_dir = _resolve_pipeline_dir_for_stage(
-            repo_root, workspace_root, pipeline_ref
-        )
-    except ValueError as exc:
-        return [str(exc)]
+    pipeline_dir = _resolve_cli_path(repo_root, pipeline_ref)
 
     _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
     gen_id = source_id or _latest_source_id(pipeline_dir)
@@ -10516,9 +10307,6 @@ def _validate_impl(
     require_verdict: bool = True,
 ) -> list[str]:
     violations: list[str] = []
-    normalized_workspace_root = _normalize_workspace_root_token(workspace_root)
-    if normalized_workspace_root != "workspace":
-        return [f"workspace_root must be exactly 'workspace' (given: {workspace_root})"]
 
     workspace_path = repo_root / workspace_root
     if not workspace_path.exists():
@@ -10589,8 +10377,8 @@ def _validate_impl(
         )
 
     source_hash_map: dict[str, list[SourceFingerprint]] = {}
-    dep_contexts: list[tuple[NodeExecution, set[str], str | None]] = []
-    lineage_contexts: list[tuple[NodeLineage, set[str], str | None]] = []
+    dep_contexts: list[tuple[NodeExecution, set[str]]] = []
+    lineage_contexts: list[tuple[NodeLineage, set[str]]] = []
     lineages = _lineage_records(workspace_path, pipeline_roots)
     # Structural SOURCE checks are scoped to the source each execution declares
     # via trial_meta.source_source_id (mirroring --run-id run-scoping). Track the
@@ -10644,16 +10432,10 @@ def _validate_impl(
         dep_data = _dependency_resolved_for_execution(repo_root, execution)
         if isinstance(dep_data, dict):
             dep_data = _with_pipeline_harness(
-                repo_root, dep_data, execution.node_key, execution.pipeline_dir, violations)
+                repo_root, dep_data, execution.node_key, execution.pipeline_dir)
             expected_nodes = _dependency_expected_node_keys(dep_data)
             if expected_nodes:
-                dep_contexts.append(
-                    (
-                        execution,
-                        expected_nodes,
-                        _dependency_run_token(dep_data),
-                    )
-                )
+                dep_contexts.append((execution, expected_nodes))
     for lineage in lineages:
         if not lineage.dependency_ref or not lineage.dependency_ref.startswith("workspace/"):
             continue
@@ -10679,7 +10461,7 @@ def _validate_impl(
                 dep_data = nested
         # all_nodes / transitive_deps now live in the dependency node's own
         # conductor-authored sidecar <ir_ref>/dependency_graph.json, not its
-        # spec.ir.yaml. Merge them over the IR block (keeping node_key / resolved_at).
+        # spec.ir.yaml. Merge them over the IR block (keeping node_key).
         graph = _read_dependency_graph_sidecar(repo_root, lineage.ir_ref)
         if isinstance(graph, dict):
             merged = dict(dep_data)
@@ -10691,22 +10473,17 @@ def _validate_impl(
         if not isinstance(all_nodes, list) or not all_nodes:
             continue
         dep_data = _with_pipeline_harness(
-            repo_root, dep_data, lineage.node_key, lineage.pipeline_dir, violations)
+            repo_root, dep_data, lineage.node_key, lineage.pipeline_dir)
         expected_nodes = _dependency_expected_node_keys(dep_data)
         if expected_nodes:
-            lineage_contexts.append((lineage, expected_nodes, _dependency_run_token(dep_data)))
+            lineage_contexts.append((lineage, expected_nodes))
 
     scope_nodes = {_normalize_node_key_token(execution.node_key) for execution in executions}
-    scope_nodes_by_token: dict[str, set[str]] = {}
-    for execution, _, token in dep_contexts:
-        if token is None:
-            continue
-        scope_nodes_by_token.setdefault(token, set()).add(_normalize_node_key_token(execution.node_key))
 
     # Cross-pipeline cache: a closure node absent from the current validation scope is still
     # DAG-satisfied when it has its own fully-validated pipeline (the --with-deps model; see
-    # _closure_node_validated_in_own_pipeline). Only the token-less "validation scope" branch
-    # uses this — the per-token (resolved_at) branch keeps strict single-scope semantics.
+    # _closure_node_validated_in_own_pipeline). (A per-`resolved_at` scope was read here until
+    # issue #643: a legacy IR spelling no writer emits.)
     _xp_cache: dict[tuple[str, str | None], bool] = {}
 
     def _xp_satisfied(node_token: str, pipeline_dir: Path) -> bool:
@@ -10720,15 +10497,10 @@ def _validate_impl(
         return _xp_cache[key]
 
     seen_dag_violations: set[tuple[Path, str, tuple[str, ...]]] = set()
-    for execution, expected_nodes, token in dep_contexts:
-        if token is None:
-            available_nodes = scope_nodes
-            scope_label = "validation scope"
-        else:
-            available_nodes = scope_nodes_by_token.get(token, set())
-            scope_label = f"resolved_at={token}"
-        missing = sorted(expected_nodes - available_nodes)
-        if token is None and missing:
+    scope_label = "validation scope"
+    for execution, expected_nodes in dep_contexts:
+        missing = sorted(expected_nodes - scope_nodes)
+        if missing:
             missing = [m for m in missing if not _xp_satisfied(m, execution.pipeline_dir)]
         if missing:
             key = (execution.pipeline_dir, scope_label, tuple(missing))
@@ -10740,41 +10512,26 @@ def _validate_impl(
             )
 
     scope_lineage_nodes = {_normalize_node_key_token(item.node_key) for item in lineages}
-    scope_lineage_nodes_by_token: dict[str, set[str]] = {}
     scope_plan_nodes = set()
-    scope_plan_nodes_by_token: dict[str, set[str]] = {}
 
-    for lineage, _, token in lineage_contexts:
+    for lineage, _ in lineage_contexts:
         node_token = _normalize_node_key_token(lineage.node_key)
-        if token is not None:
-            scope_lineage_nodes_by_token.setdefault(token, set()).add(node_token)
         plan_ok = False
         if isinstance(lineage.ir_ref, str) and lineage.ir_ref.startswith("workspace/"):
             plan_path = repo_root / lineage.ir_ref
             plan_ok = plan_path.exists() and plan_path.is_dir()
         if plan_ok:
             scope_plan_nodes.add(node_token)
-            if token is not None:
-                scope_plan_nodes_by_token.setdefault(token, set()).add(node_token)
 
     seen_issue_violations: set[tuple[Path, str, tuple[str, ...], tuple[str, ...]]] = set()
-    for lineage, expected_nodes, token in lineage_contexts:
-        if token is None:
-            available_pipeline_nodes = scope_lineage_nodes
-            available_plan_nodes = scope_plan_nodes
-            scope_label = "validation scope"
-        else:
-            available_pipeline_nodes = scope_lineage_nodes_by_token.get(token, set())
-            available_plan_nodes = scope_plan_nodes_by_token.get(token, set())
-            scope_label = f"resolved_at={token}"
-        missing_pipeline_nodes = sorted(expected_nodes - available_pipeline_nodes)
-        missing_plan_nodes = sorted(expected_nodes - available_plan_nodes)
-        if token is None:
-            # A dependency built in its own pipeline (--with-deps) is issued cross-pipeline.
-            missing_pipeline_nodes = [m for m in missing_pipeline_nodes
-                                      if not _xp_satisfied(m, lineage.pipeline_dir)]
-            missing_plan_nodes = [m for m in missing_plan_nodes
+    for lineage, expected_nodes in lineage_contexts:
+        missing_pipeline_nodes = sorted(expected_nodes - scope_lineage_nodes)
+        missing_plan_nodes = sorted(expected_nodes - scope_plan_nodes)
+        # A dependency built in its own pipeline (--with-deps) is issued cross-pipeline.
+        missing_pipeline_nodes = [m for m in missing_pipeline_nodes
                                   if not _xp_satisfied(m, lineage.pipeline_dir)]
+        missing_plan_nodes = [m for m in missing_plan_nodes
+                              if not _xp_satisfied(m, lineage.pipeline_dir)]
         if not missing_pipeline_nodes and not missing_plan_nodes:
             continue
         key = (
@@ -10879,7 +10636,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Optional pipeline directory to validate. "
-            "Can be repeated. Path must be under workspace/. "
+            "Can be repeated. "
             "Required as a single path for post_generate/post_build."
         ),
     )
@@ -10960,15 +10717,7 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     args.source_id,
                 )
         else:
-            try:
-                pipeline_roots = _resolve_pipeline_roots(
-                    repo_root=repo_root,
-                    workspace_root=args.workspace_root,
-                    raw_values=args.pipeline_root,
-                )
-            except ValueError as exc:
-                print(f"pipeline semantic validation: FAIL\n- {exc}")
-                return 1
+            pipeline_roots = _resolve_pipeline_roots(repo_root, args.pipeline_root)
 
             run_ids = set(args.run_id) if args.run_id else None
             if args.stage == "post_execute":

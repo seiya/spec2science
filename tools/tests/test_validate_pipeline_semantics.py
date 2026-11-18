@@ -1277,15 +1277,6 @@ class ValidatePipelineSemanticsTests(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def test_rejects_noncanonical_workspace_root_argument(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            violations = validate(repo_root=repo_root, workspace_root="workspace/runs/sample")
-            self.assertTrue(
-                any("workspace_root must be exactly 'workspace'" in v for v in violations)
-            )
-
     def test_ignores_empty_execution_node_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -2593,7 +2584,6 @@ end program shallow_water2d_runner
                     "direct_deps": ["component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"],
                     "transitive_deps": ["component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"],
                     "topo_level": 1,
-                    "resolved_at": "20260304T000000Z",
                     "all_nodes": [
                         {"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"},
                         {"node_key": "problem/shallow_water2d@0.3.0"},
@@ -2644,7 +2634,6 @@ end program shallow_water2d_runner
         "direct_deps": ["component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"],
         "transitive_deps": ["component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"],
         "topo_level": 1,
-        # NOTE: no `resolved_at` -> token-less "validation scope" branch (the one relaxed).
         "all_nodes": [
             {"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"},
             {"node_key": "problem/shallow_water2d@0.3.0"},
@@ -10322,53 +10311,6 @@ end program shallow_water2d_runner
             vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
         self.assertEqual(len([v for v in violations if "target case(s) ['b']" in v]), 1, violations)
 
-    # --- the retired `reported` line (issue #589) ---------------------------------------------
-    # Deleted with the class (their subject went with `source: reported` and the D13 pins):
-    # `test_a_reported_variable_is_pinned_to_the_tests_md_line` (the IR's `source: reported` set
-    # == the lines), `test_a_reported_line_is_read_by_a_predicate_of_its_own_test` (the per-test
-    # line == the reads) and `test_a_malformed_reported_line_is_refused_at_the_stage` (the line
-    # reader's problems). What survives is the line's DETECTOR, which now refuses it.
-
-    def test_a_reported_line_is_refused_at_the_stage(self) -> None:
-        """Issue #589: the `reported` class is retired, so a `reported:` line in tests.md is
-        refused wherever it stands — in a definition, in either spelling, or outside one — once
-        per line, naming the line; the same tests.md without it is clean."""
-        plain = "### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
-        for label, extra, lines in (
-                ("bullet", "- `reported`: `cfl`\n", [4]),   # (after the planted outcome line)
-                ("plain", "reported: cfl, h_min_run\n", [4]),
-                ("star bullet, empty", "* reported:\n", [4]),
-                ("outside a definition", "## 7. Notes\nreported: cfl\n", [5]),
-                ("two", "- `reported`: `cfl`\nreported: h\n", [4, 5])):
-            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
-                v = self._stage_with_tests_md(Path(tmp), plain + extra,
-                                              self._io_contract_with_predicates())
-                hits = [x for x in v if "a `reported:` line is refused" in x]
-                self.assertEqual(len(hits), len(lines), v)
-                for hit, n in zip(hits, lines):
-                    self.assertIn(f" line {n}: a `reported:` line is refused", hit)
-                    self.assertIn("the class is retired (issue #589)", hit)
-                self.assertEqual(len(v), len(lines), v)
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(self._stage_with_tests_md(
-                Path(tmp), plain, self._io_contract_with_predicates()), [])
-
-    def test_the_reported_line_reader_takes_only_its_own_form(self) -> None:
-        """Over-refusal probe of the detector (`TEST_REPORTED_LINE`, kept by issue #589 to refuse
-        the line): prose that speaks of a report, in a definition or outside one, is no line;
-        both spellings are lines wherever they stand."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "tests.md"
-            path.write_text(
-                "## 5. Judged quantities\n- reported: outside_any_definition\n"
-                "## 6. Test definitions\n"
-                "### 1-1. `t1`\n- `reported`: `cfl`, `h_min_run`\n"
-                "- The reported CFL is judged. It is reported: by the operation.\n"
-                "### 1-2. `t2`\nreported: cfl\n### 1-3. `t3`\n- `judgment`: nothing reported\n",
-                encoding="utf-8")
-            self.assertEqual([n for n, _line in vps._tests_md_reported_lines(path)], [2, 5, 8])
-            self.assertIsNone(vps._tests_md_reported_lines(Path(tmp) / "absent"))
-
     def test_compile_omission_gate_through_the_stage(self) -> None:
         """D10 (issue #582), THROUGH the full compile stage (`_validate_tests_and_predicates` ->
         `primary_evidence.quantity_violations`): the set of `quantity` over a test's predicates
@@ -10815,19 +10757,6 @@ end program shallow_water2d_runner
         self.assertEqual(len(partial), 1, partial)
         self.assertIn(f"test {dropped['test_id']!r}: no predicate", partial[0])
         self.assertIn(repr([dropped["quantity"]]), partial[0])
-
-    def test_validate_compile_stage_rejects_non_plans_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            violations = validate_compile_stage(
-                repo_root,
-                "workspace",
-                "workspace/pipelines/foo/bar",
-            )
-            self.assertTrue(
-                any("ir_ref must be under" in v for v in violations), violations
-            )
 
     def test_validate_compile_stage_rejects_missing_context_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16284,7 +16213,7 @@ class ProfileSelectionGateTests(unittest.TestCase):
         # green.
         import inspect
         source = inspect.getsource(vps._validate_compile_ir_dir_impl)
-        self.assertIn("_validate_compile_ir_dir_impl(repo_root, ir_dir)",
+        self.assertIn("_validate_compile_ir_dir_impl(repo_root, _resolve_cli_path(repo_root, ir_ref))",
                       inspect.getsource(vps._validate_compile_stage_impl))
         self.assertIn("_validate_profile_selection(repo_root, ir_dir, violations)", source)
 
@@ -16928,17 +16857,15 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
 
     def test_a_case_only_duplicate_is_refused_under_a_case_sensitive_key_too(self) -> None:
         """The duplicate rule is the strictest language's (issue #469 PR-3): with a key that
-        calls `dp` and `DP` two names, a §5.1 or an IR declaring both is still a duplicate, not
-        two parameters. Driven on the function with the case-sensitive key, the §5.1 half by
-        patching the reader (the struct validator refuses that §5.1 before any caller gets
-        here, so no caller reaches the §5.1 half — it is defense in depth)."""
+        calls `dp` and `DP` two names, an IR declaring both is still a duplicate, not two
+        parameters. Driven on the function with the case-sensitive key. (The §5.1 half went in
+        issue #643: the struct validator refuses that §5.1 before any caller gets here.)"""
         from tools.backends.language.cuda_cpp import bundle as cuda_bundle
         two = [{"name": "dp", "base": "integer", "value": "float64"},
                {"name": "DP", "base": "integer", "value": "float64"}]
         one = two[:1]
         for side, spec_params, ir_params, expected in (
-                ("spec", two, one, "§5.1 declares module parameter 'dp' more than once"),
-                ("ir", one, two, "declares parameter 'dp' more than once (case-insensitively)")):
+                ("ir", one, two, "declares parameter 'dp' more than once (case-insensitively)"),):
             with self.subTest(side=side), unittest.mock.patch.object(
                     vps, "_section51_module_parameters", return_value=spec_params):
                 violations: list[str] = []
@@ -21252,10 +21179,10 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         republished the decoy's names to consumers — a leaf reaches `compile.generate` AND
         `generate.generate` done without transcribing §5.1 at all.
 
-        Two rows, because the two checks fail in different circumstances and the weaker one has to
-        keep working when the stronger cannot answer: CONTAINMENT (never a document inside the IR
-        directory, which holds with no registry present) and IDENTITY (when the registry knows this
-        `(spec_kind, spec_id)`, the ref must be exactly the file it names).
+        Two rows, both answered by IDENTITY (the registry knows this `(spec_kind, spec_id)`, and the
+        ref must be exactly the file it names): a decoy inside the IR directory, and one outside it.
+        (A separate CONTAINMENT refusal of the first went in issue #643; the identity check refuses
+        that decoy too, and the registry always answers by the time the pin runs.)
 
         The control matters as much as the attack here: this fixture's own honest ref must still
         pass, or the row would be green for a gate that refuses everything."""
@@ -21290,7 +21217,7 @@ class ComponentPublicApiGateTests(unittest.TestCase):
                 v: list[str] = []
                 vps._validate_published_surface(tmp, ir_dir, v)
             self.assertTrue(
-                any("resolves INSIDE the IR directory" in x for x in v), v)
+                any("is not the controlled_spec the registry records" in x for x in v), v)
 
         with self.subTest(check="identity"):
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -21834,17 +21761,16 @@ class ComposingInitPostGenerateTests(unittest.TestCase):
         self.assertFalse(any("cmp_mem__init` is named" in v for v in self._violations(
             moved, member_51=self._member_51("cmp_mem__step"))))
 
-    def test_a_member_whose_spec_cannot_be_read_is_refused_and_still_placed(self) -> None:
-        """Fail-closed both ways: the unreadable member is a violation, and the placement gate
-        runs for it as if it published `__init`."""
+    def test_a_member_whose_spec_cannot_be_read_is_still_placed(self) -> None:
+        """Fail-closed: the placement gate runs for an unreadable member as if it published
+        `__init`. (Its refusal of the unreadable §5.1 went in issue #643: the spec input check
+        refuses that operator file at launch.)"""
         moved = self._model().replace(
             "    dts = dt / real(substeps, dp)\n",
             "    dts = dt / real(substeps, dp)\n    call cmp_mem__init(nx, 1, u, dts, j, ok)\n")
         for member_51 in (None, "### 5.1 Canonical interface block\n\n```yaml\n[unclosed\n```\n"):
             with self.subTest(member_51=member_51):
                 found = self._violations(moved, member_51=member_51)
-                self.assertTrue(any("problem member 'cmp_mem': its §5.1 procedure set cannot "
-                                    "be read" in v for v in found), found)
                 self.assertTrue(any("`cmp_mem__init` is named outside" in v for v in found),
                                 found)
 
@@ -27711,10 +27637,10 @@ class CompileIrDirTests(unittest.TestCase):
             norm = (lambda xs, d: [x.replace(str(d), "<ir>") for x in xs])
             self.assertEqual(norm(result, scratch),
                              norm(gate, (repo / refs.ir_ref).resolve()))
-            # The CLI path is unchanged: it still refuses a directory outside workspace/ir.
-            refused = vps.validate_compile_stage(repo, "workspace", str(scratch))
-            self.assertEqual(len(refused), 1)
-            self.assertIn("ir_ref must be under", refused[0])
+            # The CLI path reads the directory it is named (its `workspace/ir` confinement went in
+            # issue #643), so the scratch copy draws the same findings through it.
+            through_cli = vps.validate_compile_stage(repo, "workspace", str(scratch))
+            self.assertEqual(norm(through_cli, scratch.resolve()), norm(result, scratch))
 
 
 _ALIASED_DEP_DIR = Path(__file__).parent / "data" / "channel_aliased_dependency_calls"
