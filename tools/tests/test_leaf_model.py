@@ -1377,6 +1377,7 @@ class InprocBodiesCallTheServerWithoutATokenTests(unittest.TestCase):
     #: `_gate_syntax_check` rather than a body of its own.
     CALLING_METHODS: ClassVar[frozenset[str]] = frozenset({
         "_build_inproc",            # compile_project
+        "_build_oracle",            # compile_project     (the oracle's builds, issue #680)
         "_gate_lint_check",         # run_linter          (generate.gate, compile.static)
         "_probe",                   # run_linter          (attribution re-run)
         "_gate_syntax_check",       # run_syntax_check    (generate.gate, compile.static)

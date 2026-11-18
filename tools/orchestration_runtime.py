@@ -2353,15 +2353,15 @@ def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
 
 def _stamped_oracle(recorded: Any, computed: Mapping[str, Any]) -> dict[str, Any] | None:
     """The `oracle` member a stamp's `derivation_inputs` records — each build's libraries with
-    the site's files a key computed without probing lacks (issue #680) — when it holds the same
-    declaration and adapter, and each build the same libraries with the same declarations
-    (`_stamped_library_files`); None otherwise, and when it records none. The declaration's hash
-    fixes the build ids and their libraries' ids and order, so only each library's declaration
-    is compared beside it."""
+    the site's files a key computed without probing lacks (issue #680) — when it holds every
+    member but `builds` equal (the declaration, the adapter and the `use`), and each build the
+    same libraries with the same declarations (`_stamped_library_files`); None otherwise, and
+    when it records none. The declaration's hash fixes the build ids and their libraries' ids
+    and order, so only each library's declaration is compared beside it."""
     stamped = recorded.get("oracle") if isinstance(recorded, Mapping) else None
     if not (isinstance(stamped, Mapping)
-            and stamped.get("declaration") == computed.get("declaration")
-            and stamped.get("source") == computed.get("source")
+            and {k: v for k, v in stamped.items() if k != "builds"}
+            == {k: v for k, v in computed.items() if k != "builds"}
             and isinstance(stamped.get("builds"), list)
             and len(stamped["builds"]) == len(computed["builds"])):
         return None

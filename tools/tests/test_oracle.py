@@ -1,6 +1,7 @@
-"""The `oracle` of a node (issue #680, PR-1): the declaration (`tools/oracle.py`), the case plan,
-the build and validate keys' `oracle` member (`tools/orchestration_runtime.py`), and the
-driver's startup verdict over the oracle's libraries (`run_workflow._library_verdict`).
+"""The `oracle` of a node (issue #680): the declaration (`tools/oracle.py`), the case plan,
+the build and validate keys' `oracle` member (`tools/orchestration_runtime.py`), the driver's
+startup verdict over the oracle's libraries (`run_workflow._library_verdict`) (PR-1), and the
+oracle's builds in `Build` (`Conductor._build_oracle`, PR-2).
 
 The libraries are the ones `test_external_library.py` builds with the real compiler, installed
 under a non-system directory; its fixture is reused.
@@ -10,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -487,6 +490,420 @@ class OracleVerdictTest(_OracleFixture):
                 assert verdict is not None
                 self.assertEqual((verdict["reason"], verdict["spec_ref"], verdict["oracle_of"]),
                                  (oracle.DECLARATION_INVALID, SPEC, dep))
+
+
+#: The node the build rows drive: spec id `spec_x`, so the model is `spec_x_model.f90` and the
+#: binary `spec_x_runner`.
+_BUILD_SPEC = "spec/component/spec_x"
+_BUILD_NODE = "component/spec_x@0.1.0"
+#: A control file that honours the variables Build hands it (`execute.build_overrides`,
+#: `library_overrides`) and compiles the model and the driver.
+_MAKEFILE = """\
+OBJDIR ?= build
+BINDIR ?= bin
+BIN ?= spec_x_runner
+LIBINC ?=
+LIBS ?=
+all: $(BINDIR)/$(BIN)
+$(BINDIR)/$(BIN): spec_x_model.f90 spec_x_runner.f90
+\tmkdir -p $(OBJDIR) $(BINDIR)
+\tgfortran $(LIBINC) -J$(OBJDIR) -c spec_x_model.f90 -o $(OBJDIR)/spec_x_model.o
+\tgfortran $(LIBINC) -J$(OBJDIR) -c spec_x_runner.f90 -o $(OBJDIR)/spec_x_runner.o
+\tgfortran $(OBJDIR)/spec_x_model.o $(OBJDIR)/spec_x_runner.o $(LIBS) -o $@
+"""
+_DRIVER = "program p\n  use m_model, only: m_run\n  call m_run()\nend program p\n"
+#: A generated model that reaches no library.
+_MODEL = """\
+module m_model
+  implicit none
+contains
+  subroutine m_run()
+    print '(a)', 'model'
+  end subroutine m_run
+end module m_model
+"""
+#: An adapter that reaches `foo` alone.
+_ADAPTER_FOO = """\
+module m_model
+  implicit none
+contains
+  subroutine m_run()
+    real(8), external :: foo_add
+    print '(f8.2)', foo_add(1d0)
+  end subroutine m_run
+end module m_model
+"""
+#: An adapter that reaches both libraries.
+_ADAPTER_BOTH = """\
+module m_model
+  use vend, only: vend_scale
+  implicit none
+contains
+  subroutine m_run()
+    real(8) :: a(1)
+    real(8), external :: foo_add
+    a = [1d0]
+    call vend_scale(a, 3d0)
+    print '(2f8.2)', a, foo_add(1d0)
+  end subroutine m_run
+end module m_model
+"""
+
+
+class OracleBuildTest(_OracleFixture):
+    """`Build` builds the oracle (`Conductor._build_oracle`): each declared build from the
+    adapter in the model source's place, with the closure's libraries and its own; the certified
+    and checked builds with the closure's alone. Real `make` and `gfortran`; the post_build
+    validator subprocess alone is stubbed."""
+
+    def node(self, *, oracle_text: str | None, adapter: str = _ADAPTER_FOO,
+             model: str = _MODEL) -> tuple[Path, Any, Any]:
+        """A scratch repository holding the fixture libraries' declarations, `sites.yaml`, the
+        node's generated `src/` and (unless `oracle_text` is None) its oracle."""
+        import tools.workflow_conductor as wc
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_external_library import write_declarations
+        from tools.tests.test_workflow_conductor import _TargetedConductor
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        repo = Path(td.name)
+        write_declarations(repo)
+        write_sites(repo, self.dirs)
+        spec = repo / _BUILD_SPEC
+        spec.mkdir(parents=True)
+        (spec / "deps.yaml").write_text(
+            "dependencies:\n  components: []\n  profiles: []\n")
+        if oracle_text is not None:
+            d = spec / oracle.ORACLE_DIR
+            d.mkdir()
+            (d / oracle.DECLARATION_FILE).write_text(oracle_text)
+            (d / ADAPTER).write_text(adapter)
+        c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                               orchestration_agent_run_id="x",
+                               llm_config=sample_config_with("claude"), env={},
+                               target_profile=FORTRAN_CPU)
+        refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id, node_key=_BUILD_NODE,
+                           spec_path=_BUILD_SPEC, ir_id="x_1", pipeline_id="x_1",
+                           source_id="src_1", binary_id="bin_1")
+        (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+        src = repo / refs.source_dir() / "src"
+        src.mkdir(parents=True)
+        (src / "Makefile").write_text(_MAKEFILE)
+        (src / "spec_x_model.f90").write_text(model)
+        (src / "spec_x_runner.f90").write_text(_DRIVER)
+        return repo, c, refs
+
+    def build(self, c: Any, refs: Any, *, closure: tuple[str, ...] = (),
+              record: list[dict] | None = None) -> Any:
+        """`_run_deterministic_substep` on Build, with the closure's libraries `closure`
+        (resolved at the fixture site) and every `tool_compile_project` call recorded."""
+        import tools.workflow_conductor as wc
+        from tools.tests.test_workflow_conductor import _build_runtime
+        build_runtime = _build_runtime()
+        real_compile = build_runtime.tool_compile_project
+        calls = record if record is not None else []
+        resolved = xl.resolve_closure(c.repo_root, FORTRAN_CPU,
+                                      [xl.load_declaration(c.repo_root, i) for i in closure])
+        real_run = subprocess.run
+
+        def run_but_the_post_build_validator(argv, *a, **k):
+            if any("validate_pipeline_semantics" in str(w) for w in argv):
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return real_run(argv, *a, **k)
+
+        def compile_and_record(args):
+            calls.append(args)
+            return real_compile(args)
+
+        with mock.patch.object(build_runtime, "tool_compile_project", compile_and_record), \
+                mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
+                                  lambda self_, refs_: []), \
+                mock.patch.object(wc.Conductor, "_stage_dependency_sources",
+                                  lambda self_, refs_, obj_dir, *, phase: []), \
+                mock.patch.object(wc.Conductor, "_closure_libraries",
+                                  lambda self_, refs_: resolved), \
+                mock.patch.object(subprocess, "run", run_but_the_post_build_validator):
+            return c._run_deterministic_substep(refs, "build", None, "child-1", {})
+
+    def meta(self, repo: Path, refs: Any) -> dict[str, Any]:
+        return json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+
+    def output(self, binary: Path) -> str:
+        env = {**os.environ, "LD_LIBRARY_PATH": str(self.dirs["lib"])}
+        return subprocess.run([str(binary)], capture_output=True, text=True, env=env,
+                              check=True).stdout.strip()
+
+    @staticmethod
+    def libs(call: dict) -> list[str]:
+        return [a for a in call["extra_args"] if a.startswith(("LIBINC=", "LIBS="))]
+
+    def test_each_declared_build_is_built_from_the_adapter_with_its_own_libraries(
+            self) -> None:
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\norigin: o\n"
+                "builds:\n  - id: default\n    libraries: [foo]\n"
+                "  - id: alt\n    libraries: [foo, vend]\n    cases: [c2]\n")
+        repo, c, refs = self.node(oracle_text=text)
+        calls: list[dict] = []
+        result = self.build(c, refs, record=calls)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta = self.meta(repo, refs)
+        self.assertEqual(meta["verification_status"], "pass", meta.get("failure_excerpt"))
+        bdir = repo / refs.binary_dir()
+        # The certified binary is the generated model's; each oracle binary the adapter's.
+        self.assertEqual(self.output(bdir / "bin" / "spec_x_runner"), "model")
+        for build_id in ("default", "alt"):
+            self.assertEqual(
+                self.output(bdir / "bin_oracle" / build_id / "spec_x_runner"), "3.00")
+        declared = oracle.load(repo, _BUILD_SPEC, "fortran")
+        assert declared is not None
+        record = meta["oracle"]
+        self.assertEqual(
+            (record["declaration_sha256"], record["source_sha256"], record["origin"]),
+            (declared.declaration_sha256, declared.source_sha256, "o"))
+        self.assertEqual([b["id"] for b in record["builds"]], ["default", "alt"])
+        oracle_calls = [k for k in calls if "/oracle/" in k["project_dir"]]
+        self.assertEqual(len(oracle_calls), 2)
+        for build, call, ids in zip(record["builds"], oracle_calls,
+                                    (("foo",), ("foo", "vend"))):
+            own = self.resolved(ids)
+            self.assertEqual(build["binary_ref"],
+                             f"binary/bin_1/bin_oracle/{build['id']}/spec_x_runner")
+            self.assertEqual(build["libraries"], xl.identity(own))
+            self.assertEqual(build["library_dirs"], list(xl.library_dirs(own)))
+            self.assertIsNotNone(build["command_id"])
+            inc, link = xl.make_values("gfortran", own)
+            self.assertEqual(self.libs(call), [f"LIBINC={inc}", f"LIBS={link}"])
+            # The node's log, as every other Build command's, not one under workspace/tmp/.
+            self.assertEqual(call["command_log_path"],
+                             str(repo / refs.source_dir() / "src" / "command_log.jsonl"))
+            # The adapter took the model's name; the driver and the control file are the
+            # certified ones; nothing else of the oracle directory was copied.
+            build_src = Path(call["project_dir"])
+            self.assertEqual((build_src / "spec_x_model.f90").read_text(), _ADAPTER_FOO)
+            self.assertEqual(sorted(p.name for p in build_src.iterdir()),
+                             ["Makefile", "spec_x_model.f90", "spec_x_runner.f90"])
+        logged = [json.loads(line) for line in
+                  (repo / refs.source_dir() / "src" / "command_log.jsonl").read_text()
+                  .splitlines()]
+        self.assertTrue({b["command_id"] for b in record["builds"]}
+                        <= {e.get("command_id") for e in logged})
+
+    def test_a_closure_library_and_an_oracle_library_are_both_on_the_oracle_s_link_line(
+            self) -> None:
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [vend]\n")
+        repo, c, refs = self.node(oracle_text=text, adapter=_ADAPTER_BOTH)
+        calls: list[dict] = []
+        result = self.build(c, refs, closure=("foo",), record=calls)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.meta(repo, refs)["verification_status"], "pass")
+        (call,) = [k for k in calls if "/oracle/" in k["project_dir"]]
+        inc, link = xl.make_values("gfortran", self.resolved(("foo", "vend")))
+        # ONE pair, over the closure's then the build's.
+        self.assertEqual(self.libs(call), [f"LIBINC={inc}", f"LIBS={link}"])
+        binary = repo / refs.binary_dir() / "bin_oracle" / "default" / "spec_x_runner"
+        self.assertEqual(self.output(binary).split(), ["3.00", "3.00"])
+        # The record's libraries are the build's own (the key member's); its loader path
+        # every library it linked.
+        build = self.meta(repo, refs)["oracle"]["builds"][0]
+        self.assertEqual(build["libraries"], xl.identity(self.resolved(("vend",))))
+        self.assertEqual(build["library_dirs"],
+                         list(xl.library_dirs(self.resolved(("foo", "vend")))))
+
+    def test_the_certified_and_checked_builds_are_not_handed_the_oracle_s_libraries(
+            self) -> None:
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [vend]\n")
+        repo, c, refs = self.node(oracle_text=text, adapter=_ADAPTER_BOTH)
+        calls: list[dict] = []
+        result = self.build(c, refs, closure=("foo",), record=calls)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        src = str(repo / refs.source_dir() / "src")
+        certified = [k for k in calls if k["project_dir"] == src]
+        # The certified build and the checked one (the fixture target's compiler declares
+        # checked flags).
+        self.assertEqual(len(certified), 2)
+        inc, link = xl.make_values("gfortran", self.resolved(("foo",)))
+        for call in certified:
+            self.assertEqual(self.libs(call), [f"LIBINC={inc}", f"LIBS={link}"])
+
+    def test_a_generated_model_that_uses_an_oracle_library_module_fails_the_certified_build(
+            self) -> None:
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [vend]\n")
+        model = _ADAPTER_BOTH.replace("    real(8), external :: foo_add\n", "").replace(
+            "a, foo_add(1d0)", "a, 0d0")
+        repo, c, refs = self.node(oracle_text=text, adapter=_ADAPTER_BOTH, model=model)
+        calls: list[dict] = []
+        result = self.build(c, refs, closure=("foo",), record=calls)
+        # A content failure, routed as today (Generate); the oracle is not built.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta = self.meta(repo, refs)
+        self.assertEqual(meta["verification_status"], "fail")
+        self.assertIn("vend", meta["failure_excerpt"])
+        self.assertIsNone(meta["oracle"])
+        self.assertFalse([k for k in calls if "/oracle/" in k["project_dir"]])
+
+    def test_an_oracle_library_installed_beside_a_closure_library_still_fails_the_certified_link(
+            self) -> None:
+        """`vend` (the closure's) and `foo` (the oracle's) sit in one directory, which the
+        certified build's link words search: an external call of the oracle's procedure still
+        does not link, because the build is handed no link word naming it."""
+        self.assertEqual(self.dirs["lib"], Path(self.resolved(("vend",))[0].lib_dir))
+        self.assertEqual(self.dirs["lib"], Path(self.resolved(("foo",))[0].lib_dir))
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [foo]\n")
+        repo, c, refs = self.node(oracle_text=text, model=_ADAPTER_FOO)
+        result = self.build(c, refs, closure=("vend",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta = self.meta(repo, refs)
+        self.assertEqual(meta["verification_status"], "fail")
+        self.assertIn("foo_add", meta["failure_excerpt"])
+        self.assertIsNone(meta["oracle"])
+
+    def test_an_oracle_build_failure_is_fail_closed_and_no_generate_retry(self) -> None:
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [foo]\n")
+        repo, c, refs = self.node(oracle_text=text, adapter="this is not fortran\n")
+        result = self.build(c, refs)
+        # A transport fail_closed (a non-zero rc out of the deterministic body), not a content
+        # failure recorded for Generate to repair.
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("deterministic_build_error: oracle_build_failed: oracle build 'default'",
+                      result.stderr)
+        self.assertIn("adapter.f90", result.stderr)
+        self.assertFalse((repo / refs.binary_dir() / "binary_meta.json").exists())
+
+    def test_an_oracle_at_a_remote_site_is_refused_before_anything_is_staged(self) -> None:
+        import tools.workflow_conductor as wc
+        from tools.execution_sites import Site
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: []\n")
+        repo, c, refs = self.node(oracle_text=text)
+        remote = mock.Mock(spec=Site, is_local=False, site_id="far")
+        staged: list[Any] = []
+        with mock.patch.object(wc.Conductor, "site", new_callable=mock.PropertyMock,
+                               return_value=remote), \
+                mock.patch.object(wc.Conductor, "_stage_dependency_sources",
+                                  lambda *a, **k: staged.append(a) or []):
+            result = c._run_deterministic_substep(refs, "build", None, "child-1", {})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(oracle.REMOTE_SITE, result.stderr)
+        self.assertEqual(staged, [])
+
+    def test_a_node_without_an_oracle_records_none(self) -> None:
+        repo, c, refs = self.node(oracle_text=None)
+        calls: list[dict] = []
+        result = self.build(c, refs, record=calls)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta = self.meta(repo, refs)
+        self.assertEqual(meta["verification_status"], "pass")
+        self.assertIsNone(meta["oracle"])
+        self.assertFalse((repo / refs.binary_dir() / "bin_oracle").exists())
+        self.assertEqual(len(calls), 2)
+
+
+class OracleRunPhaseTest(_OracleFixture):
+    """The two places a Build deliverable is declared — the launch `run_substep` records and
+    the step result `run_phase` writes, whose `required_outputs` the stamp hashes — each carry
+    every oracle binary, driven through the real `run_phase` with the runtime's I/O stubbed."""
+
+    def run_build(self, oracle_text: str | None) -> tuple[list[str], list[str], Any]:
+        import tools.workflow_conductor as wc
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import _TargetedConductor
+        recorded: list[dict] = []
+        results: list[dict] = []
+
+        class _Stub(_TargetedConductor):
+            def emit(self, *_a, **_k):
+                return None
+
+            def check_phase_certified(self, *_a, **_k):
+                return {"certified": False}
+
+            def workflow_launch_check(self, *_a, **_k):
+                return None
+
+            def _ensure_fresh_producer_id(self, *_a, **_k):
+                return None
+
+            def _write_lineage(self, *_a, **_k):
+                return ()
+
+            def _phase_derivation(self, refs, phase):
+                return {"derivation_key": "sha256:" + "0" * 64,
+                        "derivation_inputs": {}, "transformation": ["stub-1"]}
+
+            def new_agent_run_id(self):
+                return "ar_build"
+
+            def record_launch(self, child_arid, request, entry):
+                recorded.append(request)
+
+            def _launch_instant(self, *_a, **_k):
+                return 0.0
+
+            def _run_deterministic_substep(self, *_a, **_k):
+                return wc.ProcResult(returncode=0, stdout="", stderr="")
+
+            def _persist_leaf_output(self, *_a, **_k):
+                return None
+
+            def determine_substep_status(self, refs, phase, substep, paths, **_k):
+                return "pass", list(paths)
+
+            def finalize_child(self, *_a, **_k):
+                return None
+
+            def _agent_run_json(self, *_a, **_k):
+                return {}
+
+            def write_step_result(self, node_key, step, executor, result):
+                results.append(result)
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            spec = repo / _BUILD_SPEC
+            spec.mkdir(parents=True)
+            if oracle_text is not None:
+                (spec / oracle.ORACLE_DIR).mkdir()
+                (spec / oracle.ORACLE_DIR / oracle.DECLARATION_FILE).write_text(oracle_text)
+                (spec / oracle.ORACLE_DIR / ADAPTER).write_text(_ADAPTER_FOO)
+            stub = _Stub(repo_root=repo, orchestration_id="t", orchestration_agent_run_id="x",
+                         llm_config=sample_config_with("claude"), env={},
+                         target_profile=FORTRAN_CPU)
+            refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id, node_key=_BUILD_NODE,
+                               spec_path=_BUILD_SPEC, ir_id="x_1", pipeline_id="x_1",
+                               source_id="src_1", binary_id="bin_1", run_id="r1",
+                               source_binary_id="bin_1")
+            outcome = stub.run_phase(refs, "build")
+        self.assertEqual(outcome.status, "pass")
+        (request,), (result,) = recorded, results
+        return request["allowed_output_paths"], result["required_outputs"], refs
+
+    def test_run_phase_build_passes_with_the_oracle_binaries_hashed_and_recorded(self) -> None:
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: []\n"
+                "  - id: alt\n    libraries: []\n    cases: [c2]\n")
+        allowed, required, refs = self.run_build(text)
+        expected = [f"{refs.binary_dir()}/bin_oracle/{b}/spec_x_runner"
+                    for b in ("default", "alt")]
+        for listed in (allowed, required):
+            self.assertEqual([p for p in listed if "/bin_oracle/" in p], expected)
+
+    def test_run_phase_build_of_a_node_without_an_oracle_lists_what_it_listed(self) -> None:
+        import tools.workflow_conductor as wc
+        allowed, required, refs = self.run_build(None)
+        exe = "spec_x_runner"
+        bdir = refs.binary_dir()
+        self.assertEqual(allowed, [f"{bdir}/bin/{exe}", f"{bdir}/bin_checked/{exe}",
+                                   f"{bdir}/binary_meta.json", f"{bdir}/command_log.jsonl"])
+        self.assertEqual(required, wc.phase_required_outputs(
+            refs, "build", exe_name=exe, checked_build=True))
+        self.assertEqual(required, [f"{bdir}/bin/{exe}", f"{bdir}/bin_checked/{exe}",
+                                    f"{bdir}/binary_meta.json",
+                                    f"{refs.source_dir()}/src/command_log.jsonl"])
 
 
 if __name__ == "__main__":

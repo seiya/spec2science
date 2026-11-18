@@ -9203,6 +9203,10 @@ class SubstepEventTests(unittest.TestCase):
             def _builds_checked(self):
                 return False
 
+            # ... and the node's oracle, whether Build delivers its binaries (issue #680).
+            def _oracle_build_ids(self, *_a, **_k):
+                return ()
+
         stub = _Stub()
         refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/x@0.1.0", spec_path="spec/x",
