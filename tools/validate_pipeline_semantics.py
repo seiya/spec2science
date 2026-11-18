@@ -6145,7 +6145,9 @@ def _validate_component_dep_operations_membership(
     Inert (skip) when: the sidecar file is absent (a legacy tree / a non-conductor-driven
     compile), a dep has NO sidecar entry (a key that is not one of the graph's direct
     dependencies, which ``_validate_compile_dependency_consistency`` — run first — has already
-    refused: the sidecar holds an entry for every called direct dependency of the graph), or its
+    refused, since the sidecar holds an entry for every called direct dependency of the graph;
+    or a host that could not resolve the surface at all, where
+    ``orchestration_runtime._resolve_component_dep_surface`` writes no entry), or its
     entry's ``source`` is
     ``unresolved`` (the surface could not be resolved — never manufacture a violation from a
     resolution gap). A sidecar that is unreadable, or an entry whose ``published_operations`` is
@@ -6206,10 +6208,12 @@ def _validate_component_dep_operations_membership(
         # dependency (`orchestration_runtime._resolve_component_dep_surface`), and the
         # consistency gate, which runs first, compares `direct_deps` keys in the same form
         # (issue #661). So a key with no entry here is one that gate has already refused — a
-        # drifted or missing `@version` included — and the stage fails on that finding.
+        # drifted or missing `@version` included — and the stage fails on that finding. The
+        # other way to have no entry is the host's own: a surface it could not resolve at all is
+        # written with no entries (the `except` of `_resolve_component_dep_surface`).
         surface = surface_by_key.get(called[2])
         if not isinstance(surface, dict):
-            continue  # inert: not a key of the graph — reported by the consistency gate
+            continue  # inert: refused by the consistency gate, or the host resolved no surface
         source_tag = str(surface.get("source") or "").strip()
         if source_tag == "unresolved":
             continue  # inert: surface could not be resolved — not a violation
