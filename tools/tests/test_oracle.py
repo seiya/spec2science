@@ -323,7 +323,7 @@ class OracleKeyTest(_OracleFixture):
             with self.subTest(broken=broken):
                 self.assertIsNone(substituted(broken))
 
-    def test_a_key_without_an_oracle_is_byte_identical(self) -> None:
+    def test_a_key_without_an_oracle_carries_no_member(self) -> None:
         self.assertIsNone(self.member())
         self.assertNotIn("oracle", self.inputs("build"))
 
@@ -348,6 +348,7 @@ class OracleVerdictTest(_OracleFixture):
         self.write_oracle()
         self.assertIsNone(self.verdict())
         write_sites(self.repo, self.dirs, libraries="      vend:\n")
+        self.assertIsNone(self.verdict(until="Generate"))
         verdict = self.verdict()
         assert verdict is not None
         self.assertEqual((verdict["status"], verdict["reason"], verdict["library_id"],
@@ -390,7 +391,9 @@ class OracleVerdictTest(_OracleFixture):
         assert verdict is not None
         self.assertNotIn("oracle_of", verdict)
 
-    def test_an_oracle_without_a_library_at_a_remote_site_is_refused(self) -> None:
+    def test_an_oracle_at_a_remote_site_is_refused_whatever_it_links(self) -> None:
+        """`oracle_at_remote_site` names the oracle's node — the node's own, or a closure
+        member's — whether the oracle links a library or none."""
         repo_root = Path(__file__).resolve().parents[2]
         targets = self.repo / "spec/targets"
         targets.mkdir(parents=True, exist_ok=True)
@@ -408,20 +411,41 @@ class OracleVerdictTest(_OracleFixture):
                   fortran_cpu: box
                 """))
             self.assertIsNone(self.verdict())
-            self.write_oracle(_VALID.split("builds:")[0]
-                              + "builds:\n  - id: default\n    libraries: []\n")
-            verdict = self.verdict()
+            for name, text in (("no library", _VALID.split("builds:")[0]
+                                + "builds:\n  - id: default\n    libraries: []\n"),
+                               ("a library", _VALID)):
+                with self.subTest(name):
+                    self.write_oracle(text)
+                    verdict = self.verdict()
+                    assert verdict is not None
+                    self.assertEqual((verdict["status"], verdict["reason"],
+                                      verdict["oracle_of"]),
+                                     ("fail", oracle.REMOTE_SITE, SPEC))
+            shutil.rmtree(self.repo / SPEC / oracle.ORACLE_DIR)
+            dep = "spec/component/dep"
+            (self.repo / dep).mkdir(parents=True, exist_ok=True)
+            self.write_oracle(spec=dep)
+            verdict = self.verdict(SPEC, [dep])
             assert verdict is not None
-            self.assertEqual((verdict["status"], verdict["reason"], verdict["oracle_of"]),
-                             ("fail", oracle.REMOTE_SITE, SPEC))
-            # With a library, the library's own refusal answers.
-            self.write_oracle()
-            verdict = self.verdict()
-            assert verdict is not None
-            self.assertEqual((verdict["status"], verdict["reason"]),
-                             ("fail", xl.REMOTE_SITE))
+            self.assertEqual((verdict["reason"], verdict["oracle_of"]),
+                             (oracle.REMOTE_SITE, dep))
+            # A run that does not reach Build does not read it.
+            self.assertIsNone(self.verdict(SPEC, [dep], until="Generate"))
         finally:
             shutil.rmtree(targets)
+
+    def test_the_host_tools_are_required_for_an_oracle_s_library_alone(self) -> None:
+        from tools import host_prerequisites
+        self.write_oracle()
+        real_which = shutil.which
+        with mock.patch.object(host_prerequisites.shutil, "which",
+                               lambda name: None if name == "objdump" else real_which(name)), \
+                mock.patch("tools.backends.compiler.gfortran.library_binary._run",
+                           side_effect=FileNotFoundError("objdump")):
+            verdict = self.verdict()
+        assert verdict is not None
+        self.assertEqual((verdict["status"], verdict["reason"], verdict["missing"]),
+                         ("fail", "missing_required_host_tools", ["objdump"]))
 
     def test_an_oracle_of_another_language_than_the_target_s_is_not_read(self) -> None:
         self.write_oracle(_VALID.replace("language: fortran", f"language: {OTHER}"))
@@ -430,9 +454,12 @@ class OracleVerdictTest(_OracleFixture):
         self.write_oracle(f"language: {OTHER}\nbuilds: nonsense\n")
         self.assertIsNone(self.verdict())
 
-    def test_a_malformed_oracle_declaration_is_not_read_on_a_compile_only_run(self) -> None:
+    def test_a_malformed_oracle_declaration_is_read_only_by_a_run_that_reaches_build(
+            self) -> None:
         self.write_oracle("language: fortran\nbuilds: nonsense\n")
-        self.assertIsNone(self.verdict(until="Compile"))
+        for until in ("Compile", "Generate"):
+            with self.subTest(until=until):
+                self.assertIsNone(self.verdict(until=until))
         verdict = self.verdict()
         assert verdict is not None
         self.assertEqual((verdict["status"], verdict["reason"], verdict["oracle_of"]),

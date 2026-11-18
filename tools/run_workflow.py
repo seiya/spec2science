@@ -4880,31 +4880,23 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
                 "spec_ref": spec_ref}
     # The oracles (issue #680) of the node and of every closure member, each where the target's
     # language is its own: a member with an oracle cannot be certified without it, and a node
-    # cannot be certified without its members. Read past Compile only, and only on a target of
-    # the oracle's language: no Compile or Generate key carries it.
+    # cannot be certified without its members. Read only by a run that reaches Build, where the
+    # oracle is first built and keyed: no Compile or Generate key carries it.
+    from tools.target_profile import NON_BUILDING_PHASES
     language = str(target_profile.toolchain["language"])
     oracles: list[Any] = []
-    for ref in (spec_ref, *(n["spec_ref"] for n in ordered)):
-        try:
-            declared = oracle_mod.load(repo_root, ref, language)
-        except oracle_mod.OracleDeclarationError as exc:
-            return {"status": "fail", "reason": oracle_mod.DECLARATION_INVALID,
-                    "detail": str(exc), "spec_ref": spec_ref, "oracle_of": ref}
-        if declared is not None:
-            oracles.append(declared)
-    # The library each oracle reaches and the closure does not, with the oracle that names it.
-    oracle_of: dict[str, str] = {}
-    for declared in oracles:
-        for declaration in declared.library_declarations():
-            if all(d.library_id != declaration.library_id for d in declarations):
-                declarations.append(declaration)
-                oracle_of[declaration.library_id] = declared.spec_ref
-    if not declarations:
-        if not oracles:
-            return None
-        # An oracle without a library: the one case the site's locality is asked for it.
-        # Breakage without it: the run would stop at Build after Compile and Generate were
-        # billed.
+    if _normalize_phase(until_phase).lower() not in NON_BUILDING_PHASES:
+        for ref in (spec_ref, *(n["spec_ref"] for n in ordered)):
+            try:
+                declared = oracle_mod.load(repo_root, ref, language)
+            except oracle_mod.OracleDeclarationError as exc:
+                return {"status": "fail", "reason": oracle_mod.DECLARATION_INVALID,
+                        "detail": str(exc), "spec_ref": spec_ref, "oracle_of": ref}
+            if declared is not None:
+                oracles.append(declared)
+    if oracles:
+        # An oracle is built and run at the local site only, whatever it links. Breakage
+        # without it: the run would stop at Build after Compile and Generate were billed.
         try:
             site = xl.site_for_target(repo_root, target_profile.target_id)
         except (SitesConfigError, TargetProfileError) as exc:
@@ -4915,8 +4907,16 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
                     "site": site.site_id, "target_id": target_profile.target_id,
                     "spec_ref": spec_ref, "oracle_of": oracles[0].spec_ref,
                     "detail": (f"target {target_profile.target_id} runs at site "
-                               f"{site.site_id!r}, and an oracle is built and run at the "
-                               f"local site only")}
+                               f"{site.site_id!r}, and the oracle of {oracles[0].spec_ref} is "
+                               f"built and run at the local site only")}
+    # The library each oracle reaches and the closure does not, with the oracle that names it.
+    oracle_of: dict[str, str] = {}
+    for declared in oracles:
+        for declaration in declared.library_declarations():
+            if all(d.library_id != declaration.library_id for d in declarations):
+                declarations.append(declaration)
+                oracle_of[declaration.library_id] = declared.spec_ref
+    if not declarations:
         return None
     # The programs first: resolving a shared object runs one of them.
     from tools.host_prerequisites import missing_host_executables
@@ -4924,8 +4924,9 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
         _host_probe_selection(target_profile), [d.library_id for d in declarations])]
     if missing:
         return {"status": "fail", "reason": "missing_required_host_tools",
-                "detail": (f"missing host tools: {','.join(missing)} — the closure declares "
-                           f"external libraries, and the post-build library checks run them "
+                "detail": (f"missing host tools: {','.join(missing)} — the closure or an "
+                           f"oracle declares external libraries, and resolving them and the post-build "
+                           f"library checks run them "
                            f"(see docs/RUNBOOK.md#0-1)"),
                 "missing": missing, "spec_ref": spec_ref, "docs_ref": "docs/RUNBOOK.md#0-1"}
     try:
@@ -5750,7 +5751,8 @@ def _run_with_dependency_closure(
                 "node": f"{node['spec_kind']}/{node['spec_id']}@{node['spec_versions'][0]}",
                 "spec_ref": node["spec_ref"], "skipped": False, "status": "library_unavailable",
                 "reason": verdict["reason"], "library_id": verdict["library_id"],
-                "site": verdict["site"]})
+                "site": verdict["site"],
+                **({"oracle_of": verdict["oracle_of"]} if "oracle_of" in verdict else {})})
         else:
             _emit_unlogged_event({**verdict, "dependency_runs": dependency_runs,
                                   "target_spec_ref": target_spec_ref}, stdout_format)
