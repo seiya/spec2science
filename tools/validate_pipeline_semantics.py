@@ -4054,66 +4054,6 @@ def _shape_matches_expr(shape_expr: str, actual_shape: list[int]) -> bool:
     return True
 
 
-def _state_snapshot_requirement_details(
-    repo_root: Path, execution: NodeExecution
-) -> tuple[dict[str, str], str, str]:
-    required_variables: dict[str, str] = {}
-    required_time_variable = ""
-    required_time_shape_expr = "scalar"
-
-    raw_requirements = _raw_requirements_for_execution(repo_root, execution)
-    if not isinstance(raw_requirements, dict):
-        return required_variables, required_time_variable, required_time_shape_expr
-
-    required_evidence = raw_requirements.get("required_evidence")
-    if not isinstance(required_evidence, list):
-        return required_variables, required_time_variable, required_time_shape_expr
-
-    for item in required_evidence:
-        if not isinstance(item, dict):
-            continue
-        raw_artifact = item.get("artifact")
-        if not isinstance(raw_artifact, str):
-            continue
-        artifact = _normalize_raw_evidence_artifact(raw_artifact)
-        if artifact != "state_snapshots":
-            continue
-        if isinstance(item.get("required"), bool) and not item["required"]:
-            return required_variables, required_time_variable, required_time_shape_expr
-
-        schema = item.get("schema")
-        if isinstance(schema, dict):
-            raw_variables = schema.get("variables")
-            if isinstance(raw_variables, list):
-                for variable in raw_variables:
-                    if not isinstance(variable, dict):
-                        continue
-                    raw_name = variable.get("name")
-                    raw_shape_expr = variable.get("shape_expr")
-                    if (
-                        isinstance(raw_name, str)
-                        and raw_name.strip()
-                        and isinstance(raw_shape_expr, str)
-                        and raw_shape_expr.strip()
-                    ):
-                        required_variables[raw_name.strip()] = _canonical_shape_expr(raw_shape_expr)
-
-            # Legacy `state_variables` shorthand is no longer recognized.
-            # `_validate_io_contract_schema` separately rejects schemas
-            # that omit `variables`, so missing required-evidence shapes fail
-            # closed there with a clear violation.
-            raw_time_var = schema.get("time_variable")
-            if isinstance(raw_time_var, str) and raw_time_var.strip():
-                required_time_variable = raw_time_var.strip()
-            raw_time_shape = schema.get("time_shape_expr")
-            if isinstance(raw_time_shape, str) and raw_time_shape.strip():
-                required_time_shape_expr = _canonical_shape_expr(raw_time_shape)
-
-        return required_variables, required_time_variable, required_time_shape_expr
-
-    return required_variables, required_time_variable, required_time_shape_expr
-
-
 def _raw_requirements_for_execution(
     repo_root: Path, execution: NodeExecution
 ) -> dict[str, Any] | None:
