@@ -25360,6 +25360,20 @@ class DriveGateStageTests(unittest.TestCase):
                     self.assertEqual(sorted(p.name for p in ir_dir.iterdir()),
                                      ["dependency_graph.json", "ir_meta.json", "spec.ir.yaml"])
 
+    def test_an_initial_state_key_outside_the_schema_is_gate_f_not_a_crash(self) -> None:
+        """Issue #643 PR-6 kept PE-156 arm 1 (`_evaluate_case`'s "initial_state.<key> is not a
+        snapshot schema variable"): `predicate_schema_context` evaluates every IR's cases and
+        catches `PrimaryEvidenceError` alone, and without that raise the unknown key reaches
+        `shapes[var]` and a `KeyError` escapes `validate_compile_ir_dir` in place of gate (f)'s
+        finding (verify/ver_f5.md, PE-156)."""
+        def unknown_key(ir: dict) -> None:
+            ir["case"]["test_case_set"][0].setdefault("initial_state", {})[
+                "zz_not_a_variable"] = 0.0
+
+        found = _drive_stage("coriolis", unknown_key)
+        self.assertTrue(any("(f)" in f and "initial_state.zz_not_a_variable is not a snapshot "
+                            "schema variable" in f for f in found), found)
+
     # --- what a flag values (review round 6, R6-1) ---------------------------------------------------
     def test_a_value_1_flag_on_a_refusal_test_is_the_coverage_refusal(self) -> None:
         tid = "l0_invalid_ncomp_xfail"
