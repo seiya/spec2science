@@ -2335,7 +2335,14 @@ PINNED_VERDICT: dict[str, str] = {
     # by diffing `verdict_tuple()` against main 31dfcbf1's: that row and no other.) The digest
     # `verdict-20` shipped with at 31dfcbf1:
     "verdict-20@31dfcbf1": "ec33f052a7217312b3eee4a04774a00a06ebc211933d146a75e2fa8c561a6def",
-    "verdict-20": "6a8e679f3d71687194e6e84e27f4a10895c6db3def95cc1c762d2972e84ca00e",
+    # verdict-20 re-pinned in place by issue #643 PR-3 (operator decision 2026-11-18): the member
+    # `Conductor._author_derived_validate_artifacts` no longer folds a ready dependency whose
+    # certified verdict does not resolve through `DerivationResolver.select` as `pass` (OR1-87);
+    # it folds as `blocked`. Every output certified at this version is unchanged: the census of
+    # `docs/design/check_inventory_643/verify/ver_defects.md` item 3 found 0 ready-with-no-fact
+    # dependency rows over 876 recorded aggregates. The digest `verdict-20` shipped with at 03643f31:
+    "verdict-20@03643f31": "6a8e679f3d71687194e6e84e27f4a10895c6db3def95cc1c762d2972e84ca00e",
+    "verdict-20": "dd02f3c2f75fec924679d7c319b748f1d7b35a7834feccc4525108d16ff9b87b",
 }
 
 

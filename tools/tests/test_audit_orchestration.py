@@ -1870,6 +1870,8 @@ class InRepoRecordSectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             self._violation(root, "arid-1", "sandbox_profile_build_failed")
+            # A reason `record_agent_run` wrote until issue #643: a record on disk from an
+            # older run still carries it, and the section reports a reason as written.
             self._violation(root, "arid-2", "sandbox_not_enforced")
             self._violation(root, "arid-3", "sandbox_not_enforced")
             result, md = self._rendered(tmp)

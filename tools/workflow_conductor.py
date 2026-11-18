@@ -242,7 +242,6 @@ from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_
 # same resolvers the certification predicate will read, stamped by this conductor on every
 # launch and step_result of the attempt.
 from tools.orchestration_runtime import (
-    FAIL_CLOSED_REASON_CODES,
     WORKSHOP_CUT_READ_REPAIR_REASON,
     DerivationInputsUnresolvable,
     phase_derivation,
@@ -260,11 +259,8 @@ def child_agent_role(step: str) -> str:
     """The agent_role of the leaf child for a phase: build => step, else substep.
 
     Read from `STEP_REQUIRED_CHILD_AGENT`, the runtime's table, rather than restated as
-    `"step" if step == "build" else "substep"`. Those were two definitions of one fact,
-    and record-launch now REJECTS a request whose role disagrees with the table
-    (`_require_child_agent_role_for_step`), so a conductor that answered from its own copy
-    would fail its own launches the moment the two drifted. An unsupported step raises
-    there, as it already does everywhere else the table is consulted.
+    `"step" if step == "build" else "substep"`: those would be two definitions of one fact.
+    An unsupported step raises there, as it does everywhere else the table is consulted.
     """
     from tools.orchestration_runtime import _required_child_agent_kind
 
@@ -1891,11 +1887,9 @@ def build_launch_request(
     # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
     # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
     # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
-    # branch, and `_validate_leaf_launch_request_payload` REFUSES a pure request whose list is
-    # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
-    # survives for a deterministic launch, where `_allowed_output_paths_for_launch` checks the
-    # list against the phase contract at record-launch (NOT `post_<phase>` validation, which
-    # never reads the field). The hazard the three layers were defence in depth
+    # branch. So the narrowing above is dead for both verify substeps, which are pure; it
+    # survives for a deterministic launch, where `determine_substep_status` reads the list
+    # (record-launch no longer matches it against the phase contract, issue #643). The hazard the three layers were defence in depth
     # against — a source rewritten on a verify turn, which would
     # reach Build uncertified, the lint/syntax/static gates having already run and never re-running
     # — is refused by the sandbox itself, not merely by the hook. The constraint therefore does not
@@ -1916,18 +1910,8 @@ def build_launch_request(
     # the three skill fields are declared empty (no SKILL exists to read). Applied LAST so it
     # overrides the generate branch's leaf-authored output set. On a warm-resume repair the
     # lineage already holds the context, so pure_context is omitted (the validator exempts it
-    # for a warm+reuse+findings request); a cold launch carries it. A host-rendered request
-    # without a lineage was the pure leaf's, and is refused here: no launch shape serves it.
-    if workshop_lineage_id is not None and not pure_leaf:
-        raise ValueError("build_launch_request: a workshop lineage belongs to a host-rendered "
-                         "(pure_leaf=True) request")
-    if (workshop_lineage_id is None) != (workshop_provider is None):
-        raise ValueError("build_launch_request: a workshop request names its lineage and its "
-                         "provider together (workshop_lineage_id, workshop_provider)")
-    if pure_leaf and workshop_lineage_id is None:
-        raise ValueError("build_launch_request: a host-rendered LLM request is a workshop "
-                         "request and names its lineage (workshop_lineage_id); the pure leaf "
-                         "it would otherwise describe went in issue #534 PR-J4-b")
+    # for a warm+reuse+findings request); a cold launch carries it. Every caller that passes
+    # `pure_leaf=True` passes a lineage and its entry's provider too.
     if pure_leaf:
         from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
         req["leaf_mode"] = WORKSHOP_LEAF_MODE
@@ -4737,7 +4721,6 @@ class Conductor:
     def _register_codex_thread(self, child_arid: str, thread_id: str) -> None:
         """Transactionally replace the provisional Codex identity in all host records."""
         from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
             _normalized_agent_role,
             _read_json,
             _write_json_transaction,
@@ -4747,22 +4730,10 @@ class Conductor:
         )
         launch_dir = orchestration_dir / "launches"
         request = _read_json(launch_dir / f"{child_arid}.request.json") or {}
-        # Read the role that record-launch already validated and persisted; do NOT default
-        # it. This was the last reader answering the question from its own fallback
-        # (`or "substep"`), and it writes straight through to the session run index, whose
-        # upsert applies no vocabulary test of its own. The request file is host-written by
-        # record-launch AFTER `_validate_launch_request_payload`, so a role that is absent
-        # or outside the vocabulary means the file's CONTENT is wrong — a transport fault
-        # to surface, not a value to guess. (An absent FILE does not arrive here at all:
-        # `_read_json` raises `FileNotFoundError` first, and the `or {}` above covers only
-        # a JSON null / empty body.)
+        # The role the launch request carries, as record-launch persisted it; no default.
+        # The request is host-written, its role `child_agent_role(step)` (issue #643 removed
+        # the vocabulary refusal that re-checked it here).
         role = _normalized_agent_role(request.get("agent_role"))
-        if role not in AGENT_RUN_ROLES:
-            raise RuntimeError(
-                f"codex thread registration: launch request for {child_arid} carries "
-                f"agent_role={request.get('agent_role')!r}, which record-launch would not "
-                f"have accepted; refusing to guess it"
-            )
         context = request.get("context_id")
         _write_json_transaction(
             transaction_dir=orchestration_dir,
@@ -5562,7 +5533,7 @@ class Conductor:
     def finalize_child(self, child_arid: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
         # The reply goes over stdin rather than argv. Every current call site composes it
-        # host-side within the ~2000-char reply budget, so it is small today — but it is
+        # host-side as a few-line status string, so it is small today — but it is
         # declared as the leaf's verbatim final message, and stdin costs nothing and is
         # already persisted by the runtime as launches/<arid>.reply.txt (no second copy).
         # The agent_run payload travels as a kept evidence file.
@@ -10172,12 +10143,11 @@ class Conductor:
         ])
         return out if isinstance(out, dict) else {"certified": False}
 
-    def workflow_launch_check(self, node_key: str, step: str, require_child_agent: str,
+    def workflow_launch_check(self, node_key: str, step: str,
                               entry: ResolvedLeafEntry | None = None) -> dict[str, Any]:
         out = self.runtime([
             "workflow-launch-check", *self._oid_args(),
             "--node-key", node_key, "--step", step,
-            "--require-child-agent", require_child_agent,
             "--backend", (entry or self.entry_for(None, None)).backend_token,
         ])
         if out.get("status") != "pass":
@@ -10673,6 +10643,17 @@ class Conductor:
             # varies by build system) exist AND were authored in this attempt
             # (mtime >= min_mtime), so a retry/reopen never passes on stale files.
             required = [p for p in paths if Path(p).name not in _OPTIONAL_OUTPUT_BASENAMES]
+            if not required:
+                # The premise every branch below rests on: a deterministic substep declares at
+                # least one deliverable (`build_launch_request` lists one for each). With none,
+                # the freshness test is vacuously True and a prior attempt's `pass` meta would
+                # certify this substep — the record-launch refusal of an empty list that used to
+                # state this went in issue #643. No leaf writes the list, so this defends against
+                # nothing a leaf does: it states the premise where a new deterministic substep
+                # that forgets its deliverable would otherwise certify on a stale meta.
+                raise ValueError(
+                    f"determine_substep_status: {phase}.{substep or ''} declares no deliverable "
+                    f"besides audit logs ({paths})")
             present = [p for p in required if (self.repo_root / p).exists()]
             if len(present) != len(required):
                 return False
@@ -15417,15 +15398,16 @@ class Conductor:
         else:
             self_verdict = "pass"
 
-        # Direct-dependency `blocked` rule. The blocking decision uses the SAME readiness
-        # predicate the pre_judge substep and the `--stage pre_judge` gate use
-        # (`_closure_node_validated_in_own_pipeline` — a dep is ready iff any binary-bound
-        # verdict in its own pipeline is pass/xfail), so the derived `aggregate_verdict` can
-        # never contradict a readiness gate that already passed (a dep that regressed to a
-        # newer `fail` verdict but retains an older bound pass is still ready — pre_judge
-        # admits it, so we must not blindly block on its LATEST verdict). `_resolve_dependency_
-        # facts` (orientation-only, latest bound verdict) supplies each dep's display verdict +
-        # pipeline/run refs; it is NEVER the blocking signal.
+        # Direct-dependency `blocked` rule. A dep counts as ready only when BOTH answers say
+        # so: the readiness predicate the pre_judge substep and the `--stage pre_judge` gate
+        # use (`_closure_node_validated_in_own_pipeline` — any binary-bound verdict in its own
+        # pipeline is pass/xfail, version- and key-agnostic), AND its certified Validate output
+        # resolves through `DerivationResolver.select` (`_resolve_dependency_facts`), which is
+        # where its contribution (`xfail` or `pass`) is read. A dep that regressed to a newer
+        # `fail` verdict but retains an older bound pass is still ready. A dep readiness admits
+        # but `select` does not (revoked or re-keyed since the gate ran) folds as NOT ready:
+        # before issue #643's S3 fix it folded as `pass`, which recorded a ready dep's `xfail`
+        # as `pass` (ver_defects item 3).
         from tools.validate_pipeline_semantics import (
             _closure_node_validated_in_own_pipeline,
             _dependency_expected_node_keys, _normalize_node_key_token,
@@ -15446,6 +15428,8 @@ class Conductor:
         dependency_nodes: list[dict[str, Any]] = []
         dep_counts = {"total": 0, "pass": 0, "xfail": 0, "fail": 0, "blocked": 0}
         blocking_direct_deps: list[str] = []
+        not_validated: list[str] = []
+        verdict_unresolved: list[str] = []
         fold_order = {"pass": 0, "xfail": 1, "fail": 2, "blocked": 3}
         fold_inv = {0: "pass", 1: "xfail", 2: "fail", 3: "blocked"}
         worst = fold_order.get(self_verdict, 0)
@@ -15463,7 +15447,12 @@ class Conductor:
                 ready = False
                 token = None
             fact = facts_by_token.get(token, {}) if token else {}
-            # Display verdict = the dep's latest bound aggregate (informational; may show a
+            if not ready:
+                not_validated.append(node_key)
+            elif not fact:
+                ready = False
+                verdict_unresolved.append(node_key)
+            # Display verdict = the dep's selected aggregate (informational; may show a
             # regression), else pass/unknown per readiness.
             agg_ref = fact.get("aggregate_verdict_ref")
             display = ""
@@ -15494,14 +15483,21 @@ class Conductor:
 
         # aggregate_verdict: `blocked` when any immediate dep is not ready; else the transitive
         # fold (precedence blocked > fail > xfail > pass) over {self_verdict} + ready-dep
-        # contributions. On the post_judge path (judge passed → self_verdict ∈ {pass,xfail} and
-        # every dep ready) this is always ∈ {pass,xfail}.
+        # contributions. On the post_judge path the judge passed (self_verdict ∈ {pass,xfail})
+        # and the pre_judge gate found every dep ready, so this is ∈ {pass,xfail} unless a
+        # dep's certified verdict no longer resolves through `select`.
         blocked = bool(blocking_direct_deps)
         blocked_reason: str | None = None
         if blocked:
             aggregate_verdict = "blocked"
-            blocked_reason = ("immediate dependency not built+validated in its own pipeline: "
-                              + ", ".join(blocking_direct_deps))
+            reasons: list[str] = []
+            if not_validated:
+                reasons.append("immediate dependency not built+validated in its own pipeline: "
+                               + ", ".join(not_validated))
+            if verdict_unresolved:
+                reasons.append("immediate dependency's certified verdict does not resolve "
+                               "(DerivationResolver.select): " + ", ".join(verdict_unresolved))
+            blocked_reason = "; ".join(reasons)
         else:
             aggregate_verdict = fold_inv[worst]
 
@@ -15624,6 +15620,23 @@ class Conductor:
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
         self._author_derived_validate_artifacts(refs)
+        # A `blocked` aggregate is an integrity blocker (`phase_04_validate.md`): the node is not
+        # certifiable in this run. On this path the pre_judge substep has already required every
+        # immediate dependency ready, so the fold blocks only when a dependency it admitted no
+        # longer resolves through `DerivationResolver.select` (revoked or re-keyed since). Without
+        # this the run would certify the node with that aggregate, and later runs would adopt it.
+        agg = _read_json(self.repo_root / refs.run_node_dir() / "aggregate_verdict.json") or {}
+        if agg.get("aggregate_verdict") == "blocked":
+            self._write_run_node_meta(refs, "post_judge_meta.json", {
+                "run_id": refs.run_id, "node_key": refs.node_key,
+                "pipeline_id": refs.pipeline_id, "status": "fail",
+                "validation_stage": "pre_judge",
+                "failure_category": "aggregate_blocked",
+                "failure_excerpt": str(agg.get("blocked_reason") or "")[:400],
+                "violations": [], "disposition": "fail_closed",
+            })
+            return {"returncode": 0, "stdout": "",
+                    "stderr": f"[post_judge aggregate blocked] {agg.get('blocked_reason')}"}
         judge_arid = getattr(self, "_pending_judge_arid", {}).get(refs.node_key, "")
         cmd = ["python3", "tools/validate_pipeline_semantics.py", "--stage", "pre_judge",
                "--orchestration-id", self.orchestration_id,
@@ -15775,8 +15788,7 @@ class Conductor:
         # (`entry_for(phase, None)` resolves to the same thing while reading as per-phase).
         # Each leaf's own provider is authorized per launch, by `record_launch` against
         # `preflight.json#providers`.
-        self.workflow_launch_check(node_key, phase, child_agent_role(phase),
-                                   self.entry_for(None, None))
+        self.workflow_launch_check(node_key, phase, self.entry_for(None, None))
         self._ensure_fresh_producer_id(refs, phase)
         # Author/refresh the pipeline lineage.json host-side BEFORE the substeps run:
         # generate.gate's static (post_generate) checker requires it, and the sandboxed leaf cannot
@@ -15960,8 +15972,8 @@ class Conductor:
         # session limit) the decision tables cannot classify — route straight to fail_closed
         # so the operator can --resume. This is checked BEFORE write_step_result: a transport
         # failure leaves no canonical evidence (e.g. a judge that died with no
-        # semantic_review.json), so writing the step_result would crash on the
-        # post_phase_complete judge gate instead of cleanly failing closed. Skipping the write
+        # semantic_review.json), so writing the step_result would crash on its missing
+        # deliverable instead of cleanly failing closed. Skipping the write
         # leaves the attempt's already-terminalized agents without a step_result, and since
         # issue #177 that costs nothing to clean up: a terminal arid no step_result vouches is
         # simply a failed attempt. It used to need a tombstone for every one of them, or a later
@@ -16956,16 +16968,11 @@ class Conductor:
                                 reason_detail=str(exc)[:200])
                 return "fail_closed"
             except LaunchCheckRefused as exc:
-                # The runtime refused the phase start (a dependency not ready, preflight).
-                # Its reason is a fail_closed code already; one outside the
-                # allowlist (`backend_not_probed`) is carried under the generic code and leads
-                # the detail, so nothing the check said is lost (issue #383).
-                detail = exc.reason_detail
-                if exc.reason_code in FAIL_CLOSED_REASON_CODES:
-                    reason_code = exc.reason_code
-                else:
-                    reason_code = "conductor_phase_fail_closed"
-                    detail = f"{exc.reason_code}: {detail}"
+                # The runtime refused the phase start (a dependency not ready, preflight). Its
+                # code is recorded as given — the same code a substep's own `record-launch`
+                # records for the same refusal (issue #643 PR-3, which removed the allowlist
+                # that used to make this remap a generic code).
+                reason_code, detail = exc.reason_code, exc.reason_detail
                 self.emit("launch_check_refused", node_key=refs.node_key, phase=phase,
                           reason_code=exc.reason_code, detail=exc.reason_detail)
                 self.set_status("fail_closed", reason_code=reason_code,
@@ -17014,9 +17021,8 @@ class Conductor:
                 decision = self.escalate(refs, phase, outcome)
             if decision.action == "fail_closed":
                 reason = decision.reason or ""
-                # Map to an allowlisted FAIL_CLOSED_REASON_CODES value (the runtime
-                # rejects any other code for fail_closed); the specific routing reason is
-                # preserved in reason_detail.
+                # Map to a reason code the operator's RUNBOOK routes by; the specific routing
+                # reason is preserved in reason_detail.
                 if reason.startswith("leaf_transport_error"):
                     reason_code = "leaf_transport_error"
                 elif "sandbox" in reason:

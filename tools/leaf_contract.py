@@ -37,7 +37,7 @@ from typing import Any, NamedTuple
 # PR-J4, and `leaf-85` is the first bump after it (the leaf-read text PR-J4 deferred, the
 # `inlined`-to-seed wording, and issue #545's judge sentence). It is in no derivation key since
 # issue #574, whose `leaf-86` deleted the certified refs from `DEPENDENCIES.md`.
-LEAF_PROMPT_CONTRACT_VERSION = "leaf-102"
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-103"
 
 # The keyed half of the contract (issue #574): what one phase's READING leaf reads, which is what
 # "valid" means for that phase. Each is a member of its phase's transformation tuple
@@ -325,7 +325,7 @@ _CLAUDE_FILE_TOOLS_TEXT = ("You have no shell: your file tools (Read, Write, Edi
 #: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
 #: the launch request names (`workshop_provider`): the one sentence of the contract that
 #: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
-#: provider with no row cannot serve a workshop launch (`_validate_leaf_launch_request_payload`).
+#: provider with no row cannot serve a workshop launch (`_render_leaf_launch_prompt` refuses it).
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
     "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT[:-1]
                    + ", and the host's operations are the `wrapper` MCP server's tools "

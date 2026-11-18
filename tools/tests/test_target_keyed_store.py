@@ -225,17 +225,6 @@ class DerivationKeyTargetTests(unittest.TestCase):
                 "target_id": FORTRAN_CPU.target_id, "profile": FORTRAN_CPU.sha256,
                 "threads_per_rank": FORTRAN_CPU.threads_per_rank, "preset": "make_test"})
 
-    def test_a_pipeline_key_without_a_target_is_unresolvable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", _NK, through="compile")
-            with self.assertRaises(ort.DerivationInputsUnresolvable):
-                ort.phase_derivation_inputs(
-                    repo, node_key=_NK, step="generate",
-                    spec_ref=ort.DerivationResolver(repo).spec_ref(_NK),
-                    ir_ref=refs["ir_ref"])
-
-
 class StoreCoordinateTests(unittest.TestCase):
     def test_a_target_id_is_never_a_store_id(self) -> None:
         self.assertTrue(tp.is_target_id(FORTRAN_CPU.target_id))
@@ -330,22 +319,6 @@ class ReservationAndLaunchRefTests(unittest.TestCase):
             (res_dir / "generate.json").write_text(json.dumps(
                 {"reserved_ir_id": "spec-x_20260101_001"}), encoding="utf-8")
             self.assertIsNone(ort._reserved_pipeline_dir(repo, res_dir))
-
-    def test_a_launch_pipeline_ref_carries_its_target(self) -> None:
-        good = pipe_ref(_SAFE, "spec-x_20260101_001")
-        ort._validate_canonical_workspace_root_ref(
-            ref=good, node_safe=_SAFE, kind="pipelines", label="pipeline_ref")
-        for bad in (f"workspace/pipelines/{_SAFE}/spec-x_20260101_001",
-                    f"workspace/pipelines/{_SAFE}/spec-x_20260101_002/spec-x_20260101_001",
-                    f"{good}/source"):
-            with self.assertRaises(ValueError, msg=bad):
-                ort._validate_canonical_workspace_root_ref(
-                    ref=bad, node_safe=_SAFE, kind="pipelines", label="pipeline_ref")
-        # The ir_ref shape is unchanged: target-free.
-        ort._validate_canonical_workspace_root_ref(
-            ref=f"workspace/ir/{_SAFE}/spec-x_20260101_001", node_safe=_SAFE, kind="ir",
-            label="ir_ref")
-
 
 class ClaimKeyTests(unittest.TestCase):
     def test_the_spec_claim_is_per_target(self) -> None:

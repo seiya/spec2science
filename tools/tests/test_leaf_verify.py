@@ -1528,8 +1528,7 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
     def test_pure_verify_request_shape(self) -> None:
         """The verify request `build_launch_request` builds for a reviewer leaf: a workshop
         request (issue #534 PR-J4-b) stamped with the one prompt contract version, no leaf
-        write set, no skill, the context present. A host-rendered request that names no
-        lineage or provider is refused at the builder."""
+        write set, no skill, the context present."""
         with tempfile.TemporaryDirectory() as tmp:
             refs = _verify_node(Path(tmp))
             kwargs = dict(
@@ -1549,12 +1548,6 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
             self.assertIn("pure_context", req)
-            for missing in ("workshop_lineage_id", "workshop_provider"):
-                with self.subTest(missing=missing), self.assertRaises(ValueError):
-                    wc.build_launch_request(refs, **kwargs, **{
-                        k: v for k, v in (("workshop_lineage_id", "c"),
-                                          ("workshop_provider", "claude_cli"))
-                        if k != missing})
 
 
 # ======================================================================================

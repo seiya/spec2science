@@ -59,8 +59,6 @@ from tools.orchestration_runtime import (
     record_launch,
     _read_json_or_none,
     reserve_phase_root,
-    _evaluate_reply_budget,
-    REPLY_BUDGET_CHARS,
     render_launch_prompt_text,
     update_orchestration_status,
     workflow_launch_check,
@@ -1029,49 +1027,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertFalse((repo_root / "workspace" / "orchestrations" /
                               "orch_lineage_race" / "session_run_index.json").exists())
 
-    def test_record_launch_refuses_a_lineage_id_off_workshop_or_malformed(self) -> None:
-        """`--workshop-lineage-id` becomes a path segment outside the repository.
-
-        Refused for a launch that is not a workshop one (it names a lineage home that launch
-        has none of) and for anything but a plain token, BEFORE any lineage home is reached —
-        the preparer's own check is the second wall, and a call here would be a path join on
-        the value. (The `--codex-lineage-id` this row first pinned went with the pure codex
-        lineage, issue #534 PR-J4-b; the walls stand on the workshop id.)
-        """
-        from tools.orchestration_runtime import record_launch
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Only the metadata the lineage-home preparer reads: `init_orchestration` would
-            # create `launches/`, whose absence is part of what this row observes.
-            meta = repo_root / "workspace" / "orchestrations" / "orch_lineage_refuse" / "orchestration_meta.json"
-            meta.parent.mkdir(parents=True)
-            meta.write_text(json.dumps({"orchestration_id": "orch_lineage_refuse"}), encoding="utf-8")
-            prepare = mock.Mock(side_effect=AssertionError("preparer reached"))
-            with patch.dict(ort.WORKSHOP_HOME_PREPARERS, {"codex": prepare}):
-                with patch("tools.orchestration_runtime._require_preflight_launchable",
-                           return_value={"backend": "codex"}), \
-                        self.assertRaisesRegex(ValueError,
-                                               "valid only for a workshop launch request"):
-                    record_launch(
-                        repo_root, "orch_lineage_refuse",
-                        parent_agent_run_id="parent", child_agent_run_id="child",
-                        request_payload={}, response_payload={"backend": "codex"},
-                        workshop_lineage_id="lineage-1", netns_socket_dir=netns_socket_dir())
-                for bad in ("../x", "a/b", "", "x y"):
-                    with self.subTest(lineage=bad), \
-                            patch("tools.orchestration_runtime._require_preflight_launchable",
-                                  return_value={"backend": "codex"}), \
-                            self.assertRaisesRegex(ValueError,
-                                                   "workshop_lineage_id contains"):
-                        record_launch(
-                            repo_root, "orch_lineage_refuse",
-                            parent_agent_run_id="parent", child_agent_run_id="child",
-                            request_payload=self._codex_workshop_request("child", "lineage-1"),
-                            response_payload={"backend": "codex"},
-                            workshop_lineage_id=bad, netns_socket_dir=netns_socket_dir())
-            prepare.assert_not_called()
-
     def test_record_launch_takes_no_codex_lineage_id(self) -> None:
         """The pure codex lineage's `codex_lineage_id` parameter and `--codex-lineage-id`
         flag went with it (issue #534 PR-J4-b): a caller still passing one is refused by the
@@ -1804,148 +1759,13 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(sub.get("agent_model"), "claude-opus-4-8")
             self.assertEqual(sub.get("derivation_key"), "sha256:" + "d" * 64)
 
-    def test_validate_launch_request_payload_requires_agent_model(self) -> None:
-        """A step/substep launch request without agent_model is rejected at
-        record-launch time (fail-fast), since agent_model is not runtime-derivable
-        and must be supplied by the orchestration agent."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        req = {"node_key": "problem/shallow_water2d@0.3.0", "step": "build"}
-        with self.assertRaisesRegex(ValueError, "agent_model"):
-            _validate_launch_request_payload(req)
-
-    def test_validate_launch_request_payload_accepts_deterministic_generate_gate(self) -> None:
-        """The record-launch validation chokepoint's deterministic-flag allowlist must
-        include generate.gate (else every generate node fails at the gate substep's
-        record-launch), and a non-gate deterministic generate substep is still rejected.
-
-        The deterministic-flag check runs before the agent_model/ref checks, so a gate
-        payload that passes it falls through to the agent_model error (proving the
-        deterministic gate did NOT reject it)."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        gate = {"node_key": "component/spec_x@0.1.0", "step": "generate",
-                "substep": "gate", "deterministic": True}
-        # Passes the deterministic allowlist -> fails later on the missing agent_model.
-        with self.assertRaisesRegex(ValueError, "agent_model"):
-            _validate_launch_request_payload(gate)
-
-        # A deterministic flag on the producer generate substep IS rejected.
-        forged = {"node_key": "component/spec_x@0.1.0", "step": "generate",
-                  "substep": "generate", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-
-    def test_validate_launch_request_payload_rejects_retired_generate_checker_substeps(self) -> None:
-        """The retired per-checker substep names (lint/syntax/static) are NOT in the
-        deterministic-flag allowlist: a legacy resume that still emits one fails closed loudly
-        at record-launch, rather than silently claiming the reduced launch-prompt guards."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        for retired in ("lint", "syntax", "static"):
-            payload = {"node_key": "component/spec_x@0.1.0", "step": "generate",
-                       "substep": retired, "deterministic": True}
-            with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-                _validate_launch_request_payload(payload)
-
-    def test_validate_launch_request_payload_accepts_deterministic_compile_static(self) -> None:
-        """The deterministic-flag allowlist must also include compile.static (else every compile
-        node fails at the static substep's record-launch). Like generate.gate, a compile.static
-        payload that passes the allowlist falls through to the agent_model error; a non-static
-        deterministic compile substep is still rejected."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        static = {"node_key": "component/spec_x@0.1.0", "step": "compile",
-                  "substep": "static", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "agent_model"):
-            _validate_launch_request_payload(static)
-
-        forged = {"node_key": "component/spec_x@0.1.0", "step": "compile",
-                  "substep": "verify", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-
-    def test_validate_launch_request_payload_accepts_deterministic_validate_gates(self) -> None:
-        """The deterministic-flag allowlist must include the validate gate substeps
-        pre_judge and post_judge (else every validate node fails at their record-launch);
-        the LLM judge substep must NOT be allowed to claim the deterministic flag."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        for sub in ("pre_judge", "post_judge"):
-            payload = {"node_key": "component/spec_x@0.1.0", "step": "validate",
-                       "substep": sub, "deterministic": True}
-            with self.assertRaisesRegex(ValueError, "agent_model"):
-                _validate_launch_request_payload(payload)
-
-        forged = {"node_key": "component/spec_x@0.1.0", "step": "validate",
-                  "substep": "judge", "deterministic": True}
-        with self.assertRaisesRegex(ValueError, "deterministic=True is only valid"):
-            _validate_launch_request_payload(forged)
-
-    def test_phase_contract_accepts_validate_gate_meta_outputs(self) -> None:
-        """record-launch's phase-contract check (`_allowed_output_paths_for_launch`) must accept
-        the pre_judge/post_judge deterministic substeps' ONLY deliverable — their run-node meta —
-        or every validate node crashes at the first substep's record-launch in the real flow.
-        Drives the REAL contract function (not the _FakeConductor stub) so the mock gap that hid
-        this cannot recur."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        pipeline = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/spec-x_20260101_001"
-        node_key = "component/spec_x@0.1.0"
-        node_safe = "component__spec_x__0.1.0"
-        run_id = "run_20260101_001"
-        for sub in ("pre_judge", "post_judge"):
-            good = f"{pipeline}/runs/{run_id}/{node_safe}/{sub}_meta.json"
-            payload = {"agent_role": "substep", "step": "validate", "substep": sub,
-                       "pipeline_ref": pipeline, "node_key": node_key,
-                       "allowed_output_paths": [good]}
-            self.assertEqual(
-                _allowed_output_paths_for_launch(request_payload=payload),
-                [good])
-            # The gate substep may declare ONLY its own meta — not the judge's artifacts.
-            forged = dict(payload, allowed_output_paths=[
-                f"{pipeline}/runs/{run_id}/{node_safe}/semantic_review.json"])
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged)
-
-    def test_phase_contract_execute_authors_verdict_judge_does_not(self) -> None:
-        """R2: verdict.json is part of the Validate.EXECUTE write-contract (host-authored from
-        io_contract.tests and io_contract.predicates) and is NOT a Validate.judge deliverable. Drives the REAL
-        _allowed_output_paths_for_launch (not the _FakeConductor stub) so the mock gap that hid
-        the execute record-launch crash cannot recur."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        pipeline = "workspace/pipelines/component__spec_x__0.1.0/fortran_cpu/spec-x_20260101_001"
-        node_key = "component/spec_x@0.1.0"
-        node_safe = "component__spec_x__0.1.0"
-        run_id = "run_20260101_001"
-        verdict = f"{pipeline}/runs/{run_id}/{node_safe}/verdict.json"
-        # execute may declare verdict.json (else record-launch crashes before it runs)
-        execute = {"agent_role": "substep", "step": "validate", "substep": "execute",
-                   "pipeline_ref": pipeline, "node_key": node_key,
-                   "allowed_output_paths": [verdict]}
-        self.assertIn(
-            verdict, _allowed_output_paths_for_launch(request_payload=execute))
-        # the judge may NOT declare verdict.json (it authors only semantic_review.json)
-        judge = {"agent_role": "substep", "step": "validate", "substep": "judge",
-                 "pipeline_ref": pipeline, "node_key": node_key,
-                 "allowed_output_paths": [verdict]}
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(request_payload=judge)
-        sem = f"{pipeline}/runs/{run_id}/{node_safe}/semantic_review.json"
-        judge_ok = dict(judge, allowed_output_paths=[sem])
-        self.assertEqual(
-            _allowed_output_paths_for_launch(request_payload=judge_ok), [sem])
-
-    def test_phase_contract_admits_the_traced_execute_request(self) -> None:
+    def test_the_traced_execute_request_lists_the_kernel_summary(self) -> None:
         """Issue #307: the execute request `build_launch_request` builds for a traced target —
-        the real one, not a stub — passes the REAL phase-contract check, so record-launch does
-        not refuse every `cuda` Validate.execute before it runs (round 1 found it did: the
-        conductor tests mock `runtime`, which never reaches this function). The summary's name
-        is the conductor's constant; and it is execute's alone — a judge may not declare it."""
+        the real one, not a stub — lists the per-kernel summary as a deliverable, under the
+        conductor's constant name, and an untraced one does not. (The phase-contract match this
+        row also drove went in issue #643.)"""
         import tools.workflow_conductor as wc
         from tools.host_execution import KERNEL_TRACE_ARTIFACT
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
         refs = wc.NodeRefs(target_id="fortran_cpu", node_key="component/spec_x@0.1.0",
                            spec_path="spec/component/spec_x", ir_id="x_1", pipeline_id="x_1",
@@ -1958,14 +1778,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     orchestration_agent_run_id="a", child_agent_run_id="c", agent_model="m",
                     workflow_mode="dev", case_ids=("c_alpha",), device_trace=traced,
                     output_format="json")
-                outs = _allowed_output_paths_for_launch(request_payload=req)
                 summary = f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"
-                self.assertEqual(summary in outs, traced)
-        judge = {"agent_role": "substep", "step": "validate", "substep": "judge",
-                 "pipeline_ref": refs.pipeline_ref, "node_key": refs.node_key,
-                 "allowed_output_paths": [f"{refs.run_node_dir()}/{KERNEL_TRACE_ARTIFACT}"]}
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(request_payload=judge)
+                self.assertEqual(summary in req["allowed_output_paths"], traced)
 
     # `test_phase_contract_compile_generate_admits_only_conductor_declaration` stood here until
     # Z4 (issue #171). It drove the CAPTURED agentic `compile.generate` request through
@@ -1980,41 +1794,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     # itself and `docs/workflow/phases/phase_01_compile.md`, which the pure compile prompt
     # inlines whole; what is NOT carried forward is this layer's refusal of a third name at the
     # IR root, because no leaf names anything there any more.
-
-    def test_phase_contract_compile_static_is_the_meta_alone(self) -> None:
-        """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`.
-        Review found that widening that `==` to a `startswith` on the IR root was invisible to
-        the whole suite — nothing pinned this branch — so a deterministic substep could have
-        declared write authority over the IR it is supposed to validate read-only. Pinned here
-        next to the generate contract because the two are one rule read at two substeps.
-
-        (Keeping a compile.generate / compile.verify leaf from listing the verdict as ITS output
-        is a different mechanism — `compile_required` membership — already pinned by
-        `test_compile_non_static_launch_rejects_compile_static_meta_json`. An earlier draft of
-        this docstring credited that job to this branch.)
-
-        Unlike the generate contract, this payload is hand-written: `compile.static` has no
-        captured request under tools/tests/data/conductor_launch_requests/, so a conductor-side
-        widening of the static declaration is NOT caught here the way the generate side is by
-        test_reproduces_every_real_substep_payload."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
-        base = {"agent_role": "substep", "step": "compile", "substep": "static",
-                "ir_ref": ir_ref, "node_key": "component/spec_x@0.1.0"}
-        meta = [f"{ir_ref}/compile_static_meta.json"]
-        self.assertEqual(
-            _allowed_output_paths_for_launch(
-                request_payload=dict(base, allowed_output_paths=meta)),
-            meta)
-        # Not even the IR the gate reads, and not a sibling meta: static writes its verdict only.
-        # The trailing-slash entries probe the directory branch, which no file-shaped probe
-        # reaches — see the note in the generate test above.
-        for extra in ("spec.ir.yaml", "ir_meta.json", "compile_static_meta.json.bak",
-                      "zz9_unlisted_artifact.xyz", "", "views/"):
-            forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
-            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                _allowed_output_paths_for_launch(request_payload=forged)
 
     def test_a_codex_cold_launch_starts_its_own_lineage_and_a_warm_one_reuses_it(self) -> None:
         """End to end through `record_launch`, the registration transaction and the index.
@@ -2344,40 +2123,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             # The IR deliverable itself: the pass path stamps its sha256 into ir_meta.json.
             (ir_meta_path.parent / "spec.ir.yaml").write_text(
                 "spec: shallow_water2d\n", encoding="utf-8")
-            # Fail-fast executor-role guard: a substep-aware phase (compile) rejects a
-            # non-orchestration --agent-run-id (here the verify-substep and the build
-            # step arid) BEFORE the file is written and BEFORE the phase transitions, so
-            # the phase stays child_finished and the agent can retry with the orch arid.
-            compile_step_dir = (
-                repo_root
-                / "workspace/orchestrations/orch_001/steps"
-                / "problem__shallow_water2d__0.3.0/compile"
-            )
-            for wrong_arid in ("substep_run_plan_generate_001", "step_run_build_001"):
-                with self.assertRaises(RuntimeError):
-                    write_step_result(
-                        repo_root=repo_root,
-                        orchestration_id="orch_001",
-                        node_key="problem/shallow_water2d@0.3.0",
-                        step="compile",
-                        agent_run_id=wrong_arid,
-                        payload={
-                            "status": "pass",
-                            "derivation": _fixture_derivation(repo_root, "compile"),
-                            "required_outputs": [
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                            ],
-                            "failed_substeps": [],
-                            "substep_agent_run_ids": ["substep_run_plan_generate_001"],
-                            "executor_agent_run_id": wrong_arid,
-                            "validation_stage": "compile",
-                        },
-                    )
-                self.assertFalse(
-                    (compile_step_dir / wrong_arid / "step_result.json").exists(),
-                    "guard must reject before writing step_result.json",
-                )
             write_step_result(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2397,25 +2142,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "validation_stage": "compile",
                 },
             )
-            # Symmetric guard: the no-substep Build phase requires the step agent arid,
-            # so the orchestration arid is rejected.
-            with self.assertRaises(RuntimeError):
-                write_step_result(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    node_key="problem/shallow_water2d@0.3.0",
-                    step="build",
-                    agent_run_id="orch_run_001",
-                    payload={
-                        "status": "pass",
-                        "derivation": _fixture_derivation(repo_root, "build"),
-                        "validation_stage": "post_build",
-                        "required_outputs": _seed_build_pass_outputs(repo_root),
-                        "failed_substeps": [],
-                        "substep_agent_run_ids": [],
-                        "executor_agent_run_id": "orch_run_001",
-                    },
-                )
             write_step_result(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2887,219 +2613,14 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 ),
             )
 
-    def test_generate_gate_launch_accepts_gate_meta_json(self) -> None:
-        """The deterministic Generate.gate substep declares
-        source/<source_id>/gate_meta.json as its conductor-authored deliverable
-        (workflow_conductor._gate_inproc), plus the canonical src/command_log.jsonl its
-        lint/syntax checkers append to. gate_meta.json sits at the source root — a sibling of
-        source_meta.json, NOT under src/ — so the generate phase contract must accept it.
-        Regression for the billed-E2E fail "allowed_output_paths[0] is outside phase contract
-        outputs for step='generate': .../gate_meta.json".
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_gate_meta_001"
-        gate_meta = f"{_FIX_PIPE_REF}/source/{src_id}/gate_meta.json"
-        command_log = f"{_FIX_PIPE_REF}/source/{src_id}/src/command_log.jsonl"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate",
-            "substep": "gate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "allowed_output_paths": [gate_meta, command_log],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertIn(gate_meta, out)
-        self.assertIn(command_log, out)
-
-    def test_generate_non_gate_launch_rejects_gate_meta_json(self) -> None:
-        """gate_meta.json is conductor-authored and leaf-non-writable. A Generate.generate /
-        Generate.verify leaf launch must NOT be able to list it as an output (it would
-        auto-authorize overwriting the gate verdict). The generate phase contract accepts
-        gate_meta.json for the deterministic Generate.gate substep ONLY. The retired per-checker
-        meta names are rejected outright, for the gate substep too.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_gate_meta_002"
-        gate_meta = f"{_FIX_PIPE_REF}/source/{src_id}/gate_meta.json"
-        model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        for substep in ("generate", "verify"):
-            with self.subTest(substep=substep):
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": src_id,
-                    "allowed_output_paths": [model_src, gate_meta],
-                }
-                with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                    _allowed_output_paths_for_launch(
-                        request_payload=req,
-                    )
-
-    def test_compile_static_launch_accepts_compile_static_meta_json(self) -> None:
-        """The deterministic Compile.static substep declares
-        <ir_ref>/compile_static_meta.json as its conductor-authored deliverable
-        (workflow_conductor._compile_static_inproc). It sits at the IR root (a sibling of
-        spec.ir.yaml / ir_meta.json), so the compile phase contract must accept it for the
-        static substep — else every compile node fails at the static substep's record-launch.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        compile_static_meta = f"{_FIX_IR_REF}/compile_static_meta.json"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "compile",
-            "substep": "static",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [compile_static_meta],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertIn(compile_static_meta, out)
-
-    def test_compile_verify_launch_rejects_spec_ir_yaml_write(self) -> None:
-        """Compile.verify authors NOTHING in spec.ir.yaml (io_contract moved to Compile.generate;
-        Compile.static gated the IR before verify). Its sole write is ir_meta.json, so a verify
-        launch that lists spec.ir.yaml as an output is rejected — preventing verify from mutating
-        the IR post-gate (which would bypass --stage compile). ir_meta.json alone is accepted.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        ir_meta = f"{_FIX_IR_REF}/ir_meta.json"
-        ir_yaml = f"{_FIX_IR_REF}/spec.ir.yaml"
-        base = {
-            "agent_role": "substep", "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "compile", "substep": "verify",
-            "ir_ref": _FIX_IR_REF, "pipeline_ref": _FIX_PIPE_REF,
-        }
-        # ir_meta.json alone is accepted.
-        out = _allowed_output_paths_for_launch(
-            request_payload={**base, "allowed_output_paths": [ir_meta]})
-        self.assertEqual(out, [ir_meta])
-        # listing spec.ir.yaml is rejected for verify.
-        with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-            _allowed_output_paths_for_launch(
-                request_payload={**base, "allowed_output_paths": [ir_yaml, ir_meta]})
-        # ...but Compile.generate (the author) may still list spec.ir.yaml.
-        gen_out = _allowed_output_paths_for_launch(
-            request_payload={**base, "substep": "generate",
-                             "allowed_output_paths": [ir_yaml, ir_meta]})
-        self.assertIn(ir_yaml, gen_out)
-
-    def test_compile_non_static_launch_rejects_compile_static_meta_json(self) -> None:
-        """compile_static_meta.json is conductor-authored and leaf-non-writable. A
-        Compile.generate / Compile.verify leaf launch must NOT be able to list it as an output
-        (it would auto-authorize overwriting the static verdict). The compile phase contract
-        accepts compile_static_meta.json for the deterministic Compile.static substep ONLY.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        compile_static_meta = f"{_FIX_IR_REF}/compile_static_meta.json"
-        ir_yaml = f"{_FIX_IR_REF}/spec.ir.yaml"
-        for substep in ("generate", "verify"):
-            with self.subTest(substep=substep):
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "compile",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "allowed_output_paths": [ir_yaml, compile_static_meta],
-                }
-                with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
-                    _allowed_output_paths_for_launch(
-                        request_payload=req,
-                    )
-
-    def test_generate_leaf_launch_rejects_unlisted_source_root_json(self) -> None:
-        """The GENERATE phase contract is a MEMBERSHIP test on source-root JSON: a name it does
-        not list is refused whatever it is called, for every generate substep. `gate_meta.json`
-        is the one accepted name, and only for Generate.gate (the row above).
-
-        WHAT THIS DOES AND DOES NOT COVER, stated because issue #180's round 1 measured the
-        wider version FALSE. It is true of the generate contracts only. Two sibling contracts
-        in `_matches_phase_contract` would accept a retired per-checker name: `validate.execute`
-        admits anything under `raw/` (`orchestration_runtime.py:7856`) and `tune` admits any
-        `*_meta.json` basename (`:7934`). So the enumeration issue #180 deleted from
-        `_allowed_file_tool_paths_for_launch` was NOT redundant with this layer everywhere — it
-        was redundant here, and unreached everywhere, because no request in this tree sets
-        `allowed_file_tool_paths` and nothing reads the three names. That is the evidence the
-        deletion rests on; this row is not it.
-        """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_unlisted_meta_002"
-        unlisted = f"{_FIX_PIPE_REF}/source/{src_id}/extra_meta.json"
-        model_src = f"{_FIX_PIPE_REF}/source/{src_id}/src/m_model.f90"
-        for substep in ("generate", "verify", "gate"):
-            with self.subTest(substep=substep):
-                req = {
-                    "agent_role": "substep",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "generate",
-                    "substep": substep,
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "source_id": src_id,
-                    "allowed_output_paths": [model_src, unlisted],
-                }
-                with self.assertRaisesRegex(
-                    ValueError, "outside phase contract outputs"
-                ):
-                    _allowed_output_paths_for_launch(
-                        request_payload=req,
-                    )
-
-    def test_validate_launch_rejects_listed_path_for_other_run_id(self) -> None:
-        """If request.run_id is set, listed paths must use that run_id only."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": "exec_real_001",
-            "allowed_output_paths": [
-                # Caller declares run_id=exec_real_001 but lists a path
-                # under a different run_id.
-                f"{_FIX_PIPE_REF}/runs/run_20260201_002/{node_safe}/perf.json",
-            ],
-        }
-        with self.assertRaisesRegex(
-            ValueError,
-            "must target a single run_id|does not match request run_id",
-        ):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
     def test_build_launch_accepts_cross_phase_log_for_make_build(self) -> None:
         """In-source Make builds (Fortran/C family) run compile_project with
         project_dir=<source_id>/src/, so the command log lands in the generate
-        tree. The build launch must auto-inject the cross-phase canonical
-        placement when source_id is provided.
+        tree. The canonical placements of a build launch carry the cross-phase one when
+        source_id is provided and the build system builds in source (record_launch then checks
+        that source's `source_meta.json` is at pass).
         """
-        from tools.orchestration_runtime import (
-            _allowed_output_paths_for_launch,
-            _canonical_command_log_paths_for_request,
-        )
+        from tools.orchestration_runtime import _canonical_command_log_paths_for_request
 
         src_id = "src_make_build_001"
         binary_id = "build-make_20260101_001"
@@ -3116,45 +2637,32 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "ir_ref": _FIX_IR_REF,
             "pipeline_ref": _FIX_PIPE_REF,
             "source_id": src_id,
-            # `_resolved_build_system` is normally injected by record_launch
-            # from spec.ir.yaml; for direct helper tests we set it.
+            # `_resolved_build_system` is normally set by record_launch from the target
+            # profile of the request's pipeline; for direct helper tests we set it.
             "_resolved_build_system": "make",
             "allowed_output_paths": [
                 f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
                 f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
             ],
         }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        # Both placements (in-phase and cross-phase) auto-injected.
-        self.assertIn(in_phase_log, out)
-        self.assertIn(cross_log, out)
-        canonical = set(_canonical_command_log_paths_for_request(req, out))
+        canonical = set(_canonical_command_log_paths_for_request(
+            req, req["allowed_output_paths"]))
         self.assertIn(in_phase_log, canonical)
         self.assertIn(cross_log, canonical)
-        # Without the record-launch stamp, the build system is the TARGET's, read off the
-        # request's pipeline_ref (issue #284): the make-only cross-phase placement holds when
-        # the profile resolves and is dropped when it does not.
-        from tools.tests.target_fixtures import install_target_profile
+        # Without the record-launch stamp there is no build system, and the make-only
+        # cross-phase placement is not granted.
         bare = {k: v for k, v in req.items() if k != "_resolved_build_system"}
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            self.assertNotIn(cross_log, set(_canonical_command_log_paths_for_request(
-                bare, out, repo_root=repo)))
-            install_target_profile(repo)
-            self.assertIn(cross_log, set(_canonical_command_log_paths_for_request(
-                bare, out, repo_root=repo)))
+        self.assertNotIn(cross_log, set(_canonical_command_log_paths_for_request(
+            bare, req["allowed_output_paths"])))
 
     def test_build_launch_skips_cross_phase_log_for_non_make_toolchain(self) -> None:
         """Cross-phase canonical placement is Make-only.
 
         For CMake/Meson/Ninja or any out-of-source build, the cross-phase
-        generate-tree audit log must NOT be auto-injected even when
-        source_id is provided. Otherwise non-Make builds would gain
-        write authority into the generate tree contrary to spec.
+        generate-tree audit log is NOT a canonical placement even when
+        source_id is provided.
         """
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+        from tools.orchestration_runtime import _canonical_command_log_paths_for_request
 
         src_id = "src_cmake_001"
         binary_id = "build-cmake_20260101_001"
@@ -3178,121 +2686,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
             ],
         }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        # In-phase log is auto-injected; cross-phase is NOT.
-        self.assertIn(in_phase_log, out)
-        self.assertNotIn(cross_log, out)
-
-    def test_validate_execute_auto_injects_snapshot_schema(self) -> None:
-        """Validate.execute launches must auto-inject the canonical
-        raw/state_snapshots/snapshot_schema.json so an executor that writes it
-        is not rejected by post_execute / restarted (P3)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        node_safe = "problem__shallow_water2d__0.3.0"
-        run_id = "run_20260201_002"
-        run_dir = f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{run_dir}/perf.json",
-                f"{run_dir}/quality_check.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        expected = f"{run_dir}/raw/state_snapshots/snapshot_schema.json"
-        self.assertIn(expected, out)
-        # Idempotent: pre-listing it must not duplicate.
-        req2 = dict(req)
-        req2["allowed_output_paths"] = req["allowed_output_paths"] + [expected]
-        out2 = _allowed_output_paths_for_launch(
-            request_payload=req2,
-        )
-        self.assertEqual([p for p in out2 if p == expected], [expected])
-
-    def test_generate_generate_does_not_inject_lineage(self) -> None:
-        """Phase-2: lineage.json is authored host-side by the conductor (it sits at the
-        pipeline root, which must stay non-writable to the sandboxed leaf), so it must
-        NOT be auto-injected into the generate child's allowed_output_paths."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        source_id = "src_20260415_001"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate", "substep": "generate",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": source_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/source/{source_id}/src/",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
-
-    def test_generate_verify_does_not_inject_lineage(self) -> None:
-        """The verify substep only reads lineage.json; it must NOT be auto-injected
-        into the verify launch's allowed_output_paths."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        source_id = "src_20260415_001"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "generate", "substep": "verify",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": source_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/source/{source_id}/src/",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertNotIn(f"{_FIX_PIPE_REF}/lineage.json", out)
-
-    def test_validate_judge_does_not_inject_snapshot_schema(self) -> None:
-        """The judge substep writes no raw/ evidence and its phase contract
-        rejects raw/ paths; the snapshot schema must NOT be injected there
-        (injecting would make _matches_phase_contract raise) (P3)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        node_safe = "problem__shallow_water2d__0.3.0"
-        run_id = "run_20260201_003"
-        run_dir = f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}"
-        req = {
-            "agent_role": "substep",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "judge",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{run_dir}/semantic_review.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-            # Judge's production write_root is the narrowed semantic_review.json file pin.
-        )
-        for p in out:
-            self.assertFalse(
-                p.endswith("snapshot_schema.json"),
-                f"unexpected snapshot_schema inject for judge: {p}",
-            )
+        canonical = set(_canonical_command_log_paths_for_request(
+            req, req["allowed_output_paths"]))
+        # In-phase log is canonical; cross-phase is NOT.
+        self.assertIn(in_phase_log, canonical)
+        self.assertNotIn(cross_log, canonical)
 
     def test_required_child_agent_kind_lists_valid_steps_on_unknown(self) -> None:
         """An unsupported step must raise a ValueError that enumerates the valid
@@ -4079,415 +3477,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     response_payload=_spawn_response_payload("sess_step_build_failed_gen"),
                  netns_socket_dir=netns_socket_dir())
 
-    def test_build_launch_rejects_listed_paths_for_multiple_build_ids(self) -> None:
-        """A build launch must target exactly one binary_id."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/binary/bin_20260101_002/binary_meta.json",
-                f"{_FIX_PIPE_REF}/binary/bin_20260101_003/binary_meta.json",
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "must target a single binary_id"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
-    def test_build_phase_auto_injects_and_accepts_command_log(self) -> None:
-        """Build step must auto-inject <binary_id>/command_log.jsonl (compile_project log)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        binary_id = "bin_20260510_001"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/bin/main",
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/binary_meta.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        expected_log = f"{_FIX_PIPE_REF}/binary/{binary_id}/command_log.jsonl"
-        self.assertIn(expected_log, out)
-
-    def test_build_phase_rejects_log_in_unrecognized_subdir(self) -> None:
-        """Build phase only accepts the log directly under <binary_id>/, not under arbitrary subdirs."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        binary_id = "bin_20260510_002"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "build",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                # Log path under an unrecognized subdir (not /bin/, not directly under binary_id).
-                f"{_FIX_PIPE_REF}/binary/{binary_id}/logs/command_log.jsonl",
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
-    def test_execute_phase_auto_injects_and_accepts_command_log(self) -> None:
-        """Execute step must auto-inject <run_id>/<node_safe>/command_log.jsonl."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        run_id = "run_20260510_001"
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        expected_log = (
-            f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/command_log.jsonl"
-        )
-        self.assertIn(expected_log, out)
-
-    def test_record_launch_rejects_slug_shaped_validate_run_id(self) -> None:
-        """Regression for the orch_…_2947d72c failure: a slug-shaped run_id
-        like `run-rsn-p0_20260605_001` matches the generic
-        `_SLUG_DATE_SEQ3_PATTERN` (slug=`run-rsn-p0`) and used to slip past the
-        write-acceptance boundary, but is NOT a canonical run_id (no literal
-        `run_` prefix) so the Validate post_execute discovery silently found no
-        artifacts. The boundary must now reject it at launch."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        run_id = "run-rsn-p0_20260605_001"
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
-            ],
-        }
-        with self.assertRaisesRegex(ValueError, "outside phase contract"):
-            _allowed_output_paths_for_launch(
-                request_payload=req,
-            )
-
-    def test_record_launch_accepts_canonical_validate_run_id(self) -> None:
-        """The canonical run_<YYYYMMDD>_<seq3> form must continue to pass."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        run_id = "run_20260605_001"
-        node_safe = "problem__shallow_water2d__0.3.0"
-        req = {
-            "agent_role": "step",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "step": "validate", "substep": "execute",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "run_id": run_id,
-            "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
-            ],
-        }
-        out = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertIn(
-            f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json", out
-        )
-
-    def test_generate_non_make_launch_does_not_inject_makefile_pin(self) -> None:
-        """Fix 1 is Make-scoped: CMake/Meson Generate launches must NOT get a
-        Makefile pin auto-injected (out-of-source toolchains do not build with
-        an in-source Makefile)."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-
-        src_id = "src_20260604_003"
-        src_dir = f"{_FIX_PIPE_REF}/source/{src_id}/src/"
-        req = {
-            "agent_role": "step",
-            "step": "generate",
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "source_id": src_id,
-            "_resolved_build_system": "cmake",
-            "allowed_output_paths": [src_dir],
-        }
-        allowed = _allowed_output_paths_for_launch(
-            request_payload=req,
-        )
-        self.assertNotIn(
-            f"{_FIX_PIPE_REF}/source/{src_id}/src/Makefile", allowed
-        )
-
-    def test_rejects_launch_with_placeholder_plan_or_pipeline_refs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "ir_ref must not contain placeholder"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_run_plan_generate_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "compile",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_plan_generate_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/<agent-determined-plan-id>",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt(
-                            "problem/shallow_water2d@0.3.0",
-                            "compile",
-                            "generate",
-                            "substep_run_plan_generate_001",
-                        ),
-                    },
-                    response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_launch_when_dependency_ref_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "launch request must include non-empty dependency_ref"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_run_plan_generate_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "allowed_output_paths": [
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                        ],
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "compile",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_plan_generate_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt(
-                            "problem/shallow_water2d@0.3.0",
-                            "compile",
-                            "generate",
-                            "substep_run_plan_generate_001",
-                        ),
-                    },
-                    response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_launch_with_placeholder_dependency_ref(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "launch request dependency_ref must not contain placeholder tokens"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_run_plan_generate_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "allowed_output_paths": [
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
-                        ],
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "compile",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_run_plan_generate_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/<agent-determined-dependency-ref>",
-                        "skill_name": "workflow-compile-generate",
-                        "skill_ref": "skills/workflow-compile-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": _substep_launch_prompt(
-                            "problem/shallow_water2d@0.3.0",
-                            "compile",
-                            "generate",
-                            "substep_run_plan_generate_001",
-                        ),
-                    },
-                    response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_launch_when_pipeline_ref_is_not_pipeline_root_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            bad_pipeline = (
-                "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                "shallow-water2d_20260415_001/source/src_001/source_meta.json"
-            )
-            with self.assertRaisesRegex(ValueError, "pipeline_ref must be exactly"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_bad_pipeline_001",
-                    request_payload={
-                        "agent_role": "substep",
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "generate",
-                        "substep": "generate",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_bad_pipeline_001",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": bad_pipeline,
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-generate-generate",
-                        "skill_ref": "skills/workflow-generate-generate/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": "prompt",
-                    },
-                    response_payload=_spawn_response_payload("sess_bad_pipeline_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_rejects_generate_verify_without_source_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            with self.assertRaisesRegex(ValueError, "source_id"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="substep_gen_verify_no_gid",
-                    request_payload={
-                        "agent_role": "substep",
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "generate",
-                        "substep": "verify",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "substep_gen_verify_no_gid",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                        "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                        "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                        "skill_name": "workflow-generate-verify",
-                        "skill_ref": "skills/workflow-generate-verify/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "launch_prompt_full": "gv verify",
-                    },
-                    response_payload=_spawn_response_payload("sess_gv_no_gid"),
-                 netns_socket_dir=netns_socket_dir())
-
     def test_rejects_pass_step_result_when_required_outputs_are_missing_from_substeps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -4909,99 +3898,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 },
             )
             self.assertEqual(payload["output_refs"], [out_ref])
-
-    def test_execute_launch_rejects_listed_path_for_unrelated_generation(self) -> None:
-        """Defense against authorization-by-listing of an unrelated generation.
-
-        If an execute launch lists `<pipeline_ref>/source/<other>/src/...`
-        in allowed_output_paths (a generation different from the request's
-        `source_id`), the launch must be rejected. Otherwise an older or
-        sibling generation's audit log could gain build-runtime-owned write authority.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_agent_run(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "agent_run_id": "orch_run_001",
-                    "agent_role": "orchestration",
-                    "status": "running",
-                    "agent_backend": "claude",
-                },
-            )
-            real_gen = "gen_real_001"
-            other_src = "src_other_002"
-            run_id = "run_20260201_001"
-            node_safe = "problem__shallow_water2d__0.3.0"
-            # Both generations exist on disk (e.g., older sibling under same pipeline).
-            for gid in (real_gen, other_src):
-                gdir = repo_root / f"{_FIX_PIPE_REF}/source/{gid}"
-                gdir.mkdir(parents=True, exist_ok=True)
-                (gdir / "source_meta.json").write_text(
-                    '{"verification_status": "pass"}\n', encoding="utf-8"
-                )
-            (repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_003/bin").mkdir(
-                parents=True, exist_ok=True
-            )
-            (repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_003/bin/main").write_text(
-                "binary\n", encoding="utf-8"
-            )
-            perf_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
-            )
-            other_log_ref = (
-                f"{_FIX_PIPE_REF}/source/{other_src}/src/command_log.jsonl"
-            )
-            # Launch with source_id=real_gen but ALSO list a path under
-            # the unrelated other_src tree. The phase contract for execute
-            # should reject the unrelated generate path because it does not
-            # match the request's source_id.
-            with self.assertRaisesRegex(
-                ValueError, "outside phase contract|under capability write_roots"
-            ):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_exec_unrelated",
-                    request_payload={
-                        "agent_model": "claude-opus-4-8",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "validate", "substep": "execute",
-                        "agent_role": "substep",
-                        "orchestration_id": "orch_001",
-                        "agent_run_id": "step_run_exec_unrelated",
-                        "parent_agent_run_id": "orch_run_001",
-                        "ir_ref": _FIX_IR_REF,
-                        "pipeline_ref": _FIX_PIPE_REF,
-                        "dependency_ref": _FIX_DEP_REF,
-                        "run_id": run_id,
-                        "source_id": real_gen,
-                        "skill_name": "workflow-validate-execute",
-                        "skill_ref": "skills/workflow-validate-execute/SKILL.md",
-                        "skill_must_read_refs": "",
-                        "deterministic": True,
-                        "allowed_output_paths": [perf_ref, other_log_ref],
-                        "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_unrelated"),
-                    },
-                    response_payload=_spawn_response_payload("sess_step_exec_unrelated"),
-                 netns_socket_dir=netns_socket_dir())
 
     def test_execute_launch_requires_source_build_id_for_in_phase_log_only(self) -> None:
         """source_binary_id is required for ALL execute launches, not only
@@ -5902,45 +4798,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 },
             )
 
-    def test_allowed_output_paths_for_launch_rejects_dotdot_segments(self) -> None:
-        """Regression: `..` segments must be rejected BEFORE prefix/contract
-        checks. Otherwise a path like
-        `releases/<spec>/aarch64/fortran/r1/../../somewhere_else` would pass
-        the startswith() check and the identifier check on the first three
-        tail segments, even though it resolves outside the canonical layout."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        with self.assertRaisesRegex(ValueError, "must not contain '\\.'/'\\.\\.' segments"):
-            _allowed_output_paths_for_launch(
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_role": "step",
-                    "step": "build",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "node_key": "problem/dom.fam.spec_x@1.0",
-                    "allowed_output_paths": [
-                        "releases/problem/dom/fam/spec_x/aarch64/fortran/r1/../../spec/registry/spec_catalog.yaml",
-                    ],
-                },
-            )
-
-    def test_allowed_output_paths_for_launch_rejects_single_dot_segments(self) -> None:
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        with self.assertRaisesRegex(ValueError, "must not contain '\\.'/'\\.\\.' segments"):
-            _allowed_output_paths_for_launch(
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "agent_role": "step",
-                    "step": "build",
-                    "ir_ref": _FIX_IR_REF,
-                    "pipeline_ref": _FIX_PIPE_REF,
-                    "node_key": "problem/dom.fam.spec_x@1.0",
-                    "allowed_output_paths": [
-                        "releases/problem/dom/fam/spec_x/./aarch64/fortran/r1/x.tar.gz",
-                    ],
-                },
-            )
-
     def test_allowed_output_paths_for_launch_promote_accepts_deep_artifact_path(self) -> None:
         """Positive case: arbitrary depth under <release_id>/ is allowed for
         complex artifact layouts."""
@@ -5981,71 +4838,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ],
                 },
             )
-
-    def test_rejects_agent_run_when_launch_response_session_id_differs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "backend": "claude",
-                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
-            )
-            record_launch(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                parent_agent_run_id="orch_run_001",
-                child_agent_run_id="step_run_build_001",
-                request_payload={
-                    "agent_model": "claude-opus-4-8",
-                    "node_key": "problem/shallow_water2d@0.3.0",
-                    "step": "build",
-                    "agent_role": "step",
-                    "orchestration_id": "orch_001",
-                    "agent_run_id": "step_run_build_001",
-                    "parent_agent_run_id": "orch_run_001",
-                    "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                    "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
-                    "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                    "deterministic": True,
-                    "allowed_output_paths": ["workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"],
-                    "launch_prompt_full": _step_launch_prompt(
-                        "problem/shallow_water2d@0.3.0",
-                        "build",
-                        "step_run_build_001",
-                    ),
-                },
-                response_payload=_spawn_response_payload("sess_step_build_001"),
-             netns_socket_dir=netns_socket_dir())
-            with self.assertRaisesRegex(ValueError, "agent_session_id must match"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "step_run_build_001",
-                        "agent_role": "step",
-                        "parent_agent_run_id": "orch_run_001",
-                        "step": "build",
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "status": "pass",
-                        "agent_backend": "codex",
-                        "agent_model": "gpt-5-codex",
-                        "context_id": "ctx_step_build_001",
-                        "agent_session_id": "sess_step_build_999",
-                        "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
-                        ],
-                    },
-                )
 
     def test_rejects_duplicate_agent_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6450,41 +5242,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     repo_root=repo_root,
                     orchestration_id="orch_001",
                     status="pass",
-                )
-
-    def test_record_agent_run_requires_agent_backend(self) -> None:
-        """A payload not including agent_backend raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "agent_backend must be non-empty string"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_001",
-                        "agent_role": "orchestration",
-                        "status": "running",
-                    },
-                )
-
-    def test_record_agent_run_rejects_unknown_backend(self) -> None:
-        """Specifying an unknown backend name in agent_backend raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "agent_backend must be one of"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "agent_run_id": "orch_run_001",
-                        "agent_role": "orchestration",
-                        "status": "running",
-                        "agent_backend": "unknown_backend",
-                    },
                 )
 
     def test_record_agent_run_accepts_valid_backends(self) -> None:
@@ -7033,11 +5790,24 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             fresh = json.loads((sr_dir / "step_result.json").read_text(encoding="utf-8"))
             self.assertEqual(fresh["substep_agent_run_ids"], ["fresh_compile_generate_001"])
 
-    def test_write_step_result_hook_rejection_rolls_back_overwrite(self) -> None:
-        """A post_phase_complete rejection of the fresh write restores the prior step_result
-        and leaves no archive behind (Codex finding 2), so a retry sees the exact pre-write
-        state. Before issue #177 this also had to tombstone nothing; there is no tombstone
-        now, and the rollback is the whole of it."""
+    @staticmethod
+    def _failing_step_result_write() -> Any:
+        """Make `_write_json` fail for `step_result.json` alone: the other host writes of
+        `write_step_result` (the stage meta's certification stamp) use the same function."""
+        real_write = ort._write_json
+
+        def _write(path: Path, payload: Any, *args: Any, **kwargs: Any) -> Any:
+            if Path(path).name == "step_result.json":
+                raise OSError("simulated step_result write failure")
+            return real_write(path, payload, *args, **kwargs)
+
+        return patch.object(ort, "_write_json", side_effect=_write)
+
+    def test_write_step_result_failed_write_rolls_back_overwrite(self) -> None:
+        """A failed write of the fresh step_result restores the prior one and leaves no
+        archive behind (Codex finding 2), so a retry sees the exact pre-write state. Before
+        issue #177 this also had to tombstone nothing; there is no tombstone now, and the
+        rollback is the whole of it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_preflight_and_orch_agent(repo_root)
@@ -7049,17 +5819,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 failed_substeps=["stale_exec_fail"],
             )
             self._reset_phase_child_finished(repo_root, "compile")
-            # Arm a post_phase_complete violation for the fresh write: a launch
-            # request/response pair for the executor arid whose agent_session_ids
-            # disagree.
-            launches = repo_root / "workspace/orchestrations/orch_001/launches"
-            launches.mkdir(parents=True, exist_ok=True)
-            (launches / "orch_run_001.request.json").write_text(
-                json.dumps({"agent_session_id": "sess-a"}), encoding="utf-8")
-            (launches / "orch_run_001.response.json").write_text(
-                json.dumps({"agent_session_id": "sess-b"}), encoding="utf-8")
             self._seed_fresh_compile_substep(repo_root)
-            with self.assertRaisesRegex(RuntimeError, "post_phase_complete denied"):
+            with self._failing_step_result_write(), \
+                    self.assertRaisesRegex(OSError, "simulated step_result write failure"):
                 write_step_result(
                     repo_root=repo_root,
                     orchestration_id="orch_001",
@@ -7122,26 +5884,20 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                              ["stale_pre_pass", "stale_exec_fail"])
             self.assertEqual(list(sr_dir.glob("step_result.overwritten.*.json")), [])
 
-    def test_write_step_result_hook_rejection_restores_the_prior_attempt(self) -> None:
-        """A hook-REJECTED write leaves the pre-write state EXACTLY: the prior attempt back at
+    def test_write_step_result_failed_write_restores_the_prior_attempt(self) -> None:
+        """A FAILED write leaves the pre-write state EXACTLY: the prior attempt back at
         `step_result.json`, and no archive left behind. The completion vouch reads the latest
-        attempt's result, so a rejected payload persisting here would be read as that
-        attempt's outcome."""
+        attempt's result, so losing the prior one here would leave that attempt unread."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._setup_preflight_and_orch_agent(repo_root)
             self._write_failing_compile_step_result(
                 repo_root, substep_ids=[], failed_substeps=[])
             self._reset_phase_child_finished(repo_root, "compile")
-            launches = repo_root / "workspace/orchestrations/orch_001/launches"
-            launches.mkdir(parents=True, exist_ok=True)
-            (launches / "orch_run_001.request.json").write_text(
-                json.dumps({"agent_session_id": "sess-a"}), encoding="utf-8")
-            (launches / "orch_run_001.response.json").write_text(
-                json.dumps({"agent_session_id": "sess-b"}), encoding="utf-8")
             self._seed_fresh_compile_substep(repo_root)
 
-            with self.assertRaisesRegex(RuntimeError, "post_phase_complete denied"):
+            with self._failing_step_result_write(), \
+                    self.assertRaisesRegex(OSError, "simulated step_result write failure"):
                 write_step_result(
                     repo_root=repo_root,
                     orchestration_id="orch_001",
@@ -8000,7 +6756,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         )
 
     def _minimal_request_payload(self, **overrides: object) -> dict[str, object]:
-        """Return a minimal request_payload for the repair_strategy / issue_severity tests."""
+        """Return a minimal request_payload for the record_launch argument tests."""
         base: dict[str, object] = {
             "orchestration_id": "orch_001",
             "agent_run_id": "step_run_repair_001",
@@ -8030,111 +6786,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         if "launch_prompt_full" not in base:
             base["launch_prompt_full"] = render_launch_prompt_text(base)
         return base
-
-    def test_record_launch_rejects_invalid_repair_strategy(self) -> None:
-        """Passing an undefined value to repair_strategy raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "repair_strategy"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(repair_strategy="retry"),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_rejects_invalid_issue_severity(self) -> None:
-        """Passing an undefined value to issue_severity raises a ValueError."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "issue_severity"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(issue_severity="blocker"),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_requires_repair_target_for_reuse(self) -> None:
-        """ValueError when repair_target_agent_run_id is "none" with repair_strategy=reuse."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "repair_target_agent_run_id"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(
-                        issue_severity="minor",
-                        repair_strategy="reuse",
-                        repair_target_agent_run_id="none",
-                        repair_reason="fix indentation",
-                    ),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_requires_repair_reason_for_reuse(self) -> None:
-        """ValueError when repair_reason is "none" with repair_strategy=reuse — the second half of
-        the requirement docs/ORCHESTRATION.md §repair / retry states for a re-submission."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            with self.assertRaisesRegex(ValueError, "requires non-empty repair_reason"):
-                record_launch(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id="step_run_repair_001",
-                    request_payload=self._minimal_request_payload(
-                        issue_severity="minor",
-                        repair_strategy="reuse",
-                        repair_target_agent_run_id="step_run_prior_001",
-                        repair_reason="none",
-                    ),
-                    response_payload=_spawn_response_payload("sess_step_repair_001"),
-                 netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_rejects_traversal_in_child_agent_run_id(self) -> None:
-        """child_agent_run_id containing path separators must be rejected before path construction."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            for bad_id in ["../secret", "../../etc/passwd", "foo/bar", "foo\\bar", "foo.bar"]:
-                with self.subTest(bad_id=bad_id):
-                    with self.assertRaisesRegex(ValueError, "child_agent_run_id contains invalid characters"):
-                        record_launch(
-                            repo_root=repo_root,
-                            orchestration_id="orch_001",
-                            parent_agent_run_id="orch_run_001",
-                            child_agent_run_id=bad_id,
-                            request_payload=self._minimal_request_payload(),
-                            response_payload=_spawn_response_payload("sess_001"),
-                         netns_socket_dir=netns_socket_dir())
-
-    def test_record_launch_rejects_traversal_in_parent_agent_run_id(self) -> None:
-        """parent_agent_run_id containing path separators must be rejected."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._minimal_preflight_setup(repo_root)
-            for bad_id in ["../orch", "orch/evil", "orch\\evil"]:
-                with self.subTest(bad_id=bad_id):
-                    with self.assertRaisesRegex(ValueError, "parent_agent_run_id contains invalid characters"):
-                        record_launch(
-                            repo_root=repo_root,
-                            orchestration_id="orch_001",
-                            parent_agent_run_id=bad_id,
-                            child_agent_run_id="step_run_001",
-                            request_payload=self._minimal_request_payload(),
-                            response_payload=_spawn_response_payload("sess_001"),
-                         netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_accepts_none_strategy_without_repair_fields(self) -> None:
         """With repair_strategy=none, it succeeds even if repair_target and repair_reason are "none"."""
@@ -9096,9 +7747,13 @@ class PhaseCertificationTests(unittest.TestCase):
         self.assertEqual(set(ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES), declared)
 
     def test_phase_certified_rejects_an_unknown_step(self) -> None:
+        """A step outside the certified set is answered `unsupported_step` by `select`
+        (OR1-33); the separate `ValueError` that stood before it went in issue #643."""
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                ort._phase_certified(Path(tmp), "o1", self._NK, "promote", target=_TP)
+            repo = Path(tmp)
+            self._certified(repo, through="compile")
+            with accept_any_certified_ir():
+                self.assertEqual(self._reason(repo, "promote"), "unsupported_step:promote")
 
     def test_certified_ir_candidate_adopts_only_a_certified_latest_ir(self) -> None:
         """The cold-run adoption path asks the compile clause WITHOUT a reservation."""
@@ -9794,25 +8449,6 @@ class CertificationStampTests(unittest.TestCase):
             self.assertEqual(doc["verification_status"], "fail")
             self.assertEqual(doc["source_id"], "src_c_001")
 
-    def test_stamp_refuses_a_phase_declaring_more_than_one_certifying_meta(self) -> None:
-        """The `exactly one` rule (security round 2, mutant M21). With it dropped, a phase
-        declaring two metas has the FIRST one stamped silently and the second left
-        uncertified — a phase whose certification names an artifact nobody chose."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="generate")
-            second = f"{refs['pipeline_ref']}/source/src_20260101_002/source_meta.json"
-            (repo / second).parent.mkdir(parents=True, exist_ok=True)
-            (repo / second).write_text("{}", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
-                    required_outputs=[refs["model_ref"], refs["source_meta"], second], derivation=_DERIVATION_RECORD)
-            with self.assertRaisesRegex(RuntimeError, "exactly one source_meta.json"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="generate",
-                    required_outputs=[refs["model_ref"]], derivation=_DERIVATION_RECORD)
-
     def test_validate_pass_stamps_validate_meta_like_the_other_phases(self) -> None:
         """Validate certifies `validate_meta.json` since issue #250 (PR-1): the stamp
         byte-pins every declared run deliverable but the meta itself, writes the output hash
@@ -9851,38 +8487,6 @@ class CertificationStampTests(unittest.TestCase):
             stripped = json.loads((repo / meta_ref).read_text(encoding="utf-8"))
             self.assertEqual(added & set(stripped), set())
             self.assertEqual(stripped["verification_status"], "pass")
-
-    def test_stamp_refuses_an_unreadable_certifying_meta(self) -> None:
-        """For BUILD this raise is the meta's only reader: `STAGE_META_FILENAME_BY_STEP` has
-        no build entry, so `_validate_step_meta_payload` never opens `binary_meta.json`.
-        Without it a corrupt one takes a PASSING build step_result and the phase is then never
-        certifiable — `set-status pass` refuses the run forever with `binary_not_bound`
-        (correctness round 2, mutant X11)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="build")
-            (repo / refs["binary_meta"]).write_text("{not json", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "cannot read .*binary_meta.json"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                    required_outputs=[refs["exe_ref"], refs["binary_meta"]], derivation=_DERIVATION_RECORD)
-            (repo / refs["binary_meta"]).write_text("[]", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "is not a JSON object"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="build",
-                    required_outputs=[refs["exe_ref"], refs["binary_meta"]], derivation=_DERIVATION_RECORD)
-
-    def test_stamp_refuses_a_phase_declaring_only_its_own_meta(self) -> None:
-        """A phase whose `required_outputs` carry no hashable deliverable would be stamped
-        with an empty `artifact_hashes`, which the predicate refuses — so the phase would be
-        permanently uncertifiable instead of failing here (correctness round 2, mutant X12)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = certify_node(repo, "o1", through="compile")
-            with self.assertRaisesRegex(RuntimeError, "no hashable deliverable"):
-                ort._stamp_certification(
-                    repo, "o1", node_key="component/spec_x@0.1.0", step="compile",
-                    required_outputs=[refs["ir_meta"]], derivation=_DERIVATION_RECORD)
 
     def test_write_step_result_pass_refuses_when_the_deliverable_is_absent(self) -> None:
         """A stamp that cannot be taken fails CLOSED, and before the step_result exists: an
@@ -10112,7 +8716,7 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
             (root / "agent_runs_invalid.jsonl").write_text(
                 json.dumps({"agent_run_id": "diverted_1", "agent_role": "substep",
                             "status": "fail",
-                            "fail_reason": "agent_session_id_mismatch"}) + "\n",
+                            "fail_reason": "terminal_payload_validation_error"}) + "\n",
                 encoding="utf-8")
             self.assertEqual(
                 update_orchestration_status(
@@ -12003,7 +10607,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 node_key="problem/shallow_water2d@0.3.0",
                 step="compile",
                 backend="codex",
-                require_child_agent="substep",
             )
             self.assertEqual(out.get("status"), "fail_closed")
             self.assertEqual(out.get("reason_code"), "dependency_not_ready")
@@ -12463,41 +11066,9 @@ class DependencyFactsRenderTests(unittest.TestCase):
         ],
     }
 
-    def test_signature_drift_renders_a_warning_that_keeps_the_header_authoritative(self) -> None:
-        """The canary (issue #153 PR-2): a dependency whose certified IR pins a different signature
-        than its certified source publishes. The WARNING must say the header still governs, because
-        the header is what Build compiles and links — and it must be self-explanatory, since the
-        leaf's SKILL deliberately carries no rule for it (the leaf-context ceiling)."""
-        from tools.orchestration_runtime import _build_dependency_facts
-
-        drifted = {
-            **self.DEP,
-            "published_operations": [
-                {"operation": "demo_dep_base__scale",
-                 "interface": "subroutine demo_dep_base__scale(x, n, y)",
-                 "argument_order": ["x", "n", "y"],
-                 "interface_source": "certified_source",
-                 "signature_drift": [
-                     "argument order: IR pins ['n', 'x', 'y'], certified source has "
-                     "['x', 'n', 'y']"],
-                 },
-            ],
-        }
-        block = _build_dependency_facts(
-            dict(self.BASE, resolved_dependencies=[drifted]))
-        self.assertIn("WARNING", block)
-        self.assertIn("certified IR pins a DIFFERENT signature", block)
-        self.assertIn("argument order: IR pins", block)
-        self.assertIn("defect in the DEPENDENCY", block)
-        # The remedy must be followable and must not be half-followable: it says WHICH of the two
-        # to author against, not merely that they disagree.
-        self.assertIn("the header above is the one Build compiles and links", block)
-        # ...and the header itself is still rendered.
-        self.assertIn("subroutine demo_dep_base__scale(x, n, y)", block)
-
-    def test_no_warning_when_the_ir_pin_and_the_source_agree(self) -> None:
-        """The other direction: an op with no `signature_drift` renders no WARNING. Without this the
-        row above would pass on a renderer that emitted the warning unconditionally."""
+    def test_no_warning_for_a_dependency_whose_operations_all_resolve(self) -> None:
+        """A dependency whose declared operations all resolve renders its header and no
+        WARNING (the dropped-operation WARNING is the one this block can carry)."""
         from tools.orchestration_runtime import _build_dependency_facts
 
         block = _build_dependency_facts(
@@ -12953,135 +11524,6 @@ class DependencyFactsLanguageTests(unittest.TestCase):
         self.assertIn("cannot be composed for language 'zz_dep'", str(caught.exception))
 
 
-class SignatureDriftCanaryTests(unittest.TestCase):
-    """`_signature_drift_fields`: the language-neutral comparison behind the `<dependency_facts>`
-    drift WARNING (issue #153 PR-2).
-
-    It is a CANARY, not a gate. What a consumer is shown stays the interface extracted from the
-    dependency's certified SOURCE, because that is what Build stages and links; the dependency's own
-    Compile / Generate gates pin §5.1 == its IR == its source, so a disagreement here means one of
-    THOSE has a hole. Refusing would fail a consumer for its dependency's defect.
-
-    WHAT IS PINNED, AND WHAT IS DECLARED BLIND. Pinned: argument NAME ORDER, `intent`, and `rank`,
-    each in both directions, plus that nothing-to-compare yields no finding. Declared blind, with its
-    own row so the green is not read too widely: a TYPE-only drift is invisible, because the IR
-    carries neutral tokens and the extractor carries source tokens, and lowering one to the other
-    needs the language backend this module must not import."""
-
-    _PINNED = {
-        "kind": "subroutine", "name": "d__op",
-        "args": [
-            {"name": "x", "rank": 1, "intent": "in", "spec": {"type": "real", "kind": "dp"}},
-            {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
-            {"name": "y", "rank": 1, "intent": "out", "spec": {"type": "real", "kind": "dp"}},
-        ],
-    }
-    _EXTRACTED = {
-        "interface": "subroutine d__op(x, n, y)",
-        "argument_order": ["x", "n", "y"],
-        "arguments": [
-            {"name": "x", "type": "real(dp)", "intent": "in", "rank": 1, "dimension": "n"},
-            {"name": "n", "type": "integer", "intent": "in", "rank": 0, "dimension": None},
-            {"name": "y", "type": "real(dp)", "intent": "out", "rank": 1, "dimension": "n"},
-        ],
-    }
-
-    def _drift(self, pinned=None, extracted=None):
-        import copy
-        from tools.orchestration_runtime import _signature_drift_fields
-        return _signature_drift_fields(
-            copy.deepcopy(self._PINNED if pinned is None else pinned),
-            copy.deepcopy(self._EXTRACTED if extracted is None else extracted))
-
-    def test_agreement_is_no_finding(self) -> None:
-        self.assertEqual(self._drift(), [])
-
-    def test_argument_order_drift_is_reported_and_stops_the_per_argument_pass(self) -> None:
-        import copy
-        pinned = copy.deepcopy(self._PINNED)
-        pinned["args"][0], pinned["args"][1] = pinned["args"][1], pinned["args"][0]
-        out = self._drift(pinned)
-        self.assertEqual(len(out), 1, out)
-        self.assertIn("argument order", out[0])
-        self.assertIn("['n', 'x', 'y']", out[0])
-        self.assertIn("['x', 'n', 'y']", out[0])
-
-    def test_intent_and_rank_drift_are_reported_per_argument(self) -> None:
-        import copy
-        pinned = copy.deepcopy(self._PINNED)
-        pinned["args"][2]["intent"] = "in"
-        pinned["args"][0]["rank"] = 2
-        out = self._drift(pinned)
-        self.assertEqual(len(out), 2, out)
-        self.assertTrue(any("y.intent" in x for x in out), out)
-        self.assertTrue(any("x.rank" in x for x in out), out)
-
-    def test_a_type_only_drift_is_invisible_and_that_is_declared(self) -> None:
-        """The declared limit, pinned so it cannot quietly become a claim of full coverage. The
-        comparison must not FABRICATE a finding from tokens it cannot lower, and it must not report
-        agreement as if the types had been checked — the docstring is where that is said, and this
-        row is what keeps the docstring honest."""
-        import copy
-        pinned = copy.deepcopy(self._PINNED)
-        pinned["args"][0]["spec"] = {"type": "real", "kind": "sp"}   # narrowed kind
-        self.assertEqual(self._drift(pinned), [])
-        pinned["args"][1]["spec"] = {"type": "logical"}              # a different type outright
-        self.assertEqual(self._drift(pinned), [])
-
-    def test_nothing_to_compare_is_no_finding(self) -> None:
-        # A legacy dependency IR carries no `signatures` pin at all, and a malformed one carries no
-        # usable `args`. Neither is a drift; a canary that fired on absence would warn on every
-        # pre-PR-2 dependency in the tree.
-        self.assertEqual(self._drift(None), [])
-        self.assertEqual(self._drift({}), [])
-        self.assertEqual(self._drift({"args": "not-a-list"}), [])
-        self.assertEqual(self._drift({"args": [{"name": ""}]}), [])
-        # A zero-argument op on BOTH sides is agreement, not absence.
-        self.assertEqual(
-            self._drift({"args": []}, {"argument_order": [], "arguments": []}), [])
-
-    def test_a_pin_with_arguments_against_a_source_with_none_is_a_drift(self) -> None:
-        # Not a "nothing to compare" case: an IR pinning three arguments while the source publishes
-        # a zero-argument subroutine of the same name is exactly the disagreement worth warning about.
-        # (In production `_extract_subroutine_interface` returns None for an ABSENT op and the caller
-        # skips it before reaching here, so this shape means the op exists and its ABI moved.)
-        out = self._drift(extracted={"argument_order": [], "arguments": []})
-        self.assertEqual(len(out), 1, out)
-        self.assertIn("argument order", out[0])
-
-    def test_case_differences_are_not_a_drift(self) -> None:
-        # Fortran identifiers are case-insensitive, so `Flux` and `flux` are the same dummy; a
-        # canary that reported them as drifted would warn on every legitimately-cased source.
-        import copy
-        pinned = copy.deepcopy(self._PINNED)
-        for arg in pinned["args"]:
-            arg["name"] = arg["name"].upper()
-            arg["intent"] = str(arg["intent"]).upper()
-        self.assertEqual(self._drift(pinned), [])
-
-    # NO ROW HERE READS `workspace/`, and that is deliberate rather than an omission.
-    #
-    # The first version of this class ended with `test_the_real_corpus_agrees_with_the_section51_this_
-    # branch_wrote`, comparing each component's §5.1 against the model source certified in THIS
-    # operator's `workspace/`. It is a valuable comparison and it is not a test: `workspace/` is
-    # gitignored machine-local runtime state, absent from every fresh clone, so the row failed in any
-    # clean checkout — it took down the round-0 mutation sweep's own baseline, since the sweep runs in
-    # worktrees. Making it `skipTest` instead is the recorded WRONG answer in this repository: a
-    # calibration row pinned inside `workspace/` skipped silently for weeks while its comment called
-    # itself the real-shape line, and the report check (`tools/tests/skip_probes.py`) now refuses
-    # any skip that is not a probe's.
-    #
-    # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
-    # `spec:` commit's message and issue #153's record,
-    # https://github.com/seiya/spec2science/issues/153#issuecomment-5559622300): at `2dd73cd`,
-    # every component's §5.1 agreed with its
-    # certified source on argument names, order, `intent` and `rank`, except
-    # `dynamics_advection_diffusion_boundary_1d_periodic_copy`, whose ABI the operator decided to
-    # change — that one disagreed on argument order, which is also the canary's only real-data witness.
-    # What IS a standing test is the tracked-input half: `RealCorpusPublishedSurfaceTests` reads
-    # `spec/` only and requires the production gate to accept the IR each §5.1 implies.
-
-
 class ResolveDependencyFactsTests(unittest.TestCase):
     """_resolve_dependency_facts mirrors _verify_dep_stage_detail's selection — since issue #250
     PR-2 the dependency's SELECTED certified outputs under its derivation key — and is
@@ -13187,12 +11629,10 @@ class ResolveDependencyFactsTests(unittest.TestCase):
         self.assertTrue(ops, facts[0])
         return ops[0]
 
-    def test_facts_flag_a_source_interface_that_disagrees_with_the_dep_ir_signatures(self) -> None:
-        """The WIRING, not the comparison. `_signature_drift_fields` is pinned on its own by
-        `SignatureDriftCanaryTests`; round 0's sweep found that reverting the CALL in
-        `_resolve_dependency_facts` — so no fact ever carries `signature_drift` — was noticed by
-        nothing. This is that pin: a dependency whose certified IR pins `(n, x, y)` while its
-        certified source publishes `(x, n, y)`."""
+    def test_facts_show_the_certified_source_interface_over_the_ir_pin(self) -> None:
+        """A dependency whose certified IR pins `(n, x, y)` while its certified source publishes
+        `(x, n, y)`: the fact carries the SOURCE's order, the interface Build links. (The drift
+        canary this row also pinned went in issue #643.)"""
         with tempfile.TemporaryDirectory() as tmp:
             op = self._facts_for_drift(Path(tmp), [
                 {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
@@ -13203,25 +11643,6 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             ])
         self.assertEqual(op["argument_order"], ["x", "n", "y"],
                          "the SOURCE order is what a consumer must be shown")
-        self.assertEqual(op["interface_source"], "certified_source")
-        drift = op.get("signature_drift")
-        self.assertTrue(drift, op)
-        self.assertTrue(any("argument order" in d for d in drift), drift)
-
-    def test_facts_carry_no_drift_when_source_matches_ir_signatures(self) -> None:
-        """The other direction, so the row above cannot pass on a resolver that flags everything —
-        and `interface_source` is present either way, because it states WHERE the shown interface
-        came from rather than whether it drifted."""
-        with tempfile.TemporaryDirectory() as tmp:
-            op = self._facts_for_drift(Path(tmp), [
-                {"name": "x", "rank": 1, "intent": "in",
-                 "spec": {"type": "real", "kind": "dp"}},
-                {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
-                {"name": "y", "rank": 1, "intent": "out",
-                 "spec": {"type": "real", "kind": "dp"}},
-            ])
-        self.assertNotIn("signature_drift", op)
-        self.assertEqual(op["interface_source"], "certified_source")
 
     def test_infra_dep_published_operations_suppressed(self) -> None:
         # R1/M3c-β: an infrastructure (harness) dependency never surfaces published_operations
@@ -15283,7 +13704,6 @@ class RecordTimeoutTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "fail")
             self.assertEqual(result["deactivated_child_run_id"], arid)
-            self.assertNotIn("reply_over_budget", result)  # short reply is under budget
             # record-agent-run ran: terminal entry present.
             runs_path = repo_root / "workspace/orchestrations/orch_to_001/agent_runs.jsonl"
             entries = [json.loads(l) for l in runs_path.read_text().splitlines() if l.strip()]
@@ -15415,89 +13835,6 @@ class RecordTimeoutTests(unittest.TestCase):
                        for line in runs_path.read_text().splitlines() if line.strip()]
             entry = next(e for e in entries if e.get("agent_run_id") == arid)
             self.assertNotIn("usage", entry)
-
-    def test_finalize_child_rejects_agent_run_id_mismatch(self) -> None:
-        from tools.orchestration_runtime import finalize_child
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError):
-                finalize_child(
-                    repo_root=Path(tmp),
-                    orchestration_id="o1",
-                    agent_run_id="a",
-                    reply_text="status: pass",
-                    agent_run_payload={"agent_run_id": "DIFFERENT"},
-                )
-
-    def test_finalize_child_hard_budget_fails_before_consuming_state(self) -> None:
-        from tools.orchestration_runtime import (
-            finalize_child, _active_child_marker_path, REPLY_BUDGET_CHARS,
-        )
-        from unittest.mock import patch as _patch
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            with _patch.dict(os.environ, {"SPEC2SCIENCE_ENFORCE_REPLY_BUDGET": "1"}):
-                with self.assertRaises(ValueError):
-                    finalize_child(
-                        repo_root=repo_root,
-                        orchestration_id="orch_to_001",
-                        agent_run_id=arid,
-                        reply_text="x" * (REPLY_BUDGET_CHARS + 10),
-                        agent_run_payload={
-                            "agent_run_id": arid, "agent_role": "substep",
-                            "agent_backend": "claude", "status": "fail",
-                            "agent_session_id": arid, "context_id": "ctx_finalize_hard",
-                            "context_isolated": True,
-                            "node_key": "problem/shallow_water2d@0.3.0",
-                            "started_at": "2026-05-09T08:00:00Z",
-                            "finished_at": "2026-05-09T08:05:00Z",
-                            "result_summary": "x",
-                        },
-                    )
-            # State must NOT be consumed: the per-arid active-child marker still exists,
-            # and no terminal agent_runs.jsonl entry was written for the run.
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).exists())
-            runs_path = repo_root / "workspace/orchestrations/orch_to_001/agent_runs.jsonl"
-            entries = [json.loads(l) for l in runs_path.read_text().splitlines() if l.strip()]
-            self.assertFalse(
-                any(e.get("agent_run_id") == arid and e.get("status") == "fail" for e in entries)
-            )
-            # The hard reject is still audited to the workflow hook log.
-            hook_log = repo_root / "workspace/orchestrations/orch_to_001/hooks/workflow_hooks.jsonl"
-            self.assertTrue(
-                hook_log.exists() and "reply_over_budget" in hook_log.read_text(encoding="utf-8")
-            )
-
-    def test_finalize_child_hard_budget_counts_persisted_trailing_newline(self) -> None:
-        # Exact-boundary reply (== budget, no trailing newline): record_reply_text's
-        # appended newline pushes the persisted size to budget+1, so the precheck must
-        # reject it BEFORE consuming state (it counts the persisted form, not the raw arg).
-        from tools.orchestration_runtime import (
-            finalize_child, _active_child_marker_path, REPLY_BUDGET_CHARS,
-        )
-        from unittest.mock import patch as _patch
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            with _patch.dict(os.environ, {"SPEC2SCIENCE_ENFORCE_REPLY_BUDGET": "1"}):
-                with self.assertRaises(ValueError):
-                    finalize_child(
-                        repo_root=repo_root,
-                        orchestration_id="orch_to_001",
-                        agent_run_id=arid,
-                        reply_text="z" * REPLY_BUDGET_CHARS,  # exactly the budget, no newline
-                        agent_run_payload={
-                            "agent_run_id": arid, "agent_role": "substep",
-                            "agent_backend": "claude", "status": "fail",
-                            "agent_session_id": arid, "context_id": "ctx_finalize_boundary",
-                            "context_isolated": True,
-                            "node_key": "problem/shallow_water2d@0.3.0",
-                            "started_at": "2026-05-09T08:00:00Z",
-                            "finished_at": "2026-05-09T08:05:00Z",
-                            "result_summary": "z",
-                        },
-                    )
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).exists())
 
     def test_a_timeout_row_carries_its_derivation_and_cleans_tmp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16012,24 +14349,13 @@ class RecordTimeoutTests(unittest.TestCase):
                 "cleanup_committed marker must be written after cleanup",
             )
 
-    def test_session_id_helper_failure_records_specific_fail_reason(self) -> None:
-        """L-NEW-2: M-FOURTH-1 introduced a pre-set sandbox_fail_reason
-        before _validate_response_agent_session_id so the helper's
-        ValueError records as 'launch_response_session_id_invalid' rather
-        than the generic 'terminal_payload_validation_error'. This regression
-        test pins that behavior."""
+    def test_a_terminal_validation_refusal_records_an_invalid_row(self) -> None:
+        """A terminal payload `_validate_terminal_run_payload` refuses (here a workshop leaf's
+        pass row claiming outputs) is diverted to agent_runs_invalid.jsonl with
+        `fail_reason: terminal_payload_validation_error` and the refusal's message."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            # Corrupt the launch response so _validate_response_agent_session_id
-            # raises (placeholder token).
-            resp_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "launches" / f"{arid}.response.json"
-            )
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["agent_session_id"] = "<placeholder>"
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
 
             with self.assertRaises(ValueError):
                 record_agent_run(
@@ -16048,65 +14374,7 @@ class RecordTimeoutTests(unittest.TestCase):
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "generate",
                         "substep": "generate",
-                        "result_summary": "should fail session_id check",
-                        "output_refs": [
-                            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
-                            "shallow-water2d_20260415_001/source/src_001/"
-                            "source_meta.json"
-                        ],
-                    },
-                )
-            invalid_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "agent_runs_invalid.jsonl"
-            )
-            entries = [
-                json.loads(line) for line in invalid_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            arid_entries = [e for e in entries if e.get("agent_run_id") == arid]
-            self.assertEqual(len(arid_entries), 1)
-            self.assertEqual(
-                arid_entries[0].get("fail_reason"), "launch_response_session_id_invalid",
-                f"specific session_id reason expected, got {arid_entries[0]}",
-            )
-
-    def test_sandbox_violation_records_specific_fail_reason(self) -> None:
-        """L-NEW-1: when record_agent_run raises due to a sandbox violation
-        (sandbox_runtime != bwrap, etc.), the agent_runs_invalid.jsonl entry
-        must record the specific reason rather than a generic
-        'terminal_payload_validation_error'."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            # Fixture sets sandbox_runtime=bwrap; corrupt it to trigger the
-            # sandbox_runtime_not_bwrap branch.
-            resp_path = (
-                repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                / "launches" / f"{arid}.response.json"
-            )
-            resp = json.loads(resp_path.read_text(encoding="utf-8"))
-            resp["sandbox_runtime"] = "wrong-runtime"
-            resp_path.write_text(json.dumps(resp), encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    payload={
-                        "agent_run_id": arid,
-                        "agent_role": "substep",
-                        "agent_backend": "claude",
-                        "status": "pass",
-                        "started_at": "2026-05-09T08:00:00Z",
-                        "finished_at": "2026-05-09T09:00:00Z",
-                        "agent_session_id": arid,
-                        "context_id": arid,
-                        "context_isolated": True,
-                        "node_key": "problem/shallow_water2d@0.3.0",
-                        "step": "generate",
-                        "substep": "generate",
-                        "result_summary": "should fail sandbox check",
+                        "result_summary": "should fail the empty output_refs check",
                         "output_refs": [
                             "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
                             "shallow-water2d_20260415_001/source/src_001/"
@@ -16126,50 +14394,10 @@ class RecordTimeoutTests(unittest.TestCase):
             arid_entries = [e for e in entries if e.get("agent_run_id") == arid]
             self.assertEqual(len(arid_entries), 1)
             self.assertEqual(
-                arid_entries[0].get("fail_reason"), "sandbox_runtime_not_bwrap",
-                f"specific sandbox reason expected, got {arid_entries[0]}",
+                arid_entries[0].get("fail_reason"), "terminal_payload_validation_error",
+                f"terminal validation reason expected, got {arid_entries[0]}",
             )
-            self.assertIn("fail_message", arid_entries[0])
-
-    def test_a_launch_without_the_network_stamp_is_refused_by_name(self) -> None:
-        """Issue #534 step 4: every row that requires `sandbox_runtime: bwrap` requires
-        `sandbox_network: "namespace"` on its launch response — absent (a launch recorded
-        before step 4) and any other value alike — as `sandbox_network_missing`, with a
-        violation record. The fixture's own launch carries the stamp and is the control."""
-        for label, value in (("absent", None), ("another value", "host"), ("control", "ok")):
-            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                arid = self._setup_substep_launch(repo_root)
-                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                resp_path = orch_root / "launches" / f"{arid}.response.json"
-                resp = json.loads(resp_path.read_text(encoding="utf-8"))
-                self.assertEqual(resp["sandbox_network"], "namespace")
-                if value is None:
-                    del resp["sandbox_network"]
-                elif value != "ok":
-                    resp["sandbox_network"] = value
-                resp_path.write_text(json.dumps(resp), encoding="utf-8")
-                payload = {
-                    "agent_run_id": arid, "agent_role": "substep", "agent_backend": "claude",
-                    "status": "fail", "started_at": "2026-05-09T08:00:00Z",
-                    "finished_at": "2026-05-09T09:00:00Z", "agent_session_id": arid,
-                    "context_id": arid, "context_isolated": True,
-                    "node_key": "problem/shallow_water2d@0.3.0", "step": "generate",
-                    "substep": "generate", "result_summary": "x", "output_refs": []}
-                if value == "ok":
-                    record_agent_run(repo_root=repo_root, orchestration_id="orch_to_001",
-                                     payload=payload)
-                    continue
-                with self.assertRaisesRegex(ValueError, "sandbox_network="):
-                    record_agent_run(repo_root=repo_root, orchestration_id="orch_to_001",
-                                     payload=payload)
-                rows = [json.loads(line) for line in (orch_root / "agent_runs_invalid.jsonl")
-                        .read_text(encoding="utf-8").splitlines() if line.strip()]
-                self.assertEqual([r.get("fail_reason") for r in rows if r.get("agent_run_id")
-                                  == arid], ["sandbox_network_missing"])
-                violation = json.loads(next((orch_root / "violations").glob("*.json"))
-                                       .read_text(encoding="utf-8"))
-                self.assertIn("sandbox_network_missing", json.dumps(violation))
+            self.assertIn("output_refs to be exactly []", arid_entries[0]["fail_message"])
 
     def test_record_agent_run_locked_recheck_catches_concurrent_duplicate(self) -> None:
         """Adv-24: under fcntl serialization, even if the unlocked early
@@ -16767,7 +14995,7 @@ def _setup_verified_dep(
         catalog.unlink()
     node_key = f"{dep_kind}/{dep_id}@{dep_version}"
     safe = f"{dep_kind}__{dep_id}__{dep_version}"
-    # Codex round 31 F2: the freshness reader anchors to the strict `_SLUG_DATE_SEQ3_PATTERN`
+    # Codex round 31 F2: the freshness reader anchors to the strict canonical grammar
     # (lowercase, hyphen-separated slug), so an underscored `dep_id` takes a hyphenated slug
     # for the directory ids; the catalog spec_id keeps its underscored form.
     slug = dep_id.replace("_", "-")
@@ -19798,113 +18026,9 @@ class DependencyReadyLockSerializationTests(unittest.TestCase):
         self.assertLess(compute_idx, exit_idx)
 
 
-class CanonicalIdEnforcementTests(unittest.TestCase):
-    """Codex round 29 F2: the write-acceptance boundary rejects
-    binary_id / run_id segments that do not match the canonical
-    `<slug>_YYYYMMDD_NNN` suffix. Producer-side enforcement guarantees
-    the round-23 freshness selector never silently drops a legitimate
-    artifact from a downstream dependency's `binary/` or `runs/` tree."""
-
-    def _build_payload(self, step: str, substep: str | None, output_paths: list[str]) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "agent_role": "step" if substep is None else "substep",
-            "step": step,
-            "ir_ref": _FIX_IR_REF,
-            "pipeline_ref": _FIX_PIPE_REF,
-            "node_key": "problem/shallow_water2d@0.3.0",
-            "allowed_output_paths": output_paths,
-        }
-        if substep is not None:
-            payload["substep"] = substep
-        return payload
-
-    def test_build_rejects_non_canonical_binary_id(self) -> None:
-        """Build step output path with `binary/bin_001/...` (no canonical
-        suffix) must be rejected at the write-acceptance boundary."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        bad = f"{_FIX_PIPE_REF}/binary/bin_001/binary_meta.json"
-        good = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"
-        with self.assertRaises(ValueError) as ctx:
-            _allowed_output_paths_for_launch(
-                request_payload=self._build_payload("build", None, [bad]),
-            )
-        self.assertIn("outside phase contract", str(ctx.exception))
-        # And the canonical form passes.
-        ok_list = _allowed_output_paths_for_launch(
-            request_payload=self._build_payload("build", None, [good]),
-        )
-        self.assertIn(good, ok_list)
-
-    def test_validate_execute_rejects_non_canonical_run_id(self) -> None:
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        node_safe = "problem__shallow_water2d__0.3.0"
-        good = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}/perf.json"
-        # `run_001` lacks the canonical date/seq suffix; `run-rsn-p0_20260605_001`
-        # is slug-shaped (matches `_SLUG_DATE_SEQ3_PATTERN`) yet is NOT a
-        # canonical run_id — run_id requires the literal `run_` prefix.
-        for bad_run_id in ("run_001", "run-rsn-p0_20260605_001"):
-            bad = f"{_FIX_PIPE_REF}/runs/{bad_run_id}/{node_safe}/perf.json"
-            with self.assertRaises(ValueError) as ctx:
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "execute", [bad]),
-                )
-            self.assertIn("outside phase contract", str(ctx.exception))
-        ok_list = _allowed_output_paths_for_launch(
-            request_payload=self._build_payload("validate", "execute", [good]),
-        )
-        self.assertIn(good, ok_list)
-
-    def test_validate_judge_rejects_non_canonical_run_id(self) -> None:
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        node_safe = "problem__shallow_water2d__0.3.0"
-        # R2: semantic_review.json is the judge's only deliverable (verdict.json moved to execute).
-        good = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}/semantic_review.json"
-        # `ex_001` is non-canonical; `run-rsn-p0_20260605_001` is slug-shaped
-        # but still not a canonical run_id (no literal `run_` prefix).
-        for bad_run_id in ("ex_001", "run-rsn-p0_20260605_001"):
-            bad = f"{_FIX_PIPE_REF}/runs/{bad_run_id}/{node_safe}/semantic_review.json"
-            with self.assertRaises(ValueError) as ctx:
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "judge", [bad]),
-                )
-            self.assertIn("outside phase contract", str(ctx.exception))
-        ok_list = _allowed_output_paths_for_launch(
-            request_payload=self._build_payload("validate", "judge", [good]),
-        )
-        self.assertIn(good, ok_list)
-
-    def test_g6_judge_rejects_derived_artifacts_post_judge_accepts(self) -> None:
-        """R2/G6: the judge contract accepts only semantic_review.json; verdict.json is
-        host-authored at execute and aggregate_verdict / summary / validate_meta are authored in
-        the post_judge contract — the judge may write none of them."""
-        from tools.orchestration_runtime import _allowed_output_paths_for_launch
-        node_safe = "problem__shallow_water2d__0.3.0"
-        run_dir = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}"
-        derived = [f"{run_dir}/aggregate_verdict.json", f"{run_dir}/summary.json",
-                   f"{run_dir}/validate_meta.json"]
-        # judge: its own deliverable passes; verdict.json + each derived artifact is rejected.
-        self.assertIn(f"{run_dir}/semantic_review.json", _allowed_output_paths_for_launch(
-            request_payload=self._build_payload(
-                "validate", "judge", [f"{run_dir}/semantic_review.json"])))
-        for bad in ([f"{run_dir}/verdict.json"] + derived):
-            with self.assertRaises(ValueError) as ctx:
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "judge", [bad]))
-            self.assertIn("outside phase contract", str(ctx.exception))
-        # post_judge: post_judge_meta + all three derived artifacts pass.
-        for good in ([f"{run_dir}/post_judge_meta.json"] + derived):
-            self.assertIn(good, _allowed_output_paths_for_launch(
-                request_payload=self._build_payload("validate", "post_judge", [good])))
-        # pre_judge stays exact-match on its own meta (rejects the derived artifacts).
-        for bad in derived:
-            with self.assertRaises(ValueError):
-                _allowed_output_paths_for_launch(
-                    request_payload=self._build_payload("validate", "pre_judge", [bad]))
-
-
 class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
-    """Codex round 31 F2: the freshness reader must use the SAME grammar
-    as the writer (`_SLUG_DATE_SEQ3_PATTERN`). Round 23's loose regex
+    """Codex round 31 F2: the freshness reader takes only the canonical grammar the conductor
+    mints ids in (a writer-side copy, `_SLUG_DATE_SEQ3_PATTERN`, went in issue #643 PR-3). Round 23's loose regex
     (`^.+_(\\d{8})_(\\d{3})$`) accepted any prefix — including uppercase,
     leading underscore, or arbitrary fabricated names — so a planted
     `FAKE_20991231_999/` directory outranked legitimate artifacts."""
@@ -19936,12 +18060,10 @@ class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
             ("20260415", 1),
         )
 
-    def test_writer_pattern_matches_reader_in_lock_step(self) -> None:
-        """If a reader-accepted id is REJECTED by the writer pattern,
-        the trust-gap is back. This test prevents future drift."""
-        from tools.orchestration_runtime import (
-            _freshness_key_from_id, _SLUG_DATE_SEQ3_PATTERN,
-        )
+    def test_the_reader_takes_canonical_ids_and_no_fabrication(self) -> None:
+        """The reader's half of what used to be a writer/reader lock-step row: canonical ids
+        parse, fabricated or non-canonical ones do not."""
+        from tools.orchestration_runtime import _freshness_key_from_id
         samples = [
             "dep-a_20260101_001",
             "shallow-water2d_20260415_001",
@@ -19950,7 +18072,6 @@ class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
         ]
         for s in samples:
             self.assertIsNotNone(_freshness_key_from_id(s), s)
-            self.assertIsNotNone(_SLUG_DATE_SEQ3_PATTERN.match(s), s)
         fabrications = [
             "FAKE_20991231_999",
             "_leading_underscore_20260101_001",
@@ -19959,7 +18080,6 @@ class FreshnessSelectorStrictGrammarTests(unittest.TestCase):
         ]
         for s in fabrications:
             self.assertIsNone(_freshness_key_from_id(s), s)
-            self.assertIsNone(_SLUG_DATE_SEQ3_PATTERN.match(s), s)
 
 
 class InitialLeafReadinessCertifiedDepsTests(unittest.TestCase):
@@ -20031,37 +18151,8 @@ class PreflightLeafReadinessTests(unittest.TestCase):
 
 
 class ReservePhaseRootCanonicalIdTests(unittest.TestCase):
-    """Codex round 32 F2: `reserve_phase_root` must enforce
-    `_SLUG_DATE_SEQ3_PATTERN` on `reserved_id`. Round 31 tightened the
-    freshness reader to this grammar but left the writer side
-    unenforced — a workflow could reserve a non-canonical id and write
-    valid artifacts that downstream dep_readiness silently ignored."""
-
-    def test_reserve_rejects_non_canonical_reserved_id(self) -> None:
-        from tools.orchestration_runtime import reserve_phase_root
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(
-                repo_root=repo_root, orchestration_id="orch_reserve_bad",
-                spec_ref="spec/component/x",
-            )
-            for bad in (
-                "FAKE_20991231_999",
-                "dep_a_20260101_001",  # underscore inside slug
-                "noseq_20260101",
-                "missing-suffix",
-            ):
-                with self.subTest(reserved_id=bad):
-                    with self.assertRaises(ValueError) as ctx:
-                        reserve_phase_root(
-                            repo_root,
-                            orchestration_id="orch_reserve_bad",
-                            node_key="component/x@0.1.0",
-                            step="compile",
-                            reserved_id=bad,
-                            reserved_by_agent_run_id="arid_caller",
-                        )
-                    self.assertIn("reserved_id", str(ctx.exception))
+    """`reserve_phase_root` records the id it is given. The grammar refusal that stood here
+    (Codex round 32 F2) went in issue #643: the conductor mints every reserved id."""
 
     def test_reserve_accepts_canonical_reserved_id(self) -> None:
         from tools.orchestration_runtime import reserve_phase_root
@@ -20387,8 +18478,8 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
     1. `build_launch_request`'s list names `initial/<case_id>.json` and neither of the new two: no
        `history/` sample count is knowable there, and a `series/` file is the deliverable gap's
        (`_snapshot_deliverable_gap`), not freshness's.
-    2. `_matches_phase_contract` admits both anyway, by the `raw/` prefix of its execute branch, so
-       `record_launch` refuses none of it, listed or not.
+    2. `record_launch` does not match a deterministic launch's list against a phase contract
+       (issue #643 PR-3), so it refuses none of it, listed or not.
     3. `phase_required_outputs("validate")` names no raw evidence at all, so `artifact_hashes` pins
        neither, like the final captures beside them: what binds them to a verdict is the
        post-execute gate's read of the run directory."""
@@ -20459,7 +18550,7 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
                 recorded = json.loads((Path(tmp) / refs["launch_request_ref"]).read_text())
                 self.assertEqual(recorded["allowed_output_paths"], paths)
 
-    def test_the_matcher_admits_them_by_the_raw_prefix_and_no_sibling_of_it(self) -> None:
+    def test_the_payload_validator_admits_them(self) -> None:
         base = self._recorded()
         node = next(p.rsplit("/raw/state_snapshots/", 1)[0] for p in base["allowed_output_paths"]
                     if "/raw/state_snapshots/" in p)
@@ -20469,13 +18560,6 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
                 payload = dict(base, allowed_output_paths=[*base["allowed_output_paths"],
                                                            f"{node}/{rel}"])
                 ort._validate_launch_request_payload(payload)
-                self.assertIn(f"{node}/{rel}",
-                              ort._allowed_output_paths_for_launch(request_payload=payload))
-        for rel in ("history/c__1.json", "series/c__0.json"):
-            with self.subTest(rel=rel), self.assertRaisesRegex(
-                    ValueError, "outside phase contract outputs"):
-                ort._allowed_output_paths_for_launch(request_payload=dict(
-                    base, allowed_output_paths=[*base["allowed_output_paths"], f"{node}/{rel}"]))
 
     def test_the_builder_lists_initial_and_neither_new_file_and_the_stamp_pins_no_raw(self) -> None:
         import tools.workflow_conductor as wc
@@ -20491,7 +18575,7 @@ class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
             evidence_artifacts=("state_snapshots", "state_history", "step_series"),
             output_format="json")
         ort._validate_launch_request_payload(built)
-        listed = ort._allowed_output_paths_for_launch(request_payload=built)
+        listed = built["allowed_output_paths"]
         self.assertTrue(any(p.endswith("/raw/state_snapshots/initial/c_a.json") for p in listed))
         self.assertFalse([p for p in listed if "/history/" in p or "/series/" in p], listed)
         required = wc.phase_required_outputs(refs, "validate")
@@ -21044,52 +19128,6 @@ class ChildContextDocSizeTests(unittest.TestCase):
             size = (self.REPO_ROOT / rel).stat().st_size
             self.assertLessEqual(
                 size, ceiling, f"{rel} grew to {size} bytes (ceiling {ceiling}); trim or justify"
-            )
-
-
-class ReplyBudgetTests(unittest.TestCase):
-    """record_agent_run's child-reply budget guard (_evaluate_reply_budget)."""
-
-    def _write_reply(self, tmp: str, text: str) -> tuple[Path, str]:
-        repo_root = Path(tmp)
-        ref = "workspace/orchestrations/o1/launches/a.reply.txt"
-        p = repo_root / ref
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding="utf-8")
-        return repo_root, ref
-
-    def test_under_budget_is_silent(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root, ref = self._write_reply(tmp, "status: pass\noutput_refs:\n- x")
-            self.assertIsNone(
-                _evaluate_reply_budget(repo_root, "o1", agent_run_id="a", reply_ref=ref)
-            )
-
-    def test_over_budget_soft_returns_info_and_audits(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root, ref = self._write_reply(tmp, "x" * (REPLY_BUDGET_CHARS + 25))
-            info = _evaluate_reply_budget(repo_root, "o1", agent_run_id="a", reply_ref=ref)
-            self.assertEqual(info, {"chars": REPLY_BUDGET_CHARS + 25, "budget": REPLY_BUDGET_CHARS})
-            # An audit entry is appended to the workflow hook log.
-            hook_log = repo_root / "workspace/orchestrations/o1/hooks/workflow_hooks.jsonl"
-            self.assertTrue(
-                hook_log.exists() and "reply_over_budget" in hook_log.read_text(encoding="utf-8")
-            )
-
-    def test_over_budget_hard_raises_under_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root, ref = self._write_reply(tmp, "y" * (REPLY_BUDGET_CHARS + 1))
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ENFORCE_REPLY_BUDGET": "1"}):
-                with self.assertRaises(ValueError):
-                    _evaluate_reply_budget(repo_root, "o1", agent_run_id="a", reply_ref=ref)
-
-    def test_missing_reply_file_is_under_budget(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(
-                _evaluate_reply_budget(
-                    Path(tmp), "o1", agent_run_id="a",
-                    reply_ref="workspace/orchestrations/o1/launches/missing.reply.txt",
-                )
             )
 
 
@@ -22296,23 +20334,11 @@ class DerivationKeyCertificationTests(unittest.TestCase):
             {"node_key": "component/b@0.1.0", "topo_level": 1},
             {"node_key": "component/c@0.1.0", "topo_level": 0},
             {"node_key": "component/b@0.1.0", "topo_level": 1},  # duplicate: dropped
-            {"node_key": "", "topo_level": 0},                    # blank: dropped
         ]}
         self.assertEqual(_closure_nodes_from_graph(graph, "problem/a@0.1.0"),
                          ["component/c@0.1.0", "component/b@0.1.0"])
+        # The absent sidecar (`_read_json_or_none` -> None) is an empty closure.
         self.assertEqual(_closure_nodes_from_graph(None, "problem/a@0.1.0"), [])
-        self.assertEqual(_closure_nodes_from_graph({"all_nodes": "not a list"}, "x"), [])
-
-    def test_a_malformed_topo_level_does_not_raise(self) -> None:
-        from tools.orchestration_runtime import _closure_nodes_from_graph
-        graph = {"all_nodes": [
-            {"node_key": "component/b@0.1.0", "topo_level": "0"},
-            {"node_key": "component/c@0.1.0", "topo_level": True},
-            {"node_key": "component/d@0.1.0", "topo_level": 1},
-        ]}
-        self.assertEqual(_closure_nodes_from_graph(graph, "problem/a@0.1.0"),
-                         ["component/b@0.1.0", "component/c@0.1.0", "component/d@0.1.0"])
-
 
 class HostPycacheRedirectRootTest(unittest.TestCase):
     """The in-process conductor host redirects its bytecode cache to workspace/.pycache/
@@ -23007,7 +21033,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         return workflow_launch_check(
             repo_root, orchestration_id="orch_001",
             node_key="problem/shallow_water2d@0.3.0", step="compile",
-            backend=backend, require_child_agent="substep")
+            backend=backend)
 
     def test_launch_check_accepts_any_probed_launchable_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -23151,9 +21177,16 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self._mixed_preflight(repo_root)
             with self.assertRaises(RuntimeError) as ctx:
                 self._launch(repo_root, "anthropic_api", "substep_run_bad_001")
-            # `record-launch:` prefix, not the bare reason code: `pre_phase_launch` reports the
-            # SAME code, so a substring test on it passes even with this guard deleted.
-            self.assertIn("record-launch: backend_not_probed", str(ctx.exception))
+            # The launch check (`pre_phase_launch` -> `workflow_launch_check`) refuses the
+            # provider, and record_launch persists its own reason: the run is terminalized
+            # `fail_closed` / `backend_not_probed` (issue #643: the write used to be refused by
+            # the reason-code allowlist and the refusal swallowed).
+            self.assertIn("reason_code=backend_not_probed", str(ctx.exception))
+            root = repo_root / "workspace/orchestrations/orch_001"
+            meta = json.loads((root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.assertEqual((meta.get("status"), meta.get("reason_code")),
+                             ("fail_closed", "backend_not_probed"))
+            self.assertFalse((root / "launches" / "substep_run_bad_001.request.json").exists())
 
     def test_an_http_launch_skips_the_sandbox_profile_and_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -23224,9 +21257,9 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertFalse((repo_root / "workspace/orchestrations/orch_001"
                               / "agent_runs_invalid.jsonl").exists())
 
-    def test_a_cli_leaf_still_must_prove_its_sandbox(self) -> None:
-        """The exemption is granted on the launch RESPONSE's provider token, so it cannot be
-        claimed by a CLI launch whose profile is missing."""
+    def test_a_cli_leaf_does_not_get_the_http_exemption(self) -> None:
+        """The exemption is granted on the launch RESPONSE's provider token, so a CLI launch
+        whose response names the HTTP transport is still recorded as sandboxed."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)
@@ -23237,8 +21270,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             response["sandbox_runtime"] = "none"      # a CLI launch claiming the exemption
             response["leaf_transport"] = "http"
             (launches / f"{arid}.response.json").write_text(json.dumps(response), "utf-8")
-            with self.assertRaises(ValueError) as ctx:
-                record_agent_run(
+            row = record_agent_run(
                     repo_root=repo_root, orchestration_id="orch_001",
                     payload={
                         "agent_run_id": arid, "agent_role": "substep",
@@ -23252,7 +21284,8 @@ class MultiProviderPreflightTests(unittest.TestCase):
                         "step": "generate", "substep": "generate",
                         "output_refs": [], "result_summary": "x",
                     })
-            self.assertIn("sandbox_runtime=bwrap", str(ctx.exception))
+            self.assertEqual(row["sandbox_runtime"], "bwrap")
+            self.assertNotIn("leaf_transport", row)
 
     def test_an_http_token_on_a_non_workshop_launch_is_refused(self) -> None:
         """`record_launch` is the authorization gate; it must not be the one layer that assumes
@@ -23404,29 +21437,6 @@ class JsonPayloadFileArgTests(unittest.TestCase):
         self.assertEqual(captured[0]["agent_run_payload"], agent_run)
         self.assertEqual(captured[0]["reply_text"], "done")
 
-    def test_a_bad_payload_error_names_the_argument_the_caller_actually_passed(self) -> None:
-        """The shared record-agent-run validator runs FIRST on the finalize-child path, so
-        its default label would send an operator to a subcommand they did not run and a
-        flag the conductor never passes."""
-        path = self._write_json({"agent_run_id": "child-1", "agent_backend": "claude"})
-        stderr = io.StringIO()
-        with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("done")):
-            code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
-        self.assertEqual(code, 1)
-        # Anchor on the colon the message format puts after the label: the inline label
-        # is a PREFIX of the file one, so an unanchored assertion cannot tell the two
-        # branches apart and passes with the ternary collapsed to a constant.
-        self.assertIn("finalize-child --agent-run-json-file:", stderr.getvalue())
-        self.assertNotIn("record-agent-run", stderr.getvalue())
-
-        stderr = io.StringIO()
-        with redirect_stderr(stderr):
-            code = main(self._finalize_argv(
-                "--reply-text", "done", "--agent-run-json",
-                json.dumps({"agent_run_id": "child-1", "agent_backend": "claude"})))
-        self.assertEqual(code, 1)
-        self.assertIn("finalize-child --agent-run-json:", stderr.getvalue())
-
     def test_empty_stdin_reply_is_a_dispatch_error_not_a_silent_pass(self) -> None:
         """The conductor's `input=""` guard against a hung read is only a remedy if the
         runtime rejects the empty reply it produces. Pinned here, on the runtime side."""
@@ -23436,7 +21446,8 @@ class JsonPayloadFileArgTests(unittest.TestCase):
         with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("")):
             code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
         self.assertEqual(code, 1)
-        self.assertIn("requires --reply-text or --reply-from-stdin", stderr.getvalue())
+        # `finalize_child`'s own refusal (the CLI's duplicate of it went in issue #643).
+        self.assertIn("requires a non-empty reply", stderr.getvalue())
 
     def _expect_argparse_error(self, argv: list[str], needle: str) -> None:
         stderr = io.StringIO()
@@ -23516,8 +21527,12 @@ class AgentRoleFailClosedTests(unittest.TestCase):
 
     # The census. Every test method of this class must appear in exactly one of these.
     _DEFINITION_DRIVEN = frozenset({
-        "test_launch_requires_exactly_the_role_its_step_demands",
-        "test_terminal_payload_rejects_a_role_outside_the_vocabulary",
+        # `test_launch_requires_exactly_the_role_its_step_demands` was here until issue #643:
+        # the launch-side role check it drove (`_require_child_agent_role_for_step`) is
+        # deleted; the conductor writes the role from the same table.
+        # `test_terminal_payload_rejects_a_role_outside_the_vocabulary` was here until issue
+        # #643: it drove the CLI-dispatch copy of the role check, which went as a twin of the
+        # one inside `record_agent_run` (pinned by the next test).
         "test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary",
         # `test_the_write_audit_runs_for_every_role_in_the_vocabulary` was here until PR-2 of
         # issue #171: the terminal write audit it drove for every role
@@ -23525,15 +21540,17 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # against — no leaf holds write authority for such an audit to measure.
     })
     _SAMPLE_DRIVEN = frozenset({
-        "test_launch_role_normalization_closes_the_spelling_family",
+        # `test_launch_role_normalization_closes_the_spelling_family` and
+        # `test_the_validator_backstop_canonicalizes_without_prepare` were here until issue
+        # #643, with the launch-side role check and its canonicalizing write-back.
         # `test_the_prompt_actually_shipped_carries_the_task_card` was here until Z4
         # (issue #171): the Task Card was a section of the AGENTIC prompt, and it went with
         # the renderer that built it.
         "test_every_captured_production_payload_declares_the_demanded_role",
         # `test_capability_then_manifest_agree_on_the_role_record_launch_passes` was here
         # until PR-2 of issue #171: `record-launch` writes neither document now.
-        "test_the_validator_backstop_canonicalizes_without_prepare",
-        "test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role",
+        # `test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role` was here until
+        # issue #643, with the refusal it pinned (a hand-supplied prompt beside a respelled role).
     })
 
     def test_this_class_census_is_accurate(self) -> None:
@@ -23557,54 +21574,9 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         )
         self.assertFalse(self._DEFINITION_DRIVEN & self._SAMPLE_DRIVEN)
 
-    def test_launch_requires_exactly_the_role_its_step_demands(self) -> None:
-        """Table-driven over every core step: the demanded role passes the role check and
-        every OTHER role in the vocabulary is rejected. Generated from the table, so a new
-        step cannot be added without landing here."""
-        from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
-            STEP_REQUIRED_CHILD_AGENT,
-            _require_child_agent_role_for_step,
-        )
-
-        self.assertTrue(STEP_REQUIRED_CHILD_AGENT, "step table is empty; nothing pinned")
-        for step, required in STEP_REQUIRED_CHILD_AGENT.items():
-            with self.subTest(step=step, role=required):
-                self.assertEqual(
-                    _require_child_agent_role_for_step(
-                        required, step, label="t:", error_type=ValueError),
-                    required,
-                )
-            for other in sorted(AGENT_RUN_ROLES - {required}) + ["bogus", ""]:
-                with self.subTest(step=step, rejected=other):
-                    with self.assertRaisesRegex(
-                        ValueError, "does not satisfy required child agent kind"
-                    ):
-                        _require_child_agent_role_for_step(
-                            other, step, label="t:", error_type=ValueError)
-
-    def test_launch_role_normalization_closes_the_spelling_family(self) -> None:
-        """Case and surrounding whitespace must not select a different branch. A non-string
-        is rejected rather than coerced (`str(123)` would once have produced `'123'`)."""
-        from tools.orchestration_runtime import _require_child_agent_role_for_step
-
-        for spelling in ("substep", "SUBSTEP", " Substep ", "\tsubStep\n"):
-            with self.subTest(spelling=spelling):
-                self.assertEqual(
-                    _require_child_agent_role_for_step(
-                        spelling, "compile", label="t:", error_type=ValueError),
-                    "substep",
-                )
-        for junk in (None, 123, ["substep"], {"role": "substep"}):
-            with self.subTest(junk=junk):
-                with self.assertRaises(ValueError):
-                    _require_child_agent_role_for_step(
-                        junk, "compile", label="t:", error_type=ValueError)
-
     def test_every_captured_production_payload_declares_the_demanded_role(self) -> None:
-        """The captured conductor requests must already satisfy the rule the runtime now
-        enforces. Driven through the REAL `_validate_launch_request_payload`, so this is
-        the production-payload-through-the-real-validator pin, not a re-read of the field.
+        """The captured conductor requests declare the role their step demands, and pass the
+        REAL `_validate_launch_request_payload`.
 
         The fixtures are tied back to the LIVE conductor by `test_workflow_conductor.py`'s
         `test_reproduces_every_real_substep_payload`; on its own this test would not notice
@@ -23627,76 +21599,22 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # workshop captures of their pairs, plus the escalate diagnostician's
         # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
         self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
-        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
         self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if payload.get("leaf_mode") == "workshop":
-                # A capture carries the contract version of ITS run and the validator demands
-                # the current one exactly (`_validate_leaf_launch_request_payload`); the
-                # substitution is made HERE, in the test, so the tracked fixture stays a capture
-                # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`) — and
-                # the provider a `workshop-1` capture predates.
-                payload = {**payload,
-                           "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-                           "workshop_provider": payload.get("workshop_provider", "claude_cli")}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
                     payload.get("agent_role"),
                     _required_child_agent_kind(payload["step"]),
                 )
                 _validate_launch_request_payload(payload)
-                # And the negation: the same payload with the other role is refused.
-                other = "step" if payload["agent_role"] == "substep" else "substep"
-                with self.assertRaisesRegex(
-                    ValueError, "does not satisfy required child agent kind"
-                ):
-                    _validate_launch_request_payload({**payload, "agent_role": other})
-                with self.assertRaisesRegex(ValueError, "non-empty agent_role"):
-                    _validate_launch_request_payload(
-                        {k: v for k, v in payload.items() if k != "agent_role"})
-
-    def test_terminal_payload_rejects_a_role_outside_the_vocabulary(self) -> None:
-        """`record_agent_run` accepted ANY string before, and `_validate_actual_write_paths`
-        then returned early for it — recording a terminal status under a misspelled role
-        switched the unauthorized-write audit OFF instead of being refused. Iterates the
-        vocabulary so a new role must be added to the constant, not smuggled in."""
-        from tools.orchestration_runtime import (
-            AGENT_RUN_ROLES,
-            _validate_record_agent_run_fields,
-        )
-
-        def payload(role: str) -> dict[str, object]:
-            return {
-                "agent_run_id": "arid_x", "agent_backend": "claude", "status": "pass",
-                "node_key": "component/x@0.1.0", "agent_session_id": "sess_x",
-                "agent_role": role,
-            }
-
-        for role in sorted(AGENT_RUN_ROLES):
-            with self.subTest(accepted=role):
-                _validate_record_agent_run_fields(payload(role))
-        for role in ("bogus", "orchestrator", "substeps", "skipped", "SUBSTEP_"):
-            with self.subTest(rejected=role):
-                with self.assertRaisesRegex(ValueError, "must be one of"):
-                    _validate_record_agent_run_fields(payload(role))
-        # The field has three accepted spellings; closing one of them would close a
-        # spelling rather than the family.
-        for key in ("agent_role", "agent_type", "role"):
-            with self.subTest(alias=key):
-                p = payload("bogus")
-                del p["agent_role"]
-                p[key] = "bogus"
-                with self.assertRaisesRegex(ValueError, "must be one of"):
-                    _validate_record_agent_run_fields(p)
 
     def test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary(self) -> None:
-        """`_validate_record_agent_run_fields` is only the CLI-dispatch check; the conductor
-        calls `record_agent_run` in-process, and that function carried its own role handling
-        which accepted any string. Pinned separately because a mutation check showed the
-        library-side rejection surviving while only the dispatch-side one was covered —
-        exactly the "helper pinned, handler unpinned" shape this repository keeps hitting.
+        """The conductor calls `record_agent_run` in-process, and that function carried its own
+        role handling which accepted any string. It is the one copy of the role check since
+        issue #643 removed the CLI-dispatch copy (`record-agent-run` and `finalize-child`
+        reach this function).
 
         PINNED: the accept side iterates `AGENT_RUN_ROLES`. SAMPLED: the junk spelling."""
         from tools.orchestration_runtime import AGENT_RUN_ROLES, record_agent_run
@@ -23749,74 +21667,6 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                         )
                     except Exception as exc:  # noqa: BLE001 - the message is the assertion
                         self.assertNotIn("must be one of", str(exc))
-
-    def test_the_validator_backstop_canonicalizes_without_prepare(self) -> None:
-        """The write-back inside `_validate_launch_request_payload` is kept as a BACKSTOP
-        for a caller that skips `prepare_launch_request_payload`. Round 3 deleted the only
-        test that drove the validator on its own, so the backstop became invisible:
-        neutering the assignment to a bare call left the whole suite green. Keeping a
-        mechanism while deleting its witness is the same class as this branch's other
-        findings, one layer up — so the witness is restored here, deliberately NOT going
-        through prepare."""
-        from tools.orchestration_runtime import _validate_launch_request_payload
-
-        # `validate_execute` is a deterministic SUBSTEP capture, and the role canonicalization
-        # under test is role-shaped rather than substep-specific. (This row used the agentic
-        # `compile_generate` capture until Z4, issue #171, deleted that shape; the pure
-        # `compile_generate` capture that replaced it carries a `prompt_contract_version` the
-        # validator would demand re-stamping, so the deterministic row stays the simpler probe.)
-        fixture = (
-            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "validate_execute.request.json"
-        )
-        base = json.loads(fixture.read_text(encoding="utf-8"))
-        for spelling in ("SUBSTEP", " Substep ", "substep"):
-            with self.subTest(spelling=spelling):
-                payload = {**base, "agent_role": spelling}
-                _validate_launch_request_payload(payload)   # no prepare, by design
-                self.assertEqual(payload["agent_role"], "substep")
-
-    def test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role(self) -> None:
-        """`prepare_launch_request_payload` does NOT re-render when the caller supplies its own
-        prompt, so there the persisted request would record `step` while the supplied prompt
-        was built from `STEP` — the durable record disagreeing with the prompt beside it.
-        Refused rather than shipped.
-
-        The refusal is narrow by construction: it needs a caller-supplied prompt, a
-        non-canonical spelling, AND a request that is not pure (a pure one is re-rendered
-        unconditionally, which canonicalizes it). Since Z4 (issue #171) that leaves the
-        DETERMINISTIC shape, which is what this row drives — the `generate.generate` fixture it
-        used before is pure now and takes the re-render branch. The conductor still cannot
-        reach it: it supplies no prompt and a canonical role, both asserted here."""
-        from tools.orchestration_runtime import (
-            prepare_launch_request_payload,
-            render_launch_prompt_text,
-        )
-
-        fixture = (
-            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
-            / "build_step.request.json"
-        )
-        base = json.loads(fixture.read_text(encoding="utf-8"))
-        base.pop("launch_prompt_full", None)
-        respelled = {**base, "agent_role": "STEP"}
-        with self.assertRaisesRegex(ValueError, "supplies its own prompt while spelling"):
-            prepare_launch_request_payload(
-                {**respelled, "launch_prompt_full": render_launch_prompt_text(respelled)})
-        # A canonical role with a caller-supplied prompt is untouched...
-        canonical = {**base, "agent_role": "step"}
-        mine = render_launch_prompt_text(canonical) + "\nCALLER SUFFIX\n"
-        prepared = prepare_launch_request_payload(
-            {**canonical, "launch_prompt_full": mine})
-        self.assertEqual(prepared["launch_prompt_full"], mine)
-        # ...and a respelled role with NO supplied prompt is rendered, not refused, with the
-        # canonical spelling in the record.
-        rendered = prepare_launch_request_payload(dict(respelled))
-        self.assertEqual(rendered["agent_role"], "step")
-        self.assertIn("Target step:", rendered["launch_prompt_full"])
-
-
-
 
 class DerivationInputsTests(unittest.TestCase):
     """`phase_derivation_inputs` / `phase_derivation` (issue #250 PR-1): the per-phase contract
@@ -24928,24 +22778,8 @@ class DerivationInputsTests(unittest.TestCase):
 
 
 class DerivationRecordStampTests(unittest.TestCase):
-    """`_validated_derivation_record`: the shape a pass step_result's `derivation` must have."""
-
-    def test_each_malformed_shape_is_refused_by_name(self) -> None:
-        good = dict(_DERIVATION_RECORD)
-        cases = [
-            (None, "must carry a `derivation` record"),
-            ({**good, "derivation_key": "abc"}, "derivation_key must be 'sha256:<hex>'"),
-            ({**good, "derivation_key": "sha256:"}, "derivation_key must be 'sha256:<hex>'"),
-            ({**good, "derivation_inputs": []}, "derivation_inputs must be an object"),
-            ({**good, "transformation": []}, "transformation must be a non-empty list"),
-            ({**good, "transformation": ["ok", ""]}, "transformation must be a non-empty list"),
-            ({**good, "transformation": "pure-43"}, "transformation must be a non-empty list"),
-            ({k: v for k, v in good.items() if k != "derivation_inputs"}, r"lacks \['derivation_inputs'\]"),
-        ]
-        for record, pattern in cases:
-            with self.subTest(record=record), self.assertRaisesRegex(RuntimeError, pattern):
-                ort._validated_derivation_record(record, "compile")
-        self.assertEqual(ort._validated_derivation_record(good, "compile"), good)
+    """The `derivation` record a pass step_result carries into the stamp. Its shape is
+    `phase_derivation`'s and is not re-checked (issue #643); the stamp INDEXES it."""
 
     def test_write_step_result_pass_refuses_a_missing_record_before_writing(self) -> None:
         """A pass without a derivation is refused like a pass whose deliverable is absent:
@@ -24955,7 +22789,7 @@ class DerivationRecordStampTests(unittest.TestCase):
             _setup_certifiable_generate(repo)
             meta_ref = f"{_CERT_PIPE_REF}/source/src_c_001/source_meta.json"
             model_ref = f"{_CERT_PIPE_REF}/source/src_c_001/src/spec_x_model.f90"
-            with self.assertRaisesRegex(RuntimeError, "must carry a `derivation` record"):
+            with self.assertRaises(TypeError):
                 write_step_result(
                     repo_root=repo, orchestration_id="o1", node_key=_CERT_NK, step="generate",
                     agent_run_id="orch_run_001",
@@ -26882,8 +24716,8 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
     """The pure leaf went in issue #534 PR-J4-b, and the retirement has two halves that must
     not be confused (the plan's MJ2 row).
 
-    A NEW launch naming it is refused — by the launch validator with a message naming the
-    retired leaf, and end to end at `record_launch` before any launch record is written. A
+    A NEW launch naming it is refused — by the renderer, end to end at `record_launch`, before
+    any launch record is written. A
     RECORD a pure leaf wrote before the retirement is still READ: an orchestration whose old
     rows carry `leaf_mode: pure`, a part label (`pure_part`), a part list (`parts[]`, in the
     stage meta) and the second counter (`workshop_prompt_contract_version`) still passes the
@@ -26903,33 +24737,6 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
                "leaf_mode": "pure", "prompt_contract_version": "pure-49"}
         req.pop("workshop_provider", None)
         return req
-
-    def test_a_new_pure_launch_request_is_refused_naming_the_retired_leaf(self) -> None:
-        req = self._pure_request("child_new_pure", "verify")
-        with self.assertRaises(ValueError) as ctx:
-            ort._validate_leaf_launch_request_payload(
-                {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION})
-        self.assertIn("pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
-        # Control: the same request as a workshop one passes the validator, so the refusal
-        # above is the leaf_mode and nothing else the fixture carries.
-        ort._validate_leaf_launch_request_payload(
-            {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-             "leaf_mode": "workshop", "workshop_provider": "claude_cli",
-             "workshop_lineage_id": "child_new_pure"})
-
-    def test_a_new_workshop_request_carrying_a_pure_part_is_refused(self) -> None:
-        """The compile part split went with the pure leaf: a NEW request labelled with a part
-        is refused rather than recorded as a part no loop runs (old records keep their
-        readers)."""
-        req = {**self._pure_request("child_new_part", "verify"),
-               "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-               "leaf_mode": "workshop", "workshop_provider": "claude_cli",
-               "workshop_lineage_id": "child_new_part"}
-        with self.assertRaises(ValueError) as ctx:
-            ort._validate_leaf_launch_request_payload({**req, "pure_part": "core"})
-        self.assertIn("carries pure_part='core'", str(ctx.exception))
-        # Control: the same request without the label passes.
-        ort._validate_leaf_launch_request_payload(req)
 
     def test_record_launch_refuses_a_new_pure_launch_before_any_launch_record(self) -> None:
         """End to end: a `leaf_mode: pure` request is not a workshop one, so `record_launch`
@@ -27634,17 +25441,11 @@ class ProfileExpansionTests(unittest.TestCase):
             self.assertFalse(sel.ok)
             self.assertEqual(sel.reason, "derivation_key_mismatch:dependency_graph")
 
-    def test_the_profile_term_is_order_insensitive_and_shape_validated(self) -> None:
-        """Two rows the round-2 sweeps found unpinned, and they pull in opposite directions.
-
-        `profile_keys.sort()` — its two siblings `out.sort()` / `trans.sort()` each have a
-        pinning row; without it, reordering the `profiles:` entries of a node that adopts two
-        spuriously restales it.
-
-        The non-dict refusal — this is the ONE signature term whose corruption would read
-        FRESH rather than stale: on a node that adopts none, degrading an unusable `profiles`
-        value to "adopts none" makes it compare equal, where the identical checks on
-        `all_nodes` / `transitive_deps` report the sidecar unusable."""
+    def test_the_profile_term_is_order_insensitive(self) -> None:
+        """`profile_keys` is sorted — its two siblings `out` / `trans` each have a pinning
+        row; without it, reordering the `profiles:` entries of a node that adopts two
+        spuriously restales it. (The shape refusals this row also pinned went in issue #643:
+        the one caller passes `build_dependency_graph`'s in-process result.)"""
         from tools.orchestration_runtime import _closure_signature
         two = {"node_key": "problem/t@1.0.0",
                "all_nodes": [{"node_key": "problem/t@1.0.0", "topo_level": 0}],
@@ -27653,11 +25454,6 @@ class ProfileExpansionTests(unittest.TestCase):
         reordered = dict(two, profiles=list(reversed(two["profiles"])))
         self.assertEqual(_closure_signature(two), _closure_signature(reordered))
         self.assertEqual(_closure_signature(two)[2], ["profile/a@0.1.0", "profile/b@0.1.0"])
-        for unusable in ("not-a-list", 7, [{"node_key": "profile/a@0.1.0"}, "bare-string"],
-                         [{"node_key": ""}], [{"profile_id": "a"}]):
-            with self.subTest(profiles=unusable):
-                self.assertIsNone(
-                    _closure_signature(dict(two, profiles=unusable)))
         # `None` and the absent key both mean "adopts none" — the normalization that keeps a
         # pre-#175 sidecar from restaling the corpus.
         self.assertEqual(_closure_signature(dict(two, profiles=None))[2], [])

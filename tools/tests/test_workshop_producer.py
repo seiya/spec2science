@@ -853,16 +853,9 @@ class TemplateTests(unittest.TestCase):
         prompt = self._render()
         self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
         self.assertNotIn("{{", prompt)
-        for marker in ort._required_launch_prompt_markers(
-                ort.prepare_launch_request_payload(
-                    __import__("tools.tests.test_workshop_launch", fromlist=["x"])
-                    ._workshop_request("ar_x"))):
+        for marker in ("Target node_key:", "Target step:", "Target substep:",
+                       "orchestration_id:", "agent_run_id:", "prompt_contract_version:"):
             self.assertIn(marker, prompt)
-        ort._validate_launch_prompt_text(
-            ort.prepare_launch_request_payload(
-                __import__("tools.tests.test_workshop_launch", fromlist=["x"])
-                ._workshop_request("ar_x", pure_language="fortran", pure_parallel="openmp")),
-            prompt)
 
     def test_a_cold_repair_restates_the_launch_body_and_a_warm_one_does_not(self) -> None:
         cold = self._render(repair_findings="fix it", repair_strategy="reuse",
@@ -1269,7 +1262,6 @@ class ExemplarRecordTests(_Base):
             payload = ort.prepare_launch_request_payload(dict(request))
             ort._validate_launch_request_payload(payload)
             prompt = ort.render_launch_prompt_text(payload)
-            ort._validate_launch_prompt_text(payload, prompt)
             self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
 
 
@@ -1765,7 +1757,6 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         payload = ort.prepare_launch_request_payload(dict(request))
         ort._validate_launch_request_payload(payload)
         prompt = ort.render_launch_prompt_text(payload)
-        ort._validate_launch_prompt_text(payload, prompt)
         self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
         self.assertIn("`compile.generate` producer", prompt.splitlines()[0])
         self.assertIn(leaf_contract.WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"], prompt)
@@ -1977,24 +1968,18 @@ class WorkshopSpecTests(_Base):
                 self.assertIsNotNone(getattr(default, name))
         self.assertTrue(default.workshop_seeds_host_sources and default.workshop_control_file)
 
-    def test_a_workshop_request_names_its_lineage_and_provider_together(self) -> None:
+    def test_a_workshop_request_carries_its_lineage_and_provider(self) -> None:
+        """The builder writes the lineage and the provider it is given. (Its refusals of a
+        lineage without a provider and of a host-rendered request without a lineage went in
+        issue #643: every caller passes both, from one leaf entry.)"""
         base = dict(step="generate", substep="generate", orchestration_id="o",
                     orchestration_agent_run_id="orch", child_agent_run_id="c",
                     agent_model="opus", workflow_mode="dev", pure_leaf=True,
                     pure_context=self.c._build_leaf_context(self.refs))
-        for kw in ({"workshop_lineage_id": "c"}, {"workshop_provider": "claude_cli"}):
-            with self.subTest(given=kw):
-                with self.assertRaises(ValueError) as ctx:
-                    wc.build_launch_request(self.refs, **base, **kw)
-                self.assertIn("names its lineage and its provider together", str(ctx.exception))
         req = wc.build_launch_request(self.refs, **base, workshop_lineage_id="c",
                                       workshop_provider="claude_cli")
         self.assertEqual(req["workshop_provider"], "claude_cli")
-        # Neither named: since issue #534 PR-J4-b no launch shape serves a host-rendered
-        # request without a lineage (the pure leaf's), so the builder refuses it.
-        with self.assertRaises(ValueError) as ctx:
-            wc.build_launch_request(self.refs, **base)
-        self.assertIn("names its lineage (workshop_lineage_id)", str(ctx.exception))
+        self.assertEqual(req["workshop_lineage_id"], "c")
 
 
 # --- issue #616: the stale-credential re-launch ------------------------------------------

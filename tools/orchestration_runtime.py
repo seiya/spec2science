@@ -61,18 +61,13 @@ try:
     from tools.leaf_contract import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
-        PURE_LEAF_MODE,
         LEAF_PROMPT_CONTRACT_VERSION,
-        PURE_PROMPT_SENTINEL,
         WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
-        WORKSHOP_LEAF_MODE,
-        WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _leaf_contract_is_host_rendered_request,
         is_workshop_reading_pair as _leaf_contract_is_workshop_reading_pair,
-        is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
@@ -112,18 +107,13 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.leaf_contract import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
-        PURE_LEAF_MODE,
         LEAF_PROMPT_CONTRACT_VERSION,
-        PURE_PROMPT_SENTINEL,
         WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
-        WORKSHOP_LEAF_MODE,
-        WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _leaf_contract_is_host_rendered_request,
         is_workshop_reading_pair as _leaf_contract_is_workshop_reading_pair,
-        is_pure_request as _leaf_contract_is_pure_request,
         is_workshop_request as _leaf_contract_is_workshop_request,
     )
 
@@ -140,14 +130,6 @@ def _normalize_rel_posix(path_token: str) -> str:
 
 
 TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
-# Budget (chars) for a child's verbatim final reply (launches/<arid>.reply.txt). The reply
-# lands in the orchestration transcript twice (the child leaf return + the record-reply
-# argument) and is re-read every turn (cache_read scales with context × turns), so an
-# over-long reply is a primary driver of the quadratic orchestration cost. record_agent_run
-# flags an over-budget reply as telemetry by default; SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1 makes it
-# a hard fail so the child must be re-launched with a terse final message (full detail belongs
-# in the child's artifacts, which the orchestration reads on demand — not in the reply).
-REPLY_BUDGET_CHARS = 2000
 # Phases that run via substep agents (the orchestration agent aggregates and is the
 # step_result executor). Build is the only no-substep phase (step agent is the executor).
 # Mirrors SUBSTEP_WORKFLOW_STEPS in tools/validate_pipeline_semantics.py.
@@ -889,15 +871,14 @@ def expand_profile_dependencies(
     return expanded, profiles_record, None
 
 
-# Codex round 31 F2: the freshness reader MUST share the same canonical
-# grammar as the writer (`_SLUG_DATE_SEQ3_PATTERN` defined further down).
-# The previous reader regex (`^.+_(\d{8})_(\d{3})$`) accepted ANY prefix —
+# Codex round 31 F2: the freshness reader takes only the canonical grammar the conductor
+# mints ids in. The previous reader regex (`^.+_(\d{8})_(\d{3})$`) accepted ANY prefix —
 # uppercase letters, underscores between slug parts, slashes in the path
 # tail, etc. — so a planted `FAKE__20991231_999/binary_meta.json` outranked
 # legitimate artifacts despite never having been issued by any writer.
-# Anchoring both ends to the strict slug grammar closes that trust gap.
-# `_SLUG_DATE_SEQ3_PATTERN` is this pattern without its two capture groups, built from it
-# below, so the two grammars cannot diverge.
+# Anchoring both ends to the strict slug grammar closes that trust gap. (A writer-side copy,
+# `_SLUG_DATE_SEQ3_PATTERN`, went in issue #643 PR-3 with the reservation and launch refusals
+# that read it: the ids are the conductor's own, and a non-canonical one is never selected.)
 _FRESHNESS_CANONICAL_ID_RE = re.compile(
     r"^[a-z0-9]+(?:-[a-z0-9]+)*_([0-9]{8})_([0-9]{3})$"
 )
@@ -914,8 +895,7 @@ def _freshness_key_from_id(name: str) -> tuple[str, int] | None:
     PR-2 this is the ordering token of `_stage_meta_candidates`, and the "latest" it used
     to pick is no longer what certifies — the derivation key is.
 
-    Codex round 31 F2: the matcher uses the same grammar as the writer
-    (`_SLUG_DATE_SEQ3_PATTERN`).
+    Codex round 31 F2: the matcher takes only the canonical grammar the conductor mints.
     """
     m = _FRESHNESS_CANONICAL_ID_RE.match(name)
     if m is None:
@@ -924,11 +904,13 @@ def _freshness_key_from_id(name: str) -> tuple[str, int] | None:
 
 
 def _closure_signature(
-    graph: Any,
-) -> tuple[list[list[Any]], list[str], list[str]] | None:
+    graph: Mapping[str, Any],
+) -> tuple[list[list[Any]], list[str], list[str]]:
     """Canonical comparable form of a dependency graph: the sorted `all_nodes`
     `[[node_key, topo_level], ...]`, the sorted `transitive_deps` node_key list, AND the
-    sorted `profiles[].node_key` list. `None` when the graph is unusable.
+    sorted `profiles[].node_key` list. Its one caller passes `build_dependency_graph`'s
+    in-process result, whose shape that builder fixes; the shape is not re-checked here
+    (issue #643).
 
     `all_nodes` alone is NOT a faithful signature. `topo_level` is a node's height, so two
     genuinely different closures can share every `(node_key, topo_level)` pair: with nodes
@@ -952,32 +934,12 @@ def _closure_signature(
 
     Sorting on `node_key` alone is total: a graph names each `(kind, spec_id)` at exactly one
     version (`build_dependency_graph.node_key_of`), so node_keys are unique. It also avoids
-    ordering on `topo_level`, whose value comes from an on-disk sidecar and may be any JSON
+    ordering on `topo_level`, whose value may be any JSON
     type — a mixed-type sort key would raise, and a `str()` cast would order 10 before 2. The
     level still participates in the EQUALITY comparison, which is all the caller needs."""
-    if not isinstance(graph, dict):
-        return None
-    nodes = graph.get("all_nodes")
-    transitive = graph.get("transitive_deps")
-    if not isinstance(nodes, list) or not isinstance(transitive, list):
-        return None
-    out: list[list[Any]] = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            return None
-        node_key = node.get("node_key")
-        if not isinstance(node_key, str) or not node_key.strip():
-            return None
-        out.append([node_key.strip(), node.get("topo_level")])
-    out.sort(key=lambda item: item[0])
-    trans: list[str] = []
-    for node in transitive:
-        if not isinstance(node, dict):
-            return None
-        node_key = node.get("node_key")
-        if not isinstance(node_key, str) or not node_key.strip():
-            return None
-        trans.append(node_key.strip())
+    out = sorted(([node["node_key"].strip(), node.get("topo_level")]
+                  for node in graph["all_nodes"]), key=lambda item: item[0])
+    trans = [node["node_key"].strip() for node in graph["transitive_deps"]]
     trans.sort()
     # Issue #175: the adopted `profile` set is part of the resolution, and it is the ONLY part
     # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
@@ -997,19 +959,7 @@ def _closure_signature(
     #
     # A MISSING key normalizes to `[]` rather than to `None`: a node adopting no profile
     # derives `[]`, and a sidecar written before issue #175 reads the same way.
-    profiles = graph.get("profiles")
-    profile_keys: list[str] = []
-    if profiles is not None:
-        if not isinstance(profiles, list):
-            return None
-        for entry in profiles:
-            if not isinstance(entry, dict):
-                return None
-            node_key = entry.get("node_key")
-            if not isinstance(node_key, str) or not node_key.strip():
-                return None
-            profile_keys.append(node_key.strip())
-        profile_keys.sort()
+    profile_keys = sorted(entry["node_key"].strip() for entry in graph.get("profiles") or [])
     return (out, trans, profile_keys)
 
 
@@ -1899,8 +1849,6 @@ def _phase_certification(
     phases answer `target_unresolved`.
     """
     step_token = step.strip().lower()
-    if step_token not in STEP_KEYS_FOR_NODE_STATE:
-        raise ValueError(f"unsupported step for certification: {step!r}")
     if target is None and step_token != "compile":
         target = _orchestration_target(repo_root, orchestration_id)
     resolver = DerivationResolver(
@@ -1931,46 +1879,6 @@ def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -
         if norm not in refs:
             refs.append(norm)
     return refs
-
-
-_DERIVATION_RECORD_KEYS: tuple[str, ...] = (
-    "derivation_key", "derivation_inputs", "transformation")
-
-
-def _validated_derivation_record(derivation: Any, step_token: str) -> dict[str, Any]:
-    """The derivation record a pass step_result carries, checked for SHAPE: a `sha256:<hex>`
-    key, an object of inputs, a non-empty list of version strings. The key is not recomputed
-    here — the inputs it was taken over are the phase-START inputs, and recomputing at stamp
-    time would answer a different question (see `_stamp_certification`). Type-checked
-    because `DerivationResolver.select` compares the stamped key with a recomputation, and a
-    structurally wrong stamp would read as a stale phase and send the operator hunting for
-    an input nobody changed."""
-    if not isinstance(derivation, dict):
-        raise RuntimeError(
-            f"certification stamp: pass step_result for {step_token} must carry a "
-            f"`derivation` record ({{derivation_key, derivation_inputs, transformation}}, "
-            f"as `phase_derivation` computes it at phase start); got {type(derivation).__name__}")
-    missing = [k for k in _DERIVATION_RECORD_KEYS if k not in derivation]
-    if missing:
-        raise RuntimeError(
-            f"certification stamp: {step_token} derivation record lacks {missing}")
-    key = derivation.get("derivation_key")
-    if not (isinstance(key, str) and key.startswith("sha256:") and len(key) > len("sha256:")):
-        raise RuntimeError(
-            f"certification stamp: {step_token} derivation_key must be 'sha256:<hex>', got {key!r}")
-    inputs = derivation.get("derivation_inputs")
-    if not isinstance(inputs, dict):
-        raise RuntimeError(
-            f"certification stamp: {step_token} derivation_inputs must be an object, "
-            f"got {type(inputs).__name__}")
-    transformation = derivation.get("transformation")
-    if (not isinstance(transformation, list) or not transformation
-            or not all(isinstance(v, str) and v.strip() for v in transformation)):
-        raise RuntimeError(
-            f"certification stamp: {step_token} transformation must be a non-empty list of "
-            f"version strings, got {transformation!r}")
-    return {"derivation_key": key, "derivation_inputs": inputs,
-            "transformation": list(transformation)}
 
 
 def _stamp_certification(
@@ -2006,7 +1914,7 @@ def _stamp_certification(
       - it is itself an enforcement gate a later `set-status pass` trusts, so a phase that
         could not be stamped must not get a passing step_result.
 
-    Failure is a `RuntimeError`, not a warning. The ledger this replaces updated on a
+    Failure raises, never a warning. The ledger this replaces updated on a
     best-effort basis (`update_checkpoint` was WARN-only), which was affordable because a
     missing entry only cost a re-run; an unstamped meta is instead indistinguishable from a
     meta whose author skipped the stamp, and `_phase_certified` refuses both — so failing
@@ -2016,31 +1924,18 @@ def _stamp_certification(
     meta_filename = CERTIFYING_META_FILENAME_BY_STEP.get(step_token)
     if meta_filename is None:
         return None
-    derivation_doc = _validated_derivation_record(derivation, step_token)
+    # `required_outputs` and the stage meta are the conductor's (`phase_required_outputs`
+    # declares exactly one certifying meta per phase and at least one deliverable beside it,
+    # and the meta is host-written), and `derivation` is `phase_derivation`'s record, carried
+    # in process: neither is re-checked here (issue #643). The record is INDEXED, so a pass
+    # without one raises rather than stamping a key no lookup selects.
     refs = [r.strip() for r in required_outputs if isinstance(r, str) and r.strip()]
-    meta_refs = [r for r in refs if _normalize_rel_posix(r).rsplit("/", 1)[-1] == meta_filename]
-    if len(meta_refs) != 1:
-        raise RuntimeError(
-            f"certification stamp: pass step_result for {step_token} must declare exactly one "
-            f"{meta_filename} in required_outputs, got {meta_refs}"
-        )
-    meta_ref = _normalize_rel_posix(meta_refs[0])
+    meta_ref = _normalize_rel_posix(next(
+        r for r in refs if _normalize_rel_posix(r).rsplit("/", 1)[-1] == meta_filename))
     meta_path = repo_root / meta_ref
-    try:
-        doc = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(
-            f"certification stamp: cannot read {meta_ref}: {exc}"
-        ) from exc
-    if not isinstance(doc, dict):
-        raise RuntimeError(f"certification stamp: {meta_ref} is not a JSON object")
+    doc = json.loads(meta_path.read_text(encoding="utf-8"))
 
     artifact_refs = _certifiable_artifact_refs(refs, meta_ref)
-    if not artifact_refs:
-        raise RuntimeError(
-            f"certification stamp: {step_token} declares no hashable deliverable besides "
-            f"{meta_filename} (required_outputs={refs})"
-        )
     hashes: dict[str, str] = {}
     for ref in artifact_refs:
         digest = _compute_sha256(repo_root / ref)
@@ -2056,9 +1951,9 @@ def _stamp_certification(
     # attempt id is the step_result's own `executor_agent_run_id` / the launch rows, not
     # repeated here.
     doc["output_hash"] = _output_hash(hashes, stage_dir=meta_ref.rsplit("/", 1)[0])
-    doc["derivation_key"] = derivation_doc["derivation_key"]
-    doc["derivation_inputs"] = derivation_doc["derivation_inputs"]
-    doc["derivation_transformation"] = derivation_doc["transformation"]
+    doc["derivation_key"] = derivation["derivation_key"]
+    doc["derivation_inputs"] = derivation["derivation_inputs"]
+    doc["derivation_transformation"] = list(derivation["transformation"])
 
     if step_token in {"generate", "build"}:
         # The IR binding. `source_meta.json` never carried one; `binary_meta.json` does carry
@@ -3022,8 +2917,9 @@ def phase_derivation_inputs(
     upstream that is not certified, a dependency with no certified output and an unreadable
     spec file all raise `DerivationInputsUnresolvable`. `resolver` is the evaluation's
     memo of dependency selections (`DerivationResolver`); one is created for `target` when
-    none is passed. A pipeline phase's inputs are the resolver's target's (issue #284), and a
-    resolver without one raises `DerivationInputsUnresolvable` for them."""
+    none is passed. A pipeline phase's inputs are the resolver's target's (issue #284). No
+    caller reaches here for one with a target-less resolver: `select` answers
+    `target_unresolved` first, and the conductor's resolver always carries its target."""
     step_token = step.strip().lower()
     if step_token not in DERIVATION_STEPS:
         raise ValueError(f"unsupported step for a derivation: {step!r}")
@@ -3041,23 +2937,13 @@ def phase_derivation_inputs(
         spec = need("spec_ref", spec_ref)
         graph = _derived_closure_graph(repo_root, node_key, spec)
         signature = _closure_signature(graph)
-        if signature is None:
-            raise DerivationInputsUnresolvable(
-                f"derivation_inputs_unresolvable: derived dependency graph of {node_key} "
-                "is malformed")
         profiles: list[dict[str, str]] = []
+        # `build_dependency_graph`'s profile expansion has already resolved each adopted
+        # profile to one spec directory (it refuses `profile_spec_ref_unresolved` otherwise).
         for entry in graph.get("profiles") or []:
-            pid = entry.get("profile_id") if isinstance(entry, dict) else None
-            pnk = entry.get("node_key") if isinstance(entry, dict) else None
-            if not (isinstance(pid, str) and pid.strip()):
-                continue
-            profile_ref = resolve_spec_ref_for(repo_root, "profile", pid.strip())
-            if not profile_ref:
-                raise DerivationInputsUnresolvable(
-                    f"derivation_inputs_unresolvable: adopted profile {pid!r} of {node_key} "
-                    "does not resolve to one spec directory")
+            profile_ref = resolve_spec_ref_for(repo_root, "profile", entry["profile_id"])
             profiles.append({
-                "node_key": str(pnk or "").strip(),
+                "node_key": entry["node_key"],
                 "controlled_spec": _spec_file_hash(repo_root, profile_ref, "controlled_spec.md"),
             })
         profiles.sort(key=lambda p: p["node_key"])
@@ -3083,10 +2969,6 @@ def phase_derivation_inputs(
 
     ir = need("ir_ref", ir_ref)
     target = resolver.target
-    if target is None:
-        raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: {step_token} derivation of {node_key} needs a "
-            "target profile (the resolver was built without one)")
     ir_hash = _certified_output_hash(
         repo_root, repo_root / ir / "ir_meta.json", what=f"{node_key} compile")
     closure_nodes = _pipeline_closure_for_key(repo_root, ir, node_key, target)
@@ -3462,34 +3344,28 @@ def _closure_nodes_from_graph(graph: Any, self_node_key: str) -> list[str]:
     `topo_level` ascending, deepest first, because a deeper dep provides what the shallower
     ones consume and must be built first.
 
-    Pure and NEVER raises: a missing / malformed / non-dict document, and an `all_nodes` that is
-    not a list, each yield `[]`. Single-sourced here so the conductor's staging order and the
-    derivation inputs (`pipeline_closure_nodes`, the `closure[]` of the generate and build keys)
-    cannot disagree on WHICH nodes the closure holds or in what order — the caller adds its own policy (the conductor keeps the L6
-    spec_id-collision guard, which is a build-naming rule and not part of the closure derivation).
+    A document that is not a mapping — the ABSENT sidecar, which `_read_json_or_none` reads as
+    `None` — yields `[]`; without that arm `select` would raise out of a readiness evaluator.
+    Single-sourced here so the conductor's staging order and the derivation inputs
+    (`pipeline_closure_nodes`, the `closure[]` of the generate and build keys) cannot disagree on
+    WHICH nodes the closure holds or in what order — the caller adds its own policy (the
+    conductor keeps the L6 spec_id-collision guard, which is a build-naming rule and not part of
+    the closure derivation).
 
-    The never-raises contract is load-bearing rather than decorative, and it costs two type tests
-    that read as redundant. `for n in all_nodes or []` raises `TypeError` on a non-iterable
-    (`all_nodes: 5`), and `list.sort` raises `TypeError` when a `topo_level` is not comparable with
-    an `int` (`"0"`) — both inside a readiness evaluator whose callers are promised a verdict. So
-    `all_nodes` must be a `list` (a `str` is iterable and would otherwise be walked character by
-    character), and a `topo_level` that is not an `int` — `bool` included, which `isinstance(x,
-    int)` alone accepts — falls to 0."""
-    all_nodes = graph.get("all_nodes") if isinstance(graph, dict) else None
-    if not isinstance(all_nodes, list):
+    The sidecar is host-written (`json.dumps(build_dependency_graph(...))`), so its entries are
+    `{node_key: str, topo_level: int}` by construction and their types are not re-checked here
+    (issue #643)."""
+    if not isinstance(graph, dict):
         return []
     levels: dict[str, int] = {}
     closure: list[str] = []
     seen: set[str] = set()
-    for n in all_nodes or []:
-        if not (isinstance(n, dict) and isinstance(n.get("node_key"), str)):
-            continue
+    for n in graph["all_nodes"]:
         nk = n["node_key"].strip()
-        if not nk or nk == self_node_key or nk in seen:
+        if nk == self_node_key or nk in seen:
             continue
         seen.add(nk)
-        level = n.get("topo_level")
-        levels[nk] = level if isinstance(level, int) and not isinstance(level, bool) else 0
+        levels[nk] = n["topo_level"]
         closure.append(nk)
     closure.sort(key=lambda nk: levels.get(nk, 0))
     return closure
@@ -3577,8 +3453,9 @@ def _resolve_dependency_facts(
     target: TargetProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve, host-side, the on-disk pipeline / run / aggregate_verdict each direct
-    dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
-    gate.
+    dependency of ``<ir_ref>/spec.ir.yaml`` was certified to. It gates no launch; what it decides is
+    the ``post_judge`` aggregate fold below, where a ready dependency with no fact folds as
+    ``blocked``.
 
     Mirrors ``_verify_dep_stage_detail``'s execution-readiness selection EXACTLY so the operations a
     leaf reads come from the artifacts readiness actually accepted: the dependency's SELECTED
@@ -3628,14 +3505,14 @@ def _resolve_dependency_facts(
 
     The dependency ``@version`` is taken from the IR ``direct_deps[].node_key`` (a well-
     formed IR pins the resolved version, consistent with how readiness resolves it from
-    ``deps.yaml`` + catalog). This output decides no gate and no launch, so a rare version
-    drift stales a hint and never mis-authorizes a launch. It has two readers: the leaf's
+    ``deps.yaml`` + catalog). This output decides no launch, so a rare version drift never
+    mis-authorizes one; it stales a hint and folds that dependency as ``blocked``. It has two readers: the leaf's
     ``DEPENDENCIES.md`` (Generate and Validate), and the conductor's ``post_judge`` aggregate fold
     (``Conductor._author_derived_validate_artifacts``). The fold reads each fact's
     ``aggregate_verdict_ref`` to choose a READY dependency's contribution, ``xfail`` or
-    ``pass``, to the node's ``aggregate_verdict``. A dependency with no fact folds as ``pass``.
-    Whether a dependency is ready, which decides ``blocked``, is read from readiness, not from
-    these facts.
+    ``pass``, to the node's ``aggregate_verdict``. A dependency readiness admits but with no
+    fact here folds as NOT ready (``blocked``): its certified verdict does not resolve through
+    ``select``. Readiness itself is read from the readiness predicate, not from these facts.
 
     Best-effort: NEVER raises. A leaf node (empty ``direct_deps``), a missing/unparseable
     IR, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
@@ -3795,27 +3672,13 @@ def _resolve_dependency_facts(
                             iface = consumer_signatures.published_interface(source_text, op)
                             if iface is None:
                                 continue
-                            entry_out: dict[str, Any] = {"operation": op, **iface}
-                            # The interface a consumer is SHOWN stays the one extracted from the
+                            # The interface a consumer is SHOWN is the one extracted from the
                             # certified SOURCE, because that is what Build stages and links (issue
-                            # #153 PR-1 made the consumer's binding to those bytes durable). Since
-                            # PR-2 the dependency's own §5.1 == IR == SOURCE is pinned by its
-                            # Compile and Generate gates, so a disagreement between the IR pin and
-                            # the source means one of THOSE gates has a hole — a canary, rendered as
-                            # a WARNING, never a refusal: refusing here would fail this consumer for
-                            # its dependency's defect.
-                            try:
-                                d_kind, d_id, d_ver = _parse_node_key_strict(node_key)
-                                drift = _signature_drift_fields(
-                                    _ir_published_signature(
-                                        repo_root, d_kind, d_id, d_ver, op, resolver=resolver),
-                                    iface)
-                            except Exception:
-                                drift = []
-                            if drift:
-                                entry_out["signature_drift"] = drift
-                            entry_out["interface_source"] = "certified_source"
-                            published.append(entry_out)
+                            # #153 PR-1 made the consumer's binding to those bytes durable); the
+                            # dependency's own §5.1 == IR == SOURCE is pinned by its Compile and
+                            # Generate gates (PR-2). The canary that re-reported a disagreement
+                            # between the IR pin and the source to the consumer went in issue #643.
+                            published.append({"operation": op, **iface})
                         if published:
                             fact["published_operations"] = published
                         if declared_unresolved:
@@ -3988,95 +3851,6 @@ def _published_operation_names(pa: dict[str, Any]) -> list[str]:
             if isinstance(oid, str) and oid.strip():
                 names.append(oid.strip())
     return names
-
-
-def _ir_published_signature(
-    repo_root: Path, kind: str, spec_id: str, version: str, symbol: str,
-    *, resolver: DerivationResolver | None = None,
-) -> dict[str, Any] | None:
-    """The structured `signature` the CURRENT certified IR of `(kind, spec_id, version)` publishes
-    for `symbol`, from `public_api.signatures[]` (each entry `{symbol, signature}`), or `None` when
-    the IR carries no such entry — a legacy IR with no `signatures` key included. NEVER raises.
-
-    Read for ONE purpose: the drift canary in `_resolve_dependency_facts`. It is NOT the truth source
-    for what a consumer is shown — see `_signature_drift_fields`."""
-    try:
-        ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
-        if ir_dir is None:
-            return None
-        doc = yaml.safe_load(
-            (ir_dir / "spec.ir.yaml").read_text(encoding="utf-8"))
-        pa = doc.get("public_api") if isinstance(doc, dict) else None
-        sigs = pa.get("signatures") if isinstance(pa, dict) else None
-        if not isinstance(sigs, list):
-            return None
-        for entry in sigs:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("symbol") or "").strip() == symbol.strip():
-                sig = entry.get("signature")
-                return sig if isinstance(sig, dict) else None
-        return None
-    except Exception:
-        return None
-
-
-def _signature_drift_fields(
-    ir_signature: dict[str, Any] | None, extracted: dict[str, Any]
-) -> list[str]:
-    """The LANGUAGE-NEUTRAL disagreements between a dependency's certified IR signature pin and the
-    interface extracted from its certified SOURCE. `[]` when they agree or when there is nothing to
-    compare (a legacy IR with no pin, an unparseable shape).
-
-    WHY THIS IS A CANARY AND NOT A GATE. What Build stages and links is the SOURCE, and issue #153
-    PR-1 made a consumer's binding to those source bytes durable — so the source is what a consumer
-    must be shown, and replacing it with the IR pin would show the leaf an interface Build does not
-    link. Since PR-2 the producer side pins §5.1 == IR == SOURCE at Compile and Generate, so the two
-    agreeing is an invariant and a disagreement here means one of THOSE gates has a hole. That is
-    worth a warning in the render and worth nothing as a refusal: refusing would fail a consumer for
-    its dependency's defect, on a node whose own source is fine.
-
-    WHAT IS COMPARED, and why not more. Argument NAMES in order, each argument's `intent`, and each
-    argument's `rank` — the three fields that are language-neutral on both sides and decide a call
-    site. TYPES are deliberately NOT compared: the IR carries neutral tokens (`real` + `kind: dp`)
-    while the extractor carries the author's own source tokens (`real(dp)`), and lowering one to the
-    other needs the language backend, which this module must not import
-    (`tools/tests/test_backend_boundary.py` pins the importer set). A type-only drift is therefore
-    invisible here — stated because a green canary must not be read as "the ABI agrees"."""
-    if not isinstance(ir_signature, dict) or not isinstance(extracted, dict):
-        return []
-    pinned_args = ir_signature.get("args")
-    if not isinstance(pinned_args, list):
-        return []
-    pinned_names = [str(a.get("name") or "").strip()
-                    for a in pinned_args if isinstance(a, dict)]
-    if len(pinned_names) != len(pinned_args) or not all(pinned_names):
-        return []
-    source_names = [str(n).strip() for n in (extracted.get("argument_order") or [])
-                    if isinstance(n, str)]
-    problems: list[str] = []
-    if [n.lower() for n in pinned_names] != [n.lower() for n in source_names]:
-        problems.append(
-            f"argument order: IR pins {pinned_names}, certified source has {source_names}")
-        # An order disagreement makes a per-argument comparison meaningless (the positions no
-        # longer correspond), so stop here rather than emit N more lines saying the same thing.
-        return problems
-    by_name = {str(a.get("name") or "").strip().lower(): a
-               for a in pinned_args if isinstance(a, dict)}
-    for arg in (extracted.get("arguments") or []):
-        if not isinstance(arg, dict):
-            continue
-        name = str(arg.get("name") or "").strip()
-        pinned = by_name.get(name.lower())
-        if not isinstance(pinned, dict):
-            continue
-        for field in ("intent", "rank"):
-            got, want = arg.get(field), pinned.get(field)
-            if got is None or want is None:
-                continue  # the extractor could not resolve it; not a disagreement
-            if str(got).strip().lower() != str(want).strip().lower():
-                problems.append(f"{name}.{field}: IR pins {want!r}, certified source has {got!r}")
-    return problems
 
 
 def _catalog_family_index(repo_root: Path) -> list[dict[str, str]]:
@@ -4509,13 +4283,7 @@ def _compute_initial_dependency_readiness(
 JUDGE_SEMANTIC_REVIEW_SKIPPED_STATUSES = frozenset({"timeout", "cancel"})
 SUPPORTED_BACKENDS = {"codex", "claude"}
 PREFLIGHT_TTL_DEFAULT_SECONDS: int = 1800
-VALID_REPAIR_STRATEGIES = frozenset({"none", "reuse", "restart"})
-VALID_ISSUE_SEVERITIES = frozenset({"none", "minor", "major", "critical"})
 
-# Must match tools/validate_workspace_root.py (canonical pipeline/plan id directory naming).
-_NODE_KEY_SAFE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
-)
 # Strict per-component validators for node_key in the canonical
 # `<spec_kind>/<spec_id>@<spec_version>` form. Used to reject malicious or
 # malformed values before they flow into capability write_roots / path prefixes
@@ -4524,33 +4292,6 @@ _NODE_KEY_SAFE_PATTERN = re.compile(
 _NODE_KEY_KIND_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _NODE_KEY_ID_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _NODE_KEY_VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._-]*$")
-_SLUG_DATE_SEQ3_PATTERN = re.compile(
-    _FRESHNESS_CANONICAL_ID_RE.pattern
-    .replace(r"([0-9]{8})", r"[0-9]{8}")
-    .replace(r"([0-9]{3})", r"[0-9]{3}")
-)
-
-# `run_id` is the one id in the family that is NOT a `<slug>_<date>_<seq3>`
-# value: it carries a fixed literal `run_` prefix (`run_<YYYYMMDD>_<seq3>`,
-# e.g. `run_20260605_001`). A slug-shaped run_id like `run-rsn-p0_20260605_001`
-# (mistakenly generalized from the ir_id/pipeline_id naming rule) MATCHES
-# `_SLUG_DATE_SEQ3_PATTERN` (slug=`run-rsn-p0`) and therefore used to slip
-# through the `_matches_phase_contract` write-acceptance boundary, yet the
-# Validate `post_execute` run discovery in `tools/validate_pipeline_semantics.py`
-# only recognizes the canonical `runs/run_<date>_<seq>/...` layout and reports
-# "no execution artifacts found". The validate run-dir branches in
-# `_matches_phase_contract` enforce THIS stricter shape so the format drift
-# fails fast at launch (record-launch raises "outside phase contract") instead
-# of a silent downstream no-match. IMPORTANT: keep this in lock-step with the
-# canonical run dir grammar that `post_execute` discovery relies on.
-_RUN_ID_RE = re.compile(r"^run_[0-9]{8}_[0-9]{3}$")
-# Canonical source_id format for the Generate step: `src_<YYYYMMDD>_<seq3>`.
-# This is the ONLY accepted prefix — unlike ir_id / pipeline_id which use an
-# arbitrary slug, source_id always starts with the literal `src_` prefix.
-# Validated at record-launch time so a malformed source_id (e.g. inheriting
-# the ir_id slug format) fails fast before the generate agent wastes a full
-# substep run that would only be caught by generate.verify.
-_SOURCE_ID_RE = re.compile(r"^src_[0-9]{8}_[0-9]{3}$")
 
 
 def _parse_node_key_strict(node_key: Any) -> tuple[str, str, str]:
@@ -5571,37 +5312,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
     if reached:
         invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
 
-FAIL_CLOSED_REASON_CODES = {
-    "child_agent_unavailable_on_execution_platform",
-    "required_child_agent_kind_mismatch",
-    "phase_body_started_before_launch",
-    "dependency_not_ready",
-    "downstream_artifact_not_ready",
-    "post_phase_complete_violation",
-    "parallel_nodes_not_explicitly_allowed",
-    "sandbox_enforcement_violation",
-    # Conductor (deterministic driver) terminal failure modes. The conductor is the
-    # canonical driver, so its fail_closed terminalizations must use allowlisted codes:
-    #   - leaf_transport_error: a leaf process crashed / hit a token limit / transport,
-    #     or was killed by the conductor at the per-leaf cap (tag `leaf_timeout`).
-    #   - retry_budget_exhausted: a phase exceeded its cross-phase reopen budget.
-    #   - conductor_phase_fail_closed: a generic phase fail_closed routing decision
-    #     (e.g. judge spec-attribution, dev-mode severe verify) — the specific reason is
-    #     carried in reason_detail.
-    #   - dev_phase_rollback: dev-mode only — a cross-phase backward rollback (reopen of an
-    #     already-passed upstream phase, or a retry/reopen targeting an earlier phase) is
-    #     stopped immediately instead of auto-retrying (F1); the routing reason is in
-    #     reason_detail. prod keeps the bounded cross-phase reopen/retry.
-    "leaf_transport_error",
-    "retry_budget_exhausted",
-    "conductor_phase_fail_closed",
-    "dev_phase_rollback",
-    #   - revocation_not_landed: the conductor decided to re-derive a phase and the
-    #     revocation resolved no stage meta while the phase stayed `certified`. Continuing
-    #     would let a `--resume` skip the phase the run just decided to re-derive, so the run
-    #     stops and says so instead of spending itself arriving back where it started.
-    "revocation_not_landed",
-}
 
 PARALLEL_NODES_ENV_VAR = "SPEC2SCIENCE_ALLOW_PARALLEL_NODES"
 
@@ -5636,25 +5346,6 @@ def _violations_dir(repo_root: Path, orchestration_id: str) -> Path:
 
 def _sandbox_profiles_dir(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "sandbox_profiles"
-
-
-def _hooks_log_path(repo_root: Path, orchestration_id: str) -> Path:
-    return _orchestration_root(repo_root, orchestration_id) / "hooks" / "workflow_hooks.jsonl"
-
-
-def _append_workflow_hook_log(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    hook_name: str,
-    status: str,
-    detail: dict[str, Any],
-) -> None:
-    path = _hooks_log_path(repo_root, orchestration_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry: dict[str, Any] = {"ts": _utc_now_iso(), "hook": hook_name, "status": status, **detail}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _phase_state_path(repo_root: Path, orchestration_id: str) -> Path:
@@ -5706,14 +5397,10 @@ def _ensure_orchestration_audit_dirs(repo_root: Path, orchestration_id: str) -> 
     # ONE directory. Four more were created here unconditionally — `access_policies/`,
     # `access_logs/`, `violations/` and `capabilities/` — and three of them now have no
     # writer at all (issue #171 PR-2). `violations/` has ONE live writer FUNCTION,
-    # `_write_sandbox_enforcement_violation`, reached from SIX call sites: one in
-    # `record_launch` (the sandbox profile could not be built) and five in `record_agent_run`
-    # (`sandbox_runtime_not_bwrap`, `sandbox_not_enforced`, `sandbox_network_missing` — issue
-    # #534 step 4 —, `sandbox_profile_missing`, `sandbox_profile_not_found`). Counting it as
-    # "one, at record-launch" is wrong and was written twice — by PR-2 and again by its round-1
-    # correction — so the count is derived here by name: grep
-    # `_write_sandbox_enforcement_violation`. Since bwrap is the only confinement left, those
-    # five are the last record that it was actually in force.
+    # `_write_sandbox_enforcement_violation`, reached from one call site in `record_launch`
+    # (the sandbox profile could not be built). The five `record_agent_run` sites re-read the
+    # host-written launch response and went in issue #643. Derive the count by name rather
+    # than from this comment: grep `_write_sandbox_enforcement_violation`.
     # The directory is deliberately NOT pre-created: an empty `violations/` is a record that
     # something is expected to write there, and the completion criterion for this change is
     # that a clean run leaves neither the directory nor its contents. `_write_json` creates the parent when a violation actually happens.
@@ -5936,8 +5623,6 @@ def _transition_node_step_phase_state(
     """
     node_safe = _node_key_to_safe(node_key.strip())
     step_key = step.strip().lower()
-    if step_key not in STEP_KEYS_FOR_NODE_STATE:
-        raise ValueError(f"unsupported workflow step for phase_state: {step_key!r}")
 
     doc = _load_phase_state(repo_root, orchestration_id)
     if doc is None:
@@ -6058,35 +5743,6 @@ def _normalized_agent_role(value: Any) -> str:
     return value.strip().lower() if isinstance(value, str) and value.strip() else ""
 
 
-def _require_child_agent_role_for_step(
-    role_value: Any,
-    step_key: str,
-    *,
-    label: str,
-    error_type: type[Exception],
-) -> str:
-    """Require `role_value` to be exactly the child agent kind that `step_key` demands.
-
-ONE caller since issue #171 PR-2: the record-launch request validator, which reads the
-    LAUNCH REQUEST's role. Two more read a CAPABILITY document's role — the MCP build-tool
-    phase gate and the run-gate phase gate — and both went with the capability itself. The
-    launch-side call was always the upstream one: without it an unrecognized role was inferred
-    downstream and skipped by every reader.
-
-    `_required_child_agent_kind` is called first, so an unsupported step (`tune` /
-    `promote`) fails on the step rather than on the role — the pre-existing behavior at
-    both capability call sites.
-    """
-    required_child = _required_child_agent_kind(step_key)
-    role = _normalized_agent_role(role_value)
-    if role != required_child:
-        raise error_type(
-            f"{label} agent_role does not satisfy required child agent kind "
-            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
-        )
-    return role
-
-
 def _dependency_ready(
     repo_root: Path, orchestration_id: str, *, step: str
 ) -> tuple[bool, str | None]:
@@ -6173,23 +5829,12 @@ def workflow_launch_check(
     node_key: str,
     step: str,
     backend: str,
-    require_child_agent: str,
 ) -> dict[str, Any]:
     required_by_step = _required_child_agent_kind(step)
-    required_flag = require_child_agent.strip().lower()
-    if required_flag not in {"step", "substep"}:
-        raise ValueError("--require-child-agent must be step or substep")
 
     blocking_scope = "default_allow"
     reason_code: str | None = None
     reason_detail: str | None = None
-
-    if required_by_step != required_flag:
-        reason_code = "required_child_agent_kind_mismatch"
-        reason_detail = (
-            f"step {step.strip().lower()!r} requires {required_by_step!r}, "
-            f"but flag is {required_flag!r}"
-        )
 
     try:
         preflight = _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
@@ -6199,7 +5844,6 @@ def workflow_launch_check(
             "orchestration_id": orchestration_id,
             "node_key": node_key,
             "step": step.strip().lower(),
-            "required_child_agent": required_flag,
             "required_child_agent_by_step": required_by_step,
             "execution_platform_launchable": False,
             "reason_code": "child_agent_unavailable_on_execution_platform",
@@ -6245,7 +5889,6 @@ def workflow_launch_check(
         "orchestration_id": orchestration_id,
         "node_key": node_key,
         "step": step.strip().lower(),
-        "required_child_agent": required_flag,
         "required_child_agent_by_step": required_by_step,
         "execution_platform_launchable": execution_platform_launchable,
         "reason_code": reason_code,
@@ -6296,41 +5939,19 @@ def _downstream_phase_launch_gate(
     pipeline_ref: str,
     launch_request: dict[str, Any],
 ) -> tuple[bool, str | None]:
-    """Check the downstream phase start condition only when `pipeline_ref` exists on disk."""
+    """Check the downstream phase start condition only when `pipeline_ref` exists on disk.
+
+    Only `validate.judge` is checked here. A build or `validate.execute` launch is held by
+    `record_launch`, which binds the request's OWN source (its `source_meta.json` at
+    `verification_status: pass`) and, for execute, its own binary's `binary_meta.json`; the
+    judge's `perf.json` is an execute deliverable `determine_substep_status` requires fresh
+    (issue #643)."""
     rel = _normalize_rel_posix(pipeline_ref)
     pr_abs = repo_root / rel
     if not pr_abs.is_dir():
         return True, None
     st = step.strip().lower()
     substep = str(launch_request.get("substep") or "").strip().lower()
-    if st == "build":
-        gen_root = pr_abs / "source"
-        if not gen_root.is_dir():
-            return False, "downstream:source_dir_missing"
-        for gen_dir in sorted(gen_root.iterdir()):
-            if not gen_dir.is_dir():
-                continue
-            meta = gen_dir / "source_meta.json"
-            if not meta.is_file():
-                continue
-            try:
-                data = _read_json(meta)
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(data, dict) and str(data.get("verification_status", "")).strip().lower() == "pass":
-                return True, None
-        return False, "downstream:source_meta_verification_status_not_pass"
-    if st == "validate" and substep == "execute":
-        build_root = pr_abs / "binary"
-        if not build_root.is_dir():
-            return False, "downstream:binary_dir_missing"
-        for bdir in sorted(build_root.iterdir()):
-            if not bdir.is_dir():
-                continue
-            bin_dir = bdir / "bin"
-            if bin_dir.is_dir() and any(bin_dir.iterdir()):
-                return True, None
-        return False, "downstream:binary_bin_dir_missing"
     if st == "validate" and substep == "judge":
         base, err = _resolve_judge_execution_dir(
             repo_root,
@@ -6340,8 +5961,6 @@ def _downstream_phase_launch_gate(
         )
         if base is None:
             return False, f"downstream:{err or 'judge_path'}"
-        if not (base / "perf.json").is_file():
-            return False, "downstream:judge_missing:perf.json"
         raw_dir = base / "raw"
         if not raw_dir.is_dir():
             return False, "downstream:judge_raw_dir_missing"
@@ -6361,7 +5980,6 @@ def pre_phase_launch(
     node_key: str,
     step: str,
     backend: str,
-    require_child_agent: str,
     launch_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A hook bundling `workflow_launch_check` and the downstream artifact start condition (when `pipeline_ref` exists on disk)."""
@@ -6371,18 +5989,10 @@ def pre_phase_launch(
         node_key=node_key,
         step=step,
         backend=backend,
-        require_child_agent=require_child_agent,
     )
     merged: dict[str, Any] = dict(base)
     merged["hook"] = "pre_phase_launch"
     if merged.get("status") != "pass":
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="pre_phase_launch",
-            status="deny",
-            detail={"reason": merged.get("reason_code"), "detail": merged.get("reason_detail")},
-        )
         return merged
     if launch_request:
         pr = launch_request.get("pipeline_ref")
@@ -6400,21 +6010,7 @@ def pre_phase_launch(
                 merged["reason_detail"] = reason
                 merged["next_action"] = "stop_before_phase_body"
                 merged["blocking_policy_scope"] = "downstream_artifacts"
-                _append_workflow_hook_log(
-                    repo_root,
-                    orchestration_id,
-                    hook_name="pre_phase_launch",
-                    status="deny",
-                    detail={"reason": "downstream_artifact_not_ready", "detail": reason},
-                )
                 return merged
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_phase_launch",
-        status="allow",
-        detail={"node_key": node_key, "step": step.strip().lower()},
-    )
     return merged
 
 
@@ -6465,22 +6061,14 @@ def pre_orchestration_start(
         "workspace_bootstrap": created_ws,
         "parallel_nodes_explicit": parallel_nodes_explicit_persisted,
     }
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_orchestration_start",
-        status="allow",
-        detail=detail,
-    )
     return {"status": "pass", "hook": "pre_orchestration_start", **detail}
 
 
-# A per-substep write_root file pin interpolates `run_id` / `source_id` directly into a
-# repo-relative path, so the id is constrained to an explicit allowlist rather than a denylist:
-# only `[A-Za-z0-9_-]` (the superset of the canonical `_RUN_ID_RE` / `_SOURCE_ID_RE` forms).
-# This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but every other
-# metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a fail-closed guard, not
-# a full format check (the canonical regexes above own the exact `<prefix>_<date>_<seq3>` shape).
+# An id interpolated directly into a repo-relative path is constrained to an explicit
+# allowlist rather than a denylist: only `[A-Za-z0-9_-]` (the superset of the canonical `run_` /
+# `src_` id forms). This rejects not just path separators / traversal (`/`, `\`, `.`, `..`) but
+# every other metacharacter (space, `~`, `*`, `?`, glob/shell chars) in one place — a guard, not
+# a format check.
 _SAFE_PATH_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 def _is_safe_path_id(tok: str) -> bool:
@@ -6508,370 +6096,42 @@ def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, 
     return load_pipeline_target(repo_root, pipeline_ref).toolchain
 
 
-def _mandatory_phase_outputs_for_launch(
-    request_payload: dict[str, Any],
-    allowed_output_paths: Sequence[str],
-) -> list[str]:
-    """Canonical phase outputs that MUST be pre-authorized for the launch.
-
-    The Validate ``post_execute`` gate (``tools/validate_pipeline_semantics.py``)
-    requires the snapshot schema at
-    ``<pipeline_ref>/runs/<run_id>/<node_safe>/raw/state_snapshots/snapshot_schema.json``
-    whenever the spec mandates state-snapshot evidence. Its ``.json`` name is not
-    covered by a bare ``raw/state_snapshots/`` directory allowlist entry (the
-    directory-allowlist source-extension set excludes it, same reason the
-    ``Makefile`` needs an explicit pin), so an executor that writes it without
-    listing it gets rejected with ``allowed_output_paths manifest violation`` and
-    the orchestration restarts. Pre-authorizing the canonical path is harmless
-    when the spec does not require snapshots (the file is simply never written),
-    so we inject it for the Validate.execute substep and let the
-    ``_matches_phase_contract`` check below confirm it stays in-contract.
-
-    Restricted to the ``execute`` substep: only execute writes ``raw/`` evidence,
-    and the ``judge`` contract rejects ``raw/`` paths — injecting there would make
-    ``_matches_phase_contract`` raise. It mirrored
-    ``_mandatory_file_tool_pins_for_launch``, which produced the file-tool pins a leaf's
-    Edit/Write grant needed and went with that grant in issue #171 PR-2: returns paths to be
-    merged into ``allowed`` only when missing; never raises.
-    """
-    step_token = str(request_payload.get("step") or "").strip().lower()
-    substep_token = str(request_payload.get("substep") or "").strip().lower()
-    pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
-    # Phase-2: the pipeline ``lineage.json`` is no longer a leaf output — it sits at the
-    # pipeline root, and a pure leaf writes nothing. The conductor authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
-    # post_generate gate runs, so it is NOT injected into the generate child's
-    # allowed_output_paths (historical audit: orch_20260615T095217Z_74450292 predates this).
-    if step_token != "validate" or substep_token != "execute" or not pipeline_ref:
-        return []
-    node_key = str(request_payload.get("node_key") or "").strip()
-    node_safe = _node_key_to_safe(node_key) if node_key else ""
-    if not node_safe:
-        return []
-    validate_prefix = f"{pipeline_ref}/runs/"
-    run_id = str(request_payload.get("run_id") or "").strip()
-    if not run_id:
-        # Single-namespace enforcement guarantees at most one run_id under the
-        # validate prefix; derive it from the listed paths when the request does
-        # not carry an explicit `run_id` field.
-        run_ids: set[str] = set()
-        for item in allowed_output_paths:
-            if not isinstance(item, str):
-                continue
-            tok = _normalize_rel_posix(item)
-            if not tok.startswith(validate_prefix):
-                continue
-            tail = tok[len(validate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                run_ids.add(parts[0])
-        if len(run_ids) == 1:
-            run_id = next(iter(run_ids))
-    if not run_id:
-        # run_id not determinable → inject nothing and preserve the loud
-        # downstream failure rather than guessing a placement.
-        return []
-    from tools.capture_store import SNAPSHOT_DIR_PARTS, SNAPSHOT_SCHEMA_FILENAME
-    return [
-        f"{validate_prefix}{run_id}/{node_safe}/{'/'.join(SNAPSHOT_DIR_PARTS)}/"
-        f"{SNAPSHOT_SCHEMA_FILENAME}"
-    ]
-
-
 def _allowed_output_paths_for_launch(
     *,
     request_payload: dict[str, Any],
 ) -> list[str]:
-    """The paths this launch is CONTRACTED to produce, validated against the phase contract.
+    """The paths a DETERMINISTIC launch declares it will produce, as its request lists them.
 
     It took a `write_roots` argument until issue #171 PR-2 and checked each declared path for
-    containment in the capability's roots as well. That was the authority half — a bound on
-    what a leaf could write — and there is no capability any more: the one caller left is a
-    DETERMINISTIC substep, which runs in the conductor's own process and is bound by nothing
-    this function returns. The phase-contract half stays, because it answers a different
-    question — is this path where this phase's output BELONGS — and its readers
-    (`determine_substep_status`, `_validate_pass_output_refs_against_launch`) still ask it.
+    containment in the capability's roots as well; there is no capability any more. Until
+    issue #643 it also matched every path against the phase's contract (where that phase's
+    output belongs), refused a malformed or empty list, required one source / binary / run id,
+    and injected the canonical command logs and the snapshot schema. None of that decided
+    anything: the conductor builds the list from host constants for every deterministic
+    substep, `determine_substep_status` reads the conductor's own in-memory list, the
+    persisted request is the conductor's, and the one reader of what this returns
+    (`_canonical_command_log_paths_for_request`) derives the cross-phase log from `source_id`.
+
+    The reserved `tune` / `promote` flows (issue #174) keep their contract match: no launcher
+    builds their requests yet, and their output layout is stated here and nowhere else.
     """
     raw_candidates = (
         request_payload.get("allowed_output_paths")
         or request_payload.get("required_outputs")
         or request_payload.get("output_refs")
+        or []
     )
-    if not isinstance(raw_candidates, list):
-        raise ValueError(
-            "record-launch requires explicit allowed_output_paths list for step/substep agents"
-        )
     allowed: list[str] = []
-    for idx, item in enumerate(raw_candidates):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"allowed_output_paths[{idx}] must be non-empty string")
-        token_raw = item.strip().replace("\\", "/")
-        # Reject path-traversal segments BEFORE prefix/contract checks.
-        # `_normalize_rel_posix` does not collapse `..`, so a path like
-        # `releases/<spec>/.../r1/../../somewhere_else` would pass the
-        # startswith() prefix and identifier checks. Refuse any `.` or
-        # `..` segment anywhere in the candidate.
-        for _seg in token_raw.split("/"):
-            if _seg in ("", ".") and not (_seg == "" and token_raw.endswith("/")):
-                # Tolerate a trailing slash (directory entry) but not bare "/"
-                # repeats elsewhere.
-                if _seg == "":
-                    # Skip — duplicate slashes get normalized; treat as harmless.
-                    continue
-            if _seg in (".", ".."):
-                raise ValueError(
-                    f"allowed_output_paths[{idx}] must not contain '.'/'..' segments: {item!r}"
-                )
-        if token_raw.endswith("/"):
-            # Directory allowlist entry: stored with trailing slash preserved
-            token = _normalize_rel_posix(token_raw.rstrip("/")) + "/"
-        else:
-            token = _normalize_rel_posix(token_raw)
-        if not token or token == "/":
-            raise ValueError(f"allowed_output_paths[{idx}] must be valid relative path")
-        allowed.append(token)
+    for item in raw_candidates:
+        token = _normalize_rel_posix(str(item).strip().replace("\\", "/"))
+        if token not in allowed:
+            allowed.append(token)
     step_token = str(request_payload.get("step") or "").strip().lower()
-    substep_token = str(request_payload.get("substep") or "").strip().lower()
-    ir_ref = _normalize_rel_posix(str(request_payload.get("ir_ref") or ""))
     pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
     node_key = str(request_payload.get("node_key") or "").strip()
-    node_safe = _node_key_to_safe(node_key) if node_key else ""
-    compile_required = {
-        f"{ir_ref}/spec.ir.yaml",
-        f"{ir_ref}/ir_meta.json",
-    } if ir_ref else set()
-    generate_prefix = f"{pipeline_ref}/source/" if pipeline_ref else ""
-    build_prefix = f"{pipeline_ref}/binary/" if pipeline_ref else ""
-    validate_prefix = f"{pipeline_ref}/runs/" if pipeline_ref else ""
     tune_prefix = f"{pipeline_ref}/tune/" if pipeline_ref else ""
-    # source_id closure for cross-phase placement check below.
-    source_id = str(request_payload.get("source_id") or "").strip()
 
     def _matches_phase_contract(path: str) -> bool:
-        # Directory allowlist entries (trailing slash): validate the directory itself is permitted.
-        if path.endswith("/"):
-            dir_path = path.rstrip("/")
-            if step_token == "generate":
-                if generate_prefix and dir_path.startswith(generate_prefix):
-                    # Allow only <source_id>/src and its subdirectories; the source root itself is forbidden
-                    tail = dir_path[len(generate_prefix):]
-                    parts = [seg for seg in tail.split("/") if seg]
-                    if len(parts) >= 2 and parts[1] == "src":
-                        return True
-            return False
-        if step_token == "compile":
-            # Compile.static deliverable: the conductor-authored, freshness-gated
-            # compile_static_meta.json sits at the IR root (<ir_ref>/compile_static_meta.json),
-            # a sibling of spec.ir.yaml / ir_meta.json. Gated to the deterministic Compile.static
-            # substep ONLY (same rationale as generate's gate_meta above: a
-            # Compile.generate / Compile.verify leaf launch must NOT be able to list a
-            # conductor-authored verdict as its own output). The --stage compile validator is
-            # read-only on the IR; only this meta is written, inside the substep's own write_root.
-            # Compile.static's ONLY deliverable is compile_static_meta.json (exhaustive, like
-            # the generate.gate branch — a compile.static request listing any other compile path is
-            # rejected, not silently accepted via the compile_required fall-through).
-            # NOTE: the dependency-graph sidecar <ir_ref>/dependency_graph.json is
-            # conductor-authored (workflow_conductor._write_dependency_graph) and NOT a leaf
-            # deliverable — it is absent from compile_required ({spec.ir.yaml,
-            # ir_meta.json}; a membership allowlist, NOT a required set — an
-            # under-declaring request is accepted; only deterministic substeps reach it), so a compile.generate /
-            # compile.verify leaf declaring it as an output is rejected here.
-            # The retired view-only companion `algorithm.summary.md` is likewise absent:
-            # the conductor's compile.generate allowed_output_paths never listed it, so a
-            # leaf that authored one was blocked at the hook while this set silently
-            # permitted it at record-launch. Both sides now name the same two files.
-            if substep_token == "static":
-                return bool(ir_ref) and path == f"{ir_ref}/compile_static_meta.json"
-            # Compile.verify authors NOTHING in spec.ir.yaml — generate authors all 5 sections
-            # (incl. io_contract) and Compile.static validated the IR before verify runs. Verify's
-            # sole write is ir_meta.json; restricting its contract here prevents verify from
-            # mutating the IR post-gate (which would bypass --stage compile).
-            if substep_token == "verify":
-                return bool(ir_ref) and path == f"{ir_ref}/ir_meta.json"
-            return path in compile_required
-        if step_token == "generate":
-            # lineage.json is NOT a generate leaf output (it is authored host-side by the
-            # conductor; see workflow_conductor._write_lineage). The generate leaf writes
-            # only the source tree.
-            if generate_prefix and path.startswith(generate_prefix):
-                if "/src/" in path:
-                    return True
-                if path.endswith("/source_meta.json"):
-                    return True
-                # Generate.gate deliverable: the conductor-authored, freshness-gated
-                # gate_meta.json (the single unioned lint/syntax/static verdict) sits at the
-                # source root (source/<source_id>/gate_meta.json), a sibling of source_meta.json
-                # — not under src/. See workflow_conductor._gate_inproc and
-                # docs/workflow/phases/phase_02_generate.md. Gated to the deterministic
-                # Generate.gate substep ONLY: it is conductor-authored and leaf-non-writable, so a
-                # Generate.generate / Generate.verify leaf launch must NOT be able to list it as an
-                # output. A leaf writes nothing at all since issue #171, so this is a
-                # statement about the declaration rather than a refusal of a write.
-                if substep_token == "gate" and path.endswith("/gate_meta.json"):
-                    return True
-            return False
-        if step_token == "build":
-            # Cross-phase exception: in-source Make builds for Fortran/C
-            # family run compile_project with project_dir=<source_id>/src/, so the
-            # command log lands under the generate tree. Strict bind to
-            # request.source_id (record_launch verifies pass-state).
-            if generate_prefix and path.startswith(generate_prefix):
-                if not source_id:
-                    return False
-                expected_cross_phase_build = (
-                    f"{generate_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
-                )
-                return path == expected_cross_phase_build
-            if build_prefix and path.startswith(build_prefix):
-                # Codex round 29 F2: enforce canonical `<slug>_YYYYMMDD_NNN`
-                # on `binary_id` (the first segment after build_prefix).
-                # The round-23 freshness selector filters by this same
-                # suffix when dependency_readiness inspects another
-                # orchestration's `binary/<binary_id>/binary_meta.json` —
-                # so a non-canonical binary_id would silently be ignored
-                # by downstream dep checks. Reject the write at the
-                # earliest boundary instead of letting it land and be
-                # silently dropped later.
-                tail = path[len(build_prefix):]
-                tail_parts = [part for part in tail.split("/") if part]
-                if not tail_parts or not _SLUG_DATE_SEQ3_PATTERN.match(tail_parts[0]):
-                    return False
-                if "/bin/" in path or path.endswith("/binary_meta.json"):
-                    return True
-                # The bounds-checked binary Build makes beside the certified one when the
-                # target's compiler declares checked flags (issue #589 PR-0):
-                # `<binary_id>/bin_checked/<exe>`, exactly that depth.
-                if len(tail_parts) == 3 and tail_parts[1] == "bin_checked":
-                    return True
-                # `compile_project` writes a side-effect command log to
-                # `<project_dir>/command_log.jsonl`. Per
-                # `docs/workflow/phases/phase_03_build.md`, the in-phase
-                # canonical placement (out-of-source CMake/Meson builds) is
-                # directly under `<binary_id>/`.
-                if (
-                    len(tail_parts) == 2
-                    and tail_parts[1] == "command_log.jsonl"
-                ):
-                    return True
-            return False
-        if step_token == "validate" and substep_token == "execute":
-            if not validate_prefix or not node_safe:
-                return False
-            # Cross-phase exception: docs/workflow/phases/phase_04_validate.md
-            # mandates `run_quality_checks` against
-            # `project_dir=source/<source_id>/src/` for
-            # `toolchain.build_system=make` + Fortran/C-family pipelines. The
-            # build-runtime library's default command_log_path resolves to
-            # `<project_dir>/command_log.jsonl`, so the audit log lands in
-            # the source tree. This is the only legitimate write the
-            # Validate.execute substep makes outside runs/. Strictly bind the
-            # allowed cross-phase placement to the launch request's
-            # `source_id` field — any other source_id (e.g. an older sibling
-            # source under the same pipeline) is not authorized.
-            if generate_prefix and path.startswith(generate_prefix):
-                if not source_id:
-                    return False
-                expected_cross_phase = (
-                    f"{generate_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
-                )
-                return path == expected_cross_phase
-            if not path.startswith(validate_prefix):
-                return False
-            tail = path[len(validate_prefix):]
-            tail_parts = [part for part in tail.split("/") if part]
-            # Validate.execute contract must be under runs/<run_id>/<node_safe>/...
-            # Codex round 29 F2: enforce canonical `run_id` so the round-23
-            # freshness filter for `runs/<run_id>/.../aggregate_verdict.json`
-            # never has to silently drop legitimate verdicts of downstream
-            # consumers.
-            # run_id uses the strict `run_<YYYYMMDD>_<seq3>` grammar
-            # (`_RUN_ID_RE`), NOT the generic `<slug>_<date>_<seq3>` grammar:
-            # a slug-shaped value like `run-rsn-p0_20260605_001` matched the
-            # old `_SLUG_DATE_SEQ3_PATTERN` (slug=`run-rsn-p0`) and slipped
-            # through here, yet the Validate `post_execute` run discovery only
-            # recognizes the literal `run_` layout and silently reported
-            # "no execution artifacts found". Rejecting it at this boundary
-            # surfaces the mistake at launch instead.
-            if (
-                len(tail_parts) < 3
-                or tail_parts[1] != node_safe
-                or not _RUN_ID_RE.fullmatch(tail_parts[0])
-            ):
-                return False
-            rel_under_node = "/".join(tail_parts[2:])
-            allowed_files = {
-                "perf.json",
-                "quality_check.json",
-                "trial_meta.json",
-                "stdout.log",
-                "stderr.log",
-                # `run_program` / `run_quality_checks` side-effect log
-                # (phase_04_validate.md).
-                "command_log.jsonl",
-                # R2: execute authors verdict.json deterministically (the host's predicates over
-                # the captures), so it is part of the execute write-contract
-                # (moved off the judge substep, below). Without this, record_launch for the
-                # deterministic execute substep would reject its own allowed_output_paths.
-                "verdict.json",
-                # Issue #307: the device trace's per-kernel summary, promoted by execute for a
-                # target whose parallel backend declares `device_trace`
-                # (`host_execution.KERNEL_TRACE_ARTIFACT`).
-                "kernel_trace.csv",
-            }
-            return rel_under_node in allowed_files or rel_under_node.startswith("raw/")
-        if step_token == "validate" and substep_token == "judge":
-            if not validate_prefix or not node_safe:
-                return False
-            if not path.startswith(validate_prefix):
-                return False
-            tail = path[len(validate_prefix):]
-            tail_parts = [part for part in tail.split("/") if part]
-            # Validate.judge contract must be under runs/<run_id>/<node_safe>/...
-            # Codex round 29 F2: same canonical-id enforcement as the
-            # execute substep — judge writes the aggregate_verdict that
-            # downstream dependency_readiness consumes. run_id uses the strict
-            # `run_<YYYYMMDD>_<seq3>` grammar (`_RUN_ID_RE`); see the execute
-            # branch above for why the generic slug grammar is insufficient.
-            if (
-                len(tail_parts) < 3
-                or tail_parts[1] != node_safe
-                or not _RUN_ID_RE.fullmatch(tail_parts[0])
-            ):
-                return False
-            rel_under_node = "/".join(tail_parts[2:])
-            # R2: the judge authors ONLY semantic_review.json. verdict.json is host-authored at
-            # execute (per-test predicate evaluation) — removed here so a judge leaf is not even
-            # authorized to overwrite the host-authored verdict. aggregate_verdict / summary /
-            # validate_meta are conductor-authored in the post_judge substep (G6, see below).
-            allowed_files = {
-                "semantic_review.json",
-            }
-            return rel_under_node in allowed_files
-        if step_token == "validate" and substep_token in ("pre_judge", "post_judge"):
-            # G4/G6: the deterministic Validate gate substeps, conductor-authored in-process
-            # under the run-node dir, with the same canonical run_id enforcement as
-            # execute/judge. pre_judge authors ONLY its own meta (exact-match). post_judge
-            # authors post_judge_meta.json PLUS the G6 derived artifacts
-            # (aggregate_verdict / summary / validate_meta hoisted out of the judge leaf).
-            if not validate_prefix or not node_safe:
-                return False
-            if not path.startswith(validate_prefix):
-                return False
-            tail_parts = [p for p in path[len(validate_prefix):].split("/") if p]
-            if (
-                len(tail_parts) < 3
-                or tail_parts[1] != node_safe
-                or not _RUN_ID_RE.fullmatch(tail_parts[0])
-            ):
-                return False
-            rel_under_node = "/".join(tail_parts[2:])
-            if substep_token == "post_judge":
-                return rel_under_node in {
-                    "post_judge_meta.json",
-                    "aggregate_verdict.json",
-                    "summary.json",
-                    "validate_meta.json",
-                }
-            return rel_under_node == "pre_judge_meta.json"
         # NOTE: `tune` / `promote` step branches below are out-of-scope for the
         # core 5-phase workflow. They remain to satisfy the optional flows' contract.
         if step_token == "tune":
@@ -6943,136 +6203,14 @@ def _allowed_output_paths_for_launch(
             return True
         return False
 
-    # Defensive auto-inject: the build-runtime library writes a side-effect
-    # command log to `<project_dir>/command_log.jsonl` (run_linter for
-    # generate per skills/workflow-generate-generate, compile_project per
-    # docs/workflow/phases/phase_03_build.md, run_program /
-    # run_quality_checks per docs/workflow/phases/phase_04_validate.md). If
-    # the canonical log path is not pre-listed in allowed_output_paths, the phase's
-    # declared outputs and its actual ones disagree, which `post_<phase>` structural
-    # validation refuses. (It was record-agent-run that refused it, as an
-    # `unauthorized_write_violation`, until issue #171 PR-2 retired that audit.)
-    # Single-namespace enforcement for generate/build/validate steps:
-    # require listed paths under `<pipeline_ref>/<phase>/` to use exactly one
-    # `<source_id>` / `<binary_id>` / `<run_id>`. Otherwise the step could
-    # authorize build-runtime-owned command logs and outputs across sibling runs in the
-    # same pipeline, breaking provenance isolation.
-    if step_token == "generate" and generate_prefix:
-        gen_ids: set[str] = set()
-        for p in allowed:
-            if not p.startswith(generate_prefix):
-                continue
-            tail = p[len(generate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                gen_ids.add(parts[0])
-        if len(gen_ids) > 1:
-            raise ValueError(
-                f"allowed_output_paths must target a single source_id; "
-                f"got multiple under {generate_prefix!r}: {sorted(gen_ids)!r}"
-            )
-        if source_id and gen_ids and source_id not in gen_ids:
-            raise ValueError(
-                f"allowed_output_paths source_id={sorted(gen_ids)!r} does "
-                f"not match request source_id={source_id!r}"
-            )
-    elif step_token == "build" and build_prefix:
-        build_ids: set[str] = set()
-        for p in allowed:
-            if not p.startswith(build_prefix):
-                continue
-            tail = p[len(build_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                build_ids.add(parts[0])
-        if len(build_ids) > 1:
-            raise ValueError(
-                f"allowed_output_paths must target a single binary_id; "
-                f"got multiple under {build_prefix!r}: {sorted(build_ids)!r}"
-            )
-    elif step_token == "validate" and validate_prefix:
-        run_ids: set[str] = set()
-        for p in allowed:
-            if not p.startswith(validate_prefix):
-                continue
-            tail = p[len(validate_prefix):]
-            parts = [s for s in tail.split("/") if s]
-            if parts:
-                run_ids.add(parts[0])
-        if len(run_ids) > 1:
-            raise ValueError(
-                f"allowed_output_paths must target a single run_id; "
-                f"got multiple under {validate_prefix!r}: {sorted(run_ids)!r}"
-            )
-        request_run_id = str(
-            request_payload.get("run_id") or ""
-        ).strip()
-        if request_run_id and run_ids and request_run_id not in run_ids:
-            raise ValueError(
-                f"allowed_output_paths run_id={sorted(run_ids)!r} does "
-                f"not match request run_id={request_run_id!r}"
-            )
-    # Inject only the canonical placements derived from listed paths — see
-    # `_canonical_command_log_paths` for the strict per-phase shapes.
-    # `_resolved_build_system` is an internal request_payload field
-    # populated by record_launch (resolved from the target profile of the request's
-    # pipeline) so the helper can gate cross-phase canonical placement on `build_system=make`.
-    # Tests calling this helper directly may set the field explicitly when
-    # cross-phase semantics are exercised; absence simply disables
-    # cross-phase auto-inject (in-phase canonical still applies).
-    _bs_raw = request_payload.get("_resolved_build_system")
-    _bs_norm = (
-        _bs_raw.strip().lower()
-        if isinstance(_bs_raw, str) and _bs_raw.strip()
-        else ""
-    )
-    canonical_logs = _canonical_command_log_paths(
-        step_token=step_token,
-        pipeline_ref=pipeline_ref,
-        node_safe=node_safe,
-        source_id=source_id,
-        listed_paths=list(allowed),
-        build_system=_bs_norm,
-        substep_token=substep_token,
-    )
-    canonical_logs_set: set[str] = set(canonical_logs)
-    for log_path in canonical_logs:
-        if log_path not in allowed:
-            allowed.append(log_path)
-
-    # Mandatory canonical phase outputs (e.g. Validate's snapshot_schema.json)
-    # whose names are not covered by a directory allowlist entry. Inject so the
-    # executor's write is authorized rather than failing post_execute and forcing
-    # a restart. The _matches_phase_contract pass below validates placement.
-    for mandatory_output in _mandatory_phase_outputs_for_launch(request_payload, allowed):
-        if mandatory_output not in allowed:
-            allowed.append(mandatory_output)
-
-    for idx, path in enumerate(allowed):
-        if path in canonical_logs_set:
-            # Canonical build-runtime-owned command logs are pre-validated against
-            # canonical phase placements (including legitimate cross-phase
-            # placements like Execute's run_quality_checks log under
-            # source/<source_id>/src/).
+    if step_token in ("tune", "promote"):
+        for idx, path in enumerate(allowed):
             if not _matches_phase_contract(path):
                 raise ValueError(
-                    f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
+                    f"allowed_output_paths[{idx}] is outside phase contract outputs for "
+                    f"step={step_token!r}: {path!r}"
                 )
-            continue
-        if not _matches_phase_contract(path):
-            raise ValueError(
-                f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
-            )
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for path in allowed:
-        if path in seen:
-            continue
-        deduped.append(path)
-        seen.add(path)
-    if not deduped:
-        raise ValueError("allowed_output_paths must be non-empty for step/substep agents")
-    return deduped
+    return allowed
 
 
 # Integrity-protected audit logs written exclusively by the build-runtime library as evidence
@@ -7163,10 +6301,8 @@ def _canonical_command_log_paths(
             )
     elif step_token == "validate" and substep_token == "execute" and node_safe:
         # Only the Validate.execute substep emits command logs (run_program
-        # / run_quality_checks). Validate.judge runs no build-runtime entry point, so no
-        # auto-injection — adding command_log.jsonl would later fail
-        # phase contract validation since judge does not list it as an allowed
-        # output filename.
+        # / run_quality_checks). Validate.judge runs no build-runtime entry point, so it has
+        # no canonical log placement.
         prefix = f"{pipeline_ref}/runs/"
         for tok in listed_paths:
             if not isinstance(tok, str) or not tok.startswith(prefix):
@@ -7215,28 +6351,20 @@ def _builds_in_source(build_system: str | None) -> bool:
 def _canonical_command_log_paths_for_request(
     request_payload: dict[str, Any],
     allowed_output_paths: Sequence[str],
-    *,
-    repo_root: Path | None = None,
 ) -> list[str]:
     step_token = str(request_payload.get("step") or "").strip().lower()
     pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
     node_key = str(request_payload.get("node_key") or "").strip()
     node_safe = _node_key_to_safe(node_key) if node_key else ""
     source_id = str(request_payload.get("source_id") or "").strip()
-    # Resolve toolchain.build_system, preferring (1) explicit
-    # `_resolved_build_system` in request_payload (set by record_launch from the target
-    # profile of the request's pipeline), then (2) reading that profile directly when
-    # repo_root is provided. Without either, build_system="" which disables cross-phase
-    # canonical placement (Make-only exception).
+    # toolchain.build_system: `_resolved_build_system`, which record_launch sets from the
+    # target profile of the request's pipeline whenever the request carries a `pipeline_ref`
+    # (and refuses the launch when that profile does not load). Without it, build_system=""
+    # disables the cross-phase canonical placement (Make-only exception).
     build_system = ""
     bs_pre = request_payload.get("_resolved_build_system")
     if isinstance(bs_pre, str) and bs_pre.strip():
         build_system = bs_pre.strip().lower()
-    elif repo_root is not None and pipeline_ref:
-        try:
-            build_system = str(_pipeline_target_toolchain(repo_root, pipeline_ref)["build_system"])
-        except TargetProfileError:
-            build_system = ""
     substep_token = str(request_payload.get("substep") or "").strip().lower()
     return _canonical_command_log_paths(
         step_token=step_token,
@@ -8914,13 +8042,6 @@ def _coerce_nested_launch_text(payload: dict[str, Any], path: tuple[str, ...]) -
     return _coerce_launch_text(current)
 
 
-def _is_placeholder_ref(value: str) -> bool:
-    token = value.strip()
-    if not token:
-        return False
-    return "agent-determined" in token or ("<" in token and ">" in token)
-
-
 # The conductor-consumed launch-prompt templates: one plain-text file per template type
 # under tools/prompt_templates/. These are the ONLY machine-parsed launch-prompt material.
 # The human-facing reference lives in docs/workflow/LAUNCH_PROMPT_REFERENCE.md. The templates
@@ -9268,23 +8389,6 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
             if not iface:
                 continue
             rows.append(f"- {node_key} :: {iface}")
-            # Signature-drift canary (issue #153 PR-2). The dependency's own gates pin
-            # §5.1 == its IR == its source, so a disagreement between its IR pin and the
-            # interface above means one of those gates has a hole. Rendered as a WARNING with
-            # the header still authoritative, because the header is what Build links — and
-            # self-explanatory, so the leaf needs no rule in its SKILL to act on it.
-            drift = op.get("signature_drift")
-            if isinstance(drift, list):
-                spelled = [str(d).strip() for d in drift if isinstance(d, str) and d.strip()]
-                if spelled:
-                    rows.append(
-                        f"  - WARNING — this dependency's certified IR pins a DIFFERENT "
-                        f"signature for `{op.get('operation')}` than its certified source "
-                        f"publishes ({'; '.join(spelled)}). That is a defect in the DEPENDENCY, "
-                        "not in your node: the header above is the one Build compiles and links, "
-                        "so author against it, and report the disagreement in your prose so a "
-                        "reviewer sees it."
-                    )
             prototypes = op.get("procedure_interfaces")
             detail = _argument_detail_lines(
                 op.get("arguments"), signatures,
@@ -9361,9 +8465,8 @@ def _render_deterministic_launch_prompt(request_payload: dict[str, Any]) -> str:
 # The five `SLIM_REPAIR_*` literals — the sentinel, the findings header, the untrusted-excerpt
 # warning and its BEGIN/END fence — stood here until Z4 (issue #171). They belonged to the
 # warm-resume slim repair prompt, which only an AGENTIC leaf could receive, and nothing in this
-# module renders one now. `tools/validate_pipeline_semantics.py` keeps its own copies of the two
-# it needs: its subject is a PERSISTED record, and an operator's `workspace/` holds runs launched
-# before the cut, which it still has to classify.
+# module renders one now. `tools/validate_pipeline_semantics.py` kept copies of two of them to
+# classify pre-cut records until issue #643 removed the launch-prompt marker audit.
 
 
 # --------------------------------------------------------------------------------------
@@ -9446,19 +8549,6 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
 }
 
 
-def _is_pure_launch_request(request_payload: dict[str, Any]) -> bool:
-    """True when this launch is a Z2 pure-function leaf turn (`leaf_mode == "pure"`).
-
-    An ABSENT `leaf_mode` was the legacy agentic path; since Z4 (issue #171) it means a
-    DETERMINISTIC substep or a malformed request, and this predicate is the single gate that
-    steers a request into the pure renderer / marker set / record-launch branch. (Slim and pure
-    were made mutually exclusive predicates for the same reason, and the slim side lives on only
-    in `validate_pipeline_semantics`, for records written before the cut.) Deterministic
-    and pure are likewise mutually exclusive (enforced at validation). Delegates to
-    `leaf_contract.is_pure_request` — the single detection source shared with the validator."""
-    return _leaf_contract_is_pure_request(request_payload)
-
-
 def _sanitize_pure_doc_body(text: str) -> str:
     """Neutralize any embedded pure-doc fence marker in an inlined document body so an
     untrusted document (tests.md, the IR, the bundle under review) cannot FORGE or prematurely
@@ -9501,11 +8591,9 @@ def _substitute_leaf_placeholders(template: str, subs: dict[str, str]) -> str:
 
 def _leaf_launch_template_name(request_payload: dict[str, Any]) -> str:
     """The template key for a workshop launch: `workshop <step>.<substep>`, with the declared
-    `pure_shape` appended when the request carries one. The validator has already refused any
-    `pure_shape` outside `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, so a name built here always
-    resolves in `_PROMPT_TEMPLATE_FILES` (a KeyError would be the two tables disagreeing, which
-    `test_leaf_wiring` pins). The `pure <step>.<substep>` family went with the pure leaf
-    in issue #534 PR-J4-b."""
+    `pure_shape` appended when the request carries one. A name with no template (an unknown
+    shape, or a shape on a pair that has none) is refused by `_render_leaf_launch_prompt`. The
+    `pure <step>.<substep>` family went with the pure leaf in issue #534 PR-J4-b."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     shape = str(request_payload.get("pure_shape", "")).strip().lower()
@@ -9671,8 +8759,7 @@ def _render_leaf_launch_prompt(request_payload: dict[str, Any]) -> str:
     subs["prompt_contract_version"] = str(request_payload.get("prompt_contract_version", ""))
     # The one sentence of a workshop contract that differs by transport: what the leaf holds
     # besides the wrapper (issue #534 step 2). A NAMED refusal for a provider with no row, for
-    # the reason a missing template is one above: the render runs before
-    # `_validate_leaf_launch_request_payload`, which refuses the same request.
+    # the reason a missing template is one above.
     provider = request_payload.get("workshop_provider")
     surface = _workshop_tool_surface_table(request_payload)
     if not (isinstance(provider, str) and provider in surface):
@@ -9887,10 +8974,6 @@ def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
         "the pure leaf went in issue #534 PR-J4-b")
 
 
-def build_launch_prompt_text(request_payload: dict[str, Any]) -> str:
-    return _render_launch_prompt_template(request_payload).split("\n\n", 1)[0]
-
-
 def render_launch_prompt_text(request_payload: dict[str, Any]) -> str:
     return _render_launch_prompt_template(request_payload)
 
@@ -9905,21 +8988,18 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # and shipped without its Task Card, while the persisted request recorded `"substep"` —
     # a durable record positively disagreeing with the prompt beside it. That renderer is
     # deleted (Z4, issue #171) and the ORDER is kept: it is the general rule, and the next
-    # renderer to read a request field before validation gets it for free. Normalization only: an unknown or absent role is left exactly as it is
-    # for the validator to REJECT, so this can never turn a bad role into an accepted one.
+    # renderer to read a request field before validation gets it for free. Normalization only: an
+    # unknown or absent role is left as it is (the conductor writes it from the step table).
     _role_raw = payload.get("agent_role")
-    _role_respelled = False
     if isinstance(_role_raw, str) and _role_raw.strip():
         payload["agent_role"] = _role_raw.strip().lower()
-        _role_respelled = payload["agent_role"] != _role_raw
     # Deterministic (in-process Build / Validate.execute) requests carry no skill: no
     # leaf runs them, and their SKILL.md files do not exist. Leave skill_name/skill_ref
     # stripped and skill_must_read_refs empty (mirror build_launch_request) so the
     # persisted request stays self-consistent and references no deleted SKILL.
     # A pure-function leaf reads no SKILL (its whole context is host-inlined) and has no
     # skill section in its prompt: force the skill fields empty so the persisted request is
-    # self-consistent and the pure marker / validation checks (which require empty skill
-    # fields) hold. A deterministic request never carries them in the first place.
+    # self-consistent. A deterministic request never carries them in the first place.
     pure = _leaf_contract_is_host_rendered_request(payload)
     if pure:
         payload["skill_name"] = ""
@@ -9931,8 +9011,7 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     payload.setdefault("repair_reason", "none")
     # NO leaf force-reads a document since Z4 (issue #171): a deterministic substep has no
     # leaf, and a pure leaf is handed its whole context inlined. Kept as an explicit empty in
-    # BOTH assembly paths (here + build_launch_request) because the launch-integrity validator
-    # checks it.
+    # BOTH assembly paths (here + build_launch_request).
     payload["skill_must_read_refs"] = ""
     explicit_prompt_present = any(
         _coerce_nested_launch_text(payload, path) is not None
@@ -9955,27 +9034,11 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # A pure launch is HOST-MEDIATED: the host fully controls the closed context, so the prompt
     # is ALWAYS the canonical render of THIS request — never a caller-supplied body. Force-render
     # (overwriting any explicit prompt field) so a supplied `launch_prompt_full` cannot inject a
-    # mismatched identity/context that the marker-only validation would otherwise accept (the
-    # child would act on one context while its output is attributed to another request). For the
+    # mismatched identity/context (the child would act on one context while its output is
+    # attributed to another request). For the
     # legacy path, keep the existing behavior (render only when no explicit prompt is supplied).
     if pure or not explicit_prompt_present:
         payload["launch_prompt_full"] = render_launch_prompt_text(payload)
-    elif _role_respelled:
-        # The other half of the same defect. On the render branch above, canonicalizing the
-        # role before the render is what puts the Task Card in the prompt. On THIS branch
-        # nothing is re-rendered, so a caller-supplied prompt built from `"SUBSTEP"` ships
-        # unchanged while the persisted request records `"substep"` — the durable record
-        # disagreeing with the prompt beside it, which is precisely the harm the render-side
-        # fix was written to stop. Refuse the pair instead of silently shipping it. Narrow by
-        # construction: it fires ONLY when the caller both supplies its own prompt AND spells
-        # the role non-canonically, so no conductor launch can reach it
-        # (`workflow_conductor.build_launch_request` supplies no prompt and a canonical role).
-        raise ValueError(
-            "launch request supplies its own prompt while spelling agent_role "
-            f"{_role_raw!r}, which normalizes to {payload['agent_role']!r}; the persisted "
-            "request would disagree with the prompt it accompanies. Send the canonical "
-            "spelling, or omit the prompt and let record-launch render it."
-        )
     return payload
 
 
@@ -10041,61 +9104,7 @@ def _validate_response_agent_session_id(response_payload: dict[str, Any]) -> str
     session_id = _extract_response_agent_session_id(response_payload)
     if session_id is None:
         raise ValueError("launch response must include the child agent identifier")
-    if _is_placeholder_ref(session_id):
-        raise ValueError("launch response child agent identifier must not contain placeholder tokens")
     return session_id
-
-
-def _required_launch_prompt_markers(request_payload: dict[str, Any]) -> list[str]:
-    step = request_payload.get("step")
-    if not isinstance(step, str) or not step.strip():
-        return []
-    if _leaf_contract_is_host_rendered_request(request_payload):
-        # Pure-function leaf turn (launch OR repair): sentinel + identity + contract version.
-        # No skill / must-read / `Required requirements:` markers — the pure prompt has no
-        # skill section and no leaf-authorable gate/write instructions. A workshop turn
-        # (issue #534) carries the same identity block under its own sentinel.
-        return [
-            WORKSHOP_PROMPT_SENTINEL if _leaf_contract_is_workshop_request(request_payload)
-            else PURE_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:", "Target substep:",
-            "orchestration_id:", "agent_run_id:",
-            "prompt_contract_version:",
-        ]
-    if request_payload.get("deterministic"):
-        # In-process Build / Validate.execute: minimal prompt, no skill section.
-        det = [
-            DETERMINISTIC_PROMPT_SENTINEL,
-            "Target node_key:", "Target step:",
-            "orchestration_id:", "agent_run_id:", "parent_agent_run_id:",
-            "ir_ref:", "pipeline_ref:",
-        ]
-        substep = request_payload.get("substep")
-        if isinstance(substep, str) and substep.strip():
-            det.append("Target substep:")
-        return det
-    # Neither shape: no third prompt exists since Z4 (issue #171). The renderer refuses to
-    # RENDER one — but `prepare_launch_request_payload` force-renders only when
-    # `pure or not explicit_prompt_present`, so a caller that supplies `launch_prompt_full`
-    # itself never reaches the renderer, and the earlier wording here ("the renderer refuses
-    # such a request outright") was false on exactly that path. What answers for it is the
-    # caller: `_validate_launch_prompt_text`'s `if not required_markers` arm applies an
-    # identity floor when a step is declared, and returns only for the self-prompt (no step).
-    # This empty is therefore the honest "no template to preserve", not a permission.
-    return []
-
-
-def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
-    step = request_payload.get("step")
-    if not isinstance(step, str) or not step.strip():
-        return []
-    # Backward compatibility: workflow_mode line is recommended but not mandatory
-    # for manually provided legacy launch prompts.
-    return [
-        line
-        for line in build_launch_prompt_text(request_payload).splitlines()
-        if not line.strip().startswith("workflow_mode:")
-    ]
 
 
 # The per-(step, substep) allowed `validate_pipeline_semantics --stage` map, and the scanner
@@ -10107,121 +9116,6 @@ def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
 # process, per `docs/workflow/phases/phase_0{1,2,4}_*.md`. The prose half went with them:
 # `docs/workflow/LAUNCH_PROMPT_REFERENCE.md`'s "substep <-> allowed validator gate
 # correspondence table", which this map was the code side of.
-
-
-def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: str) -> None:
-    # Pure detection is the AND of "request declares pure" and "prompt opens with the pure
-    # sentinel" (line 0), and BOTH directions of the disagreement are refused. The first arm is
-    # not redundant with the marker check below, measured by the round-2 security review: a
-    # DETERMINISTIC request whose prompt is the real deterministic render with the pure sentinel
-    # prepended carries every deterministic marker and every field value, so the marker and line
-    # checks both pass — this arm is the only thing that refuses it. Its mirror in
-    # `validate_pipeline_semantics` (`request_confirms_pure != prompt_is_pure`) answers for the
-    # persisted record; this one answers at the write.
-    # The WORKSHOP sentinel (issue #534) is held to the same AND, in both directions, before
-    # the pure one: a workshop request carries a workshop-shaped prompt and nothing else does.
-    prompt_opens_workshop = prompt_text.lstrip().startswith(WORKSHOP_PROMPT_SENTINEL)
-    if prompt_opens_workshop != _leaf_contract_is_workshop_request(request_payload):
-        raise ValueError(
-            "launch prompt and request disagree on the workshop leaf model: the prompt "
-            + ("opens" if prompt_opens_workshop else "does not open")
-            + f" with the workshop sentinel ({WORKSHOP_PROMPT_SENTINEL!r}) and the request "
-            + ("declares" if _leaf_contract_is_workshop_request(request_payload)
-               else "does not declare") + " leaf_mode=workshop")
-    prompt_opens_pure = prompt_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
-    if prompt_opens_pure and not _is_pure_launch_request(request_payload):
-        raise ValueError(
-            "launch prompt opens with the pure-function sentinel but the launch request does "
-            "not declare leaf_mode=pure; a non-pure request must not carry a pure-shaped prompt"
-        )
-    if _is_pure_launch_request(request_payload) and not prompt_opens_pure:
-        raise ValueError(
-            "pure launch request prompt must open with the pure-function sentinel "
-            f"({PURE_PROMPT_SENTINEL!r})"
-        )
-    if _leaf_contract_is_host_rendered_request(request_payload):
-        # Defense-in-depth: bind the pure prompt's identity VALUES to the request, not just the
-        # marker NAMES. `prepare_launch_request_payload` force-renders the canonical pure prompt,
-        # so at the record-launch chokepoint this holds by construction; but a caller that reaches
-        # this validator with a hand-supplied prompt must not be able to keep the `Target
-        # node_key:` marker while swapping its VALUE (which would attribute the child's output to
-        # the wrong request). Require each rendered identity line, with its value, verbatim.
-        expected_identity_lines = (
-            f"Target node_key: {request_payload.get('node_key', '')}",
-            f"Target step: {request_payload.get('step', '')}",
-            f"Target substep: {request_payload.get('substep', '')}",
-            f"orchestration_id: {request_payload.get('orchestration_id', '')}",
-            f"agent_run_id: {request_payload.get('agent_run_id', '')}",
-            f"prompt_contract_version: {request_payload.get('prompt_contract_version', '')}",
-        )
-        missing_identity = [line for line in expected_identity_lines if line not in prompt_text]
-        if missing_identity:
-            raise ValueError(
-                "pure launch prompt identity does not match the request (missing/mismatched: "
-                + "; ".join(missing_identity) + ")"
-            )
-    required_markers = _required_launch_prompt_markers(request_payload)
-    if not required_markers:
-        # An empty marker set means one of two things, and they must not share an exit.
-        # (a) NO STEP: the orchestration agent's own self-prompt, rendered from no template,
-        #     with nothing to preserve. That is what the early return below is for.
-        # (b) A STEP that is NEITHER deterministic NOR workshop (pure until issue #534 PR-J4-b).
-        #     There is no third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
-        #     force-renders only when `pure or not explicit_prompt_present`, so a caller that
-        #     supplies `launch_prompt_full` ITSELF never meets the renderer, and this validator
-        #     is the only thing in front of an arbitrary prompt body on a real step. Returning
-        #     silently there was a fail-OPEN, measured by the round-1 review: HEAD accepted a
-        #     payload `origin/main` refused, because the agentic marker set used to apply to any
-        #     step.
-        #
-        # THE ANSWER IS A REFUSAL, and it became one in PR-2 of issue #171.
-        #
-        # PR-1 left an identity FLOOR here instead — the prompt had to at least name the
-        # node_key and the two ids — and the reason was neither the one first written (that a
-        # pre-Z4 `build` record still had to be readable, which the round-2 disclosure review
-        # showed is false: the only caller is `record_launch`, a WRITER, which never re-reads a
-        # persisted record) nor a judgment about the shape. It was the CORPUS: 30 tests built a
-        # launch whose step is an LLM pair and whose payload declared neither shape, because
-        # their subject was the leaf-declared write set — `allowed_output_paths`, the output
-        # manifest, the cross-phase MCP log auto-injection. They could not be converted (a pure
-        # request declares `allowed_output_paths: []`, which is what those tests were about),
-        # and refusing the shape in PR-1 would have meant rewriting a corpus PR-2 deletes.
-        #
-        # PR-2 deleted it. There is no caller that can build this payload and no test that
-        # needs it, so the honest answer is the one the shape always deserved: a launch is
-        # DETERMINISTIC or PURE, and a request that is neither is a host defect, refused where
-        # it is written rather than recorded with a prompt nothing can check.
-        #
-        # This is a HOST-defect guard: `launch_prompt_full` is supplied by the conductor, and
-        # no leaf holds a write path to a launch request.
-        step = request_payload.get("step")
-        if isinstance(step, str) and step.strip():
-            raise ValueError(
-                f"launch request declares step={step!r} "
-                f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-                "workshop. A launch is one of those two shapes (the pure leaf went in issue "
-                "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
-                "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
-                "and a `workshop_provider` for an LLM leaf"
-            )
-        return
-    missing_markers = [marker for marker in required_markers if marker not in prompt_text]
-    if missing_markers:
-        raise ValueError(
-            "launch prompt text must preserve launch-prompt template markers: "
-            + ", ".join(missing_markers)
-        )
-    required_lines = _required_launch_prompt_lines(request_payload)
-    missing_lines = [line for line in required_lines if line not in prompt_text]
-    if missing_lines:
-        raise ValueError(
-            "launch prompt text must preserve launch-prompt template field values: "
-            + ", ".join(missing_lines)
-        )
-    # The `substep -> allowed validator gate` allowlist lint that used to run here went with
-    # the agentic leaf (Z4, issue #171): it existed because an agentic prompt INSTRUCTED a leaf
-    # to run gate commands, and a pure prompt instructs nothing — the leaf holds no shell, and
-    # every gate is a deterministic in-process substep the host runs itself.
 
 
 def _extract_agent_summary_text(payload: dict[str, Any]) -> str:
@@ -10282,47 +9176,6 @@ def _validate_agent_summary_text(payload: dict[str, Any], summary_text: str) -> 
         and not any(token in text for token in ("result_summary:", "summary:", "reason:", "failure_reason:"))
     ):
         raise ValueError("agent.summary.txt must include summary or failure reason")
-
-
-def _evaluate_reply_budget(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    reply_ref: str,
-) -> dict[str, Any] | None:
-    """Measure a child's verbatim reply against REPLY_BUDGET_CHARS.
-
-    Returns ``{"chars": n, "budget": REPLY_BUDGET_CHARS}`` when the reply exceeds the
-    budget (so record_agent_run can surface it as telemetry), else ``None``. Always
-    appends an audit entry on an over-budget reply. With SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1
-    it raises instead of returning, turning the soft warning into a hard fail (the
-    orchestration must then re-launch the child with a terse final message). A missing /
-    unreadable reply file is treated as under budget (never blocks on absence).
-    """
-    path = repo_root / reply_ref
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    n = len(text)
-    if n <= REPLY_BUDGET_CHARS:
-        return None
-    info = {"chars": n, "budget": REPLY_BUDGET_CHARS}
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="reply_over_budget",
-        status="warn",
-        detail={"agent_run_id": agent_run_id, **info},
-    )
-    if os.environ.get("SPEC2SCIENCE_ENFORCE_REPLY_BUDGET") == "1":
-        raise ValueError(
-            f"record-agent-run: child reply is {n} chars, over the {REPLY_BUDGET_CHARS}-char budget "
-            f"(SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a status "
-            f"line, output_refs, and a few lines of rationale; full detail belongs in the child's artifacts."
-        )
-    return info
 
 
 def _node_key_to_safe(node_key: str) -> str:
@@ -10639,184 +9492,37 @@ def default_agent_model_for_backend(backend: str) -> str:
     return ""
 
 
-def _validate_canonical_workspace_root_ref(
-    *,
-    ref: str,
-    node_safe: str,
-    kind: str,
-    label: str,
-) -> None:
-    """Require ref == workspace/{kind}/{node_safe}/{root_id} — for `kind="pipelines"`,
-    workspace/pipelines/{node_safe}/{target_id}/{root_id} (issue #284) — with no extra path
-    segments."""
-    token = ref.strip().strip("/")
-    parts = token.split("/")
-    shape = ("workspace/pipelines/<node_key_safe>/<target_id>/<id>" if kind == "pipelines"
-             else f"workspace/{kind}/<node_key_safe>/<id>")
-    if len(parts) != (5 if kind == "pipelines" else 4):
-        raise ValueError(
-            f"launch request {label} must be exactly {shape} (directory root only); "
-            f"got {ref!r}"
-        )
-    if parts[0] != "workspace" or parts[1] != kind:
-        raise ValueError(f"launch request {label} must be under workspace/{kind}/; got {ref!r}")
-    if kind == "pipelines" and not is_target_id(parts[3]):
-        raise ValueError(
-            f"launch request {label} has invalid target_id segment {parts[3]!r}; got {ref!r}")
-    seg_node = parts[2]
-    root_id = parts[-1]
-    if seg_node != node_safe:
-        raise ValueError(
-            f"launch request {label} node directory must be {node_safe!r}; got {ref!r}"
-        )
-    if not _NODE_KEY_SAFE_PATTERN.match(seg_node):
-        raise ValueError(f"launch request {label} has invalid node_key_safe segment: {ref!r}")
-    if not _SLUG_DATE_SEQ3_PATTERN.match(root_id):
-        raise ValueError(
-            f"launch request {label} root id must match <slug>_<YYYYMMDD>_<seq3>; got {ref!r}"
-        )
-
-
-def _workspace_path_is_under_ref(path: str, base: str) -> bool:
-    p = path.strip().rstrip("/")
-    b = base.strip().rstrip("/")
-    return p == b or p.startswith(b + "/")
-
-
-def _validate_pass_output_refs_against_launch(
-    repo_root: Path,
-    payload: dict[str, Any],
-) -> None:
-    """Require each output_ref to lie under ir_ref or pipeline_ref from the saved launch request.
-
-    Only applies to ``step`` / ``substep`` runs that have a launch request on disk.
-    ``orchestration`` and other roles do not set ``launch_request_ref``; skip validation.
-    """
-    role = payload.get("agent_role")
-    if not isinstance(role, str) or role.strip().lower() not in {"step", "substep"}:
-        return
-
-    output_refs = payload.get("output_refs")
-    if not isinstance(output_refs, list) or not output_refs:
-        return
-
-    launch_request_ref = payload.get("launch_request_ref")
-    if not isinstance(launch_request_ref, str) or not launch_request_ref.strip():
-        raise ValueError("launch_request_ref must be non-empty string for pass output_refs validation")
-    launch_path = repo_root / launch_request_ref.strip()
-    if not launch_path.exists():
-        raise ValueError(f"launch_request_ref target not found: {launch_request_ref}")
-    try:
-        launch_payload = _read_json(launch_path)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"launch_request_ref must be valid json: {launch_request_ref}") from exc
-    if not isinstance(launch_payload, dict):
-        raise ValueError(f"launch request must be object: {launch_request_ref}")
-
-    ir_ref = launch_payload.get("ir_ref")
-    pipeline_ref = launch_payload.get("pipeline_ref")
-    if not isinstance(ir_ref, str) or not ir_ref.strip():
-        raise ValueError("launch request ir_ref missing for output_refs validation")
-    if not isinstance(pipeline_ref, str) or not pipeline_ref.strip():
-        raise ValueError("launch request pipeline_ref missing for output_refs validation")
-
-    ir_root = ir_ref.strip().rstrip("/")
-    pipe_root = pipeline_ref.strip().rstrip("/")
-
-    for idx, ref in enumerate(output_refs):
-        if not isinstance(ref, str) or not ref.strip():
-            raise ValueError(f"output_refs[{idx}] must be non-empty string")
-        r = ref.strip()
-        if not r.startswith("workspace/"):
-            raise ValueError(f"output_refs[{idx}] must start with workspace/: {r!r}")
-        if _workspace_path_is_under_ref(r, ir_root) or _workspace_path_is_under_ref(r, pipe_root):
-            continue
-        raise ValueError(
-            f"output_refs[{idx}] must be under ir_ref or pipeline_ref root "
-            f"({ir_root!r} or {pipe_root!r}); got {r!r}"
-        )
-
-
 def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> None:
     """Validate the leaf-specific shape of a host-rendered launch request.
 
-    Enforced (fail-closed): the one accepted `leaf_mode` is `"workshop"` (issue #534; the
-    `"pure"` leaf went in PR-J4-b, and a NEW request naming it is refused here — a RECORD naming
-    it is still read by `is_host_rendered_request`'s readers); the pair is one a workshop leaf
-    serves (`WORKSHOP_LAUNCH_PAIRS`); it is mutually exclusive with `deterministic`; the request
-    names its lineage and the provider whose tool surface its prompt states;
-    `prompt_contract_version` matches the leaf contract EXACTLY; `allowed_output_paths` is empty
-    (the leaf has no write authority — the host writes after the child window closes); the
-    three skill fields are empty (no SKILL is read); and the required `pure_context` keys are
-    present on a cold launch. A warm-resume repair (`warm_resume` + `repair_findings`) may omit
-    `pure_context` — the resumed lineage already holds it — but a cold repair still requires
-    it."""
-    leaf_mode = str(request_payload.get("leaf_mode", "")).strip().lower()
-    if leaf_mode != WORKSHOP_LEAF_MODE:
-        raise ValueError(
-            f"launch request leaf_mode must be {WORKSHOP_LEAF_MODE!r} when present; got "
-            f"{request_payload.get('leaf_mode')!r}"
-            + (" (the pure leaf went in issue #534 PR-J4-b)" if leaf_mode == PURE_LEAF_MODE
-               else ""))
-    if request_payload.get("deterministic"):
-        raise ValueError(
-            f"launch request must not set both leaf_mode={leaf_mode} and deterministic=True"
-        )
+    Enforced (fail-closed): the pair is one a workshop leaf serves (`WORKSHOP_LAUNCH_PAIRS`);
+    a declared `pure_language` / `pure_parallel` is a non-empty
+    string; and the required `pure_context` keys are present on a cold launch. A warm-resume
+    repair (`warm_resume` + `repair_findings`) may omit `pure_context` — the resumed lineage
+    already holds it — but a cold repair still requires it.
+
+    The rest of the request (`leaf_mode`, `deterministic`, `workshop_provider`,
+    `workshop_lineage_id` (`record_launch` checks its token shape first), `pure_shape`,
+    `prompt_contract_version`, `allowed_output_paths`, the skill fields) is written by the
+    conductor's `build_launch_request` from its own phase logic, and a leaf authors no launch
+    request; the refusals that re-checked those fields went in issue #643. An unknown
+    `pure_shape` has no template, so the renderer refuses it on a cold launch."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     key = (step, substep)
-    lineage = request_payload.get("workshop_lineage_id")
     if key not in WORKSHOP_LAUNCH_PAIRS:
         admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(WORKSHOP_LAUNCH_PAIRS))
         raise ValueError(
             f"leaf_mode=workshop is only valid for {admissible}; "
             f"got (step={step!r}, substep={substep!r})")
-    # Not observed by any test: `record_launch`, the one caller, checks the same field
-    # with the same pattern before it gets here. Kept so the validator states the whole
-    # shape on its own.
-    if not (isinstance(lineage, str) and _AGENT_RUN_ID_RE.match(lineage.strip())):
-        raise ValueError(
-            "workshop launch request must name its lineage in workshop_lineage_id (a plain "
-            f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
-            f"{lineage!r}")
-    # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row
-    # in the table of the request's KIND (a reading lineage's table names fewer providers).
-    provider = request_payload.get("workshop_provider")
-    surface = _workshop_tool_surface_table(request_payload)
-    if not (isinstance(provider, str) and provider in surface):
-        raise ValueError(
-            f"workshop launch request must name its provider in workshop_provider, one of "
-            f"{', '.join(sorted(surface))}; got {provider!r}")
-    # A declared bundle SHAPE selects a different template and a different required-key set, so
-    # it is validated before either is looked up: the vocabulary is closed, and the shape must be
-    # declared on a pair that HAS one. An unknown value never falls back to the default.
+    # A declared bundle SHAPE selects a different required-key set.
     shape = request_payload.get("pure_shape")
-    shape_key: tuple[str, str, str] | None = None
-    if isinstance(shape, str) and shape.strip():
-        shape_norm = shape.strip().lower()
-        if shape_norm not in PURE_LAUNCH_SHAPES:
-            raise ValueError(
-                f"pure launch request pure_shape must be one of "
-                f"{', '.join(sorted(PURE_LAUNCH_SHAPES))} when present; got {shape!r}")
-        shape_key = (step, substep, shape_norm)
-        if shape_key not in PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE:
-            admissible = ", ".join(
-                f"({st}, {ss}, {sh})"
-                for st, ss, sh in sorted(PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE))
-            raise ValueError(
-                f"pure launch request pure_shape is only valid for {admissible}; got "
-                f"(step={step!r}, substep={substep!r}, pure_shape={shape_norm!r})")
-    elif shape is not None:
-        # A non-string, or a blank one, is REFUSED rather than treated as absent: an absent
-        # `pure_shape` means the default shape, and silently defaulting a malformed one would
-        # render the default template for a node whose bundle is judged by another shape's rules.
-        raise ValueError(
-            f"pure launch request pure_shape must be a non-empty string when present; "
-            f"got {shape!r}")
-    # The target language the template is composed for (issue #289). Refused when malformed for
-    # the reason a malformed `pure_shape` is: an absent value means "this template carries no
-    # language fragment", and a blank one read as absent would render a prompt missing the rules
-    # the gates hold the leaf to. Whether a template NEEDS one is the composer's question.
+    shape_key: tuple[str, str, str] | None = (
+        (step, substep, shape.strip().lower())
+        if isinstance(shape, str) and shape.strip() else None)
+    # The target language the template is composed for (issue #289). Refused when malformed:
+    # an absent value means "this template carries no language fragment", and a blank one read
+    # as absent would render a prompt missing the rules the gates hold the leaf to. Whether a template NEEDS one is the composer's question.
     language = request_payload.get("pure_language")
     if language is not None and not (isinstance(language, str) and language.strip()):
         raise ValueError(
@@ -10829,49 +9535,12 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_parallel must be a non-empty string when present; "
             f"got {parallel!r}")
-    # The label of a `compile.generate` verification part (issue #526) went with the pure part
-    # split (issue #534 PR-J4-b); a new request carrying one is refused rather than recorded as
-    # a part no loop runs. Records that carry it keep their readers (the audit's repeated-
-    # substep table, the attempt-cost report).
-    part = request_payload.get("pure_part")
-    if part is not None:
-        raise ValueError(
-            f"launch request carries pure_part={part!r}: the compile.generate part split went "
-            "with the pure leaf in issue #534 PR-J4-b")
-    if key not in PURE_CONTEXT_REQUIRED_KEYS:
-        # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
-        # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.
-        admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(PURE_CONTEXT_REQUIRED_KEYS))
-        raise ValueError(
-            f"a host-rendered launch request is only valid for {admissible}; "
-            f"got (step={step!r}, substep={substep!r})"
-        )
-    version = request_payload.get("prompt_contract_version")
-    if version != LEAF_PROMPT_CONTRACT_VERSION:
-        raise ValueError(
-            f"{leaf_mode} launch request prompt_contract_version must be exactly "
-            f"{LEAF_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
-        )
-    aop = request_payload.get("allowed_output_paths")
-    if aop not in (None, []):
-        raise ValueError(
-            "launch request allowed_output_paths must be empty — a workshop leaf writes "
-            f"nothing in the checkout (the host writes after the child window closes); got "
-            f"{aop!r}"
-        )
-    for field in ("skill_name", "skill_ref", "skill_must_read_refs"):
-        value = request_payload.get(field)
-        if isinstance(value, str) and value.strip():
-            raise ValueError(
-                f"pure launch request must leave {field} empty (no SKILL is read); got {value!r}"
-            )
     # `pure_context` may be omitted ONLY on a genuine warm-resume REUSE repair — the resumed
     # producer session already holds the schema, the prior document, and the input context, so
     # re-inlining them is redundant. A `restart` (or any non-reuse) repair has no such session,
     # and the cold fallback renderer needs the context re-inlined, so it is NOT exempt: require
     # `repair_strategy == "reuse"` alongside warm_resume + findings, or the context stays
-    # mandatory. The same (warm + reuse + findings) shape the slim repair turn used, which is
-    # why `validate_pipeline_semantics` still classifies the two apart on a pre-Z4 record.
+    # mandatory. The same (warm + reuse + findings) shape the slim repair turn used.
     warm = bool(request_payload.get("warm_resume"))
     reuse = str(request_payload.get("repair_strategy", "")).strip() == "reuse"
     findings = str(request_payload.get("repair_findings", "")).strip()
@@ -10897,234 +9566,24 @@ def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> No
 
 
 def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
+    """Validate a launch request before `record_launch` writes it.
+
+    The request is assembled by the conductor (`workflow_conductor.build_launch_request`),
+    never by a leaf: its refs come from the conductor's reservations, its role, model, repair
+    block and `deterministic` flag from the conductor's own phase logic and the operator's
+    configuration. The refusals that re-checked those host values went in issue #643. What
+    stays is what `record_launch` needs to place the launch (`node_key`, `step`) and the shape
+    of a workshop request (`_validate_leaf_launch_request_payload`)."""
     node_key = request_payload.get("node_key")
     step = request_payload.get("step")
-    substep = request_payload.get("substep")
     if not isinstance(node_key, str) or not node_key.strip():
         raise ValueError("launch request must include non-empty node_key")
     if not isinstance(step, str) or not step.strip():
         raise ValueError("launch request must include non-empty step")
-    # Defense-in-depth: `deterministic` (in-process, skill-/constraint-line-exempt) is
-    # only legitimate for the non-LLM substeps Build, Validate.pre_judge, Validate.execute,
-    # Validate.post_judge, Generate.gate and Compile.static. Reject the flag on any other step so
-    # a forged/buggy payload cannot claim the reduced launch-prompt guards while being a leaf
-    # step. (The flag is host-set by the conductor today; this makes the invariant explicit at
-    # the validation chokepoint.) The retired Generate substep names lint/syntax/static are
-    # deliberately NOT accepted here — a legacy resume that still emits them fails closed loudly.
-    if request_payload.get("deterministic"):
-        step_l = step.strip().lower()
-        substep_l = str(substep).strip().lower() if isinstance(substep, str) else ""
-        if not (step_l == "build"
-                or (step_l == "validate" and substep_l in ("pre_judge", "execute", "post_judge"))
-                or (step_l == "generate" and substep_l == "gate")
-                or (step_l == "compile" and substep_l == "static")):
-            raise ValueError(
-                "launch request: deterministic=True is only valid for step=build, "
-                "step=validate substep=pre_judge|execute|post_judge, "
-                "step=generate substep=gate, or "
-                f"step=compile substep=static (got step={step!r} substep={substep!r})"
-            )
-    # agent_model identifies the LLM that produced the child's artifacts. At launch
-    # only the unpinned spec-side ALIAS is known (e.g. "opus"); the exact version is
-    # resolved post-run from the leaf's own CLI result envelope and recorded by the
-    # conductor onto the agent_runs row (see `_agent_run_json`). record-launch
-    # persists the alias into the request; record_agent_run only backfills it onto
-    # the agent_runs entry when the conductor did not already supply the resolved
-    # version (setdefault), satisfying the pre_judge step/substep requirement either
-    # way. The launch request must still carry a non-empty alias here.
-    agent_model = request_payload.get("agent_model")
-    if not isinstance(agent_model, str) or not agent_model.strip():
-        raise ValueError("launch request must include non-empty agent_model")
-    # THE agent_role chokepoint. SIX readers disagreed about an unrecognized role, named
-    # here in full because an earlier version of this comment said "six" and then listed
-    # five: (1) `build_capability_document` INFERRED it; (2) `_allowed_output_paths_for_launch`,
-    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` SKIPPED their
-    # work — (1), (3) and (4) are deleted by Z4 (issue #171), (4) in PR-1 and the other two in
-    # PR-2; (5) `record_launch` itself fell back to the step-derived kind, or to the
-    # literal "unknown" for the session-run-index row; and (6) `workflow_conductor.
-    # _register_codex_thread` defaulted to "substep" when re-reading the persisted request.
-    # Requiring the field here, at the one place every launch passes through, is what makes
-    # all of them see one value.
-    #
-    # Two things about the placement USED to be load-bearing; neither is now. (1) `record_launch`
-    # called this validator immediately BEFORE `_append_session_run_index_entry`, so a rejected
-    # role left no orphan `running` row. Since issue #481 that holds for every check of the
-    # launch by the position of `record_launch`'s bookkeeping block, written after the launch
-    # files, so this placement no longer keeps the row honest. (2) it was
-    # upstream of the capability, so a capability the MCP and run-gate phase gates re-checked
-    # with this same predicate could not be minted from an inferred role at all — all three of
-    # those went in issue #171 PR-2, and the chokepoint is now the only reader. Nor is the position WITHIN this function. It sits
-    # after the deterministic-flag and agent_model checks purely so their existing
-    # error-ordering tests keep reporting the error they were written to observe.
-    #
-    # Attribution: the launch request is assembled by the conductor
-    # (`workflow_conductor.build_launch_request`), never by a leaf, so a mismatch is a
-    # transport fault the leaf cannot repair — a raise here, never a content failure.
-    if not _normalized_agent_role(request_payload.get("agent_role")):
-        raise ValueError("launch request must include non-empty agent_role")
-    # Canonicalize as well as validate, as a BACKSTOP for a caller that skips
-    # `prepare_launch_request_payload` (which does the same normalization, and must, because
-    # it renders the prompt — see the comment there; doing it only here fixed nothing).
-    # `record_agent_run` likewise writes its normalized token back into the terminal payload.
-    # NOTE: an earlier version of this comment also named `_write_allowed_output_manifest` as
-    # a reader harmed by an unlowered role. That is FALSE and was measured so: record-launch
-    # calls it without an `agent_role` at all, and its ONE other production call site
-    # (`init_orchestration`) passes the literal `"orchestration"`. The launch payload's
-    # role never reaches it. (An earlier version of this correction said "three other
-    # call sites" — wrong again, in the very sentence fixing a wrong claim.)
-    request_payload["agent_role"] = _require_child_agent_role_for_step(
-        request_payload.get("agent_role"),
-        step,
-        label="launch request:",
-        error_type=ValueError,
-    )
-    if isinstance(node_key, str) and node_key.strip():
-        node_safe = _node_key_to_safe(node_key.strip())
-    else:
-        node_safe = None
-
-    for key in ("ir_ref", "pipeline_ref", "dependency_ref"):
-        value = request_payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"launch request must include non-empty {key}")
-        if _is_placeholder_ref(value):
-            raise ValueError(f"launch request {key} must not contain placeholder tokens")
-
-    ir_ref = request_payload.get("ir_ref")
-    pipeline_ref = request_payload.get("pipeline_ref")
-    dependency_ref = request_payload.get("dependency_ref")
-    if node_safe is not None:
-        if isinstance(ir_ref, str) and ir_ref.strip():
-            _validate_canonical_workspace_root_ref(
-                ref=ir_ref,
-                node_safe=node_safe,
-                kind="ir",
-                label="ir_ref",
-            )
-        if isinstance(pipeline_ref, str) and pipeline_ref.strip():
-            _validate_canonical_workspace_root_ref(
-                ref=pipeline_ref,
-                node_safe=node_safe,
-                kind="pipelines",
-                label="pipeline_ref",
-            )
-    if isinstance(dependency_ref, str) and _is_placeholder_ref(dependency_ref):
-        raise ValueError("launch request dependency_ref must not contain placeholder tokens")
-    step_val = str(request_payload.get("step", "")).strip().lower()
-    if step_val == "compile" and isinstance(dependency_ref, str) and dependency_ref.strip():
-        dep_norm = _normalize_rel_posix(dependency_ref.strip())
-        if not (dep_norm.startswith("spec/") and dep_norm.endswith("/deps.yaml")):
-            raise ValueError(
-                "record-launch: Compile step dependency_ref must be spec/.../deps.yaml, "
-                f"got {dependency_ref!r}. "
-                "Both generate and verify substeps must receive the spec path, "
-                "not workspace/ir/."
-            )
-
-    # value validation of repair_strategy / issue_severity
-    repair_strategy = str(request_payload.get("repair_strategy", "none")).strip()
-    if repair_strategy not in VALID_REPAIR_STRATEGIES:
-        raise ValueError(
-            f"launch request repair_strategy must be one of {sorted(VALID_REPAIR_STRATEGIES)}; "
-            f"got {repair_strategy!r}"
-        )
-
-    issue_severity = str(request_payload.get("issue_severity", "none")).strip()
-    if issue_severity not in VALID_ISSUE_SEVERITIES:
-        raise ValueError(
-            f"launch request issue_severity must be one of {sorted(VALID_ISSUE_SEVERITIES)}; "
-            f"got {issue_severity!r}"
-        )
-
-    # require the repair fields when repair_strategy is reuse/restart
-    if repair_strategy in {"reuse", "restart"}:
-        repair_target = str(request_payload.get("repair_target_agent_run_id", "none")).strip()
-        if not repair_target or repair_target == "none":
-            raise ValueError(
-                "repair launch request requires non-empty repair_target_agent_run_id "
-                f"(repair_strategy={repair_strategy!r})"
-            )
-        repair_reason = str(request_payload.get("repair_reason", "none")).strip()
-        if not repair_reason or repair_reason == "none":
-            raise ValueError(
-                "repair launch request requires non-empty repair_reason "
-                f"(repair_strategy={repair_strategy!r})"
-            )
-
-    # Pure-function leaf (`leaf_mode` present): validate its dedicated shape and, for the pure
-    # verify substep, short-circuit before the verify skill-requirement block below (a pure
-    # verify carries empty skill fields by contract, so those checks would false-reject it —
-    # this branch is the one that currently rejects pure verify). The gate is KEY PRESENCE, not
-    # `is not None`: the invariant is "any present `leaf_mode` other than 'pure' is invalid", so
-    # an explicit `leaf_mode: null` (or "", or "agentic") must reach the validator and be
-    # REJECTED — not silently fall through to the agentic path with write authority. Only an
-    # ABSENT key is the legacy path. `_validate_leaf_launch_request_payload` then requires the
-    # value be exactly "pure".
-    is_pure = "leaf_mode" in request_payload
-    if is_pure:
+    # The gate is KEY PRESENCE: any request that names a `leaf_mode` is held to the workshop
+    # request's shape.
+    if "leaf_mode" in request_payload:
         _validate_leaf_launch_request_payload(request_payload)
-
-    is_verify_substep = (
-        isinstance(step, str)
-        and step.strip().lower() in {"compile", "generate"}
-        and isinstance(substep, str)
-        and substep.strip().lower() == "verify"
-    )
-    # Validate source_id format for any generate-step launch (both generate and
-    # verify substeps).  The orchestration agent must supply source_id in the
-    # launch request when step=generate; validate format here so a mis-formatted
-    # source_id (e.g. using the ir_id slug format instead of `src_YYYYMMDD_seq3`)
-    # is rejected before the child agent runs, rather than discovered later by
-    # generate.verify after a full substep execution.
-    if isinstance(step, str) and step.strip().lower() == "generate":
-        gen_id = request_payload.get("source_id")
-        if not isinstance(gen_id, str) or not gen_id.strip():
-            raise ValueError(
-                "generate step launch request must include non-empty source_id "
-                "(format: src_<YYYYMMDD>_<seq3>, e.g. src_20260511_001)"
-            )
-        if not _SOURCE_ID_RE.match(gen_id.strip()):
-            raise ValueError(
-                f"generate step launch request source_id={gen_id!r} does not match "
-                "required format src_<YYYYMMDD>_<seq3> (e.g. src_20260511_001). "
-                "source_id must start with literal 'src_' prefix followed by 8-digit "
-                "date and 3-digit sequence; do not reuse the ir_id / pipeline_id slug format."
-            )
-    if is_verify_substep and isinstance(step, str) and step.strip().lower() == "generate":
-        # source_id presence and format already validated above; keep this branch
-        # for the additional non-empty guard that predates the format check.
-        gen_id = request_payload.get("source_id")
-        if not isinstance(gen_id, str) or not gen_id.strip():
-            raise ValueError("generate verify launch request must include non-empty source_id")
-
-    # THE TWO SHAPES, refused HERE and not only at the prompt.
-    # `_validate_launch_prompt_text` carries the same refusal and is the one that answers for
-    # an arbitrary prompt BODY. This arm is the request-only statement of the rule: it refuses
-    # before the prompt text is checked, and tests pin it directly. It was added (Z4 PR-2)
-    # because `record_launch` then wrote its `running` row before the prompt-text arm, so a
-    # neither-shape request left an orphan row; since issue #481 every bookkeeping write of
-    # `record_launch` follows every check of the launch, so that orphan is prevented by
-    # placement and this arm is no longer what prevents it. The prompt-text arm stays, because a request can
-    # declare a shape its prompt does not carry.
-    # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
-    # marker set on a real step IS "neither deterministic nor workshop" (its own comment says so),
-    # so the two refusals cannot answer differently.
-    if (isinstance(step, str) and step.strip()
-            and not _required_launch_prompt_markers(request_payload)):
-        raise ValueError(
-            f"launch request declares step={step!r} "
-            f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-            "workshop. A launch is one of those two shapes (the pure leaf went in issue "
-            "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
-            "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
-            "and a `workshop_provider` for an LLM leaf"
-        )
-    if not is_verify_substep:
-        return
-    # Every verify leaf is pure since Z4 (issue #171), and a pure request's skill fields are
-    # empty by contract (validated above). The non-empty `skill_name` / `skill_ref` /
-    # `skill_must_read_refs` requirements that stood here, and the per-substep required-input
-    # set behind them, described a leaf that read documents off disk; there is none.
 
 
 def _load_run_records(
@@ -11132,18 +9591,17 @@ def _load_run_records(
     *,
     caller_holds_lock: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Load `agent_runs.jsonl` into a dict keyed by agent_run_id.
+    """Load `agent_runs.jsonl` into a dict keyed by agent_run_id: the one parser of the
+    ledger (`_read_existing_run_ids` reads through it).
 
-    M-NEW-1: shares the same parse-resilience contract as
-    `_read_existing_run_ids` — Adv-21 trailing-line tolerance combined with
-    Adv-40 in-flight detection. A truncated last line whose corruption is
-    plausibly a concurrent appender's mid-write is silently skipped; any
-    other malformed line raises `RuntimeError("...durable corruption...")`.
+    Adv-21 trailing-line tolerance combined with Adv-40 in-flight detection. A truncated
+    last line whose corruption is plausibly a concurrent appender's mid-write is silently
+    skipped; any other malformed line raises `RuntimeError("...durable corruption...")`.
     Without this, callers like `_validate_orchestration_completion_for_pass`
     would crash on `JSONDecodeError` whenever `record_agent_run` is appending
     concurrently.
 
-    H-FOURTH-1: caller_holds_lock mirrors `_read_existing_run_ids`. When the
+    H-FOURTH-1 / NEW-H1: when the
     caller already holds the runs-jsonl fcntl lock (typically via
     `_runs_jsonl_exclusive_lock` inside `record_agent_run`), the
     writer-active probe would self-contend and falsely report in-flight,
@@ -11260,8 +9718,8 @@ def _validate_terminal_run_payload(
         # passing row therefore carries `output_refs == []`, ENFORCED BIDIRECTIONALLY: an empty
         # list is required (the bundle's provenance is `bundle_meta.json`, not this row), and a
         # NON-empty one is rejected — a leaf with no write authority that claims outputs is a
-        # forged provenance, fail-closed. The output-manifest checks below (which raise on the
-        # absent manifest) and `_validate_pass_output_refs_against_launch` are skipped for pure.
+        # forged provenance, fail-closed. The non-empty `output_refs` check below is skipped for
+        # pure.
         # Detected from the launch request (`leaf_mode == "pure"`), the single source the
         # producer stamps, not a field on this payload the leaf could set.
         agent_run_id = str(payload.get("agent_run_id") or "").strip()
@@ -11288,35 +9746,16 @@ def _validate_terminal_run_payload(
         for idx, item in enumerate(output_refs):
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(f"output_refs[{idx}] must be non-empty string")
-        # `_validate_pass_output_refs_against_launch` reads the LAUNCH REQUEST's
-        # `allowed_output_paths`, which is host-authored and still recorded. The second check
-        # that stood here re-read the same list from `output_manifests/<arid>.json`, a copy of
-        # it written for a leaf to read; issue #171 PR-2 stopped writing the copy, and the
-        # check against the original stays.
-        _validate_pass_output_refs_against_launch(repo_root, payload)
+        # A non-workshop step/substep pass row is a DETERMINISTIC one: its `output_refs` are the
+        # conductor's own subset of the request's `allowed_output_paths`, so the prefix check
+        # against the request's `ir_ref` / `pipeline_ref` that stood here re-read a host value.
         # P2-7 retired the apply_patch_writes gate, and issue #171 PR-2 retired the FS-diff
         # that replaced it. A leaf writes no artifact at all: the host writes every one after
         # the child window, so there is nothing about this row's writes left to verify.
         return
 
     # orchestration role (the trusted, unconfined conductor): output_refs are optional
-    # bookkeeping. The retired apply_patch_writes gate previously tied each declared ref
-    # to write evidence; its P2-7 replacement is an existence check — a `pass` that
-    # declares output_refs must have actually produced them, so it cannot claim
-    # missing/unproduced artifacts.
-    if not isinstance(output_refs, list) or not output_refs:
-        return
-    missing: list[str] = []
-    for idx, item in enumerate(output_refs):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"output_refs[{idx}] must be non-empty string")
-        if not (repo_root / _normalize_rel_posix(item.strip())).exists():
-            missing.append(item.strip())
-    if missing:
-        raise ValueError(
-            "pass status for orchestration declares output_refs that were not produced "
-            "(do not exist): " + ", ".join(sorted(missing))
-        )
+    # bookkeeping, and no orchestration row carries them.
 
 
 def _read_launch_request_payload(
@@ -11541,9 +9980,9 @@ def _validate_orchestration_completion_for_pass(
     # This clause is about graph INTEGRITY and nothing else, and the distinction cost a round to
     # get right. An earlier cut of issue #177 made it refuse the invalid-log child outright, to
     # catch an unacknowledged unauthorized write. It caught that — and everything else diverted
-    # by the same `except ValueError`, which is far wider than the write audit: a
-    # `launch_response_not_object`, an `agent_session_id_mismatch`, a `sandbox_profile_not_found`,
-    # an empty `output_refs` on a pass payload. None of those implies a write outside the window,
+    # by the same `except ValueError`, which is far wider than the write audit: an empty
+    # `output_refs` on a pass payload, and at the time a malformed launch response or a
+    # missing sandbox stamp in it. None of those implies a write outside the window,
     # and each would have wedged an honest run permanently. It also did not actually close the
     # hole: `_prune_orphan_agent_graph_edges` keeps the dangling edge only BECAUSE the child is in
     # the invalid log, so deleting that log prunes the edge and the clause has nothing left to
@@ -11886,58 +10325,6 @@ def _pre_phase_complete_judge_checks(
                 raise ValueError(f"blocked judge requires {name} under execution directory")
 
 
-def post_phase_complete(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    node_key: str,
-    step: str,
-    agent_run_id: str,
-    payload: dict[str, Any],
-) -> None:
-    step_token = step.strip().lower()
-    violations: list[str] = []
-    orch_root = _orchestration_root(repo_root, orchestration_id)
-    resp_path = orch_root / "launches" / f"{agent_run_id.strip()}.response.json"
-    req_path = orch_root / "launches" / f"{agent_run_id.strip()}.request.json"
-    if resp_path.is_file() and req_path.is_file():
-        try:
-            rsp = _read_json(resp_path)
-            req = _read_json(req_path)
-        except (OSError, json.JSONDecodeError):
-            rsp = {}
-            req = {}
-        if isinstance(req, dict) and isinstance(rsp, dict):
-            rq_sid = req.get("agent_session_id")
-            rs_sid = rsp.get("agent_session_id")
-            if (
-                isinstance(rq_sid, str)
-                and rq_sid.strip()
-                and isinstance(rs_sid, str)
-                and rs_sid.strip()
-                and rq_sid.strip() != rs_sid.strip()
-            ):
-                violations.append(
-                    "post_phase_complete: launch response agent_session_id mismatch vs request"
-                )
-    if violations:
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="post_phase_complete",
-            status="deny",
-            detail={"violations": violations, "step": step_token},
-        )
-        raise RuntimeError("post_phase_complete denied: " + "; ".join(violations))
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="post_phase_complete",
-        status="allow",
-        detail={"step": step_token, "agent_run_id": agent_run_id},
-    )
-
-
 def _validate_step_result_payload(
     repo_root: Path,
     orchestration_id: str,
@@ -11960,13 +10347,6 @@ def _validate_step_result_payload(
                 f"terminal step_result for {step_token} requires validation_stage in "
                 f"{sorted(allowed)}; status={status_token!r} validation_stage={validation_stage!r}"
             )
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="pre_phase_complete",
-            status="allow",
-            detail={"step": step_token, "status": status_token, "validation_stage": validation_stage},
-        )
 
     if step_token == "validate" and status_token in TERMINAL_STATUSES:
         _pre_phase_complete_judge_checks(
@@ -11990,8 +10370,6 @@ def _validate_step_result_payload(
         step_token=step_token,
     )
     required_outputs = payload.get("required_outputs")
-    if not isinstance(required_outputs, list):
-        raise ValueError("step_result.required_outputs must be list")
     declared_outputs = {item.strip() for item in required_outputs if isinstance(item, str) and item.strip()}
 
     # Z2 pure substeps (leaf_mode==pure, the M-C producer + M-D verify reviewer) hold NO write
@@ -13932,32 +12310,16 @@ def _launch_network_block(repo_root: Path, socket_dir: str | None, family: str,
     """The `network` block of one CLI launch's profile (issue #534 step 4), from the socket
     directory the conductor serves for it (`--netns-socket-dir`) and the wrapper endpoint the
     launch's own setting surface records (`<family>_mcp_config`; a reading launch records
-    none). The directory must be the conductor's: an existing directory, not a link, owned by
-    this user and private to it (0700, `leaf_netns.make_socket_dir`); the block's own refusals
-    (outside the checkout, short enough for a socket path) are `network_block_violations`'."""
-    if not (isinstance(socket_dir, str) and socket_dir.strip()):
-        raise ValueError("a CLI launch needs its network namespace's socket directory "
-                         "(--netns-socket-dir; issue #534 step 4)")
+    none). Both are the conductor's: the directory is the private one `leaf_netns.make_socket_dir`
+    made for this launch, the URL its own wrapper's loopback endpoint. The block's own refusals
+    (outside the checkout, short enough for a socket path) are `network_block_violations`'. A
+    malformed value raises here, inside `record_launch`'s fail-closed sandbox catch."""
     path = socket_dir.strip()
-    try:
-        st = os.lstat(path)
-    except OSError as exc:
-        raise ValueError(f"--netns-socket-dir {path!r} does not exist: {exc}") from exc
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        raise ValueError(f"--netns-socket-dir {path!r} must be a directory (not a link) owned "
-                         "by this user with mode 0700")
     servers = response_payload.get(f"{family}_mcp_config")
     wrapper_port: int | None = None
     if servers is not None:
-        urls = [str(item.get("url") or "") for item in servers if isinstance(item, dict)] \
-            if isinstance(servers, list) else []
-        if len(urls) != 1 or not urls[0].startswith("http://127.0.0.1:"):
-            raise ValueError(f"{family}_mcp_config must name one loopback wrapper URL "
-                             f"(got {servers!r})")
-        port = urls[0][len("http://127.0.0.1:"):].split("/", 1)[0]
-        if not port.isdigit():
-            raise ValueError(f"the wrapper URL names no port (got {urls[0]!r})")
-        wrapper_port = int(port)
+        url = str(servers[0].get("url") or "")
+        wrapper_port = int(url[len("http://127.0.0.1:"):].split("/", 1)[0])
     block = leaf_netns.network_block(path, WORKSHOP_CLI_ENDPOINTS[family], wrapper_port)
     problems = leaf_netns.network_block_violations(
         block, endpoints=WORKSHOP_CLI_ENDPOINTS[family], repo_root=str(repo_root))
@@ -13979,22 +12341,9 @@ def record_launch(
     workshop_lineage_id: str | None = None,
     netns_socket_dir: str | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
-        raise ValueError("record-launch requires non-empty parent_agent_run_id")
+    # Both ids are the conductor's (the orchestration's arid; a fresh uuid per child).
     parent_agent_run_id = parent_agent_run_id.strip()
-    if not _AGENT_RUN_ID_RE.match(parent_agent_run_id):
-        raise ValueError(
-            f"record-launch: parent_agent_run_id contains invalid characters "
-            f"(got {parent_agent_run_id!r}); only alphanumerics, hyphens, and underscores are allowed"
-        )
-    if not isinstance(child_agent_run_id, str) or not child_agent_run_id.strip():
-        raise ValueError("record-launch requires non-empty child_agent_run_id")
     child_agent_run_id = child_agent_run_id.strip()
-    if not _AGENT_RUN_ID_RE.match(child_agent_run_id):
-        raise ValueError(
-            f"record-launch: child_agent_run_id contains invalid characters "
-            f"(got {child_agent_run_id!r}); only alphanumerics, hyphens, and underscores are allowed"
-        )
     preflight_payload: dict[str, Any] | None = None
     try:
         preflight_payload = _require_preflight_launchable(
@@ -14029,12 +12378,8 @@ def record_launch(
                        if isinstance(_launch_backend, str) and _launch_backend.strip() else "")
     _probed = preflight_payload.get("providers") if isinstance(preflight_payload, dict) else None
     if _launch_backend and isinstance(_probed, dict) and _probed:
-        entry = _probed.get(_launch_backend)
-        if not (isinstance(entry, dict) and entry.get("launchable") is True):
-            raise RuntimeError(
-                f"record-launch: backend_not_probed — this launch names provider "
-                f"{_launch_backend!r}, which preflight did not probe as launchable"
-            )
+        # Whether preflight probed this provider as launchable is the launch check's question
+        # (`pre_phase_launch` -> `workflow_launch_check`, `backend_not_probed`), asked below.
         backend_token = _launch_backend
     elif _launch_backend in SUPPORTED_BACKENDS:
         # No `providers` map: a pre-#28 preflight, where the run has one backend and the
@@ -14084,53 +12429,20 @@ def record_launch(
     #: keyed by provider): the CLI's own token on a CLI launch, `http` for both HTTP providers,
     #: whose `backend_token` is the provider token (issue #534 PR-J3-b).
     lineage_backend: str | None = None
-    if workshop_lineage_id is not None or is_workshop:
-        if not is_workshop:
-            raise ValueError("workshop_lineage_id is valid only for a workshop launch request")
-        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+    if is_workshop:
+        # The request's provider, lineage id and the warm `--workshop-lineage-id` are all
+        # written by the conductor from one leaf entry and one lineage (issue #643 removed the
+        # refusals that re-checked them against each other). The lineage id becomes the home's
+        # path segment, so its token shape is checked (OR4-52).
         from tools.leaf_contract import WORKSHOP_LINEAGE_BACKENDS
         named = request_payload.get("workshop_provider")
-        named = named if isinstance(named, str) else ""
-        lineage_backend = WORKSHOP_LINEAGE_BACKENDS.get(named)
-        if (lineage_backend not in WORKSHOP_HOME_PREPARERS
-                or (_launch_backend and _launch_backend != backend_token)):
-            raise ValueError(
-                f"record-launch: a workshop launch runs in a lineage home of "
-                f"{', '.join(sorted(WORKSHOP_HOME_PREPARERS))} (providers "
-                f"{', '.join(sorted(WORKSHOP_LINEAGE_BACKENDS))}); this launch names "
-                f"workshop_provider {named!r} on {_launch_backend or backend_token!r}")
-        # The provider the prompt's `<tool_surface>` was rendered for is THIS launch's: a
-        # prompt stating another transport's tools would describe a surface the leaf lacks.
-        if PROVIDER_BACKEND_TOKENS.get(named) != backend_token:
-            raise ValueError(
-                f"record-launch: the workshop request's workshop_provider {named!r} is not this "
-                f"launch's provider (backend {backend_token!r})")
+        lineage_backend = WORKSHOP_LINEAGE_BACKENDS.get(named if isinstance(named, str) else "")
         requested = request_payload.get("workshop_lineage_id")
         if not (isinstance(requested, str) and _AGENT_RUN_ID_RE.match(requested.strip())):
             raise ValueError(
                 "record-launch: a workshop launch request must name its lineage as a plain "
                 f"token in workshop_lineage_id (got {requested!r})")
         requested = requested.strip()
-        if workshop_lineage_id is None:
-            if requested != child_agent_run_id:
-                raise ValueError(
-                    f"record-launch: a cold workshop launch starts its own lineage, so "
-                    f"workshop_lineage_id must be the child's id {child_agent_run_id!r} (got "
-                    f"{requested!r}); a warm one passes --workshop-lineage-id")
-        else:
-            if (not isinstance(workshop_lineage_id, str)
-                    or not _AGENT_RUN_ID_RE.match(workshop_lineage_id.strip())):
-                raise ValueError(
-                    f"record-launch: workshop_lineage_id contains invalid characters (got "
-                    f"{workshop_lineage_id!r}); only alphanumerics, hyphens, and underscores "
-                    "are allowed")
-            workshop_lineage_id = workshop_lineage_id.strip()
-            if requested != workshop_lineage_id or requested == child_agent_run_id:
-                raise ValueError(
-                    f"record-launch: a warm workshop launch resumes lineage "
-                    f"{workshop_lineage_id!r}, so the request's workshop_lineage_id must name "
-                    f"it and the child must be a new run (got request {requested!r}, child "
-                    f"{child_agent_run_id!r})")
         workshop_isolation = WORKSHOP_HOME_PREPARERS[lineage_backend](
             repo_root, orchestration_id, requested, resume=True)
         if workshop_isolation is None:
@@ -14185,7 +12497,6 @@ def record_launch(
     # anything — and `write-step-result --backfill`, which existed to break the deadlock it
     # created, goes with it.
     if isinstance(step_raw, str) and step_raw.strip() and isinstance(node_key_raw, str) and node_key_raw.strip():
-        required = _required_child_agent_kind(step_raw)
         launch_ctx = dict(request_payload)
         check = pre_phase_launch(
             repo_root,
@@ -14193,7 +12504,6 @@ def record_launch(
             node_key=node_key_raw.strip(),
             step=step_raw.strip(),
             backend=backend_token,
-            require_child_agent=required,
             launch_request=launch_ctx,
         )
         if check.get("status") == "fail_closed":
@@ -14265,11 +12575,6 @@ def record_launch(
 
     prompt_text = _extract_launch_prompt_text(request_payload)
     reply_text = _extract_launch_reply_text(response_payload)
-    if not prompt_text.strip():
-        raise ValueError("launch prompt text must be non-empty")
-    if not reply_text.strip():
-        raise ValueError("launch reply text must be non-empty")
-    _validate_launch_prompt_text(request_payload, prompt_text)
 
     request_ref, response_ref = _launch_refs(orchestration_id, child_agent_run_id)
     prompt_ref, reply_ref = _launch_dialog_refs(orchestration_id, child_agent_run_id)
@@ -14301,8 +12606,6 @@ def record_launch(
         # Retained in terse output.
         "launch_prompt_text": prompt_text,
     }
-    if not (isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip()):
-        raise ValueError("record-launch requires non-empty node_key and step for sandbox-enforced launch")
     if isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip():
         # NO ACCESS POLICY, READ MANIFEST, CAPABILITY OR OUTPUT MANIFEST. Four documents used
         # to be written here, one per question about what the child was allowed to do: which
@@ -14317,14 +12620,14 @@ def record_launch(
         #
         # What still decides something is recorded below: the read-only sandbox profile (which
         # the kernel enforces through bwrap) and the launch request itself, whose
-        # `allowed_output_paths` is what `_validate_pass_output_refs_against_launch` and
-        # `determine_substep_status` read for a deterministic substep.
+        # `allowed_output_paths` is what `determine_substep_status` reads for a deterministic
+        # substep.
         # A workshop leaf writes nothing under the checkout either — the host writes every
         # artifact from its snapshot — so it declares no output path, as a pure leaf does.
         is_pure = _leaf_contract_is_host_rendered_request(request_payload)
         # The toolchain of the target the request's pipeline is built for (issue #284; read
         # off the IR's `impl_defaults` until R4-a PR-2), so the canonical-placement helper can
-        # gate cross-phase auto-inject on the build system (the documented Make-only
+        # gate the cross-phase placement on the build system (the documented Make-only
         # exception). A request whose `pipeline_ref` carries no target is refused here
         # (`TargetProfileError`).
         _pipe_ref_for_tc = str(request_payload.get("pipeline_ref") or "").strip()
@@ -14340,8 +12643,8 @@ def record_launch(
         else:
             # A DETERMINISTIC substep. The list is not an authority — nothing enforces it
             # against the conductor's own process — it is the record of what this substep is
-            # contracted to produce, read back by `determine_substep_status` and
-            # `_validate_pass_output_refs_against_launch`.
+            # contracted to produce; `determine_substep_status` reads the conductor's own copy.
+            # Only the cross-phase log below is derived from it (from `source_id`).
             allowed_output_paths = _allowed_output_paths_for_launch(
                 request_payload=request_payload,
             )
@@ -14422,7 +12725,7 @@ def record_launch(
                     "it claims provenance for."
                 )
         canonical_audit_logs = _canonical_command_log_paths_for_request(
-            request_payload, allowed_output_paths, repo_root=repo_root
+            request_payload, allowed_output_paths
         )
         # Validate cross-phase canonical placements:
         #   - Execute → source/<source_id>/ for run_quality_checks
@@ -14529,8 +12832,8 @@ def record_launch(
             # `_launch_setting_surface` already returns `{}` for exactly this launch; this is
             # the sandbox half of the same statement.
             #
-            # `record_agent_run`'s terminal check requires `sandbox_runtime == "bwrap"` for a
-            # non-HTTP row, so it takes this as its second exemption. Stamped on the RESPONSE,
+            # `record_agent_run` stamps `sandbox_runtime: "bwrap"` on a non-HTTP row unless this
+            # marks it in-process, so it takes this as its second exemption. Stamped on the RESPONSE,
             # like the HTTP one and for the same reason: the response is host-authored and
             # outside every read-write bind of a leaf's sandbox, so a leaf cannot claim it.
             request_payload.setdefault("leaf_transport", "in_process")
@@ -14540,36 +12843,9 @@ def record_launch(
         else:
             try:
                 _resp_backend = response_payload.get("backend")
-                # THE SAME resolver the profile builder uses on the next lines, not
-                # a second reading of the raw field: `build_*_bwrap_profile` resolves
-                # the family with `_resolve_backend_type(backend_type, backend_command)`,
-                # which falls back to the COMMAND when the response omits `backend`.
-                # Reading the raw field here meant such a payload built a claude-shaped
-                # profile — `~/.claude` rw-bound, no CLAUDE_CONFIG_DIR — with no
-                # private home, i.e. a leaf on the operator's home, while the record
-                # described one it never read. Keying both off one function is what
-                # makes "the profile is claude-shaped" and "the claude isolation was
-                # prepared" the same question.
-                _backend_family = _resolve_backend_type(
-                    _resp_backend if isinstance(_resp_backend, str) else "",
-                    backend_command)
-                # Every CLI leaf is a WORKSHOP leaf (issue #534; the pure leaf, whose read-only
-                # profile and codex thread lineage this branch also built, went in PR-J4-b). A
-                # request that is not one cannot have reached here — the renderer refuses it —
-                # and is refused again rather than given a profile.
-                if not is_workshop:
-                    raise ValueError(
-                        "a CLI launch is a workshop launch; this request is not one "
-                        f"(leaf_mode={request_payload.get('leaf_mode')!r})")
-                # The family the profile is built for is the one whose home was prepared
-                # above: the same resolver answers both, or the record would describe one
-                # CLI's home under another's profile.
-                if _backend_family != backend_token or lineage_backend != backend_token:
-                    raise ValueError(
-                        f"a workshop launch's profile is its backend's ({backend_token!r}); "
-                        f"the command resolves to {_backend_family!r} and the lineage home "
-                        f"is {lineage_backend!r}")
-                # Its lineage home was found above, cold and warm alike, and stamped.
+                # Every CLI leaf is a WORKSHOP leaf (issue #534; the pure leaf went in
+                # PR-J4-b): the renderer refuses any other LLM request. Its lineage home was
+                # found above, cold and warm alike, and stamped.
                 assert workshop_isolation is not None
                 profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
                 network = _launch_network_block(repo_root, netns_socket_dir, backend_token,
@@ -14604,8 +12880,7 @@ def record_launch(
                 response_payload.setdefault("sandbox_enforced", True)
                 response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
                 response_payload.setdefault("sandbox_command", rendered)
-                # The leaf ran in a network namespace (issue #534 step 4); `record_agent_run`
-                # requires this value on every row it requires `sandbox_runtime: bwrap` on.
+                # The leaf ran in a network namespace (issue #534 step 4).
                 response_payload["sandbox_network"] = SANDBOX_NETWORK_NAMESPACE
             except Exception as exc:
                 _write_sandbox_enforcement_violation(
@@ -14630,7 +12905,7 @@ def record_launch(
     _write_text(reply_path, reply_text)
     # THE BOOKKEEPING THAT NAMES THIS LAUNCH comes after the launch record and after every
     # check of the launch above (issue #481). The four `launches/` files are the launch record;
-    # the session-index row, the `pre_agent_launch` hook entry and the graph edge each name it,
+    # the session-index row and the graph edge each name it,
     # so by position a launch refused by any of those checks leaves none of them, and none of
     # them names a launch with no `request.json`. Before the move a late refusal left an edge
     # with no request file, which `_prune_orphan_agent_graph_edges` keeps and the completion
@@ -14648,13 +12923,6 @@ def record_launch(
         status="running",
         workshop_lineage_id=(workshop_isolation["lineage_id"]
                              if workshop_isolation is not None else None),
-    )
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_agent_launch",
-        status="allow",
-        detail={"child_agent_run_id": child_agent_run_id},
     )
     graph_path = root / "agent_graph.json"
     graph = _load_graph(graph_path)
@@ -14748,61 +13016,16 @@ def _agent_runs_writer_active(runs_path: Path) -> bool:
 
 
 def _read_existing_run_ids(path: Path, *, caller_holds_lock: bool = False) -> set[str]:
-    """Return the set of agent_run_ids recorded in agent_runs.jsonl.
+    """Return the set of agent_run_ids recorded in agent_runs.jsonl (`path`).
 
-    Adv-21: writers append without holding a Python-level lock per write
-    line, so a reader that lands mid-write can observe a truncated trailing
-    line. Tolerate exactly one JSONDecodeError on the LAST non-empty line
-    when it is plausibly an in-flight append.
-    Adv-40: distinguish in-flight from durable corruption by probing the
-    record_agent_run fcntl lock. If no writer is currently holding the
-    lock, a malformed trailing line is durable corruption and must surface
-    as a controlled RuntimeError rather than be silently swallowed (which
-    could let a duplicate terminal entry slip past `record_agent_run`'s
-    duplicate-id check).
-    NEW-H1: when the caller already holds the fcntl lock (the locked
-    re-check inside record_agent_run), the writer-active probe would
-    self-contend and falsely return True — masking durable corruption.
-    `caller_holds_lock=True` skips the heuristic and treats every
-    malformed line as durable corruption, which is the correct behavior
-    when no other writer can be active by definition.
+    The one parser is `_load_run_records`, which this reads through: a truncated last line
+    is skipped only while a writer holds the record_agent_run fcntl lock (Adv-21 / Adv-40),
+    and any other malformed line raises `RuntimeError("...durable corruption...")`, which
+    is what keeps a duplicate terminal entry from slipping past `record_agent_run`'s
+    duplicate-id check. `caller_holds_lock=True` (the locked re-check inside
+    record_agent_run, NEW-H1) treats every malformed line as durable corruption.
     """
-    if not path.exists():
-        return set()
-    run_ids: set[str] = set()
-    non_empty_lines = [s for s in (raw.strip() for raw in path.read_text(encoding="utf-8").splitlines()) if s]
-    n_lines = len(non_empty_lines)
-    for idx, line in enumerate(non_empty_lines):
-        is_last = idx == n_lines - 1
-        # NEW-H1: when the caller holds the fcntl lock, no other writer can
-        # be active — a malformed line is unconditionally durable corruption.
-        in_flight = (
-            is_last
-            and not caller_holds_lock
-            and _agent_runs_writer_active(path)
-        )
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError as exc:
-            if in_flight:
-                continue
-            raise RuntimeError(
-                f"agent_runs.jsonl has malformed JSON at line {idx + 1}: {exc} "
-                f"(no active writer detected — durable corruption; quarantine "
-                f"the ledger and roll forward explicitly)"
-                if is_last else
-                f"agent_runs.jsonl has malformed non-trailing JSON at line {idx + 1}: {exc}"
-            ) from exc
-        if not isinstance(item, dict):
-            if in_flight:
-                continue
-            raise RuntimeError(
-                f"agent_runs.jsonl line {idx + 1} is not a JSON object: {item!r}"
-            )
-        run_id = item.get("agent_run_id")
-        if isinstance(run_id, str) and run_id.strip():
-            run_ids.add(run_id.strip())
-    return run_ids
+    return set(_load_run_records(path.parent, caller_holds_lock=caller_holds_lock))
 
 
 def record_agent_run(
@@ -14842,15 +13065,9 @@ def record_agent_run(
             enforce_live_probe=False,
         )
 
-    agent_backend = payload.get("agent_backend")
-    if not isinstance(agent_backend, str) or not agent_backend.strip():
-        raise ValueError("agent_backend must be non-empty string")
-    backend_token = agent_backend.strip().lower()
-    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
-            f"got {agent_backend!r}"
-        )
+    # `agent_backend` is the conductor's `entry.backend_token`, authorized per launch by
+    # `record_launch`; it is normalized here, not re-checked.
+    backend_token = str(payload.get("agent_backend") or "").strip().lower()
     payload["agent_backend"] = backend_token
 
     existing = _read_existing_run_ids(runs_path)
@@ -14862,7 +13079,6 @@ def record_agent_run(
     payload["agent_role"] = role_token
     payload.setdefault("started_at", _utc_now_iso())
 
-    reply_budget_info: dict[str, Any] | None = None
     if role_token in {"step", "substep"}:
         payload.setdefault("context_isolated", True)
         request_ref, response_ref = _launch_refs(orchestration_id, agent_run_id)
@@ -14872,16 +13088,6 @@ def record_agent_run(
         payload.setdefault("launch_prompt_ref", prompt_ref)
         payload.setdefault("launch_reply_ref", reply_ref)
         _validate_step_or_substep_launch_refs(repo_root, payload)
-        # Budget the child's verbatim reply (telemetry by default; hard fail under
-        # SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Evaluated before the terminal append so a
-        # hard fail leaves no durable record — the orchestration re-launches terser.
-        reply_budget_info = _evaluate_reply_budget(
-            repo_root,
-            orchestration_id,
-            agent_run_id=agent_run_id,
-            reply_ref=str(payload["launch_reply_ref"]),
-        )
-
         # Auto-derive identity fields the orchestration agent need not re-supply.
         # `parent_agent_run_id` and `agent_model` are recorded into the launch
         # request by record-launch (parent unconditionally; agent_model required
@@ -14910,12 +13116,6 @@ def record_agent_run(
     if isinstance(status, str) and status.strip().lower() in TERMINAL_STATUSES:
         payload.setdefault("finished_at", _utc_now_iso())
 
-    # NEW-H2: sandbox checks moved into the locked region below so two
-    # concurrent finalizers cannot race on `_write_sandbox_enforcement_violation`
-    # writes, and so failures are recorded in agent_runs_invalid.jsonl
-    # alongside other terminal-validation failures rather than only as
-    # violation sidecars.
-
     dialogs_root = root / "agents" / agent_run_id / "dialogs"
     dialogs_root.mkdir(parents=True, exist_ok=True)
     result_ref, summary_ref = _agent_result_refs(orchestration_id, agent_run_id)
@@ -14941,42 +13141,15 @@ def record_agent_run(
                 f"duplicate agent_run_id: {agent_run_id} "
                 f"(race detected on locked re-check)"
             )
-        # L-NEW-1: capture sandbox-violation reason so the invalid-log entry
-        # records the specific failure (e.g. sandbox_runtime_not_bwrap)
-        # rather than the generic "terminal_payload_validation_error".
-        sandbox_fail_reason: str | None = None
         try:
-            # NEW-H2: sandbox checks run under the lock and route violations
-            # through the same invalid-entry log as _validate_terminal_run_payload.
             if role_token in {"step", "substep"}:
                 launch_response_path = repo_root / payload["launch_response_ref"]
                 launch_response_payload = _read_json(launch_response_path)
-                if not isinstance(launch_response_payload, dict):
-                    sandbox_fail_reason = "launch_response_not_object"
-                    raise ValueError("launch response must be json object")
-                # M-FOURTH-1: pre-set the reason so a ValueError raised by
-                # the helper carries the specific identity-failure tag into
-                # agent_runs_invalid.jsonl rather than the generic
-                # "terminal_payload_validation_error" bucket.
-                sandbox_fail_reason = "launch_response_session_id_invalid"
-                response_agent_session_id = _validate_response_agent_session_id(launch_response_payload)
-                # Helper accepted the response → reset to None so the next
-                # check's failure (if any) records its own specific reason.
-                sandbox_fail_reason = None
-                payload_agent_session_id = payload.get("agent_session_id")
-                if not isinstance(payload_agent_session_id, str) or not payload_agent_session_id.strip():
-                    sandbox_fail_reason = "agent_session_id_empty"
-                    raise ValueError("agent_session_id must be non-empty string")
-                if payload_agent_session_id.strip() != response_agent_session_id:
-                    sandbox_fail_reason = "agent_session_id_mismatch"
-                    raise ValueError(
-                        "agent_session_id must match child agent identifier in launch response"
-                    )
                 sandbox_ref = launch_response_payload.get("sandbox_profile_ref")
                 # An HTTP leaf (issue #28) is answered from the conductor's own process: there
                 # is no child process, so there is nothing for bwrap to confine and
                 # `record_launch` records `leaf_transport: "http"` with no profile. The
-                # sandbox block below asserts a profile that, for such a launch, correctly does
+                # sandbox stamps below name a profile that, for such a launch, correctly does
                 # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored,
                 # and outside every read-write bind of a leaf's sandbox — and only when it names a genuine HTTP
                 # provider token, so a leaf cannot claim it. Everything else about the terminal
@@ -15020,10 +13193,9 @@ def record_agent_run(
                         _launch_request_payload = _read_json(
                             repo_root / _launch_request_ref.strip())
                     except (OSError, ValueError, json.JSONDecodeError):
-                        # An unreadable request leaves the exemption UNCLAIMED, which falls
-                        # through to the `sandbox_runtime == "bwrap"` requirement below. That
-                        # is the fail-closed direction: a row that cannot prove it was a
-                        # deterministic launch is treated as one that needed a sandbox.
+                        # An unreadable request leaves the exemption UNCLAIMED: a row that
+                        # cannot prove it was a deterministic launch is recorded as a sandboxed
+                        # one.
                         _launch_request_payload = None
                 _in_process_leaf = (
                     str(launch_response_payload.get("leaf_transport") or "").strip().lower()
@@ -15035,65 +13207,10 @@ def record_agent_run(
                     payload.setdefault("sandbox_enforced", False)
                     payload.setdefault(
                         "leaf_transport", "http" if _http_leaf else "in_process")
-                elif launch_response_payload.get("sandbox_runtime") != "bwrap":
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_runtime_not_bwrap",
-                        detail={"launch_response_ref": payload["launch_response_ref"]},
-                    )
-                    sandbox_fail_reason = "sandbox_runtime_not_bwrap"
-                    raise ValueError("launch response must record sandbox_runtime=bwrap")
-                elif launch_response_payload.get("sandbox_enforced") is not True:
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_not_enforced",
-                        detail={"launch_response_ref": payload["launch_response_ref"]},
-                    )
-                    sandbox_fail_reason = "sandbox_not_enforced"
-                    raise ValueError("launch response must record sandbox_enforced=true")
-                elif (launch_response_payload.get("sandbox_network")
-                      != SANDBOX_NETWORK_NAMESPACE):
-                    # Every CLI leaf runs in a network namespace (issue #534 step 4); a launch
-                    # recorded before that, or without it, is not one.
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_network_missing",
-                        detail={"launch_response_ref": payload["launch_response_ref"],
-                                "sandbox_network": launch_response_payload.get(
-                                    "sandbox_network")},
-                    )
-                    sandbox_fail_reason = "sandbox_network_missing"
-                    raise ValueError(
-                        f"launch response must record sandbox_network="
-                        f"{SANDBOX_NETWORK_NAMESPACE!r} (got "
-                        f"{launch_response_payload.get('sandbox_network')!r})")
-                elif not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_profile_missing",
-                        detail={"launch_response_ref": payload["launch_response_ref"]},
-                    )
-                    sandbox_fail_reason = "sandbox_profile_missing"
-                    raise ValueError("launch response must include sandbox_profile_ref")
-                elif not (repo_root / str(sandbox_ref).strip()).exists():
-                    _write_sandbox_enforcement_violation(
-                        repo_root,
-                        orchestration_id,
-                        agent_run_id=agent_run_id,
-                        reason="sandbox_profile_not_found",
-                        detail={"sandbox_profile_ref": sandbox_ref},
-                    )
-                    sandbox_fail_reason = "sandbox_profile_not_found"
-                    raise ValueError(f"sandbox_profile_ref target not found: {sandbox_ref}")
                 else:
+                    # `record_launch` stamps bwrap, enforcement, the network namespace and the
+                    # profile on every CLI launch or fails closed, and `spawn_leaf` refuses to
+                    # launch without the profile; the response is host-written.
                     payload.setdefault("sandbox_runtime", "bwrap")
                     payload.setdefault("sandbox_enforced", True)
                     payload.setdefault("sandbox_profile_ref", str(sandbox_ref).strip())
@@ -15101,8 +13218,7 @@ def record_agent_run(
                 repo_root, orchestration_id, payload, caller_holds_lock=True,
             )
         except ValueError as exc:
-            # Unauthorized write or sandbox violation detected during terminal
-            # validation.  Persist a fail entry to a SEPARATE log so audit
+            # Terminal validation refused the payload. Persist a fail entry to a SEPARATE log so audit
             # tools can see that this agent_run_id reached record-agent-run
             # with an invalid payload — without polluting agent_runs.jsonl
             # (which the duplicate-detection check would otherwise refuse on
@@ -15112,11 +13228,7 @@ def record_agent_run(
             fail_entry: dict[str, Any] = dict(payload)
             fail_entry["status"] = "fail"
             fail_entry["finished_at"] = _utc_now_iso()
-            # L-NEW-1: prefer the specific sandbox/identity reason; fall
-            # back to the generic terminal-validation tag for everything
-            # else (output manifest violations, etc., raised by
-            # _validate_terminal_run_payload itself).
-            fail_entry["fail_reason"] = sandbox_fail_reason or "terminal_payload_validation_error"
+            fail_entry["fail_reason"] = "terminal_payload_validation_error"
             fail_entry["fail_message"] = str(exc)
             with invalid_path.open("a", encoding="utf-8") as _h:
                 _h.write(json.dumps(fail_entry, ensure_ascii=False) + "\n")
@@ -15193,11 +13305,6 @@ def record_agent_run(
                 repo_root, orchestration_id, agent_run_id=agent_run_id
             )
 
-    # Surface an over-budget reply in the CLI result (soft mode) without persisting it
-    # into the durable agent_runs.jsonl record. _TERSE_ALWAYS_KEEP retains it through the
-    # terse projection so the orchestration always sees the warning.
-    if reply_budget_info is not None:
-        return {**payload, "reply_over_budget": reply_budget_info}
     return payload
 
 
@@ -15266,8 +13373,6 @@ def record_reply_text(
     agent_run_id: str,
     reply_text: str,
 ) -> dict[str, Any]:
-    if not isinstance(reply_text, str) or not reply_text.strip():
-        raise ValueError("record-reply requires non-empty reply_text")
     _, reply_ref = _launch_dialog_refs(orchestration_id, agent_run_id)
     reply_path = repo_root / reply_ref
     _write_text(reply_path, reply_text)
@@ -15291,11 +13396,10 @@ def finalize_child(
 
     Performs, in the mandated order and in a single process,
     `deactivate_child_agent` -> `record_reply_text` -> `record_agent_run`, reusing those
-    functions unchanged so every guard is preserved (the active_child ordering, and the
-    reply budget guard which reads the reply written by step 2).
+    functions unchanged so every guard is preserved (the active_child ordering).
 
-    `agent_run_payload` is the `record-agent-run` payload; its `agent_run_id` must match
-    the `--agent-run-id` argument (a mismatch is a caller error).
+    `agent_run_payload` is the `record-agent-run` payload; the conductor writes its
+    `agent_run_id` and `--agent-run-id` from one value.
     """
     arid = agent_run_id.strip() if isinstance(agent_run_id, str) else ""
     if not arid:
@@ -15306,47 +13410,6 @@ def finalize_child(
     if not isinstance(reply_text, str) or not reply_text.strip():
         raise ValueError(
             "finalize-child requires a non-empty reply (--reply-text or --reply-from-stdin)")
-    if not isinstance(agent_run_payload, dict):
-        raise ValueError(
-            "finalize-child requires the agent-run payload "
-            "(--agent-run-json / --agent-run-json-file) to be a JSON object")
-    payload_arid = agent_run_payload.get("agent_run_id")
-    if not (isinstance(payload_arid, str) and payload_arid.strip() == arid):
-        raise ValueError(
-            f"finalize-child: agent-run payload agent_run_id ({payload_arid!r}) must equal "
-            f"--agent-run-id ({arid!r}). When the payload came from --agent-run-json-file, "
-            f"the offending file is launches/{arid}.agent_run.input.json"
-        )
-    # Hard reply-budget gate runs BEFORE any state-consuming side effect. Without this,
-    # record_agent_run's hard check (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1) would fire only after
-    # deactivate-child has already consumed the active marker, leaving the run un-retriable
-    # via finalize-child. The soft path
-    # (telemetry) is still handled by record_agent_run below, which reads the written reply.
-    # Measure the EXACT persisted form: record_reply_text -> _write_text appends a trailing
-    # newline when absent, so an exact-boundary reply (== budget, no newline) becomes
-    # budget+1 on disk; counting the persisted length keeps this precheck consistent with the
-    # downstream record_agent_run check and avoids a boundary leak past the side effects.
-    persisted_reply = reply_text if reply_text.endswith("\n") else reply_text + "\n"
-    if (
-        len(persisted_reply) > REPLY_BUDGET_CHARS
-        and os.environ.get("SPEC2SCIENCE_ENFORCE_REPLY_BUDGET") == "1"
-    ):
-        # Audit the reject before raising — mirrors _evaluate_reply_budget's hook entry on
-        # the direct record-agent-run path, so finalize-child hard failures stay visible in
-        # hooks/workflow_hooks.jsonl (operators diagnose budget failures from that log).
-        _append_workflow_hook_log(
-            repo_root,
-            orchestration_id,
-            hook_name="reply_over_budget",
-            status="reject",
-            detail={"agent_run_id": arid, "chars": len(persisted_reply), "budget": REPLY_BUDGET_CHARS},
-        )
-        raise ValueError(
-            f"finalize-child: child reply is {len(persisted_reply)} chars, over the {REPLY_BUDGET_CHARS}-char "
-            f"budget (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a "
-            f"status line, output_refs, and a few lines of rationale; full detail belongs in the artifacts."
-        )
-
     # The launch must still be open: `record_launch` writes this marker last and the first
     # finalization consumes it. Without the check a second finalization of the same arid, or
     # one for an arid never launched, would overwrite `launches/<arid>.reply.txt` before
@@ -15393,8 +13456,6 @@ def finalize_child(
         "reply_ref": reply.get("reply_ref"),
         "finalized_at": _utc_now_iso(),
     }
-    if isinstance(run_record, dict) and run_record.get("reply_over_budget"):
-        result["reply_over_budget"] = run_record["reply_over_budget"]
     return result
 
 
@@ -15416,9 +13477,6 @@ def write_step_result(
     step_token = step.strip().lower()
     root = _orchestration_root(repo_root, orchestration_id)
     result_path = root / "steps" / node_safe / step_token / agent_run_id / "step_result.json"
-    # Read once: nothing below appends to agent_runs.jsonl, and the executor-role guard
-    # needs the same snapshot the payload validation does.
-    run_records = _load_run_records(root)
 
     _phase_state_allows_write_step_result(
         repo_root,
@@ -15426,42 +13484,6 @@ def write_step_result(
         node_key=node_key,
         step=step,
     )
-    # Fail-fast executor-role guard. For substep-aware phases the executor must be
-    # the orchestration agent (the substeps' parent), and for the no-substep Build
-    # phase it must be the step agent. Without this, a wrong --agent-run-id (e.g. a
-    # verify-substep arid) is only caught downstream at the Validate pre_judge gate
-    # (validate_pipeline_semantics.py), by which point the phase is locked at
-    # step_result_written with no public reset. Raising here — before _write_json and
-    # the phase transition below — leaves the phase at child_finished so the agent can
-    # simply re-run with the correct arid.
-    # Only enforce when the executor's role is resolvable from agent_runs.jsonl. An
-    # absent record (unresolved role) is left to the downstream validator's
-    # "parent directory must match existing executor agent_run_id" check; in a real
-    # run the executor is always recorded (orchestration row at init, step agent via
-    # record-agent-run), so the recurrence case — a recorded wrong-role arid — is
-    # fully covered here.
-    executor_role = str(run_records.get(agent_run_id.strip(), {}).get("agent_role") or "").strip().lower()
-    if executor_role:
-        if step_token in SUBSTEP_AWARE_STEPS:
-            if executor_role != "orchestration":
-                raise RuntimeError(
-                    f"write_step_result: step {step_token!r} is substep-aware; --agent-run-id must be "
-                    f"the orchestration agent_run_id (role=orchestration), got role={executor_role!r} "
-                    f"for {agent_run_id}. The phase stays child_finished — re-run write-step-result with the "
-                    f"orchestration arid as both --agent-run-id and executor_agent_run_id."
-                )
-        elif executor_role != "step":
-            raise RuntimeError(
-                f"write_step_result: step {step_token!r} is a no-substep phase; --agent-run-id must be the "
-                f"step agent_run_id (role=step), got role={executor_role!r} for {agent_run_id}."
-            )
-    explicit_executor = payload.get("executor_agent_run_id")
-    if isinstance(explicit_executor, str) and explicit_executor.strip() and explicit_executor.strip() != agent_run_id.strip():
-        raise RuntimeError(
-            f"write_step_result: executor_agent_run_id ({explicit_executor.strip()}) must equal "
-            f"--agent-run-id ({agent_run_id.strip()})."
-        )
-
     result = dict(payload)
     result.setdefault("executor_agent_run_id", agent_run_id)
     result.setdefault("required_outputs", [])
@@ -15519,36 +13541,16 @@ def write_step_result(
             seq += 1
         result_path.rename(archived_prior_path)
 
-    committed_new = False
     try:
         _write_json(result_path, result)
-        committed_new = True
-        post_phase_complete(
-            repo_root,
-            orchestration_id,
-            node_key=node_key,
-            step=step,
-            agent_run_id=agent_run_id,
-            payload=result,
-        )
     except BaseException:
         # Roll the overwrite back whole, so a retry sees the exact pre-write state.
         # `_write_json` must stay inside this guard — after the rename the prior attempt
         # exists ONLY under its archive name, so letting a failed write escape would
         # leave result_path absent and the next attempt blind to the prior substep ids.
-        # BaseException, not RuntimeError: a KeyboardInterrupt or an OSError mid-write
-        # must restore just as a rejected hook does.
-        #
-        # Unlink ONLY what this call committed. `_write_json` is atomic (temp file +
-        # os.replace), so when it is what raised, result_path still holds the prior
-        # content — unlinking unconditionally would destroy a file the failed write had
-        # preserved, and in the no-archive branch there would be nothing to restore it
-        # from. Nothing has been tombstoned yet (that happens only after the hook passes).
-        if committed_new:
-            try:
-                result_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        # BaseException: a KeyboardInterrupt or an OSError mid-write must restore too.
+        # `_write_json` is atomic (temp file + os.replace), so when it raised nothing new
+        # was committed at result_path; only the archive is moved back.
         if archived_prior_path is not None:
             try:
                 archived_prior_path.rename(result_path)
@@ -15933,27 +13935,18 @@ def update_orchestration_status(
             and status == current_status_pre
         )
         # Codex round 15 F1: status-specific preconditions (pass needs
-        # preflight launchability + completion validation; fail_closed needs
-        # reason_code) MUST run only for FORWARD transitions. A same-terminal
+        # preflight launchability + completion validation) MUST run only for FORWARD
+        # transitions. A same-terminal
         # replay reflects a defensive retry after the first call already
         # committed — re-running pass validation can fail on expired preflight
         # or drifted workspace even though the orchestration is already done.
-        if not is_same_terminal_replay:
-            if status == "pass":
-                _require_preflight_launchable(
-                    repo_root,
-                    orchestration_id,
-                    enforce_live_probe=False,
-                )
-                _validate_orchestration_completion_for_pass(repo_root, orchestration_id)
-            if status == "fail_closed":
-                if not isinstance(reason_code, str) or not reason_code.strip():
-                    raise ValueError("set-status fail_closed requires non-empty reason_code")
-                if reason_code.strip() not in FAIL_CLOSED_REASON_CODES:
-                    raise ValueError(
-                        "set-status fail_closed reason_code must be one of "
-                        f"{sorted(FAIL_CLOSED_REASON_CODES)}"
-                    )
+        if not is_same_terminal_replay and status == "pass":
+            _require_preflight_launchable(
+                repo_root,
+                orchestration_id,
+                enforce_live_probe=False,
+            )
+            _validate_orchestration_completion_for_pass(repo_root, orchestration_id)
         current_status = meta.get("status")
         orch_arid_obj = meta.get("orchestration_agent_run_id")
         orch_arid = (
@@ -16304,23 +14297,7 @@ def reserve_phase_root(
     step_key = step.strip().lower()
     _required_child_agent_kind(step_key)
     target_token = target_id.strip() if isinstance(target_id, str) else ""
-    # Codex round 32 F2: validate `reserved_id` against `_SLUG_DATE_SEQ3_PATTERN`
-    # at the canonical reservation entrypoint. Round-31 tightened the
-    # freshness reader to this same grammar but left the writer side
-    # unenforced — a workflow could reserve a non-canonical id, write
-    # valid artifacts under it, and then have downstream
-    # `dependency_readiness` silently ignore them. Enforcing the same
-    # grammar here means the trust boundary is symmetric: only IDs that
-    # readers will honor can be issued in the first place.
     reserved_id_clean = reserved_id.strip()
-    if not _SLUG_DATE_SEQ3_PATTERN.match(reserved_id_clean):
-        raise ValueError(
-            f"reserve-phase-root: reserved_id={reserved_id_clean!r} must match "
-            f"<slug>_<YYYYMMDD>_<seq3> (lowercase hyphen-separated slug + "
-            "8-digit date + 3-digit sequence). The freshness selector "
-            "rejects non-canonical IDs, so an artifact written under this "
-            "id would be invisible to downstream dependency_readiness."
-        )
     node_safe = _node_key_to_safe(node_key.strip())
     out = (
         _orchestration_root(repo_root, orchestration_id)
@@ -16368,87 +14345,6 @@ def _json_file_arg(raw: str) -> dict[str, Any]:
     return value
 
 
-def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
-    """Validate the required fields of record-launch --response-json at CLI dispatch time."""
-    label = "record-launch --response-json"
-    for key in ("agent_run_id", "agent_session_id", "started_at", "backend"):
-        value = payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"{label}: required field {key!r} is missing or empty. "
-                f"For Claude Code use: {{\"agent_run_id\": \"<uuid>\", "
-                f"\"agent_session_id\": \"<same uuid>\", "
-                f"\"started_at\": \"<ISO8601>\", \"backend\": \"claude\"}}"
-            )
-    backend = payload["backend"].strip()
-    if backend not in SUPPORTED_PROVIDER_TOKENS:
-        raise ValueError(
-            f"{label}: 'backend' must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
-            f"got {backend!r}"
-        )
-
-
-def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None = None) -> None:
-    """Validate the required fields of the record-agent-run payload at CLI dispatch time.
-
-    `label` names the argument the operator actually passed. `finalize-child` runs this
-    same validator before its own checks, so the default would send an operator to inspect
-    a subcommand they did not run and a flag the conductor never passes (it always uses
-    `--agent-run-json-file`).
-    """
-    label = label or "record-agent-run --agent-run-json"
-    for key in ("agent_run_id", "agent_backend", "status"):
-        value = payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{label}: required field {key!r} is missing or empty")
-    role_raw = payload.get("agent_role") or payload.get("agent_type") or payload.get("role")
-    if not isinstance(role_raw, str) or not role_raw.strip():
-        raise ValueError(f"{label}: required field 'agent_role' is missing or empty")
-    role_token = _normalized_agent_role(role_raw)
-    # Reject an out-of-vocabulary role at CLI dispatch too, not only inside
-    # `record_agent_run`. Both read the same three spellings of the field
-    # (`agent_role` / `agent_type` / `role`), so closing only one of them would close a
-    # spelling rather than the family.
-    if role_token not in AGENT_RUN_ROLES:
-        raise ValueError(
-            f"{label}: field 'agent_role' must be one of {sorted(AGENT_RUN_ROLES)}; "
-            f"got {role_token!r}"
-        )
-    if role_token in {"step", "substep"}:
-        for key in ("node_key", "agent_session_id"):
-            value = payload.get(key)
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(
-                    f"{label}: field {key!r} is required for agent_role={role_token!r}"
-                )
-
-
-def _validate_write_step_result_fields(payload: dict[str, Any], step: str) -> None:
-    """Validate the required fields of write-step-result --result-json at CLI dispatch time."""
-    label = "write-step-result --result-json"
-    status_raw = payload.get("status")
-    if not isinstance(status_raw, str) or not status_raw.strip():
-        raise ValueError(f"{label}: required field 'status' is missing or empty")
-    status_token = status_raw.strip().lower()
-    substep_ids = payload.get("substep_agent_run_ids")
-    if not isinstance(substep_ids, list):
-        type_name = type(substep_ids).__name__ if substep_ids is not None else "missing"
-        raise ValueError(
-            f"{label}: required field 'substep_agent_run_ids' must be a list (got {type_name}). "
-            "Use an empty list [] for step-only phases (build)."
-        )
-    step_token = step.strip().lower()
-    if step_token in STEP_REQUIRED_VALIDATION_STAGES and status_token in TERMINAL_STATUSES:
-        allowed = STEP_REQUIRED_VALIDATION_STAGES[step_token]
-        validation_stage = payload.get("validation_stage")
-        if not isinstance(validation_stage, str) or validation_stage.strip() not in allowed:
-            raise ValueError(
-                f"{label}: step={step_token!r} with terminal status={status_token!r} requires "
-                f"'validation_stage' to be one of {sorted(allowed)}; "
-                f"got {validation_stage!r}"
-            )
-
-
 # Default (terse) result projections for the high-frequency bookkeeping
 # subcommands. Each maps a subcommand to the result fields the conductor
 # parses downstream. Anything not listed is dropped from the default stdout (the
@@ -16491,7 +14387,7 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
 # Fields preserved in a terse result whenever present and non-empty, even if not
 # in the per-command list above, so a terse success can never silently hide a
 # soft-failure signal carried in the payload.
-_TERSE_ALWAYS_KEEP: tuple[str, ...] = ("violations", "error", "errors", "warning", "warnings", "reply_over_budget")
+_TERSE_ALWAYS_KEEP: tuple[str, ...] = ("violations", "error", "errors", "warning", "warnings")
 
 
 def _project_terse_result(command: str, result: Any) -> Any:
@@ -16631,23 +14527,19 @@ def main(argv: list[str] | None = None) -> int:
         "skill_name / skill_ref / skill_must_read_refs are NOT required and must be empty: no leaf "
         "reads a SKILL (issue #171). "
         "For a DETERMINISTIC step/substep launch, one of allowed_output_paths|required_outputs|output_refs "
-        "must be provided as a file-path list; the runtime validates each path against the phase contract's "
-        "outputs. (It also validated them against the capability's write_roots until issue #171 PR-2, which "
-        "deleted the capability document.) A PURE launch must leave allowed_output_paths empty -- the host "
+        "lists the files it produces; the runtime matches each path against the phase contract's outputs "
+        "for the reserved tune and promote flows only (issue #643). A PURE launch must leave allowed_output_paths empty -- the host "
         "writes every artifact after the child window closes. allowed_file_tool_paths is accepted and IGNORED: "
         "it named a leaf's Edit/Write grant, and no leaf holds either tool. "
         "ir_id/pipeline_id format: <slug>_<YYYYMMDD>_<seq3> where slug uses hyphens only "
-        "(e.g. 'flux-rsn-p0_20260425_001'; underscores in slug are invalid). "
+        "(e.g. 'flux-rsn-p0_20260425_001'); an id of another form is never selected by the readers. "
         "Execute step extra-required fields: run_id, "
         "source_id (the source whose <source_id>/src/ run_quality_checks uses; record_launch verifies "
         "verification_status=pass), and source_binary_id (the binary_id whose binary execute uses; "
         "record_launch reads <pipeline_ref>/binary/<source_binary_id>/binary_meta.json and verifies "
         "source_source_id == request.source_id to prevent mixed-build forge). "
-        "Cross-phase command log auto-inject (`<source_id>/src/command_log.jsonl`) only fires when "
-        "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds). "
-        "Generate substep extra-required: source_id matches the listed paths' single <source_id>. "
-        "Build step listed paths must use a single <binary_id>; cross-phase Make builds also accept "
-        "source_id-derived `<source_id>/src/command_log.jsonl` placement."
+        "The cross-phase command log placement (`<source_id>/src/command_log.jsonl`) exists only when "
+        "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds)."
     )
     _RECORD_LAUNCH_RESPONSE_HELP = (
         "JSON object with child agent response. For Claude Code backend use: "
@@ -16732,10 +14624,7 @@ def main(argv: list[str] | None = None) -> int:
         "record-agent-run",
         description=(
             "Append one agent run record to agent_runs.jsonl. "
-            "For step/substep roles also writes agent.result.json and agent.summary.txt, "
-            "and validates that output_refs lie within the phase contract outputs "
-            "(they were checked against the capability write_roots too until issue #171 "
-            "PR-2, which deleted the capability document)."
+            "For step/substep roles also writes agent.result.json and agent.summary.txt."
         ),
     )
     run_parser.add_argument("--repo-root", required=True)
@@ -16745,8 +14634,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "JSON object for the agent run record. "
             "Always required: agent_run_id (UUID), agent_role ('orchestration'|'step'|'substep'), "
-            "agent_backend ('claude'|'codex'), status ('running'|'pass'|'fail'|...), "
-            "started_at (ISO8601). "
+            "status ('running'|'pass'|'fail'|...), started_at (ISO8601). "
+            "agent_backend names the provider ('claude'|'codex'|an HTTP provider token). "
             "Required for step/substep: agent_session_id (for Claude Code = agent_run_id), "
             "context_id (unique UUID per run), context_isolated (true), node_key "
             "(<spec_kind>/<spec_id>@<spec_version>). "
@@ -16761,8 +14650,8 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "One-call child finalization: deactivate-child -> record-reply -> "
             "record-agent-run, in that order, reusing each guard. --agent-run-json is the "
-            "record-agent-run payload (its agent_run_id must equal --agent-run-id); "
-            "--reply-text is the child's verbatim final message (budget-checked)."
+            "record-agent-run payload (its agent_run_id is --agent-run-id); "
+            "--reply-text is the child's verbatim final message."
         ),
     )
     finalize_parser.add_argument("--repo-root", required=True)
@@ -16854,11 +14743,6 @@ def main(argv: list[str] | None = None) -> int:
     launch_check_parser.add_argument("--backend", default="claude",
                                      choices=sorted(SUPPORTED_PROVIDER_TOKENS))
     launch_check_parser.add_argument(
-        "--require-child-agent", required=True, choices=("step", "substep"),
-        help="Expected child agent kind. Compile/Generate/Validate require 'substep'; "
-             "Build requires 'step'.",
-    )
-    launch_check_parser.add_argument(
         "--launch-request-json",
         default=None,
         type=_json_arg,
@@ -16891,7 +14775,8 @@ def main(argv: list[str] | None = None) -> int:
             "Format: <slug>_<YYYYMMDD>_<seq3> where slug is hyphen-separated lowercase alphanumeric "
             "(regex: ^[a-z0-9]+(?:-[a-z0-9]+)*_[0-9]{8}_[0-9]{3}$). "
             "Example: 'flux-rsn-p0_20260425_001'. "
-            "Underscores inside the slug are INVALID (use hyphens instead)."
+            "Nothing refuses another form, but no reader selects it (an underscore inside the "
+            "slug makes it non-canonical; use hyphens)."
         ),
     )
     reserve_root_parser.add_argument("--reserved-by-agent-run-id", required=True,
@@ -17129,7 +15014,6 @@ def main(argv: list[str] | None = None) -> int:
             if getattr(args, "child_env_from_stdin", False):
                 # The conductor's `_child_env`, serialized by the conductor.
                 child_env_payload = json.loads(sys.stdin.read())
-            _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -17147,7 +15031,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     elif args.command == "record-agent-run":
         try:
-            _validate_record_agent_run_fields(args.agent_run_json)
             result = record_agent_run(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -17164,15 +15047,7 @@ def main(argv: list[str] | None = None) -> int:
             reply_text = sys.stdin.read()
         else:
             reply_text = args.reply_text
-        if not isinstance(reply_text, str) or not reply_text.strip():
-            print("finalize-child requires --reply-text or --reply-from-stdin", file=sys.stderr)
-            return 1
         try:
-            _validate_record_agent_run_fields(
-                agent_run_payload,
-                label=("finalize-child --agent-run-json-file"
-                       if args.agent_run_json is None else "finalize-child --agent-run-json"),
-            )
             result = finalize_child(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -17185,7 +15060,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     elif args.command == "write-step-result":
         try:
-            _validate_write_step_result_fields(args.result_json, args.step)
             result = write_step_result(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
@@ -17210,16 +15084,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "record-reply":
         if args.reply_from_stdin:
             reply_text = sys.stdin.read()
-            if not isinstance(reply_text, str):
-                reply_text = ""
         else:
             reply_text = args.reply_text
-        if not isinstance(reply_text, str):
-            print("record-reply requires --reply-text or --reply-from-stdin", file=sys.stderr)
-            return 1
-        if not reply_text.strip():
-            print("record-reply requires non-empty reply_text", file=sys.stderr)
-            return 1
         try:
             result = record_reply_text(
                 repo_root=repo_root,
@@ -17333,7 +15199,6 @@ def main(argv: list[str] | None = None) -> int:
                 node_key=args.node_key,
                 step=args.step,
                 backend=args.backend,
-                require_child_agent=args.require_child_agent,
                 launch_request=getattr(args, "launch_request_json", None),
             )
         except ValueError as exc:

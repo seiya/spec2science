@@ -1744,16 +1744,6 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
                           "validate": "run_1"})
         self.assertEqual(refs.ir_ref, f"workspace/ir/{refs.safe}/ir_1")
 
-    def test_the_reason_code_is_in_the_runtime_allowlist(self) -> None:
-        """`set-status` refuses a fail_closed reason code outside `FAIL_CLOSED_REASON_CODES`, so
-        a terminal the conductor cannot record is a terminal the operator never sees."""
-        self.assertIn("revocation_not_landed", ort.FAIL_CLOSED_REASON_CODES)
-
-    def test_the_writerless_noncanonical_code_is_not_in_the_runtime_allowlist(self) -> None:
-        """`noncanonical_phase_write_attempt` was emitted only by `_reject_noncanonical_phase_write`,
-        which had no caller and went with issue #433. An allowlisted code nothing emits reads as a
-        live terminal; putting it back is a visible edit of this row."""
-        self.assertNotIn("noncanonical_phase_write_attempt", ort.FAIL_CLOSED_REASON_CODES)
 
 
 class SeedRepairsFromRevocationsTest(unittest.TestCase):
@@ -2461,17 +2451,16 @@ class LaunchCheckRefusalTest(unittest.TestCase):
         # Refused before any leaf: nothing was launched.
         self.assertNotIn("record-launch", [sub for sub, _ in c.calls])
 
-    def test_a_refusal_code_outside_the_allowlist_keeps_the_code_in_the_detail(self) -> None:
-        """`backend_not_probed` is a launch-check code the runtime refuses for `fail_closed`;
-        it is carried under the generic conductor code and LEADS the detail."""
-        self.assertNotIn("backend_not_probed", wc.FAIL_CLOSED_REASON_CODES)
+    def test_a_preflight_refusal_is_recorded_under_its_own_code(self) -> None:
+        """`backend_not_probed` is recorded as given, the code a substep's own `record-launch`
+        records for the same refusal (issue #643 PR-3; it used to be carried under the generic
+        conductor code while `set-status` refused it)."""
         c = self._conductor("backend_not_probed")
         result, events = self._conduct(c)
         self.assertEqual(result, "fail_closed")
         [status] = [kw for sub, kw in c.calls if sub == "set-status"]
         self.assertEqual((status["--status"], status["--reason-code"], status["--reason-detail"]),
-                         ("fail_closed", "conductor_phase_fail_closed",
-                          f"backend_not_probed: {self._DETAIL}"))
+                         ("fail_closed", "backend_not_probed", self._DETAIL))
         [ev] = [e for e in events if e.get("event") == "launch_check_refused"]
         self.assertEqual((ev["reason_code"], ev["detail"]), ("backend_not_probed", self._DETAIL))
 
@@ -3118,19 +3107,9 @@ class ConductRoutingTest(unittest.TestCase):
             binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001",
         )
 
-    def test_conductor_fail_closed_codes_are_allowlisted(self) -> None:
-        # Every reason_code the conductor uses for set-status fail_closed must be in the
-        # runtime's FAIL_CLOSED_REASON_CODES, or set-status rejects it (→ crash).
-        from tools.orchestration_runtime import FAIL_CLOSED_REASON_CODES
-        for code in ("leaf_transport_error", "retry_budget_exhausted",
-                     "conductor_phase_fail_closed", "sandbox_enforcement_violation",
-                     "dev_phase_rollback"):
-            self.assertIn(code, FAIL_CLOSED_REASON_CODES)
-
-    def test_generic_fail_closed_uses_allowlisted_reason_code(self) -> None:
+    def test_generic_fail_closed_uses_the_conductor_reason_code(self) -> None:
         # A generic phase fail_closed decision (e.g. a declared compile fail) maps to the
-        # allowlisted conductor_phase_fail_closed code, with the specific reason in detail.
-        from tools.orchestration_runtime import FAIL_CLOSED_REASON_CODES
+        # conductor_phase_fail_closed code, with the specific reason in detail.
         c = self._conductor()
         c.status_fn = lambda phase, substep, n: "fail" if phase == "compile" else "pass"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
@@ -3139,7 +3118,6 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(status, "fail_closed")
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--reason-code"], "conductor_phase_fail_closed")
-        self.assertIn(ss["--reason-code"], FAIL_CLOSED_REASON_CODES)
         self.assertEqual(ss["--reason-detail"], wc.COMPILE_DECLARED_FAIL)
 
     def test_conduct_terminalizes_sandbox_enforcement_as_fail_closed(self) -> None:
@@ -3156,7 +3134,6 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertEqual(status, "fail_closed")
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--status"], "fail_closed")
-        # must be an allowlisted FAIL_CLOSED_REASON_CODES value (runtime rejects others)
         self.assertEqual(ss["--reason-code"], "sandbox_enforcement_violation")
 
     def test_reopen_compile_on_ir_then_succeed(self) -> None:
@@ -5859,6 +5836,27 @@ class ValidateGateReasonFromMetaTest(unittest.TestCase):
                 json.dumps({"status": "pass"}), encoding="utf-8")
             status, _ = c.determine_substep_status(refs, "validate", "pre_judge", [rel])
             self.assertEqual(status, "pass")
+
+    def test_a_pass_meta_with_no_declared_deliverable_is_refused_not_certified(self) -> None:
+        """Issue #643 PR-3 (OR2-B35): record-launch no longer refuses an empty deliverable list,
+        so `determine_substep_status` states the premise itself. A passing meta with nothing
+        declared beside it would otherwise certify the substep on the vacuous freshness test,
+        however old the meta is. An audit-log-only list is the same case."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = _TargetedConductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH",
+                             llm_config=_cfg("claude"), env={})
+            node_dir = repo / refs.run_node_dir()
+            node_dir.mkdir(parents=True, exist_ok=True)
+            (node_dir / "pre_judge_meta.json").write_text(
+                json.dumps({"status": "pass"}), encoding="utf-8")
+            audit_only = min(wc._OPTIONAL_OUTPUT_BASENAMES)
+            for paths in ([], [f"{refs.run_node_dir()}/{audit_only}"]):
+                with self.subTest(paths=paths), \
+                        self.assertRaisesRegex(ValueError, "declares no deliverable"):
+                    c.determine_substep_status(refs, "validate", "pre_judge", paths)
 
     def test_a_below_window_mtime_on_a_pass_meta_is_what_builds_the_freshness_reason(self) -> None:
         """The exhibit for `validate_<substep>_deliverable_not_freshly_written`.
@@ -10479,53 +10477,6 @@ class LeafSpawnTest(unittest.TestCase):
             self.assertEqual(launch_response["agent_session_id"], "thread-1")
             self.assertEqual(launch_response["session_id"], "thread-1")
             self.assertEqual(session_index["entries"][0]["agent_session_id"], "thread-1")
-
-    def test_codex_thread_registration_refuses_to_guess_a_missing_or_unknown_role(self) -> None:
-        """`_register_codex_thread` was the last reader of `agent_role` that answered from
-        its own default (`or "substep"`), and it writes through to the session run index,
-        whose upsert applies no vocabulary test. record-launch validates and persists the
-        role before this ever runs, so an absent or out-of-vocabulary value means the
-        request file is missing or corrupt — surfaced, not guessed.
-
-        PINNED: that each of the three shapes raises, and that the session run index is not
-        written. SAMPLED: the particular junk role.
-
-        THE FIXTURE MUST BE FULLY BUILT — both response mirrors included, exactly like
-        `test_codex_thread_registration_updates_both_response_mirrors` above. An earlier
-        version of this test omitted them, and review measured the consequence: with the
-        production guard reverted, `_write_json_transaction` died on the missing
-        `A.response.json` BEFORE reaching the session index, so `assertFalse(...exists())`
-        was true no matter what the code under test did, and the mutant was killed only
-        because `FileNotFoundError` does not match `assertRaisesRegex(RuntimeError, ...)`.
-        Passing for the wrong reason. With the mirrors present the reverted code really
-        does durably record `agent_role: "bogus"`, which is the fail-open this pins."""
-        provisional_response = {
-            "agent_session_id": "A", "session_id": "A", "backend": "codex",
-        }
-        for label, request in (
-            ("absent", {"context_id": "ctx"}),
-            ("empty", {"agent_role": "", "context_id": "ctx"}),
-            ("out-of-vocabulary", {"agent_role": "bogus", "context_id": "ctx"}),
-        ):
-            with self.subTest(role=label), tempfile.TemporaryDirectory() as tmp:
-                repo = Path(tmp)
-                orchestration_dir = repo / "workspace" / "orchestrations" / "o"
-                launch_dir = orchestration_dir / "launches"
-                dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
-                launch_dir.mkdir(parents=True)
-                dialogs_dir.mkdir(parents=True)
-                (launch_dir / "A.request.json").write_text(
-                    json.dumps(request), encoding="utf-8")
-                (launch_dir / "A.response.json").write_text(
-                    json.dumps(provisional_response), encoding="utf-8")
-                c = self._c(
-                    repo_root=repo, orchestration_id="o", backend="codex",
-                    agent_model="gpt-5.6-sol")
-                with self.assertRaisesRegex(RuntimeError, "refusing to guess it"):
-                    c._register_codex_thread("A", "thread-1")
-                # Now load-bearing: this fixture CAN reach the session index, so its
-                # absence is the guard's doing rather than the fixture's.
-                self.assertFalse((orchestration_dir / "session_run_index.json").exists())
 
     def test_concurrent_codex_registrations_preserve_both_session_index_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -15763,13 +15714,11 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertIn("/src_20260101_001/", staged[1]["model_source_ref"])
             self.assertEqual(staged[1]["source_id"], "src_20260101_001")
 
-    def test_dependency_closure_nodes_survives_a_malformed_topo_level(self) -> None:
+    def test_dependency_closure_nodes_is_the_readiness_derivation(self) -> None:
         """The closure ORDER is single-sourced in `orchestration_runtime._closure_nodes_from_graph`
-        so that Build's staging and the readiness comparison cannot disagree — and the move is not
-        a pure move: the inlined version this replaced read `n.get("topo_level") or 0`, which puts
-        a `str` into the sort key and makes `list.sort` raise `TypeError`. That is a crash where
-        readiness promises a verdict, so a non-`int` level falls to 0. This is the conductor half
-        of that pin: it is RED against the inlined implementation."""
+        so that Build's staging and the readiness comparison cannot disagree. (The non-`int`
+        `topo_level` tolerance this row also pinned went in issue #643: the sidecar is
+        host-written.)"""
         from tools.orchestration_runtime import _closure_nodes_from_graph
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -15777,7 +15726,7 @@ class WriteMakefileTest(unittest.TestCase):
                                ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
             self._write_dep_ir(repo, refs)
             self._write_dep_graph_sidecar(repo, refs, all_nodes=[
-                {"node_key": "component/base@0.1.0", "topo_level": "0"},
+                {"node_key": "component/base@0.1.0", "topo_level": 0},
                 {"node_key": "component/mid@0.1.0", "topo_level": 1},
                 {"node_key": "component/top@0.1.0", "topo_level": 2},
             ], transitive_deps=[])
@@ -22798,14 +22747,18 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             dep_agg.write_text(json.dumps({"aggregate_verdict": "pass"}), encoding="utf-8")
             fact = {"node_key": "component/dep@0.1.0", "pipeline_ref": "workspace/pipelines/dep",
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
+            # The harness's fact, which `_resolve_dependency_facts` gives it in production
+            # (`with_target_harness` adds it to the IR's direct deps).
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            autospec=True, return_value=[fact]) as facts, \
+                            autospec=True, return_value=[fact, harness_fact]) as facts, \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=True) as ready:
                 c._author_derived_validate_artifacts(refs)
             # The display facts are the RUN's target's too (issue #284): without it they
-            # resolve nothing, and a ready dependency's latest `xfail` would fold as `pass`.
+            # resolve nothing, and every ready dependency would fold as `blocked`.
             facts.assert_called_once_with(repo, refs.ir_ref, target=c.target)
             rn = repo / refs.run_node_dir()
             agg = json.loads((rn / "aggregate_verdict.json").read_text())
@@ -22870,8 +22823,10 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             dep_agg.write_text(json.dumps({"aggregate_verdict": "fail"}), encoding="utf-8")
             fact = {"node_key": "component/dep@0.1.0", "pipeline_ref": "workspace/pipelines/dep",
                     "run_id": "run_dep_001", "aggregate_verdict_ref": "dep_agg.json"}
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
-                            autospec=True, return_value=[fact]), \
+                            autospec=True, return_value=[fact, harness_fact]), \
                  mock.patch("tools.validate_pipeline_semantics."
                             "_closure_node_validated_in_own_pipeline",
                             autospec=True, return_value=True):
@@ -22883,6 +22838,77 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(agg["aggregate_verdict"], "pass")
             self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "fail")
             self.assertTrue(agg["dependency_nodes"][0]["ready"])
+
+    def test_author_derived_ready_dep_whose_verdict_does_not_resolve_is_not_pass(self) -> None:
+        """Issue #643 S3 (ver_defects item 3): readiness (a version- and key-agnostic glob) can
+        admit a dependency whose certified Validate no longer resolves through
+        `DerivationResolver.select` — revoked or re-keyed since the gate ran — so
+        `_resolve_dependency_facts` gives it no fact. Its contribution cannot be read, and it
+        used to fold as `pass`, recording a dependency's `xfail` as `pass`. It folds as NOT
+        ready: the aggregate is `blocked`, and the reason says the verdict did not resolve."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[harness_fact]), \
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True):
+                c._author_derived_validate_artifacts(refs)
+            rn = repo / refs.run_node_dir()
+            agg = json.loads((rn / "aggregate_verdict.json").read_text())
+            self.assertNotEqual(agg["aggregate_verdict"], "pass")
+            self.assertEqual(agg["aggregate_verdict"], "blocked")
+            self.assertEqual(agg["blocking_direct_deps"], ["component/dep@0.1.0"])
+            self.assertIn("certified verdict does not resolve", agg["blocked_reason"])
+            self.assertNotIn("not built+validated", agg["blocked_reason"])
+            self.assertFalse(agg["dependency_nodes"][0]["ready"])
+            self.assertEqual(agg["dependency_nodes"][0]["aggregate_verdict"], "unknown")
+            summary = json.loads((rn / "summary.json").read_text())
+            self.assertEqual(summary["dependency_summary"]["blocked"], 1)
+            self.assertEqual(summary["dependency_summary"]["pass"], 1)
+
+    def test_post_judge_fails_closed_on_a_blocked_aggregate_before_the_gate(self) -> None:
+        """Issue #643 PR-3 round 2 (Codex P2): the fold above writes a `blocked` aggregate while
+        `validate_meta.json` says `pass`, so post_judge must not certify it. The gate is made to
+        pass, so only the aggregate can fail the substep; the gate is not run at all."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            repo, refs = Path(td), self._refs()
+            c = self._conductor(repo)
+            self._seed_verdict(repo, refs, [{"test_id": "t1", "status": "pass"}])
+            self._seed_ir_with_dep(repo, refs, "component/dep@0.1.0")
+            harness_fact = {"node_key": _HARNESS_NK, "pipeline_ref": "workspace/pipelines/h",
+                            "run_id": "run_h_001", "aggregate_verdict_ref": None}
+            gate_calls: list = []
+
+            def _gate(cmd, **_k):
+                gate_calls.append(cmd)
+                return wc.subprocess.CompletedProcess(cmd, 0, "", "")
+            with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
+                            autospec=True, return_value=[harness_fact]), \
+                 mock.patch("tools.validate_pipeline_semantics."
+                            "_closure_node_validated_in_own_pipeline",
+                            autospec=True, return_value=True), \
+                 self._patch_run(_gate):
+                out = c._post_judge_inproc(refs, "child-post")
+            self.assertEqual(out["returncode"], 0)  # a content outcome, not transport
+            meta = json.loads((repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+            self.assertEqual(meta["status"], "fail")
+            self.assertEqual(meta["failure_category"], "aggregate_blocked")
+            self.assertEqual(meta["disposition"], "fail_closed")
+            self.assertIn("certified verdict does not resolve", meta["failure_excerpt"])
+            self.assertEqual(gate_calls, [])
+            status, _ = c.determine_substep_status(
+                refs, "validate", "post_judge", [f"{refs.run_node_dir()}/post_judge_meta.json"])
+            self.assertEqual(status, "fail")
 
     def test_author_derived_blocked_per_test_not_certifiable(self) -> None:
         """G6 review finding #2: an all-`blocked` per_test must not certify as pass."""

@@ -120,10 +120,10 @@
       "make-control-file": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 7,
+      "fortran": 5,
       "fortran-subroutine": 2,
       "fortran-suffix": 5,
-      "make-control-file": 4
+      "make-control-file": 3
     },
     "tools/structured_signatures.py": {
       "fortran-subroutine": 6

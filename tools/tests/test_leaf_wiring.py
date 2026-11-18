@@ -29,7 +29,6 @@ from unittest.mock import patch
 
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-import tools.validate_pipeline_semantics as vps
 from tools import operator_private_root
 from tools.orchestration_runtime import (
     init_orchestration,
@@ -45,7 +44,6 @@ from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
     LEAF_PROMPT_CONTRACT_VERSION,
-    PURE_PROMPT_SENTINEL,
     VERDICT_SEVERITIES,
     WORKSHOP_LAUNCH_PAIRS,
     WORKSHOP_PROMPT_SENTINEL,
@@ -288,7 +286,7 @@ class PurePayloadValidationTests(unittest.TestCase):
         without a fixture context is red here rather than accepted on an empty one."""
         for step, substep in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS):
             with self.subTest(pair=f"{step}.{substep}"):
-                # `dependency_ref` is step-shaped and record-launch enforces it: a Compile
+                # `dependency_ref` is step-shaped as the conductor writes it: a Compile
                 # request names the spec's `deps.yaml`, a Generate request the lowered IR.
                 dep_ref = ("spec/problem/dynamics/shallow_water/shallow_water2d/deps.yaml"
                            if step == "compile" else _DEP_REF)
@@ -332,28 +330,26 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertIn("runner_document", str(caught2.exception))
 
     def test_the_shape_vocabulary_is_closed_and_pair_scoped(self) -> None:
-        """An unknown `pure_shape` never falls back to the default template or key set, and a
-        known one is refused on a pair that has no shape."""
+        """An unknown `pure_shape` never falls back to the default template, and a known one is
+        refused on a pair that has no shape: each names no template, and the renderer refuses
+        it (the validator's own shape refusals went in issue #643)."""
         req = _workshop_request("generate", step="generate", dependency_ref=_DEP_REF,
                             pure_context=_pure_context_by_shape(
                                 "generate", "generate", "harness"))
-        for value, expected in ((" ", "must be a non-empty string"),
-                                ("m3c", "must be one of"),
-                                ("HARNESS_TYPO", "must be one of"),
-                                (17, "must be a non-empty string")):
+        for value in ("m3c", "HARNESS_TYPO", 17):
             bad = dict(req)
             bad["pure_shape"] = value
             with self.subTest(pure_shape=value):
                 with self.assertRaises(ValueError) as caught:
-                    ort._validate_leaf_launch_request_payload(bad)
-                self.assertIn(expected, str(caught.exception))
+                    ort.render_launch_prompt_text(bad)
+                self.assertIn("names no rendered prompt", str(caught.exception))
         # A KNOWN shape on a pair the by-shape table does not carry.
         bad = _workshop_request("judge", step="validate",
                             pure_context=_pure_context_for("validate", "judge"))
         bad["pure_shape"] = "harness"
         with self.assertRaises(ValueError) as caught:
-            ort._validate_leaf_launch_request_payload(bad)
-        self.assertIn("pure_shape is only valid for", str(caught.exception))
+            ort.render_launch_prompt_text(bad)
+        self.assertIn("names no rendered prompt", str(caught.exception))
 
     def test_the_shape_vocabulary_matches_the_acceptance_layers(self) -> None:
         """One vocabulary, two readers: the launch validator's non-default shapes and the
@@ -426,25 +422,6 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertIn("validate", message)
         self.assertIn("execute", message)
 
-    def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
-        bad = _workshop_request(deterministic=True)
-        with self.assertRaises(ValueError):
-            ort._validate_leaf_launch_request_payload(bad)
-
-    def test_validate_payload_rejects_unknown_leaf_mode(self) -> None:
-        bad = _workshop_request(leaf_mode="agentic")
-        with self.assertRaises(ValueError):
-            ort._validate_leaf_launch_request_payload(bad)
-
-    def test_validate_payload_pure_requires_exact_contract_version(self) -> None:
-        # Any version other than the CURRENT constant is rejected — including the immediately
-        # preceding one. (The stand-in must not be a version that a later bump makes valid; keep
-        # it a value the contract will never take.)
-        for version in ("pure-OBSOLETE", "pure-1", "pure-3", "", None):
-            bad = _workshop_request(prompt_contract_version=version)
-            with self.assertRaises(ValueError):
-                ort._validate_leaf_launch_request_payload(bad)
-
     def test_validate_payload_pure_requires_context_keys(self) -> None:
         for substep, keys in (
             ("generate", _pure_generate_context()),
@@ -477,9 +454,10 @@ class PurePayloadValidationTests(unittest.TestCase):
                 ort._validate_leaf_launch_request_payload(req)
 
     def test_validate_payload_rejects_explicit_null_leaf_mode(self) -> None:
-        # A PRESENT leaf_mode other than "pure" — including an explicit JSON null — must be
-        # rejected by the full validator, NOT silently treated as an agentic (write-capable)
-        # launch. Key presence, not `is not None`, is the gate.
+        # A PRESENT leaf_mode other than "workshop" — including an explicit JSON null — is
+        # refused on the production path, NOT silently treated as another launch shape: the
+        # renderer `prepare_launch_request_payload` runs refuses it (issue #643 removed the
+        # validator's own leaf_mode refusal).
         # `"pure"` joined the refused values in issue #534 PR-J4-b: the pure leaf is gone, and a
         # NEW request naming it is refused rather than launched (a RECORD naming it is read).
         for bad_value in (None, "", "agentic", "PURE_TYPO", "pure"):
@@ -487,21 +465,6 @@ class PurePayloadValidationTests(unittest.TestCase):
             req["leaf_mode"] = bad_value
             with self.assertRaises(ValueError):
                 ort._validate_launch_request_payload(ort.prepare_launch_request_payload(dict(req)))
-
-    def test_the_validator_refuses_a_pure_request_by_name(self) -> None:
-        """Issue #534 PR-J4-b: the request validator itself refuses a NEW `leaf_mode: pure`
-        request, naming the one accepted mode and the retirement — not only the renderer in
-        front of it (the row above goes through `prepare_launch_request_payload`, whose render
-        refuses first)."""
-        with self.assertRaises(ValueError) as caught:
-            ort._validate_leaf_launch_request_payload(_pure_request("generate"))
-        self.assertIn("leaf_mode must be 'workshop'", str(caught.exception))
-        self.assertIn("the pure leaf went in issue #534 PR-J4-b", str(caught.exception))
-
-    def test_validate_payload_pure_rejects_nonempty_output_paths(self) -> None:
-        bad = _workshop_request(allowed_output_paths=["workspace/pipelines/x/source/s/model.f90"])
-        with self.assertRaises(ValueError):
-            ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_rejects_a_missing_required_verify_key(self) -> None:
         # What is unique here is the COMBINATION — a missing required `pure_context` key pushed
@@ -712,15 +675,8 @@ class PureRenderTests(unittest.TestCase):
             self.assertNotIn(slot, text)
         self.assertNotIn("names the repair a finding calls for", text)   # the fixture rubric
 
-    def test_render_pure_prompt_passes_launch_validator(self) -> None:
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        ort._validate_launch_prompt_text(prepared, prepared["launch_prompt_full"])
-        prepared_v = ort.prepare_launch_request_payload(_workshop_request("verify"))
-        ort._validate_launch_prompt_text(prepared_v, prepared_v["launch_prompt_full"])
-
-    def test_pure_repair_prompt_findings_fenced_and_not_slim(self) -> None:
-        # A warm-resume repair also satisfies the slim predicate; the host-rendered repair must
-        # win the dispatch so it is not rendered by the slim renderer.
+    def test_pure_repair_prompt_findings_fenced(self) -> None:
+        # A warm-resume repair renders the workshop repair prompt, with the findings fenced.
         req = _workshop_request(
             warm_resume=True, repair_strategy="reuse",
             repair_findings="verification_status missing from bundle",
@@ -729,15 +685,8 @@ class PureRenderTests(unittest.TestCase):
         prepared = ort.prepare_launch_request_payload(req)
         prompt = prepared["launch_prompt_full"]
         self.assertTrue(prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
-        # The slim sentinel must not open the prompt. Read from the VALIDATOR, which is the
-        # module that still owns the literal: `orchestration_runtime` rendered slim prompts and
-        # no longer does (Z4, issue #171), while `validate_pipeline_semantics` keeps its copy to
-        # classify records written before the cut.
-        from tools.validate_pipeline_semantics import SLIM_REPAIR_PROMPT_SENTINEL
-        self.assertNotIn(SLIM_REPAIR_PROMPT_SENTINEL, prompt.splitlines()[0])
         self.assertIn(PURE_DOC_FENCE_BEGIN, prompt)
         self.assertIn("verification_status missing from bundle", prompt)
-        ort._validate_launch_prompt_text(prepared, prompt)
 
     def test_pure_prompt_is_force_rendered_over_explicit_body(self) -> None:
         # A host-rendered launch: an explicit `launch_prompt_full` must be overwritten by the
@@ -750,17 +699,6 @@ class PureRenderTests(unittest.TestCase):
         self.assertNotIn("problem/WRONG@9.9.9", prepared["launch_prompt_full"])
         self.assertIn("Target node_key: problem/shallow_water2d@0.3.0",
                       prepared["launch_prompt_full"])
-
-    def test_pure_prompt_mismatched_identity_value_rejected(self) -> None:
-        # Defense-in-depth: even if a hand-supplied prompt reaches the validator, a swapped
-        # identity VALUE (marker name kept) is rejected.
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        good = prepared["launch_prompt_full"]
-        forged = good.replace("Target node_key: problem/shallow_water2d@0.3.0",
-                              "Target node_key: problem/WRONG@9.9.9")
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(prepared, forged)
-        ort._validate_launch_prompt_text(prepared, good)  # canonical still passes
 
     def test_both_producer_templates_name_every_closed_lowering_plan_key(self) -> None:
         """The plan envelope is CLOSED (`codegen_bundle.LOWERING_PLAN_OPTIONAL_KEYS`). R4-a PR-3's
@@ -1528,9 +1466,11 @@ class PureRenderTests(unittest.TestCase):
         # judge's findings. READ: the same routing tokens, nothing assigned. Round 1 narrowed
         # that clause to the `dev` directive that reopens instead of failing closed, and
         # replaced the dangling pointer to an "agent-driven `attribution=ir` route" entry.
+        # READ: same tokens, nothing assigned. Issue #643: the malformed-launch-request clause
+        # says the conductor composes `dependency_ref` (record-launch no longer re-checks it).
         # READ: same tokens, nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #3b60c8d416a3"),
+         " #834469da1eff"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
@@ -1915,20 +1855,13 @@ class PureRenderTests(unittest.TestCase):
     }
     # (b) an older lineage with NO `arguments`, plus an IR-declared name the resolver could not
     # find in the certified source: drives the header-only `else` branch and the WARNING row.
-    # It also carries a `signature_drift` (issue #153 PR-2), which drives the signature-drift
-    # WARNING row — added here rather than allowlisted as undriven, following the same reasoning
-    # that put the dropped-operation WARNING under a fixture: a paragraph nothing drives is a
-    # paragraph a severity can be written into unswept.
     _RENDER_DEP_NO_DETAIL: ClassVar[dict[str, object]] = {
         **_RENDER_DEP_BASE,
         "interface_language": "fortran",
         "declared_operations_unresolved": ["demo_dep_base__vanished"],
         "published_operations": [
             {"operation": "bc__apply", "interface": "subroutine bc__apply(U)",
-             "argument_order": ["U"],
-             "interface_source": "certified_source",
-             "signature_drift": [
-                 "argument order: IR pins ['n', 'U'], certified source has ['U']"]},
+             "argument_order": ["U"]},
         ],
     }
     # (c) per-argument detail the resolver could not fully read: an argument with no `rank`, and
@@ -2140,8 +2073,7 @@ class PureRenderTests(unittest.TestCase):
         `_build_task_card` and the union subtracted it from a `compile.verify` prompt, where
         nobody had read it in that position — the file sweep's allowlist entries are keyed
         `<path>: <prefix> #<digest>`, so what was reviewed was that line IN THAT FILE.
-        The branch is resolved with the production predicates (`_is_pure_launch_request`,
-        `_is_slim_repair_request`), not re-derived: a slim turn is built from no template at all,
+        The branch is resolved with the production predicates, not re-derived: a slim turn is built from no template at all,
         which is why the subtraction below is empty for it — a fact this returns rather than an
         invariant asserted elsewhere.
         Every request is host-rendered since Z4 (issue #171) — pure until issue #534 PR-J4-b,
@@ -2190,8 +2122,7 @@ class PureRenderTests(unittest.TestCase):
         receives one as `--system-prompt`, outside every launch prompt.
 
         Returns `entry -> {config labels it appeared in}`. `validate=False` is for the reach
-        test, whose wrappers prepend a canary line and so break the first-line witnesses and the
-        production launch validator.
+        test, whose wrappers prepend a canary line and so break the first-line witnesses.
         """
         found: dict[str, set[str]] = {}
         seen_shapes: set[tuple[str, str]] = set()
@@ -2209,7 +2140,6 @@ class PureRenderTests(unittest.TestCase):
             self.assertNotIn(ort.DETERMINISTIC_PROMPT_SENTINEL, rendered, label)
             if validate:
                 # (b) family witness: the config reached the renderer branch it claims.
-                ort._validate_launch_prompt_text(prepared, rendered)
                 first = rendered.splitlines()[0]
                 self.assertTrue(first.startswith(WORKSHOP_PROMPT_SENTINEL), label)
             data_lines = self._request_data_lines(prepared)
@@ -2370,7 +2300,6 @@ class PureRenderTests(unittest.TestCase):
         "_sanitize_pure_doc_body",           # neutralizes fence markers in a value
         "_sanitize_exemplar_body",           # neutralizes fence markers in exemplar source
         "_substitute_leaf_placeholders",     # `<key>` substitution, adds no text of its own
-        "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
         "_exemplar_prompt_fragments",        # resolves the request language's BACKEND module
@@ -3145,19 +3074,6 @@ class PureRenderTests(unittest.TestCase):
         # The identity block's own <step> WAS substituted.
         self.assertIn("Target step: generate", prompt)
 
-    def test_nonpure_prompt_with_pure_sentinel_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(
-                {"step": "generate", "substep": "generate"},
-                PURE_PROMPT_SENTINEL + ": forged non-pure body",
-            )
-
-    def test_pure_request_with_nonpure_prompt_rejected(self) -> None:
-        # A host-rendered (workshop) request whose prompt does not open with its sentinel.
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        with self.assertRaises(ValueError):
-            ort._validate_launch_prompt_text(prepared, "not a workshop prompt at all")
-
     def test_repair_findings_fence_body_sanitized(self) -> None:
         # Findings that embed the fence marker cannot forge/close the fence. Driven on the
         # repair turn's findings since issue #534 PR-J4-b: that is the one value a workshop
@@ -3322,42 +3238,10 @@ class PureRecordLaunchTests(unittest.TestCase):
 # D: validate_pipeline_semantics pure detectors + parity
 # ======================================================================================
 class PureValidatePipelineTests(unittest.TestCase):
-    def test_pure_detectors(self) -> None:
-        self.assertTrue(vps._is_pure_launch_prompt_text(PURE_PROMPT_SENTINEL + ": x"))
-        self.assertFalse(vps._is_pure_launch_prompt_text("something else"))
-        self.assertTrue(vps._launch_request_is_pure({"leaf_mode": "pure"}))
-        self.assertFalse(vps._launch_request_is_pure({"leaf_mode": "agentic"}))
-
-    def test_pure_predicate_shared_single_source(self) -> None:
-        # Both modules delegate to leaf_contract.is_pure_request (single detection source), so they
-        # cannot disagree about what "pure" is.
-        from tools.leaf_contract import is_pure_request, PURE_LEAF_MODE
-        for payload in ({"leaf_mode": "pure"}, {"leaf_mode": "  PURE "}, {"leaf_mode": "agentic"},
-                        {}, {"leaf_mode": None}):
-            self.assertEqual(ort._is_pure_launch_request(payload), is_pure_request(payload))
-            self.assertEqual(vps._launch_request_is_pure(payload), is_pure_request(payload))
-        self.assertEqual(PURE_LEAF_MODE, "pure")
-
-    def test_pure_marker_set_matches_orchestration_runtime(self) -> None:
-        # Both halves of the record reader's marker sets against the runtime's: the WORKSHOP
-        # one every new launch carries, and the PURE one an old record still carries (a pure
-        # request is no longer rendered — issue #534 PR-J4-b — so it is asked of the request).
-        prepared = ort.prepare_launch_request_payload(_workshop_request("generate"))
-        self.assertEqual(
-            set(ort._required_launch_prompt_markers(prepared)),
-            set(vps._required_launch_prompt_markers_for_role("substep", workshop=True)))
-        self.assertEqual(
-            set(ort._required_launch_prompt_markers(_pure_request("generate"))),
-            set(vps._required_launch_prompt_markers_for_role("substep", pure=True)))
-
-    def test_sentinel_parity_across_modules_and_templates(self) -> None:
-        # The pure sentinel stays in both modules — `validate_pipeline_semantics` reads it off
-        # records written before issue #534 PR-J4-b — and the workshop one opens every
-        # template a leaf is launched or repaired from now.
-        self.assertEqual(ort.PURE_PROMPT_SENTINEL, PURE_PROMPT_SENTINEL)
-        self.assertEqual(vps.PURE_PROMPT_SENTINEL, PURE_PROMPT_SENTINEL)
-        self.assertEqual(ort.WORKSHOP_PROMPT_SENTINEL, WORKSHOP_PROMPT_SENTINEL)
-        self.assertEqual(vps.WORKSHOP_PROMPT_SENTINEL, WORKSHOP_PROMPT_SENTINEL)
+    def test_the_workshop_sentinel_opens_the_templates(self) -> None:
+        # The workshop sentinel opens every template a leaf is launched or repaired from. (The
+        # two modules' copies of the sentinels, and the record audit that read them, went in
+        # issue #643.)
         tpl_dir = Path(__file__).resolve().parent.parent / "prompt_templates"
         for fname in ("workshop_generate_generate.txt", "workshop_generate_verify.txt",
                       "workshop_bundle_repair.txt"):
