@@ -8766,23 +8766,18 @@ def _validate_profile_selection(
                 f"{sidecar_path.name} resolved {expected}. Copy the host's value.")
 
 
-def _lineage_node_key_and_ir_ref(
-    pipeline_dir: Path,
-) -> tuple[str | None, str | None]:
+def _lineage_node_key(pipeline_dir: Path) -> str | None:
     lineage_path = pipeline_dir / "lineage.json"
     if not lineage_path.exists():
-        return None, None
+        return None
     try:
         data = _read_json(lineage_path)
     except json.JSONDecodeError:
-        return None, None
+        return None
     if not isinstance(data, dict):
-        return None, None
+        return None
     nk = data.get("node_key")
-    pr = data.get("ir_ref")
-    node_key = nk.strip() if isinstance(nk, str) else None
-    ir_ref = pr.strip() if isinstance(pr, str) else None
-    return node_key, ir_ref
+    return nk.strip() if isinstance(nk, str) else None
 
 
 def _stub_execution(pipeline_dir: Path, node_key: str) -> NodeExecution:
@@ -8835,7 +8830,7 @@ def _validate_post_generate_stage_impl(
     pipeline_dir = _resolve_cli_path(repo_root, pipeline_ref)
 
     _validate_pipeline_targets_resolve(repo_root, [pipeline_dir], violations)
-    node_key, ir_ref = _lineage_node_key_and_ir_ref(pipeline_dir)
+    node_key = _lineage_node_key(pipeline_dir)
     if not node_key:
         # Host invariant broken: the conductor writes lineage.json (`_write_lineage`) before
         # Generate runs; no leaf writes it (issue #643, D7: a raise, not a silent pass).
