@@ -11,7 +11,7 @@ Define the design direction for scaling the spec-to-code workflow from the curre
 These premises override any implicit assumption in the current implementation:
 
 1. **The existing specs are examples only.** Future specs add increasingly complex logic; the final target is a full atmospheric (weather) model. The certified node graph will grow to hundreds or thousands of nodes.
-2. **No human-written implementation code.** Humans author only `controlled_spec.md` / `tests.md` / `deps.yaml`. Humans do not write Fortran (or any target-language) code, and do not provide reference implementations.
+2. **No human-written implementation code.** Humans author only `controlled_spec.md` / `tests.md` / `deps.yaml`. Humans do not write Fortran (or any target-language) code, and do not provide reference implementations. Amended 2026-11-19 by [issue #680](https://github.com/seiya/spec2science/issues/680) for a node converted from existing code, which may declare that code as an `oracle`; `zero_base_architecture.md` premise 2 states the amendment.
 3. **Per-hardware code variants.** The workflow generates different code, in the programming language optimal for each hardware target, from the same spec. The set of (language, hardware) targets is open-ended.
 
 ## Measured cost baseline (2026-07)
