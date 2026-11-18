@@ -4780,7 +4780,7 @@ def _clear_stale_active_child_markers(
     reconciles a `running` prior too.
 
     Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
-    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
+    a live leaf loses its active-child marker mid-run. `docs/RUNBOOK.md`
     §3-1 records where the claim can degrade and what that costs.
 
     Removes the legacy active-child file and every per-arid marker, returning the cleared arids
@@ -4935,54 +4935,6 @@ def _protected_child_arids(repo_root: Path, orchestration_id: str) -> set[str]:
     # pruned like one. A `child_returns/` directory a past orchestration left behind is
     # no longer read.
     return protected
-
-
-def _reset_stale_child_running_node_steps(
-    repo_root: Path, orchestration_id: str
-) -> list[dict[str, str]]:
-    """Reset any node/step left at `child_running` by an abandoned launch.
-
-    `record_launch` transitions the node/step to `child_running`; an abandoned launch
-    (host died mid-flight) leaves it there even after its active-child marker is
-    cleared. The phase gates authorize child work when the node/step is
-    `child_running`; issue #171 PR-2 deleted the last of those gates, so what a stale
-    `child_running` leaves is a RECORD that disagrees with the workspace rather than a live
-    authority. A resume still resets it: the completion vouch and the `--stage pre_judge` audit
-    read phase_state, and an abandoned child left running there describes a run that is not
-    happening. Any `child_running` node/step is then stale → reset to
-    `not_started`; the resumed re-launch transitions it back to `child_running` for the real new
-    child. Returns the reset [{node_key_safe, step}].
-
-    THE PRECONDITION IS NO LONGER "the status is terminal", and the difference matters because
-    this function verifies nothing — it resets every `child_running` node/step in
-    `phase_state.json` to `not_started` unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
-    and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
-    CLAIM (an advisory `flock` under `~/.spec2science/start_claims/`, released by the OS when the
-    holding process dies) rather than by the recorded status. A terminal status still implies it;
-    a `running` status no longer contradicts it, which is why `resume_orchestration` now
-    reconciles a `running` prior too.
-
-    Calling it WITHOUT that claim held is the unsafe case, and it is unsafe in a specific way:
-    a live leaf loses its phase authority and its active-child marker mid-run. `docs/RUNBOOK.md`
-    §3-1 records where the claim can degrade and what that costs.
-    """
-    doc = _load_phase_state(repo_root, orchestration_id)
-    if not isinstance(doc, dict):
-        return []
-    node_states = doc.get("node_states")
-    if not isinstance(node_states, dict):
-        return []
-    reset: list[dict[str, str]] = []
-    for node_safe, steps in node_states.items():
-        if not isinstance(steps, dict):
-            continue
-        for step_key, state in list(steps.items()):
-            if state == "child_running":
-                steps[step_key] = "not_started"
-                reset.append({"node_key_safe": str(node_safe), "step": str(step_key)})
-    if reset:
-        _write_phase_state(repo_root, orchestration_id, doc)
-    return reset
 
 
 def _runs_jsonl_lock_path(repo_root: Path, orchestration_id: str) -> Path:
@@ -5221,31 +5173,6 @@ REVOCATION_SEVERITIES: frozenset[str] = frozenset({"minor", "major", "critical"}
 # `reuse` of the producer session the decision had said to throw away.
 REVOCATION_REPAIR_STRATEGIES: frozenset[str] = frozenset({"reuse", "restart", "re_execute"})
 
-# Validate's deliverables, as basenames under `runs/<run_id>/<node_key_safe>/`. Until issue
-# #250 (PR-1) Validate was the one phase with NO entry in `CERTIFYING_META_FILENAME_BY_STEP`,
-# so it got no `artifact_hashes` byte-pin and no revocable meta, and its certification rested
-# entirely on what `_phase_certified` reads. Reading only the verdict and the gate record let a
-# phase that DIED mid-write certify: `aggregate_verdict.json` and `post_judge_meta.json` are
-# written before the rest, so an attempt that stopped between them and `validate_meta.json` left
-# a chain that read as complete, and a `--resume` then recorded `skipped_certified` — which
-# clause (e) of the completion vouch reads as an EXEMPTION from the latest-attempt check.
-# `validate_meta.json` now carries the stamp (`_stamp_certification`, over exactly these
-# deliverables minus the meta itself), and since PR-2 of issue #250 the predicate reads the
-# stamp — a missing deliverable cannot re-hash — so this list's remaining reader is the
-# coupling test below.
-#
-# COUPLED to `workflow_conductor.phase_required_outputs(..., "validate")` by
-# `test_validate_certifying_deliverables_match_the_declared_outputs`, so adding a deliverable
-# there without deciding about it here fails rather than silently narrowing what certifies.
-VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES: tuple[str, ...] = (
-    "aggregate_verdict.json",
-    "verdict.json",
-    "summary.json",
-    "semantic_review.json",
-    "validate_meta.json",
-)
-
-
 def _normalized_until_phase(token: Any) -> str | None:
     """`token` as a member of `STEP_KEYS_FOR_NODE_STATE`, or None.
 
@@ -5287,8 +5214,6 @@ def _record_until_phase_high_water(invocation_block: dict[str, Any]) -> None:
     if reached:
         invocation_block["until_phase_high_water"] = STEP_KEYS_FOR_NODE_STATE[max(reached)]
 
-
-PARALLEL_NODES_ENV_VAR = "SPEC2SCIENCE_ALLOW_PARALLEL_NODES"
 
 STEP_KEYS_FOR_NODE_STATE: tuple[str, ...] = (
     "compile",
@@ -5995,48 +5920,20 @@ def pre_orchestration_start(
     *,
     event: str,
 ) -> dict[str, Any]:
-    """A pre-workflow-start hook applied idempotently at the `init` / `preflight` entry."""
+    """A pre-workflow-start hook applied idempotently at the `init` / `preflight` entry.
+
+    It wrote `orchestration_meta.json#parallel_nodes_explicit` / `parallel_nodes_policy` under
+    the meta lock until issue #643 PR-5: no reader decided from either (the sequential-child
+    gate reads only the active-child marker), so the fields, the lock and the meta rewrite
+    went. An old meta that carries them is read like any other."""
     ws = repo_root / "workspace"
     created_ws: str | None = None
     if not ws.exists():
         ws.mkdir(parents=True, exist_ok=True)
         created_ws = "created_workspace_root"
-    parallel_explicit = os.environ.get(PARALLEL_NODES_ENV_VAR, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    orch_root = _orchestration_root(repo_root, orchestration_id)
-    orch_root.mkdir(parents=True, exist_ok=True)
-    meta_path = orch_root / "orchestration_meta.json"
-    # The read-modify-write of `orchestration_meta.json` is under the same lock
-    # `mark_dependency_readiness` and `write_preflight`'s own readiness block take: this
-    # hook runs at the START of `write_preflight`, before that block, and unlocked it
-    # could read the meta, lose the race to a concurrent `mark-dependency-readiness`, and
-    # write its stale copy back — the verified `dependency_readiness` gone, and the
-    # readiness block that follows then initialising a fail-closed record over it (an
-    # audit-record clobber; the launch gate recomputes live and decided nothing from it).
-    # Measured as an intermittent CI failure of
-    # `test_concurrent_preflight_and_mark_do_not_clobber_verified` (issue #250 PR-3).
-    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
-        meta: dict[str, Any] = {}
-        if meta_path.is_file():
-            try:
-                loaded = _read_json(meta_path)
-            except (OSError, json.JSONDecodeError):
-                loaded = None
-            if isinstance(loaded, dict):
-                meta = loaded
-        meta.setdefault("parallel_nodes_explicit", parallel_explicit)
-        meta.setdefault("parallel_nodes_policy", "sequential_default")
-        parallel_nodes_explicit_persisted = meta["parallel_nodes_explicit"]
-        _write_json(meta_path, meta)
-    detail = {
-        "event": event,
-        "workspace_bootstrap": created_ws,
-        "parallel_nodes_explicit": parallel_nodes_explicit_persisted,
-    }
-    return {"status": "pass", "hook": "pre_orchestration_start", **detail}
+    _orchestration_root(repo_root, orchestration_id).mkdir(parents=True, exist_ok=True)
+    return {"status": "pass", "hook": "pre_orchestration_start", "event": event,
+            "workspace_bootstrap": created_ws}
 
 
 # An id interpolated directly into a repo-relative path is constrained to an explicit
@@ -9268,8 +9165,8 @@ def resume_orchestration(
     # enable. The exclusive claim answers it directly instead: a driver that is gone does not
     # hold its claim, so a resume that GOT here already knows nothing else is driving this run.
     # The crash reconciliations below therefore have to run for a `running` prior as well, or a
-    # resume recovers the status and leaves the dead child's markers, orphan edges and stale
-    # `child_running` phase state behind it. A status the runtime does not write (only a
+    # resume recovers the status and leaves the dead child's markers and orphan edges behind
+    # it. A status the runtime does not write (only a
     # hand-run `init --status` / `set-status --status` stores one) reconciles the same way; its
     # refusal went in issue #643.
     #
@@ -9327,11 +9224,11 @@ def resume_orchestration(
     # resumed run's eventual set-status(pass) is not rejected by the orphan-edge
     # check in _validate_orchestration_completion_for_pass. Idempotent.
     pruned_graph_children = _prune_orphan_agent_graph_edges(repo_root, orchestration_id)
-    # Drop a stale `child_running` for the abandoned launch: a terminal status proves no
-    # child is live, and a phase_state that says otherwise misdescribes the run to the
-    # completion vouch and the `--stage pre_judge` audit. The phase-state init below
-    # preserves node_states, so this reset survives into the resumed run.
-    reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
+    # A stale `child_running` the abandoned launch left in phase_state is NOT reset: no reader
+    # tells it from `not_started` (the completion vouch and the pre_judge audit read
+    # `skipped_certified`, write_step_result reads `child_finished`, and a transition reads no
+    # from-state), and the re-launch overwrites it. The reset and its
+    # `resume_reset_stale_child_running` log event went in issue #643 PR-5.
     # The `driver` block is GONE (issue #177): nothing reads it any more, and a record that
     # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
@@ -9401,19 +9298,6 @@ def resume_orchestration(
                 "to": "not_started",
                 "note": "stale active_child markers cleared for checkpoint resume",
                 "cleared_active_child_arids": cleared_active_child,
-            },
-        )
-    if reset_child_running:
-        _append_phase_state_log(
-            repo_root,
-            orchestration_id,
-            {
-                "ts": _utc_now_iso(),
-                "event": "resume_reset_stale_child_running",
-                "from": "child_running",
-                "to": "not_started",
-                "note": "stale child_running node/step authority reset for checkpoint resume",
-                "reset_node_steps": reset_child_running,
             },
         )
     return meta
@@ -12068,8 +11952,6 @@ def init_orchestration(
             # across re-init / resume, so the recorded SHA stays the source that
             # produced the run rather than being overwritten by a later HEAD.
             for key in (
-                "parallel_nodes_explicit",
-                "parallel_nodes_policy",
                 "repo_revision",
                 "invocation",
             ):

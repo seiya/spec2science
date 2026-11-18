@@ -51,7 +51,6 @@ from tools.orchestration_runtime import (
     init_orchestration,
     main,
     _project_terse_result,
-    pre_orchestration_start,
     pre_phase_launch,
     probe_execution_platform,
     prepare_launch_request_payload,
@@ -3235,44 +3234,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             children = [e["child_agent_run_id"] for e in edges]
             self.assertIn(invalid_child, children, "invalid-run child edge must be kept")
-
-    def test_resume_resets_stale_child_running_node_step(self) -> None:
-        """An abandoned launch leaves the node/step at `child_running`, which the phase
-        gates (apply-patch / MCP / run-gate) treat as authorization for child work.
-        A terminal-reset resume must reset it to `not_started` so the dead child's
-        capability is no longer phase-authorized (Codex P2)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_child_running"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            node = "component__demo__0.1.0"
-            # Simulate record_launch having set compile -> child_running.
-            ps = json.loads((root / "phase_state.json").read_text(encoding="utf-8"))
-            ps["node_states"] = {
-                node: {"compile": "child_running", "generate": "not_started",
-                       "build": "not_started", "validate": "not_started"}
-            }
-            (root / "phase_state.json").write_text(json.dumps(ps), encoding="utf-8")
-
-            update_orchestration_status(
-                repo_root=repo_root, orchestration_id=oid, status="fail",
-                reason_code="launch_incomplete_active_child", reason_detail="x",
-            )
-            resume_orchestration(repo_root, oid)
-
-            after = json.loads((root / "phase_state.json").read_text(encoding="utf-8"))
-            self.assertEqual(after["node_states"][node]["compile"], "not_started")
-            log_events = [
-                json.loads(line)
-                for line in (root / "phase_state_log.jsonl").read_text().splitlines()
-                if line.strip()
-            ]
-            reset = [e for e in log_events if e.get("event") == "resume_reset_stale_child_running"]
-            self.assertEqual(len(reset), 1)
-            self.assertEqual(
-                reset[0]["reset_node_steps"], [{"node_key_safe": node, "step": "compile"}]
-            )
 
     def test_resume_survives_malformed_step_result_during_prune(self) -> None:
         """A malformed/partial step_result.json must not abort checkpoint resume during
@@ -7714,7 +7675,16 @@ class PhaseCertificationTests(unittest.TestCase):
             refs = self._certified(repo, through="validate")
             run_dir = repo / refs["run_node_dir"]
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)[0])
-            for name in ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES:
+            # Every deliverable the phase declares (`phase_required_outputs`); the runtime's own
+            # copy of the list had no other reader and went in issue #643 PR-5.
+            from tools.workflow_conductor import NodeRefs, phase_required_outputs
+            declared = sorted({ref.rsplit("/", 1)[-1] for ref in phase_required_outputs(
+                NodeRefs(target_id=_TARGET_ID, node_key=self._NK,
+                         spec_path="spec/component/spec_x", ir_id="i", pipeline_id="p",
+                         source_id="s", binary_id="b", run_id="r", source_binary_id="b"),
+                "validate")})
+            self.assertIn("validate_meta.json", declared)
+            for name in declared:
                 with self.subTest(missing=name):
                     path = run_dir / name
                     body = path.read_text("utf-8")
@@ -7729,19 +7699,6 @@ class PhaseCertificationTests(unittest.TestCase):
                     path.write_text(body, encoding="utf-8")
             # restored
             self.assertTrue(ort._phase_certified(repo, "o1", self._NK, "validate", target=_TP)[0])
-
-    def test_validate_certifying_deliverables_match_the_declared_outputs(self) -> None:
-        """Coupled to the conductor, not restated beside it. `phase_required_outputs` is what
-        the phase actually declares and what `write-step-result` proves present; if a
-        deliverable is added there and not here, certification silently stops covering it."""
-        from tools.workflow_conductor import NodeRefs, phase_required_outputs
-
-        refs = NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
-                        ir_id="i", pipeline_id="p", source_id="s", binary_id="b",
-                        run_id="r", source_binary_id="b")
-        declared = {ref.rsplit("/", 1)[-1]
-                    for ref in phase_required_outputs(refs, "validate")}
-        self.assertEqual(set(ort.VALIDATE_CERTIFYING_DELIVERABLE_BASENAMES), declared)
 
     def test_phase_certified_rejects_an_unknown_step(self) -> None:
         """A step outside the certified set is answered `unsupported_step` by `select`
@@ -9528,37 +9485,20 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
 
 
 class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
-    def test_write_preflight_persists_parallel_nodes_meta_without_init(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            orch = "preflight_only_orch"
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "1"}):
-                write_preflight(
-                    repo_root=repo,
-                    orchestration_id=orch,
-                    payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-                )
-            meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
-            self.assertTrue(meta_path.is_file())
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta.get("parallel_nodes_explicit"))
-            self.assertEqual(meta.get("parallel_nodes_policy"), "sequential_default")
-
-    def test_init_orchestration_merges_parallel_nodes_from_preflight_meta(self) -> None:
+    def test_init_orchestration_after_a_preflight(self) -> None:
+        """The standalone CLI's order (preflight, then init) still yields an initialized meta.
+        (The `parallel_nodes_*` fields this row also checked went in issue #643 PR-5.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "preflight_then_init"
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "true"}):
-                write_preflight(
-                    repo_root=repo,
-                    orchestration_id=orch,
-                    payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
-                )
+            write_preflight(
+                repo_root=repo,
+                orchestration_id=orch,
+                payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
+            )
             init_orchestration(repo_root=repo, orchestration_id=orch)
             meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta.get("parallel_nodes_explicit"))
-            self.assertEqual(meta.get("parallel_nodes_policy"), "sequential_default")
             self.assertEqual(meta.get("orchestration_id"), orch)
 
     def test_init_orchestration_does_not_duplicate_orchestration_running_entry_on_reinit(self) -> None:
@@ -9703,24 +9643,6 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
                 if isinstance(item, dict) and str(item.get("agent_run_id", "")).strip() == child
             )
             self.assertEqual(terminal_entry.get("status"), "blocked")
-
-    def test_pre_orchestration_start_logs_persisted_parallel_nodes_explicit(self) -> None:
-        """The value kept by setdefault matches the detail for the hook return / log."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            orch = "orch_parallel_audit"
-            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "1"}):
-                out1 = pre_orchestration_start(repo, orch, event="init")
-            self.assertTrue(out1["parallel_nodes_explicit"])
-            meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
-            meta1 = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta1.get("parallel_nodes_explicit"))
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("SPEC2SCIENCE_ALLOW_PARALLEL_NODES", None)
-                out2 = pre_orchestration_start(repo, orch, event="preflight")
-            self.assertTrue(out2["parallel_nodes_explicit"])
-            meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertEqual(meta2.get("parallel_nodes_explicit"), meta1.get("parallel_nodes_explicit"))
 
     def test_pre_phase_complete_judge_checks_rejects_pass_decision_with_fail(
         self,
@@ -14520,8 +14442,9 @@ class RecordTimeoutTests(unittest.TestCase):
         """An operator who ran `deactivate-child` by hand and then reaches for
         `finalize-child` is refused: the marker is gone. The refusal must name that state and
         the remedy, and the remedy must work as printed: `--resume` (`resume_orchestration`),
-        with no manual terminalization first, prunes the unfinalized child's graph edge and its
-        `child_running` state, so the resumed run is not held by it."""
+        with no manual terminalization first, prunes the unfinalized child's graph edge, so the
+        resumed run is not held by it. (Its `child_running` phase state is left for the
+        re-launch to overwrite: no reader tells it from `not_started`, issue #643 PR-5.)"""
         from tools.orchestration_runtime import (
             deactivate_child_agent, finalize_child, resume_orchestration,
         )
@@ -14546,18 +14469,9 @@ class RecordTimeoutTests(unittest.TestCase):
                 graph = json.loads(graph_path.read_text(encoding="utf-8"))
                 return [e.get("child_agent_run_id") for e in graph.get("edges", [])]
 
-            state_path = graph_path.parent / "phase_state.json"
-
-            def _child_running() -> bool:
-                doc = json.loads(state_path.read_text(encoding="utf-8"))
-                return any(v == "child_running" for steps in doc.get("node_states", {}).values()
-                           for v in steps.values())
-
             self.assertIn(arid, _children())
-            self.assertTrue(_child_running())
             resume_orchestration(repo_root, "orch_to_001")
             self.assertNotIn(arid, _children())
-            self.assertFalse(_child_running())
 
 
 class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
@@ -16650,48 +16564,6 @@ class WritePreflightConcurrencyTests(unittest.TestCase):
                 payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"),
             )
             self.assertTrue(_orchestration_meta_lock_path(repo_root, "wpl").is_file())
-
-    def test_pre_orchestration_start_waits_for_the_meta_lock(self) -> None:
-        """The deterministic half of the row below (issue #250 PR-3, found as an intermittent
-        CI failure): `pre_orchestration_start` runs at the START of `write_preflight`, before
-        its locked readiness block, and its own read-modify-write of `orchestration_meta.json`
-        was unlocked — so a `mark-dependency-readiness` landing between its read and its write
-        was clobbered. Another thread holds the meta lock, writes `dependency_readiness` while
-        holding it, and releases; the hook must not have written before that, so the flags it
-        writes back are the ones the holder wrote."""
-        import threading
-        from tools.orchestration_runtime import (
-            _orchestration_meta_exclusive_lock, pre_orchestration_start,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="lk",
-                               spec_ref="spec/component/src")
-            meta_path = repo_root / "workspace" / "orchestrations" / "lk" / "orchestration_meta.json"
-            holding = threading.Event()
-            hook_returned = threading.Event()
-            saw_hook_return_while_held = []
-
-            def holder() -> None:
-                with _orchestration_meta_exclusive_lock(repo_root, "lk"):
-                    holding.set()
-                    # give the hook time to read the meta if it does not wait for the lock
-                    hook_returned.wait(0.5)
-                    saw_hook_return_while_held.append(hook_returned.is_set())
-                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                    meta["dependency_readiness"] = {"direct_dependency_compile_readiness": True}
-                    meta_path.write_text(json.dumps(meta), encoding="utf-8")
-
-            t = threading.Thread(target=holder)
-            t.start()
-            holding.wait(5)
-            pre_orchestration_start(repo_root, "lk", event="preflight")
-            hook_returned.set()
-            t.join()
-            self.assertEqual(saw_hook_return_while_held, [False])  # the hook waited
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            self.assertTrue(meta["dependency_readiness"]["direct_dependency_compile_readiness"])
-            self.assertIn("parallel_nodes_policy", meta)  # and still did its own write
 
     def test_concurrent_preflight_and_mark_do_not_clobber_verified(self) -> None:
         """A concurrent write_preflight + mark_dependency_readiness must not
