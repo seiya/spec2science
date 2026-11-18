@@ -5082,11 +5082,10 @@ class TransportFailureTest(unittest.TestCase):
         self.assertNotIn("write-step-result", subs)
 
     def test_pre_judge_substep_dag_incomplete_fails_closed(self) -> None:
-        # Defensive in-substep path (a TOCTOU where the closure becomes unready between the
-        # pre-launch guard and the substep, or the fake bypasses the guard): the pre_judge
-        # substep (index 0) authors a FAIL pre_judge_meta, the loop breaks there (no
-        # execute/judge/post_judge), and the phase terminalizes fail_closed with NO
-        # write-step-result (skip-write + tombstone).
+        # run_phase's routing of a failed pre_judge substep whose meta records a category (the
+        # substep body writes `pass` only since issue #643 PR-5; a failed meta is seeded here):
+        # the loop breaks at index 0 (no execute/judge/post_judge), and the phase terminalizes
+        # fail_closed with NO write-step-result (skip-write + tombstone).
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -18381,48 +18380,26 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(decision.target_phase, "generate")
             self.assertEqual(decision.repair_strategy, "restart")
 
-    def test_classify_failure_gate_branches_read_the_meta_not_the_index(self) -> None:
-        # Issue #114: `classify_failure`'s pre_judge / post_judge branches are DEFENSIVE
-        # (run_phase's skip-write branch terminalizes both before classify_failure is called —
-        # driven and asserted in ValidateGateReasonFromMetaTest), but a defensive branch that
-        # names a violation the meta does not record is the very defect #114 is about. Drive
-        # the branches directly, one meta shape at a time.
+    def test_classify_failure_raises_on_a_failed_gate_substep(self) -> None:
+        # Issue #643 PR-5: run_phase's skip-write branch classifies a failed pre_judge /
+        # post_judge from its own meta and returns before classify_failure (driven in
+        # ValidateGateReasonFromMetaTest), so the copy here went. A failed gate substep that
+        # reaches classify_failure raises rather than falling through to the execute / judge
+        # routes below it.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
-            node_dir = repo / refs.run_node_dir()
-            node_dir.mkdir(parents=True, exist_ok=True)
             pj_fail = [wc.SubstepOutcome("pj", "fail", [], 0)]           # index 0 -> pre_judge
             post_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                          wc.SubstepOutcome("ex", "pass", [], 0),
                          wc.SubstepOutcome("jd", "pass", [], 0),
                          wc.SubstepOutcome("po", "fail", [], 0)]         # index 3 -> post_judge
-            for outcomes, fname, category, expected in (
-                    (pj_fail, "pre_judge_meta.json", "pre_judge_dag_incomplete",
-                     "validate_pre_judge_dag_incomplete"),
-                    (pj_fail, "pre_judge_meta.json", None,
-                     "validate_pre_judge_failed_without_category"),
-                    (post_fail, "post_judge_meta.json", "pre_judge_violation",
-                     "validate_pre_judge_violation"),
-                    (post_fail, "post_judge_meta.json", None,
-                     "validate_post_judge_failed_without_category")):
-                (node_dir / fname).write_text(
-                    json.dumps({"status": "fail", "failure_category": category}),
-                    encoding="utf-8")
-                d = c.classify_failure(refs, "validate", outcomes)
-                self.assertEqual(d.action, "fail_closed", (fname, category))
-                self.assertEqual(d.reason, expected, (fname, category))
-                (node_dir / fname).unlink()
-            # ... and with no meta on disk at all (the state the `or {}` used to hide).
-            self.assertEqual(
-                c.classify_failure(refs, "validate", pj_fail).reason,
-                "validate_pre_judge_meta_missing")
-            self.assertEqual(
-                c.classify_failure(refs, "validate", post_fail).reason,
-                "validate_post_judge_meta_missing")
+            for outcomes, substep in ((pj_fail, "pre_judge"), (post_fail, "post_judge")):
+                with self.assertRaisesRegex(RuntimeError, f"failed validate {substep}"):
+                    c.classify_failure(refs, "validate", outcomes)
 
     def _predicate_ir(self, n: int = 4) -> dict:
         """A `pass` test judging `u` and a guard test judging the `record` flag, as the corpus's
@@ -22892,27 +22869,21 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                                                min_mtime=p.stat().st_mtime - 100)[0], "fail")
 
     # -- _pre_judge_inproc -----------------------------------------------------
-    def test_pre_judge_inproc_pass_and_fail(self) -> None:
+    def test_pre_judge_inproc_records_pass(self) -> None:
+        # The readiness check is run_phase's, before any substep (issue #643 PR-5): the
+        # substep records `pass` and does not repeat it.
         import tempfile
         from unittest import mock
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
             (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
             c = self._conductor(repo)
-            # empty closure -> pass
-            with mock.patch.object(c, "_judge_pre_spawn_dag_block", lambda r: None):
+            with mock.patch.object(c, "_judge_pre_spawn_dag_block",
+                                   side_effect=AssertionError("not re-checked")):
                 out = c._pre_judge_inproc(refs, "child-pj")
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.run_node_dir() / "pre_judge_meta.json").read_text())
             self.assertEqual(meta["status"], "pass")
-            # incomplete closure -> fail with dag category
-            with mock.patch.object(c, "_judge_pre_spawn_dag_block",
-                                   lambda r: "missing ['component/dep']"):
-                out = c._pre_judge_inproc(refs, "child-pj")
-            self.assertEqual(out["returncode"], 0)  # content failure, not transport
-            meta = json.loads((repo / refs.run_node_dir() / "pre_judge_meta.json").read_text())
-            self.assertEqual(meta["status"], "fail")
-            self.assertEqual(meta["failure_category"], "pre_judge_dag_incomplete")
 
     # -- _post_judge_inproc (subprocess -> post_judge_meta + disposition) ------
     def test_post_judge_pass_writes_pass_meta(self) -> None:

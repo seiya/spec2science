@@ -15146,9 +15146,11 @@ class Conductor:
     # the cross-pipeline dependency DAG) used to run INSIDE the LLM judge leaf as its final
     # step. It is hoisted to the conductor as two deterministic substeps wrapping the judge,
     # mirroring the G1/G2 deterministic-gate hoists one and two phases up:
-    #   - pre_judge  (`_pre_judge_inproc`, index 0): before running execute or spawning a COLD
-    #     judge, fail fast when a --with-deps dependency closure is not built+validated in its
-    #     own pipeline (via `_judge_pre_spawn_dag_block`). A failure is fail_closed.
+    #   - pre_judge  (`_pre_judge_inproc`, index 0): records `pre_judge_meta.json` as `pass`.
+    #     The readiness check it once ran — fail fast, before execute or a COLD judge, when a
+    #     --with-deps dependency closure is not built+validated in its own pipeline
+    #     (`_judge_pre_spawn_dag_block`) — is `run_phase`'s, before any substep, and is
+    #     fail_closed.
     #   - post_judge (`_post_judge_inproc`, index 3): after the judge returns its verdict, run
     #     `--stage pre_judge` and record `post_judge_meta.json` with a severity `disposition`;
     #     both graded classes (leaf/judge-authored conformance, and integrity) are
@@ -15224,30 +15226,23 @@ class Conductor:
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
-        """Deterministic Validate.pre_judge: the pre-spawn dependency-DAG readiness gate,
-        promoted from a run_phase pre-loop branch to a recorded substep at index 0. Runs
-        BEFORE execute so a --with-deps closure that is not built+validated in its own
-        pipeline fails fast (no execute, no cold judge spawned). Authors pre_judge_meta.json;
-        a not-ready closure is a CONTENT failure (status=fail, rc 0) that classify_failure
-        routes to fail_closed (a non-physics integrity blocker — never warm-resumed, since no
-        judge has run). A single-node run (empty closure) passes with zero overhead."""
-        block = self._judge_pre_spawn_dag_block(refs)
-        status = "fail" if block is not None else "pass"
+        """Deterministic Validate.pre_judge, the recorded substep at index 0: it authors
+        `pre_judge_meta.json` with `status: pass` and checks nothing. The dependency-DAG
+        readiness check is `run_phase`'s, before any substep (`_judge_pre_spawn_dag_block`),
+        which fails the phase closed (`validate_pre_judge_dag_incomplete`) before this substep
+        is reached; the copy this body used to run was removed by issue #643 PR-5. The
+        substep stays because `SUBSTEPS`, `classify_validate_gate_failure` and the runtime
+        name it and its meta."""
         self._write_run_node_meta(refs, "pre_judge_meta.json", {
             "run_id": refs.run_id,
             "node_key": refs.node_key,
             "pipeline_id": refs.pipeline_id,
-            "status": status,
+            "status": "pass",
             "validation_stage": "pre_judge",
-            "failure_category": "pre_judge_dag_incomplete" if block else None,
-            "failure_excerpt": block,
+            "failure_category": None,
+            "failure_excerpt": None,
         })
-        if block is not None:
-            self.emit("judge_pre_spawn_blocked", node_key=refs.node_key, detail=block[:200])
-        # Content failure returns rc 0 so run_phase routes it via classify_failure ->
-        # fail_closed; determine_substep_status reads pre_judge_meta.status.
-        return {"returncode": 0, "stdout": "",
-                "stderr": ("[pre_judge dag incomplete]\n" + block) if block else ""}
+        return {"returncode": 0, "stdout": "", "stderr": ""}
 
     def _author_derived_validate_artifacts(self, refs: NodeRefs) -> None:
         """G6: deterministically author the derived Validate artifacts the judge leaf used
@@ -15627,9 +15622,9 @@ class Conductor:
         # members that are not ready, transitive ones included.
         # `_dependency_ready` only checks DIRECT deps, whereas `_judge_pre_spawn_dag_block`
         # checks the full `dependency.all_nodes` closure, so this also catches transitive gaps
-        # the launch gate would miss. The deterministic `pre_judge` substep (index 0) re-runs
-        # the same check on the ready path and records `pre_judge_meta.json` (its in-body fail
-        # path is defensive — this pre-launch guard is the primary readiness check).
+        # the launch gate would miss. This is the one readiness check before the judge: the
+        # deterministic `pre_judge` substep (index 0) records `pre_judge_meta.json` as `pass`
+        # without repeating it (issue #643 PR-5).
         if phase == "validate":
             block = self._judge_pre_spawn_dag_block(refs)
             if block is not None:
@@ -16376,20 +16371,12 @@ class Conductor:
             # breaks on first failure, so the failed substep is index len-1.
             failed_substep = SUBSTEPS["validate"][len(outcomes) - 1]
             if failed_substep in ("pre_judge", "post_judge"):
-                # Both deterministic gate substeps are terminalized fail_closed by run_phase's
-                # skip-write branch BEFORE classify_failure is called, so this is defensive.
-                # It classifies the same way that branch does — from the substep's OWN meta
-                # (issue #114) — so the two can never disagree about what a failure was: a
-                # DAG-readiness failure keeps `validate_pre_judge_dag_incomplete`, a gate
-                # violation keeps `validate_pre_judge_violation`, and a failure whose meta
-                # records no category (or leaves no meta at all) is reported as exactly that
-                # rather than under the one violation the substep happens to classify.
-                fname = ("pre_judge_meta.json" if failed_substep == "pre_judge"
-                         else "post_judge_meta.json")
-                gate_meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / fname)
-                return RouteDecision(
-                    "fail_closed",
-                    reason=classify_validate_gate_failure(failed_substep, gate_meta))
+                # run_phase's skip-write branch classifies a failed gate substep from its own
+                # meta and returns before calling this (issue #643 PR-5 removed the copy here).
+                # Raised rather than fallen through: the branches below would route it as an
+                # execute or judge failure.
+                raise RuntimeError(f"classify_failure: a failed validate {failed_substep} is "
+                                   f"classified by run_phase, which did not return first")
             if failed_substep == "execute":
                 # R2: an execute failure now has two kinds, disambiguated by whether execute
                 # authored a verdict.json with a failure_class:
@@ -16836,7 +16823,7 @@ class Conductor:
                 idx += 1
                 continue
 
-            decision = outcome.decision or RouteDecision("escalate", reason="no_decision")
+            decision = outcome.decision
             # The HOST's classification of this failure. The findings a repair carries are
             # selected by it, never by the diagnostician's free-text directive reason (issue #353).
             findings_reason = decision.reason
@@ -16958,11 +16945,10 @@ class Conductor:
                     and phase in ("compile", "generate")
                     and decision.action in ("retry", "reopen")
                     and decision.repair_strategy in ("reuse", "restart")):
-                trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
-                if trigger is None:
-                    self.set_status("fail", reason_code=f"{phase}_fail",
-                                    reason_detail="same_phase_reopen_no_trigger")
-                    return "fail"
+                # Every failed outcome `run_phase` returns with a retry / reopen decision lists
+                # its failed substep (the decisions it returns with an empty list are
+                # `fail_closed`, which returned above).
+                trigger = outcome.failed_substeps[-1]
                 # Read the findings excerpt BEFORE the revocation/rotation while refs still names
                 # the failed artifact (its {gate,compile_static}_meta.json failure_excerpt, or the
                 # verify meta last_fail_reason), selected by the host's route reason — the reason
@@ -16989,11 +16975,7 @@ class Conductor:
                 return "fail"
 
             # upstream target is certified -> reopen it (revoke + reset, and downstream).
-            trigger = outcome.failed_substeps[-1] if outcome.failed_substeps else None
-            if trigger is None:
-                self.set_status("fail", reason_code=f"{phase}_fail",
-                                reason_detail="reopen_no_trigger")
-                return "fail"
+            trigger = outcome.failed_substeps[-1]
             # As in the same-phase branch: read the findings excerpt BEFORE the revocation,
             # while refs still names the failed artifact (a validate.execute structural failure
             # keeps its excerpt in the failed run's trial_meta.json, and the re-run rotates the
