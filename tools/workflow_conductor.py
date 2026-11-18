@@ -12665,7 +12665,8 @@ class Conductor:
                 status = "fail"
                 # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
                 # re-authoring its source. `stale_dependency_ir` is the node's own certified IR,
-                # which the leaf does not own; `static_frontend_unavailable` is an absent parser on the
+                # which the leaf does not own (no gate emits its rc 4 since issue #643 PR-4; the
+                # arm remains); `static_frontend_unavailable` is an absent parser on the
                 # machine running the gate, without which the Fortran gates read NOTHING.
                 # classify_gate_failure fail_closes any union verdict carrying either
                 # (GATE_FAILURE_TERMINAL).
@@ -15603,10 +15604,10 @@ class Conductor:
         # conformance finding — over what is really a machine problem or a stale certified IR.
         # Neither is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
         #
-        # rc 4 and rc 5 are UNREACHABLE from this stage today (both have a single emit /
-        # construction site, reached only from post_generate); they are wired so that the day a
-        # pre_judge gate reports one, it fails closed rather than being graded by the bullet
-        # rules. rc 3 IS
+        # rc 4 and rc 5 are UNREACHABLE from this stage today: no gate emits rc 4 since issue
+        # #643 PR-4 (the arm remains), and rc 5 has a single construction site, reached only
+        # from post_generate. Both are wired so that the day a pre_judge gate reports one, it
+        # fails closed rather than being graded by the bullet rules. rc 3 IS
         # reachable: `--stage pre_judge` runs gates that read source through the front end.
         # rc 6 (issue #307) is answered by a gate this stage runs too, over the same trace the
         # post_execute stage already passed, so it is reached only if the two stages disagree.

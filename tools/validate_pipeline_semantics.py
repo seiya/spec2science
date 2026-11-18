@@ -5679,11 +5679,16 @@ def _validate_quality_check_commands(
         if entry.get("tool_name") == "run_quality_checks" and (
                 matched is None or matched.get("tool_name") != "run_quality_checks"):
             # The conductor wrote this entry from the record build_runtime logged for the
-            # quality check; without it the `ok` member below cannot be read, and a silent skip
-            # would pass a quality check that exited non-zero (issue #643, D7 and D2). A
-            # leaf-built program reaches this: the quality check runs the leaf's control-file
-            # `test` target, which can append an unterminated line to `src/command_log.jsonl`,
-            # so the host's record is glued onto it and `_find_command_log_record` finds none.
+            # quality check; without it the `ok` member below cannot be read (issue #643, D7).
+            # That member matters only on a target with neither a sweep shape nor a checked
+            # run: on any other, a quality check that exited non-zero already fails the run in
+            # the conductor (no sweep shape or checked run follows it, so their rows are
+            # `run_ok: false` and `qc_status` fails `structural_ok`). No declared target is such a one today;
+            # issue #643 PR-6's D2 run measures that case. A leaf-built program reaches this
+            # raise: the host-written `test` target of `src/Makefile` runs the program built
+            # from the leaf's sources, which can append an unterminated line to
+            # `src/command_log.jsonl`, so the host's record is glued onto it and
+            # `_find_command_log_record` finds none.
             # The run fails either way (rc 1, `post_execute_violation`), and the failure is
             # charged to the leaf's Generate repair.
             raise ValueError(
@@ -5694,7 +5699,10 @@ def _validate_quality_check_commands(
 
         # Reject failed build-runtime runs as evidence: ok!=true means the
         # quality_check itself failed, so the record cannot prove a
-        # successful quality check.
+        # successful quality check. Kept by issue #643 plan decision D2: it is the only
+        # refusal of that failure on a target with neither a sweep shape nor a checked run
+        # (none declared today; PR-6's D2 run measures that case) — on every other target the
+        # conductor's `qc_status` has already failed the run.
         if matched.get("ok") is not True:
             violations.append(
                 f"{trial_meta_path}:run_quality_checks command_id={command_id} "
