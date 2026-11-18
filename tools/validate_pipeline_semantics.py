@@ -9116,7 +9116,8 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "exit codes:\n"
             "  0  PASS\n"
-            "  1  violations found (or a load/usage failure reported as a violation)\n"
+            "  1  violations found (or a load/usage failure reported as a violation); also a\n"
+            "     broken host invariant, which raises: a traceback, no violation lines\n"
             "  2  argparse usage error\n"
             f"  {SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE}  the source-structure front end is not "
             "available on this machine — an OPERATOR problem\n"
