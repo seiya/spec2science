@@ -2688,7 +2688,6 @@ class RenderRefusalTest(unittest.TestCase):
                 capture_output=True)
 
     def test_the_two_readers_of_a_procedure_binding_agree(self) -> None:
-        self.assertEqual(runner_ir.PROCEDURE_FUNCTIONS, pe.PROCEDURE_FUNCTIONS)
         raw = {"procedure": " inputs.lam * u ", "calls": "state.n",
                "record": {"t": "state.st", "u": ["state.a", "state.b"]}}
         kind, (text, calls, record) = runner_ir.drive_binding(raw)

@@ -204,26 +204,6 @@ QUANTITY_RE = _QUANTITY_RE
 
 #: The driver's committed step count, a capture name beside the time variable (grammar 6).
 STEP_CAPTURE = "step"
-#: Names a snapshot schema variable may not take (issue #644 O13): the driver's and the
-#: harness's own keys, the capture group words, and the words a capture layout and the
-#: `tests.md` history lines spell beside a variable's name. The same set as
-#: `runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS` (a test holds the two equal); a name containing
-#: `RESERVED_NAME_SEPARATOR` is refused with them.
-RESERVED_VARIABLE_NAMES: frozenset[str] = frozenset({
-    "t", STEP_CAPTURE, "case_id", "n", "count", "complete", "every", "none",
-    "initial", "final", "history", "restart_point", "series"})
-RESERVED_NAME_SEPARATOR = "__"
-
-
-def reserved_name_reason(name: str) -> str | None:
-    """Why ``name`` cannot name a snapshot variable or a series column, or None."""
-    if name in RESERVED_VARIABLE_NAMES:
-        return (f"it is the driver's or the harness's own name "
-                f"({sorted(RESERVED_VARIABLE_NAMES)})")
-    if RESERVED_NAME_SEPARATOR in name:
-        return (f"it contains {RESERVED_NAME_SEPARATOR!r}, which a capture layout joins "
-                "names with")
-    return None
 
 #: The comparison operators a predicate admits.
 PRIMARY_OPS: frozenset[str] = frozenset({"eq", "ne", "le", "ge", "lt", "gt"})
@@ -2426,6 +2406,7 @@ def validate_primary_predicate_schema(
     tv = schema.get("time_variable")
     has_time = isinstance(tv, str) and bool(tv.strip())
     capture_names = set(variables) | ({tv.strip()} if has_time else set()) | {STEP_CAPTURE}
+    from tools.runner_ir import reserved_name_reason   # the one reserved-name set (issue #644 O13)
     for name in sorted(variables):
         reason = reserved_name_reason(name)
         if reason is not None:
@@ -4448,12 +4429,6 @@ def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
     return v
 
 
-#: The functions a `{procedure: expr}` may call: elementwise over its array argument, each with
-#: a spelling in every language backend that lowers the expression (`runner_ir`).
-PROCEDURE_FUNCTIONS: frozenset[str] = frozenset(
-    {"abs", "sqrt", "exp", "log", "sin", "cos", "min", "max"})
-
-
 def _procedure_violations(ir: dict[str, Any], binding: Binding, dummy: dict[str, Any], loc: str,
                           schema_vars: dict[str, list[str]], bound: set[str],
                           v: list[str]) -> None:
@@ -4491,6 +4466,8 @@ def _procedure_violations(ir: dict[str, Any], binding: Binding, dummy: dict[str,
             continue
         v.append(f"{loc}: the expression reads {ref.name!r}; a procedure expression reads the "
                  f"prototype's real in dummies {sorted(readable)}, inputs.* and constants")
+    # The functions a `{procedure: expr}` may call: the renderer's set, the one that lowers them.
+    from tools.runner_ir import PROCEDURE_FUNCTIONS
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = node.func.id if isinstance(node.func, ast.Name) else None
@@ -4979,6 +4956,7 @@ def _infrastructure_series_violations(ir: dict[str, Any]) -> list[str]:
             or len(set(listed)) != len(listed) or STEP_CAPTURE not in listed:
         v.append(f"(h) step_series.names must be a list of distinct names that holds "
                  f"{STEP_CAPTURE!r}; got {names!r}")
+    from tools.runner_ir import reserved_name_reason
     for name in listed:
         reason = reserved_name_reason(name) if name != STEP_CAPTURE else None
         if reason is not None:
@@ -5193,6 +5171,7 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                 or len(set(listed)) != len(listed) or set(listed) != expected:
             v.append(f"(h) step_series.names must be exactly {sorted(expected)} (step and the "
                      f"min / max of every array state); got {names!r}")
+    from tools.runner_ir import reserved_name_reason
     for name in (listed if series is not None else []):
         reason = reserved_name_reason(name) if name != STEP_CAPTURE else None
         if reason is not None:

@@ -26347,8 +26347,8 @@ class DriveGateStageTests(unittest.TestCase):
                 (["step", 3], shape + "['step', 3]"),              # a non-string
                 ("step", shape + "'step'"),                        # no list
                 (_OMIT, shape + "None"),                           # no `names` key
-                (["step", "count"], "(h) step_series name 'count' is refused: it is the "
-                                    "driver's or the harness's own name"),
+                (["step", "count"], "(h) step_series name 'count' is refused: it is a "
+                                    "reserved name"),
                 (["step", "a__b"], "(h) step_series name 'a__b' is refused: it contains "
                                    "'__'")):
             def series(ir, names=names):

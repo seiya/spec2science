@@ -46,6 +46,7 @@ import numpy as np
 
 from tools import capture_store
 from tools import primary_evidence as pe
+from tools import runner_ir
 from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
@@ -1688,9 +1689,8 @@ class SchemaGateTest(unittest.TestCase):
         ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
                                     {"name": "t", "shape_expr": "[nx]"}])
         # grammar 6 refuses `t` as a variable name; the rank check still reads it as rank 0
-        reserved = ["state_snapshots.schema.variables: 't' is not a variable name: it is the "
-                    "driver's or the harness's own name "
-                    f"({sorted(pe.RESERVED_VARIABLE_NAMES)})"]
+        reserved = ["state_snapshots.schema.variables: 't' is not a variable name: it is a "
+                    f"reserved name ({sorted(runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS)})"]
         self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), reserved)
         self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), reserved)
 
@@ -2911,19 +2911,19 @@ class Grammar6Test(unittest.TestCase):
             preds, case_ids={"a", "b"}, test_ids=["t_mass"], schema=schema, cases=cases, **kw)
         self.assertEqual(gate([{**HMIN, "expr": "min(final.h) + final.step"}]), [])
         # issue #644 O13: every reserved word, and any name holding the layout separator
-        # (kills a mutant dropping a word from RESERVED_VARIABLE_NAMES, or the `__` clause of
-        # `reserved_name_reason`)
-        self.assertEqual(pe.RESERVED_VARIABLE_NAMES, frozenset({
+        # (kills a mutant dropping a word from runner_ir's HARNESS_RESERVED_SNAPSHOT_KEYS, the one
+        # set the gate reads, or the `__` clause of `reserved_name_reason`)
+        self.assertEqual(runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS, frozenset({
             "t", "step", "case_id", "n", "count", "complete", "every", "none", "initial",
             "final", "history", "restart_point", "series"}))
-        for name in sorted(pe.RESERVED_VARIABLE_NAMES) + ["a__b", "__h", "h__"]:
+        for name in sorted(runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS) + ["a__b", "__h", "h__"]:
             with self.subTest(name=name):
                 bad = {**schema, "variables": schema["variables"] + [
                     {"name": name, "shape_expr": "scalar"}]}
                 v = pe.validate_primary_predicate_schema(
                     [HMIN], case_ids={"a", "b"}, test_ids=["t_mass"], schema=bad, cases=cases)
                 self.assertIn(f"{name!r} is not a variable name: ", v[0])
-                self.assertIn("own name" if "__" not in name else "contains '__'", v[0])
+                self.assertIn("reserved name" if "__" not in name else "contains '__'", v[0])
         # one underscore is a name like any other
         ok = {**schema, "variables": schema["variables"] + [{"name": "h_b", "shape_expr": "scalar"}]}
         self.assertEqual(pe.validate_primary_predicate_schema(
@@ -6924,8 +6924,7 @@ class InfrastructureSeriesTest(unittest.TestCase):
                 ("no list", self._ir("step"), [shape]),
                 ("no names", self._ir(omit=True), [shape]),
                 ("reserved", self._ir(["step", "count"]),
-                 ["(h) step_series name 'count' is refused: it is the driver's or the "
-                  "harness's own name"]),
+                 ["(h) step_series name 'count' is refused: it is a reserved name"]),
                 ("separator", self._ir(["step", "a__b"]),
                  ["(h) step_series name 'a__b' is refused: it contains '__'"]),
                 ("both", self._ir(["count"]),
