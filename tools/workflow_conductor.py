@@ -7229,9 +7229,11 @@ class Conductor:
         ir_dir.mkdir(parents=True, exist_ok=True)
         ir_root = ir_dir.resolve()
         target = ir_dir / "spec.ir.yaml"
-        # Defense-in-depth containment, mirroring `_write_leaf_bundle_artifacts`: every path here
-        # is host-composed from `refs`, so an escape means a caller handed this method refs it did
-        # not derive — fail closed loudly rather than writing outside the IR directory.
+        # Defense-in-depth containment: every path here is host-composed from `refs`, so an
+        # escape means a caller handed this method refs it did not derive — fail closed loudly
+        # rather than writing outside the IR directory. (`_write_leaf_bundle_artifacts` carried
+        # the same refusal until issue #643 PR-4, WC2-68: the producer's acceptance,
+        # `logical_path_violations`, refuses its leaf-authored paths before it runs.)
         if not target.resolve().is_relative_to(ir_root):
             raise RuntimeError(
                 f"pure IR artifact {target.resolve()} resolves outside {ir_root} — "

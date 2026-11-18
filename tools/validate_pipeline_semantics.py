@@ -9172,15 +9172,15 @@ def main(argv: list[str] | None = None) -> int:
             "  2  argparse usage error\n"
             f"  {SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE}  the source-structure front end is not "
             "available on this machine — an OPERATOR problem\n"
-            f"  {STALE_DEPENDENCY_IR_EXIT_CODE}  a violation reports a stale/corrupt certified "
-            "IR — re-certify, do not re-author\n"
+            f"  {STALE_DEPENDENCY_IR_EXIT_CODE}  a stale/corrupt certified IR — re-certify, do not "
+            "re-author (no gate emits it since issue #643 PR-4)\n"
             f"  {HOST_AUTHORED_ARTIFACT_EXIT_CODE}  a violation's subject is a file this "
             "repository authors, not the leaf — fix the producer\n"
             f"  {DEVICE_KERNELS_ABSENT_EXIT_CODE}  the traced run executed none of the kernels "
             "the node defines — check the device\n"
             "\n"
-            "A caller routes codes 3 to 6 TERMINAL: 3, 4 and 5 name conditions no re-authored\n"
-            "source can clear, and 6 one whose measured cause is the site's device and\n"
+            "A caller routes codes 3 to 6 TERMINAL: 3 and 5 name conditions no re-authored\n"
+            "source can clear (as 4 did), and 6 one whose measured cause is the site's device and\n"
             "driver, which a retry meets again. They are answered by the branch that knows;\n"
             "nothing in the output text carries the decision.\n"
         ),
@@ -9356,9 +9356,10 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
         print("pipeline semantic validation: FAIL")
         for line in violations:
             print(f"- {line}")
-        # The TYPE decides, not the text (see `StaleDependencyIRViolation`). This precedes the
-        # `return 1` so that a stale IR co-occurring with ordinary content violations still routes
-        # TERMINAL: the ordinary ones cannot be repaired either while the IR is stale.
+        # The TYPE decides, not the text (`_exit_code_for_violations`). This precedes the
+        # `return 1` so that a host-authored or device-absent violation co-occurring with ordinary
+        # content violations still routes TERMINAL. (A stale certified IR routed the same way
+        # until issue #643 PR-4; no gate constructs `StaleDependencyIRViolation` since.)
         return _exit_code_for_violations(violations)
 
     print("pipeline semantic validation: PASS")
