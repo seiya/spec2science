@@ -28,9 +28,9 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
                       execute)
 
     def test_the_quality_check_presets_are_the_control_files(self) -> None:
-        # The argv table and the control-file target table name ONE preset set: a preset the
-        # server runs whose target the gate does not require (or the reverse) would pass a
-        # record the control file cannot have produced.
+        # The argv table and the control-file target table name ONE preset set, with one target
+        # each: `phase_04_validate.md` lists the presets from the control file's table, and the
+        # library runs them from this one.
         self.assertEqual(set(execute.QUALITY_CHECK_COMMANDS),
                          set(control_file.QUALITY_CHECK_PRESETS))
         for preset, (executable, target) in execute.QUALITY_CHECK_COMMANDS.items():
@@ -59,30 +59,6 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
             execute.quality_check_env("/o", "/b", "/r", "x_runner", "/s.yaml", ["c1", "c2"]),
             {"OBJDIR": "/o", "BINDIR": "/b", "RUNDIR": "/r", "BIN": "x_runner",
              "SPEC": "/s.yaml", "CASES": "c1 c2"})
-
-    def test_quality_check_preset_reads_the_recorded_argv(self) -> None:
-        cases = {
-            ("make", "test"): "make_test",
-            ("/usr/bin/make", "-j4", "test"): "make_test",
-            ("MAKE", "TEST"): "make_test",
-            ("make", "check"): "make_check",
-            ("make", "", "check"): "make_check",
-            ("make",): None,
-            ("make", "all"): None,
-            ("make", "tests"): None,
-            ("ctest",): None,
-            ("pytest", "-q"): None,
-            # Another executable carrying a preset's target token is not that preset.
-            ("ninja", "test"): None,
-            ("ctest", "test"): None,
-            ("gmake", "check"): None,
-            ("bash", "-c", "make test"): None,
-            ("test", "make"): None,
-            (): None,
-        }
-        for argv, expected in cases.items():
-            with self.subTest(argv=argv):
-                self.assertEqual(execute.quality_check_preset(list(argv)), expected)
 
     def test_build_artifacts_and_binary_missing(self) -> None:
         self.assertEqual(execute.BUILD_ARTIFACT_SUFFIXES, (".o", ".a", ".so"))

@@ -236,8 +236,8 @@ def _run_command(
     started = time.monotonic()
     prefix = list(sandbox_argv_prefix or [])
     # `command` stays the command the caller asked for in the log and the result, and the
-    # confinement it ran under is recorded beside it: a reader of `command` (the quality-check
-    # preset match, `build_execute.quality_check_preset`) reads the same argv either way.
+    # confinement it ran under is recorded beside it, so a reader of `command` reads the same
+    # argv either way.
     sandbox_fields: dict[str, Any] = {"sandbox_argv_prefix": prefix} if prefix else {}
     pgid: int | None = None
 

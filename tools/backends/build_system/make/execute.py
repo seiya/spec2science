@@ -1,14 +1,12 @@
 """The `make` build system's `build_execute` capability (issue #424 PR-2).
 
 What the in-process Build / Validate.execute bodies (`tools/workflow_conductor.py`
-`_build_inproc` / `_execute_inproc`), the build-runtime server's `compile_project` /
-`run_quality_checks` (`tools/build_runtime.py`) and the post_execute
-quality-check gate (`tools/validate_pipeline_semantics.py`) need to know about driving `make`:
-the argv a build runs, the variables it is handed, the quality-check preset it re-runs the
-binary through, and what a build that reported success without a binary means. The values moved
-unchanged out of those three modules; `quality_check_preset` is new, answering for this build
-system's presets only where the validator's reader also answered `ctest` / `pytest` (equivalent
-for every target this tree declares). The neutral core now asks the registry
+`_build_inproc` / `_execute_inproc`) and the build-runtime library's `compile_project` /
+`run_quality_checks` (`tools/build_runtime.py`) need to know about driving `make`: the argv a
+build runs, the variables it is handed, the quality-check preset it re-runs the binary through,
+and what a build that reported success without a binary means. The values moved unchanged out
+of the conductor, the library and the validator; the validator's quality-check reader, and the
+preset match it called here, went in issues #643 and #674. The neutral core now asks the registry
 (`registry.capability_module("build_system", <value>, "build_execute")`).
 
 The file make reads, and where it writes its command log, are `control_file`'s
@@ -20,7 +18,6 @@ Stdlib only; imports nothing from the neutral core.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import Any
 
 #: The `run_quality_checks` preset Validate.execute re-runs the built binary through (the
@@ -96,22 +93,6 @@ def checked_build_overrides(obj_dir: str, bin_dir: str, exe: str, rules: Mapping
 def build_argv(target: str | None, jobs: int, extra_args: Iterable[str]) -> list[str]:
     """The argv `compile_project` runs: `make -j<jobs> [<target>] <extra_args>…`."""
     return ["make", f"-j{jobs}", *([target] if target else []), *extra_args]
-
-
-def quality_check_preset(argv: Iterable[str]) -> str | None:
-    """The preset of `QUALITY_CHECK_COMMANDS` a recorded quality-check argv ran, or `None`.
-
-    argv[0]'s basename must be the preset's executable and the preset's target must be among the
-    remaining tokens (case-insensitive, as the record is compared). `None` for anything else —
-    another executable, or `make` naming neither target — which the gate refuses."""
-    tokens = [str(token).strip().lower() for token in argv if str(token).strip()]
-    if not tokens:
-        return None
-    executable, rest = Path(tokens[0]).name, set(tokens[1:])
-    for preset, (preset_executable, target) in QUALITY_CHECK_COMMANDS.items():
-        if executable == preset_executable and target in rest:
-            return preset
-    return None
 
 
 def quality_check_env(obj_dir: str, bin_dir: str, run_dir: str, exe: str, spec_path: str,

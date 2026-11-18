@@ -2606,19 +2606,18 @@ class RegistryConsistencyTests(unittest.TestCase):
 
     #: The same, for the build-system and parallel capabilities a package carries (issue #289,
     #: R4-b PR-3): the conductor's renderers and failure classifier, the validator's control-file
-    #: and quality-check gates, the runtime's in-source placement, and the presence floor.
+    #: gates, the runtime's in-source placement, and the presence floor.
     _OTHER_CAPABILITY_CONTRACT: ClassVar[dict[tuple[str, str], tuple[str, ...]]] = {
         ("build_system", "control_file"): (
             "CONTROL_FILE_BASENAME", "CONTROL_FILE_BASENAMES", "BUILDS_IN_SOURCE",
-            "QUALITY_CHECK_PRESETS", "targets", "render_node", "render_from_graph",
+            "QUALITY_CHECK_PRESETS", "render_node", "render_from_graph",
             "classify_build_failure", "validate_src_dir", "validate_test_no_relink",
             "validate_test_invokes_cases", "object_name"),
         # Issue #424 PR-2: what the in-process Build / Validate.execute bodies, the server's
-        # build and quality-check argv, the post_execute quality-check gate, the source
-        # fingerprint and the validate key read.
+        # build and quality-check argv, the source fingerprint and the validate key read.
         ("build_system", "build_execute"): (
             "build_overrides", "build_argv", "QUALITY_CHECK_PRESET", "QUALITY_CHECK_COMMANDS",
-            "quality_check_preset", "quality_check_env", "BUILD_ARTIFACT_SUFFIXES",
+            "quality_check_env", "BUILD_ARTIFACT_SUFFIXES",
             "BINARY_MISSING"),
         ("parallel", "parallel_directives"): ("presence_floor", "lowering_plan_declines"),
         # Issue #307: the launch seam's trace half (`tools/host_execution.py`), and the readers

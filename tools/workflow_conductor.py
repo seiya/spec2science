@@ -12700,8 +12700,8 @@ class Conductor:
         the shape's whenever the shape imposes one; and for one some shape of which runs more than
         one thread per rank (`threads_checked`, `TargetProfile.thread_count_observable`), the
         thread count it reports must be the shape's. The top-level
-        `checks` and `comparison` are the certified shape's, which the post-execute gate reads
-        as it did before the sweep. `output_format` is the target's: every shape's captures and
+        `checks` and `comparison` are the certified shape's, as they were before the sweep; no
+        gate reads this record. `output_format` is the target's: every shape's captures and
         the reference's are read through its capture store."""
         def _object(path: Path) -> dict[str, Any]:
             # A runner output that is unreadable, not UTF-8, not JSON or not an object reads as
