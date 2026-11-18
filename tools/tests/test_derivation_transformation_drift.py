@@ -1463,7 +1463,14 @@ PINNED_RENDER: dict[str, str] = {
     # diffing `render_tuple()` against main cfde9a2e's: that row and no other.) The digest
     # `render-22` shipped with at cfde9a2e:
     "render-22@cfde9a2e": "bf48dafee8de7bd5f9068f80d7d175d39bed916e5c8a4140d9785b5734abdf8c",
-    "render-22": "4c38f647a74aaf2fca89b29a433f15f9ab43ea3d4877e28f6e874fd7a6b16936",
+    # render-22 re-pinned in place by issue #643 PR-5, behaviour-preserving:
+    # `_interface_header_text` loses its rewrap of the renderer's `ValueError` as
+    # `interface_header_unrenderable` (WC2-70); the §5.1 published-surface pin at Compile refuses
+    # such an IR first, and the header text of every renderable IR is unchanged. (Measured by
+    # diffing `render_tuple()` against main ed5b95e2's: that row and no other.) The digest
+    # `render-22` shipped with at ed5b95e2:
+    "render-22@ed5b95e2": "4c38f647a74aaf2fca89b29a433f15f9ab43ea3d4877e28f6e874fd7a6b16936",
+    "render-22": "f2f0743a57a193a72c37f1f247cd75adb999a9d86d7367629d302213d12fe3e6",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1718,7 +1725,17 @@ PINNED_BUILD: dict[str, str] = {
     # docstrings of `tools/remote_execution.py`.) The digest `build-5` shipped with at
     # 31dfcbf1:
     "build-5@31dfcbf1": "e6d209160c8cc5dfba1b79cc523f60537ba8439e2742ee576da8adb33d84fb05",
-    "build-5": "db34c0c66ebfd344f5ed12276ecfcb3ecdbfca7f29495c842aba382461cd2931",
+    # build-5 re-pinned in place by issue #643 PR-5, behaviour-preserving: `_build_inproc` no
+    # longer writes `binary_meta.json#source_ir_id`, which no code reads (OR1-52; the chain binds
+    # by the upstream output hash in the key), nor refuses a staging set that moved between its
+    # two `_stage_dependency_sources` calls over the one closure binding (WC4-23), and its
+    # comments drop the retired exit code 4; `_closure_libraries` loses its rewrap of
+    # `LibraryDeclarationError` (WC2-60; the driver decides the declarations before any phase).
+    # The commands and the binary of every build do not move. (Measured by diffing
+    # `build_tuple()` against main ed5b95e2's: those two rows and no other.) The digest `build-5`
+    # shipped with at ed5b95e2:
+    "build-5@ed5b95e2": "db34c0c66ebfd344f5ed12276ecfcb3ecdbfca7f29495c842aba382461cd2931",
+    "build-5": "c2c0b3fdaa83ad10495fb593b7dc5d377bc9b66512467c3e86103f9e8f240894",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2113,7 +2130,18 @@ PINNED_EXECUTE: dict[str, str] = {
     # docstrings of `tools/remote_execution.py`.) The digest `execute-22` shipped with at
     # 31dfcbf1:
     "execute-22@31dfcbf1": "786b9f363017168893cc886ecbee5a155154500da3ec50d004cce0984b0ed57c",
-    "execute-22": "66ccc17eaea8853193d785e871de1a0d0680135518f123bd5ff0c634d1242e89",
+    # execute-22 re-pinned in place by issue #643 PR-5, behaviour-preserving: `_execute_inproc`
+    # loses its refusal of a Build with no checked binary (WC5-04; the stamp requires
+    # `bin_checked/<exe>` when the compiler declares checked flags), the RuntimeError wraps of
+    # the case-file writers' `PrimaryEvidenceError` (WC5-05/06; the same rc 1 fail_closed with
+    # the owner's message), `trial_meta.json#repo_revision` (WC5-19, no reader) and the arm of
+    # the retired exit code 4, which no gate answers since PR-4; `_author_quality_check` loses
+    # `state_agreement_applies`, a restatement of the shape's status (WC4-65b, no reader). A
+    # run's argv, case files, status and shapes do not move. (Measured by diffing
+    # `execute_tuple()` against main ed5b95e2's: those two rows and no other.) The digest
+    # `execute-22` shipped with at ed5b95e2:
+    "execute-22@ed5b95e2": "66ccc17eaea8853193d785e871de1a0d0680135518f123bd5ff0c634d1242e89",
+    "execute-22": "34e2125490ad2ae1baab7477eb8c8ba3be17f3dfea1a1d893f31851f35133f91",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2362,7 +2390,17 @@ PINNED_VERDICT: dict[str, str] = {
     # `docs/design/check_inventory_643/verify/ver_defects.md` item 3 found 0 ready-with-no-fact
     # dependency rows over 876 recorded aggregates. The digest `verdict-20` shipped with at 03643f31:
     "verdict-20@03643f31": "6a8e679f3d71687194e6e84e27f4a10895c6db3def95cc1c762d2972e84ca00e",
-    "verdict-20": "dd02f3c2f75fec924679d7c319b748f1d7b35a7834feccc4525108d16ff9b87b",
+    # verdict-20 re-pinned in place by issue #643 PR-5, behaviour-preserving:
+    # `_author_derived_validate_artifacts` no longer writes `aggregate_verdict.json`'s
+    # `dependency_set` and `dependency_nodes` (WC5-40, WC5-41c; no reader in code or documents)
+    # and loses two `except Exception` around a token normalisation that cannot raise and a
+    # readiness probe whose raise now ends the attempt fail_closed rather than `blocked` (WC5-41;
+    # neither certifies). `aggregate_verdict`, `self_verdict`, `blocked`, `blocking_direct_deps`,
+    # `summary.json` and `validate_meta.json` do not move, and no consumer key binds a Validate
+    # output hash. (Measured by diffing `verdict_tuple()` against main ed5b95e2's: that row and
+    # no other.) The digest `verdict-20` shipped with at ed5b95e2:
+    "verdict-20@ed5b95e2": "dd02f3c2f75fec924679d7c319b748f1d7b35a7834feccc4525108d16ff9b87b",
+    "verdict-20": "2e7a0a471203d54aabb53bd3cae9c4166ab37833eb108e9cf889fd51dfb6f211",
 }
 
 
