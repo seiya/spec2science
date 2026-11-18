@@ -20462,6 +20462,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
             with self._patch_syntax(self._failing_whole_stage_syntax()):
                 out = c._gate_syntax_check(refs, "child-1")
+        self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "syntax_error")
         self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
         self.assertIn("whole-run diagnostic", out["failure_excerpt"])
