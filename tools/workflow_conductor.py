@@ -12709,10 +12709,10 @@ class Conductor:
         own (so verify is now a semantic pass holding no gate — the spec-cross-reference invariants
         V1/V3/V5 — reached only on a deterministically-clean IR). Runs, in the same order/idiom
         as the post_build gate in _build_inproc, two gates: validate_workspace_root.py (bare),
-        then validate_pipeline_semantics --stage compile. Well-formedness of spec.ir.yaml and
-        ir_meta.json is the --stage compile validator's own first finding (`invalid yaml` /
-        `must be mapping` / `ir_meta.json: must be json object`), so it needs no separate
-        well-formedness gate ahead of it (issue #180). A
+        then validate_pipeline_semantics --stage compile. Well-formedness of spec.ir.yaml is the
+        --stage compile validator's own first finding (`invalid yaml` / `must be mapping`), so it
+        needs no separate well-formedness gate ahead of it (issue #180); ir_meta.json is
+        host-written and the stage does not read it (issue #643). A
         violation is a CONTENT failure (status=fail + failure_category, rc 0) routed by
         classify_compile_static_failure back to compile.generate via a warm-resume reopen; only
         an unexpected error surfaces as a transport fail_closed (caught in
