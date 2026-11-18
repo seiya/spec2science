@@ -5685,8 +5685,8 @@ def _validate_quality_check_commands(
             # the conductor (no sweep shape or checked run follows it, so their rows are
             # `run_ok: false` and `qc_status` fails `structural_ok`). No declared target is such a one today;
             # issue #643 PR-6's D2 run measures that case. A leaf-built program reaches this
-            # raise: the host-written `test` target of `src/Makefile` runs the program built
-            # from the leaf's sources, which can append an unterminated line to
+            # raise: the quality-check target of the host-written control file in `src/` runs
+            # the program built from the leaf's sources, which can append an unterminated line to
             # `src/command_log.jsonl`, so the host's record is glued onto it and
             # `_find_command_log_record` finds none.
             # The run fails either way (rc 1, `post_execute_violation`), and the failure is
