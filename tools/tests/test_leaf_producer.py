@@ -3067,9 +3067,11 @@ class PureHarnessShapeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_runner_output_contract_document_missing", str(caught.exception))
-        with self.assertRaises(RuntimeError) as caught2:
+        # The reviewer's read carries no name of its own since issue #643: its `OSError`
+        # names the file.
+        with self.assertRaises(OSError) as caught2:
             self.c._build_leaf_harness_verify_context(self.refs)
-        self.assertIn("pure_runner_output_contract_document_missing", str(caught2.exception))
+        self.assertIn("RUNNER_OUTPUT_CONTRACT.md", str(caught2.exception))
 
     def test_both_contexts_raise_when_a_node_artifact_is_unreadable(self) -> None:
         """Issue #467: every node artifact either harness context reads RAISES the named

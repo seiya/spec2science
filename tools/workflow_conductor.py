@@ -7056,18 +7056,7 @@ class Conductor:
         looked. The reviewer re-authors this file with its verdict (`_write_verify_ir_meta`)."""
         ir_dir = self.repo_root / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
-        ir_root = ir_dir.resolve()
-        target = ir_dir / "spec.ir.yaml"
-        # Defense-in-depth containment: every path here is host-composed from `refs`, so an
-        # escape means a caller handed this method refs it did not derive — fail closed loudly
-        # rather than writing outside the IR directory. (`_write_leaf_bundle_artifacts` carried
-        # the same refusal until issue #643 PR-4, WC2-68: the producer's acceptance,
-        # `logical_path_violations`, refuses its leaf-authored paths before it runs.)
-        if not target.resolve().is_relative_to(ir_root):
-            raise RuntimeError(
-                f"pure IR artifact {target.resolve()} resolves outside {ir_root} — "
-                "refusing to write")
-        target.write_text(self._leaf_ir_yaml(doc["ir"]), encoding="utf-8")
+        (ir_dir / "spec.ir.yaml").write_text(self._leaf_ir_yaml(doc["ir"]), encoding="utf-8")
         self._write_ir_meta(refs, verification_status="pending", last_fail_reason=None,
                             issue_severity=None, attempts=attempts)
 
@@ -7163,8 +7152,6 @@ class Conductor:
         # the record names one contract version (the workshop template counter it also carried
         # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
         # `workshop_prompt_contract_version`; its readers keep accepting both.
-        if leaf_mode != "workshop":
-            raise ValueError(f"{basename} leaf_mode must be workshop (got {leaf_mode!r})")
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
@@ -7642,7 +7629,8 @@ class Conductor:
         launched_monotonic: float
         #: The lineage record's `ended_by` after this launch (None: still open).
         ended_by: str | None
-        #: True when a wrapper result ended the leaf (`spawn_leaf(cancel_event=)`).
+        #: True when a wrapper result ended a CLI leaf (`spawn_leaf(cancel_event=)`); False on
+        #: an HTTP launch.
         cancelled: bool
         wrapper_calls: int
         model_turns: int | None
@@ -7710,11 +7698,8 @@ class Conductor:
             host_sources = set(seeds)
         for key, value in pure_context.items():
             if key == "runner_document":
-                runner = self._runner_basename(refs)
-                if runner not in seeds:
-                    raise RuntimeError(
-                        f"workshop seeds: the context carries the runner and {runner} is not "
-                        f"in {refs.source_dir()}/src")
+                # Seeded from `src/` above: the context builder read the same file
+                # (`pure_runner_document_missing` when it is absent).
                 continue
             expand = spec.workshop_seed_expanders.get(key)
             if expand is not None:
@@ -7850,9 +7835,8 @@ class Conductor:
         copied over the seeds (`workshop_tree.seed_from_snapshot`: a host-placed name is never
         copied back). Raises on a host precondition; the loop routes it fail_closed."""
         from tools.workshop_tree import seed_from_snapshot, seed_tree, write_lineage_record
+        # A cold preparation (`resume=False`) creates the home or raises.
         isolation = self._prepare_workshop_home(entry, lineage_id, resume=False)
-        if isolation is None:  # pragma: no cover - a cold preparation creates or raises
-            raise RuntimeError(f"workshop lineage {lineage_id}: no home was prepared")
         paths = self._workshop_paths(entry, isolation, lineage_id)
         paths.make_work_dirs()
         seed_tree(paths, seeds)
@@ -8206,14 +8190,9 @@ class Conductor:
             raise WorkshopEndpointNotStopped(
                 f"workshop wrapper endpoint of {child_arid}: {server.in_flight()} handler(s) "
                 "still running after stop; the tree is not snapshotted under a live operation")
+        # CLI only: an HTTP launch a wrapper result ended returns rc 0 after a tool call, so no
+        # reader below tells it from a clean one (its end is in the lineage record's `ended_by`).
         cancelled = cancel is not None and cancel.is_set()
-        if loop is not None:
-            # A wrapper result ended the lineage inside the host loop: the twin of the CLI's
-            # cancel event (the bound is already recorded by `run_wrapper_op`). NOT PINNED, and
-            # kept: such a launch returns rc 0, so nothing below reads a difference today; it
-            # keeps `_WorkshopTurn.cancelled` true to what happened for the next reader of it.
-            from tools.llm_workshop_loop import ENDED_BY_WRAPPER
-            cancelled = loop.ended == ENDED_BY_WRAPPER
         if not cancelled:
             if proc.timed_out:
                 end_lineage(paths, "lineage_timeout"
@@ -8976,16 +8955,8 @@ class Conductor:
         so the reviewer reads the same document the phase contract names."""
         from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
-        try:
-            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
-        try:
-            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
+        severity_rubric = _generate_verify_severity_rubric_section(
+            phase_doc_path.read_text(encoding="utf-8"))
         return {
             "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
@@ -9013,23 +8984,10 @@ class Conductor:
         than by the reviewer's recollection of it."""
         from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-        contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
-        try:
-            contract_text = contract_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
+        contract_text = (self.repo_root / RUNNER_OUTPUT_CONTRACT_REF).read_text(encoding="utf-8")
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
-        try:
-            phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_missing: {phase_doc_path}: {exc}") from exc
-        try:
-            severity_rubric = _generate_verify_severity_rubric_section(phase_doc_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
+        severity_rubric = _generate_verify_severity_rubric_section(
+            phase_doc_path.read_text(encoding="utf-8"))
         return {
             "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
@@ -9107,7 +9065,7 @@ class Conductor:
         `pure_context_assembly_failed` branch and aborting the conductor instead — the issue #168
         shape where a recoverable named outcome becomes a crash. Raising HERE keeps the named
         outcome.
-        `_run_leaf_reviewer_substep` turns the `RuntimeError` into a `pure_context_assembly_failed`
+        `_run_leaf_reviewer_substep` turns the exception into a `pure_context_assembly_failed`
         fail-closed outcome and spawns no leaf, which is the pure form of the SKILL's rule that
         the judge does not begin without its evidence.
 
@@ -9119,19 +9077,10 @@ class Conductor:
         paths = self._leaf_judge_document_refs(refs)
 
         def _read(key: str) -> str:
-            path = self.repo_root / paths[key]
-            try:
-                return path.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as exc:
-                raise RuntimeError(f"pure_{key}_missing: {path}: {exc}") from exc
+            return (self.repo_root / paths[key]).read_text(encoding="utf-8")
 
-        contract_text = _read("runner_output_contract_document")
-        try:
-            runner_output_contract = _runner_output_contract_sections(contract_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                "pure_runner_output_contract_document_unsliceable: "
-                f"{paths['runner_output_contract_document']}: {exc}") from exc
+        runner_output_contract = _runner_output_contract_sections(
+            _read("runner_output_contract_document"))
 
         ir_text = _read("io_contract_document")
         try:
@@ -9186,8 +9135,6 @@ class Conductor:
         # the record names one contract version (the workshop template counter it also carried
         # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
         # `workshop_prompt_contract_version`; its readers keep accepting both.
-        if leaf_mode != "workshop":
-            raise ValueError(f"verdict_meta.json leaf_mode must be workshop (got {leaf_mode!r})")
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
@@ -9429,11 +9376,8 @@ class Conductor:
                  for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
         if outputs is None:
             return lines, "no per-command capture of the launch"
-        writable = _codex_shell_writable_root(Path(paths.config))
-        if writable is not None:
-            # `open_cold` refuses this before a launch; kept as the backstop, since the
-            # verdict below reads a file under it.
-            return lines, f"the lineage home is under {writable}, which a codex shell can write"
+        # The rollout lives under the lineage home, which `open_cold` refused before the launch
+        # if a codex shell could write it.
         scan = scan_launch(Path(paths.config), self._session_id_for_child(child_arid, entry))
         if scan.reason is not None:
             return lines, scan.reason
@@ -10146,25 +10090,11 @@ class Conductor:
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
-            # AUTO-MEMORY IS NOT A SETTING, so no settings-layer flag closes it: the CLI
-            # injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's FIRST
-            # USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
-            # variable. Measured on CLI 2.1.234 by capturing an agentic leaf's own request:
-            # without it the first message carried the operator's memory index — past runs,
-            # merged PRs, open issues and standing instructions — 25,011 bytes of `messages`
-            # against 8,990 with it. That is ambient context the repository does not declare,
-            # the run does not record and no artifact can reproduce; it is also a leaf reading
-            # `~/.claude`, and a leaf being handed PAST-RUN state, both of which the workflow
-            # forbids outright.
+            # No auto-memory variable (issue #643): a workshop leaf's config home is its own
+            # lineage's, so the operator's memory index is not in it, and a capture of a
+            # workshop leaf's first request (CLI 2.1.326) carried no memory text with the
+            # variable or without it, a memory file planted in the lineage's home included.
             #
-            # KEPT after Z4 (issue #171), when every claude leaf passed `--safe-mode`, which
-            # closes this path on its own: the variable and the flag are two independent arms
-            # of the same predicate, and this one costs one environment entry. A workshop leaf
-            # (issue #534; every leaf since PR-J4-b) does NOT pass `--safe-mode`, which would
-            # disable the wrapper's endpoint, so this arm is no longer redundant with it. Its
-            # measurement was taken against the agentic launch that no longer exists. Set here rather than on the argv because the CLI exposes
-            # no flag for it.
-            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
             # The CLI's nonessential traffic — telemetry, update checks — off (issue #534 step
             # 4): inside the leaf's network namespace each request would be a refused route in
             # `net_routes.jsonl` (measured on CLI 2.1.312: one Datadog intake CONNECT per
@@ -10176,21 +10106,11 @@ class Conductor:
             # leaf (issue #534) has its own, and it reaches the leaf the way a codex lineage home does — through the profile's
             # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`);
             # `leaf_env_from` keeps the host's spelling of it out of this dict.
-        elif entry.provider == "codex_cli":
-            # SPEC2SCIENCE_HOME was the historical private alias for CODEX_HOME. An operator
-            # who set BOTH to different homes has said two incompatible things, and the
-            # run must not pick one silently — so the conflict still raises. Read from
-            # the HOST environment, not from `env`: neither name survives the allowlist
-            # (both are on the single-route side), so `env` can no longer answer this.
-            canonical = (self.env.get("CODEX_HOME") or "").strip()
-            legacy = (self.env.get("SPEC2SCIENCE_HOME") or "").strip()
-            if canonical and legacy and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve():
-                raise SandboxEnforcementError("CODEX_HOME and deprecated SPEC2SCIENCE_HOME conflict")
-            # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
-            # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
-            # (`_prepare_codex_workshop_lineage`); a host-side spelling could name a
-            # different home than the one whose settings were SHA-pinned, and no
-            # host-side reader consumes `child_env["CODEX_HOME"]`.
+        # A codex leaf: neither `CODEX_HOME` nor the deprecated `SPEC2SCIENCE_HOME` survives
+        # the allowlist, and nothing is promoted into CODEX_HOME here: the home the leaf reads
+        # is the one `record_launch` PREPARED and the bwrap profile `--setenv`s
+        # (`_prepare_codex_workshop_lineage`). A conflict between the two host values is
+        # refused at preflight (`_probe_codex_home_writable`); this launch reads neither.
         elif entry.is_http:
             # An HTTP leaf's credential is named BY THE ENTRY (`api_key_env`), so the
             # allowlist cannot enumerate it — the configuration file chooses the name. It
@@ -14452,9 +14372,8 @@ class Conductor:
         dead leaf's command base, its declared model (passed exactly when the leaf's launch
         passes `--model`, so the reading is judged against the same per-model windows) and its
         filtered environment; `tools/usage_reset.py` owns the per-provider readers, so no
-        provider name is spelled here. The WHOLE body is guarded: `_child_env` can raise (a
-        `CODEX_HOME` / `SPEC2SCIENCE_HOME` conflict), and a raise here — after the dead attempt is
-        already finalized — must read as `probe_failed`, the schedule fallback, not crash the
+        provider name is spelled here. The WHOLE body is guarded: a raise here — after the dead
+        attempt is already finalized — must read as `probe_failed`, the schedule fallback, not crash the
         run. A provider that declares no reader is answered before the environment is built,
         so its reading is `no_source` rather than whatever building a probe it will never run
         might raise."""

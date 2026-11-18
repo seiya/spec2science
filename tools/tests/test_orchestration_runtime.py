@@ -13408,7 +13408,7 @@ class RecordTimeoutTests(unittest.TestCase):
                     "SPEC2SCIENCE_ORCHESTRATION_ID": "orch_to_001",
                     "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "substep_run_to_001",
                     "SPEC2SCIENCE_WORKFLOW_MODE": "1",
-                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
         with tempfile.TemporaryDirectory() as td:
             repo_root = Path(td)
             arid = self._setup_substep_launch(repo_root, child_env=dict(authored))
@@ -23868,7 +23868,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertIn("CLAUDE_CONFIG_DIR", profile["env"])
         profile["env"] = {**profile["env"],
                           "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
-                          "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+                          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         self.assertEqual(self._setenv_map(argv), profile["env"])
         # ...and a second CLI home is refused, not silently tolerated.

@@ -6072,35 +6072,11 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertEqual(env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "child-1")
         self.assertNotEqual(env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "ORCH")
 
-    def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
-        """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
-
-        The CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's first
-        user message unless safe-mode, `--bare`, or this variable is in force. A pure leaf
-        passed `--safe-mode` and was therefore always closed; an agentic leaf passed none of
-        them, and neither does a workshop leaf (the only leaf model since issue #534 PR-J4-b:
-        `--safe-mode` would disable its wrapper endpoint), so without this variable it is
-        handed the operator's memory index — past runs, merged PRs, open
-        issues, standing instructions. Issue #63's private home closes the same hole from the
-        other side (a fresh home has no memory file), and this variable is deliberately kept:
-        the two close it for different reasons, and a CLI that relocated the memory file
-        without relocating the home would reopen it. That is ambient context the repository does not declare
-        and the run cannot reproduce, it is a leaf reading `~/.claude`, and it is a leaf being
-        given past-run state: three separate things the workflow forbids.
-
-        Pinned in `_child_env` because the CLI exposes no flag for it, so unlike the other four
-        closures it cannot be pinned by the argv goldens."""
-        env = self._conductor("claude")._child_env("child-1")
-        self.assertEqual(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
-
     def test_child_env_does_not_set_leaf_max_output_tokens_for_codex(self) -> None:
         # codex configures its model limits on a different surface; a CLAUDE_* var there is at
         # best inert and at worst confusing.
         env = self._conductor("codex")._child_env("child-1")
         self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", env)
-        # Same for the auto-memory switch: codex has its own context surface, and a CLAUDE_*
-        # variable there says nothing.
-        self.assertNotIn("CLAUDE_CODE_DISABLE_AUTO_MEMORY", env)
 
     # -- the environment is RECONSTRUCTED, not inherited (issue #63, PR-B) ---------
 
@@ -6193,17 +6169,6 @@ class LeafChildEnvTest(unittest.TestCase):
         env = c._child_env("child-1")
         self.assertNotIn("SPEC2SCIENCE_HOME", env)
         self.assertEqual(env["SPEC2SCIENCE_KEPT"], "yes")   # the prefix still works
-
-    def test_codex_home_conflict_still_raises_after_the_filter(self) -> None:
-        """The conflict check reads two names the filter now drops, so it had to move to
-        the HOST environment. If it had been left reading `_child_env`'s own dict it
-        would have gone quietly dead — two incompatible operator settings, no complaint."""
-        c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
-                         orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"CODEX_HOME": "/a/one", "SPEC2SCIENCE_HOME": "/b/two",
-                              "PATH": "/host/bin"})
-        with self.assertRaises(wc.SandboxEnforcementError):
-            c._child_env("child-1")
 
     def test_codex_home_is_not_promoted_from_the_legacy_alias(self) -> None:
         """The old code promoted `SPEC2SCIENCE_HOME` into `child_env["CODEX_HOME"]`. No
@@ -6709,9 +6674,8 @@ class LeafTransientRetryTest(unittest.TestCase):
                 self.assertIsNone(wait["reset_epoch"])
 
     def test_a_raising_probe_reads_as_probe_failed(self) -> None:
-        """`_read_usage_reset` guards its whole body: a `_child_env` raise (the CODEX_HOME /
-        SPEC2SCIENCE_HOME conflict) after the dead attempt is finalized is the schedule fallback,
-        not a crashed run."""
+        """`_read_usage_reset` guards its whole body: a `_child_env` raise after the dead
+        attempt is finalized is the schedule fallback, not a crashed run."""
         dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
         c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
 

@@ -6376,15 +6376,14 @@ LEAF_ENV_ALLOWED_PREFIXES = ("SPEC2SCIENCE_",)
 # Inside the prefix but deliberately dropped. `SPEC2SCIENCE_HOME` is the deprecated alias for
 # codex's configuration home; like `CODEX_HOME` it must reach the leaf through the bwrap
 # profile's `--setenv` alone, so that the home the leaf reads is the home whose settings
-# were SHA-pinned. The conductor still READS it (to raise on a conflict with CODEX_HOME)
-# — it just does not forward it.
+# were SHA-pinned. The preflight still READS it (`_probe_codex_home_writable` refuses a
+# conflict with CODEX_HOME) — no leaf launch forwards it.
 LEAF_ENV_PREFIX_EXCEPTIONS = ("SPEC2SCIENCE_HOME",)
 
-# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling, the
-# auto-memory closure, and the closure of the CLI's nonessential traffic (telemetry, update
-# checks; issue #534 step 4 — inside the leaf's network namespace each would be a refused
-# route, logged as one).
-CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling and the
+# closure of the CLI's nonessential traffic (telemetry, update checks; issue #534 step 4 —
+# inside the leaf's network namespace each would be a refused route, logged as one).
+CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS",
                           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 
 # NAMED EXCLUSIONS — decided, not overlooked (2026-08-20). The proxy / TLS families
