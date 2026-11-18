@@ -1339,6 +1339,14 @@ class _FakeConductor(wc.Conductor):
     def _write_dependency_graph(self, refs):  # type: ignore[override]
         return None
 
+    # Its sibling, for the same reason: the real surface author reads the graph the no-op above
+    # does not write, and it writes `<ir_ref>/dependency_surface.json`, which would litter the
+    # shared root and make the next attempt's `_claim_artifact_dir` (`not path.exists()`)
+    # rotate the IR id. The fake writes nothing and shows the leaf an empty surface. The real
+    # author is covered against a real Conductor by `WriteDependencySurfaceTest`.
+    def _write_dependency_surface(self, refs):  # type: ignore[override]
+        return []
+
     # Configurable `check-phase-certified` answer: (phase) -> dict. Default None keeps the
     # "not certified" answer every other test in this file was written against.
     cert_fn = None
