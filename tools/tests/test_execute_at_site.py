@@ -463,6 +463,14 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                     self.assertEqual([r["status"] for r in quality["shapes"]], ["pass"])
                     self.assertTrue(quality["checks"]["verdict_match"])
                     trial = json.loads((n.node_dir / "trial_meta.json").read_text())
+                    # The entry the conductor writes names that record at the canonical
+                    # placement, the source's own `src/` log (COMMAND_LOG_PLACEMENT.md); no gate
+                    # re-checks it since issue #674, so this row pins it.
+                    self.assertEqual(trial["source_command_ref"]["run_quality_checks"], {
+                        "tool_name": "run_quality_checks",
+                        "command_id": qc_log[0]["command_id"],
+                        "command_log_ref": (n.src / "command_log.jsonl").relative_to(
+                            n.repo).as_posix()})
                     if rc == 0:
                         self.assertEqual(quality["status"], "pass")
                         self.assertEqual(trial["status"], "pass")
