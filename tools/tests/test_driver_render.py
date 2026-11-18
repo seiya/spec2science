@@ -2742,6 +2742,26 @@ class ProcedureGateTest(unittest.TestCase):
                 found = self._violations(ir)
                 self.assertTrue(any(needle in x for x in found), found)
 
+    def test_an_input_the_expression_reads_must_be_a_finite_number(self) -> None:
+        """Since issue #643 PR-6 (PE-166) `_evaluate_case`'s `resolve_input_value` over the
+        inputs an expression reads is the one refusal of a bool, non-number, non-finite or
+        absent value (`_authored_json` no longer re-checks it): gate (c) reports it, and nothing
+        reaches the case file."""
+        absent = object()
+        for value in (True, float("nan"), "x", absent):
+            with self.subTest(value=value):
+                ir = procedure_ir("inputs.lam * u")
+                inputs = ir["case"]["test_case_set"][0]["inputs"]
+                if value is absent:
+                    del inputs["lam"]
+                else:
+                    inputs["lam"] = value
+                found = pe.drive_violations(ir, kind="component")
+                self.assertTrue(any(m.startswith("(c)") and "inputs.lam" in m for m in found),
+                                found)
+                with self.assertRaises(pe.PrimaryEvidenceError):
+                    pe.evaluate_case_inputs(ir)
+
     def test_an_array_input_in_an_expression_is_refused(self) -> None:
         ir = procedure_ir("inputs.lam * u")
         ir["case"]["test_case_set"][0]["inputs"]["lam"] = [1.0, 2.0, 3.0]
