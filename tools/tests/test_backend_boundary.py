@@ -2307,8 +2307,8 @@ class RegistryConsistencyTests(unittest.TestCase):
         # `syntax_check`, `syntax_promotions` and `bundle_facts` joined them with issue #289
         # (R4-b PR-2): the syntax-only adapter moved out of the build-runtime server into the
         # compiler's package and the language's, and the conductor's `Generate.gate`, the
-        # server's `run_syntax_check`, the post_generate certification and the default-compiler
-        # readers ask the registry for them.
+        # server's `run_syntax_check` and the default-compiler readers ask the registry for them
+        # (the post_generate certification that also asked went in issue #643 PR-6).
         #
         # `source_reading`, `signatures` and `parallel_directives` joined them with issue #289
         # (R4-b PR-3): the validator's source gates, its §5.1 signature gates and the
@@ -2530,8 +2530,8 @@ class RegistryConsistencyTests(unittest.TestCase):
         self.assertFalse(registry.is_compiled_language("c"))
 
     def test_every_syntax_adapter_carries_the_contract_its_readers_use(self) -> None:
-        """The `syntax_check` adapter contract is what `run_syntax_check`, the gate and the
-        post_generate certification read off the module (round 2, issue #289: it was written
+        """The `syntax_check` adapter contract is what `run_syntax_check` and the gate read
+        off the module (round 2, issue #289: it was written
         down nowhere, and an adapter missing `STANDARD_SPELLING_EXAMPLE` would pass every row and
         turn the canary's fail_closed remedy into an AttributeError). Asked of every compiler
         that declares the capability, and the language it names must declare
