@@ -4897,8 +4897,8 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
             oracles.append(declared)
     if oracles:
         # An oracle is built and run at the local site only, whatever it links. Breakage
-        # without it, once Build builds the oracle (issue #680's next pull request): the run
-        # would stop at Build after Compile and Generate were billed. `_sites_rejection` has
+        # without it: the run would stop at Build (which builds the oracle, issue #680) after
+        # Compile and Generate were billed. `_sites_rejection` has
         # already loaded this sites.yaml, so it does not raise here.
         site = xl.site_for_target(repo_root, target_profile.target_id)
         if not site.is_local:
