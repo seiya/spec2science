@@ -31,6 +31,11 @@ import yaml
 from tools import external_library as xl
 
 ORACLE_DECLARATION_VERSION = 1
+#: What the workflow does with a declared oracle, carried in the key member as `use`: absent =
+#: declared and read, nothing built or compared (issue #680 PR-1); 2 = `Build` builds it
+#: (PR-2). A Build or Validate certified under an earlier use is not one that built (or
+#: compared) the oracle, so the member moves, for nodes that declare an oracle alone.
+ORACLE_USE_VERSION = 2
 #: The directory under a node's spec directory that holds the declaration and the adapter.
 ORACLE_DIR = "oracle"
 DECLARATION_FILE = "oracle.yaml"
@@ -239,8 +244,10 @@ def case_plan(ir: dict[str, Any], oracle: Oracle) -> dict[str, list[str]]:
 def declared_member(oracle: Oracle) -> dict[str, Any]:
     """The build key's `oracle` member without the site's files: the declaration's and the
     adapter's hashes, and per build its id and its libraries' ids and declaration hashes. What
-    a key computed without probing the host holds."""
-    return {"declaration": oracle.declaration_sha256, "source": oracle.source_sha256,
+    a key computed without probing the host holds, and the `use` the workflow puts it to
+    (`ORACLE_USE_VERSION`)."""
+    return {"use": ORACLE_USE_VERSION,
+            "declaration": oracle.declaration_sha256, "source": oracle.source_sha256,
             "builds": [{"id": b.build_id, "libraries": xl.declared_identity(b.libraries)}
                        for b in oracle.builds]}
 

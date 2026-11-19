@@ -744,6 +744,24 @@ class WorkshopWrapperContextTests(unittest.TestCase):
             ww._syntax_run(ctx, Path(self._tmp.name), None)
         self.assertEqual(captured[0]["include_dirs"], [str(dirs["include"])])
 
+    def test_the_wrapper_context_carries_no_oracle_library(self) -> None:
+        """Issue #680: a node that declares an oracle linking a library hands its producer's
+        wrapper the closure's libraries alone — here none — so no include directory or link word
+        of the oracle's library reaches the generated model's builds there."""
+        from tools import oracle
+        from tools.tests.test_external_library import write_declarations
+        write_declarations(self.repo)
+        d = self.repo / _SPEC_PATH / oracle.ORACLE_DIR
+        d.mkdir(parents=True)
+        (d / oracle.DECLARATION_FILE).write_text(
+            "oracle_version: 1\nlanguage: fortran\nsource: a.f90\n"
+            "builds:\n  - id: default\n    libraries: [vend, foo]\n")
+        (d / "a.f90").write_text("! adapter\n")
+        self.assertIsNotNone(self.c._oracle(self.refs))
+        ctx = self._freeze()
+        self.assertEqual(list(ctx.build_overrides[:2]), ["LIBINC=", "LIBS="])
+        self.assertEqual((ctx.syntax_include_dirs, ctx.library_env), ((), ()))
+
     def test_the_syntax_stage_is_the_gates(self) -> None:
         # Each fact against the source `_gate_syntax_check` reads it from.
         target = self.c.target

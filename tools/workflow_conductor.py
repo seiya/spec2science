@@ -1580,6 +1580,7 @@ def build_launch_request(
     output_format: str = "",
     device_trace: bool = False,
     checked_build: bool = False,
+    oracle_builds: tuple[str, ...] = (),
     repair: dict[str, str] | None = None,
     resolved_dependencies: tuple[dict[str, str], ...] = (),
     dependency_surface: tuple[dict[str, Any], ...] = (),
@@ -1611,6 +1612,8 @@ def build_launch_request(
     whose per-kernel summary execute promotes to `kernel_trace.csv` (issue #307).
     checked_build says the target's compiler declares checked flags (build only), so Build
     delivers the bounds-checked binary at `bin_checked/<exe>` too (issue #589 PR-0).
+    oracle_builds are the ids of the node's oracle builds (build only, issue #680): Build
+    delivers `bin_oracle/<id>/<exe>` for each.
     """
     spec = refs.spec_path
     role = child_agent_role(step)
@@ -1717,6 +1720,8 @@ def build_launch_request(
             req["allowed_output_paths"] = [
                 f"{bdir}/bin/{exe}",
                 *([f"{bdir}/bin_checked/{exe}"] if checked_build else []),
+                # Each oracle build's binary (issue #680), as `phase_required_outputs` lists it.
+                *[f"{bdir}/bin_oracle/{b}/{exe}" for b in oracle_builds],
                 f"{bdir}/binary_meta.json",
                 f"{bdir}/command_log.jsonl",
             ]
@@ -6048,6 +6053,23 @@ class Conductor:
         declarations = xl.closure_declarations(
             self.repo_root, refs.spec_path, self._dependency_closure_nodes(refs))
         return xl.resolve_closure(self.repo_root, self.target, declarations)
+
+    def _oracle(self, refs: NodeRefs) -> Any:
+        """The oracle this node declares for the target's language (issue #680,
+        `tools/oracle.py`), or None. A malformed declaration raises `OracleDeclarationError`:
+        the driver refused it before any phase (`oracle_declaration_invalid`), so only an
+        `oracle.yaml` edited during the run meets it here — inside the Build body a transport
+        fail_closed, and out of `run_phase`'s two deliverable lists an exception that ends the
+        conductor."""
+        from tools import oracle as oracle_mod
+        return oracle_mod.load(self.repo_root, refs.spec_path,
+                               str(self.target.toolchain["language"]))
+
+    def _oracle_build_ids(self, refs: NodeRefs) -> tuple[str, ...]:
+        """The ids of the oracle's builds, in declared order; `()` for a node that declares
+        none for the target's language. Build delivers `bin_oracle/<id>/<exe>` for each."""
+        oracle = self._oracle(refs)
+        return tuple(b.build_id for b in oracle.builds) if oracle is not None else ()
 
     def _library_build_args(self, libraries: Sequence[Any], execute: Any) -> list[str]:
         """The build system's command-line variables that carry `libraries` (issue #644): the
@@ -11039,6 +11061,16 @@ class Conductor:
         flag_rules = (self._control_file_rules(tc, self._target_architecture())
                       if checked_flags else None)
         site = self.site
+        # The node's oracle (issue #680), built below after the certified builds. It is built
+        # and run at the local site only; the driver refused one at a remote site before any
+        # phase (`oracle_at_remote_site`), and this is the backstop, before anything is
+        # staged: a binary built here would not be the one a remote run executes.
+        oracle = self._oracle(refs)
+        if oracle is not None and site is not None and not site.is_local:
+            from tools.oracle import REMOTE_SITE
+            raise RuntimeError(
+                f"{REMOTE_SITE}: {refs.node_key} declares an oracle and target "
+                f"{self.target.target_id} runs at site {site.site_id!r}")
         if site is not None and not site.is_local:
             from tools.host_execution import launch_shape
 
@@ -11270,6 +11302,14 @@ class Conductor:
                 xl.node_library_ids(self.repo_root, refs.spec_path))
             if library_violation is not None:
                 ok = False
+        # The oracle's builds (issue #680), once the certified and checked builds left their
+        # binaries and passed the library checks: what fails before here is the generated
+        # code's, and is routed as today. An oracle build that fails raises (a transport
+        # fail_closed, `oracle_build_failed`): no re-authored model changes it.
+        oracle_record = (self._build_oracle(
+            refs, child_arid, oracle, src_dir=src_dir, exe=exe, language=language,
+            build_system=build_system, execute=execute,
+            closure_libraries=libraries) if ok and oracle is not None else None)
         # `command_log_ref` from the handler is cwd-relative (`_path_to_ref` uses
         # Path.cwd()), which is unreliable for the in-process caller — derive it from
         # our repo_root + the known canonical placement instead (`BUILDS_IN_SOURCE`, checked
@@ -11363,6 +11403,10 @@ class Conductor:
             # objects (null when the closure declares none).
             "library_dirs": list(xl.library_dirs(libraries)),
             "library_check": library_check,
+            # The oracle's builds (issue #680, `_build_oracle`): null when the node declares
+            # none for the target's language, and when the build failed before them. A Build
+            # certified before this field existed (build-5 re-pinned in place) has no key.
+            "oracle": oracle_record,
             "failure_category": None,
             "failure_excerpt": None,
         }
@@ -11416,6 +11460,95 @@ class Conductor:
                     json.dumps(binary_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 stderr += "\n[post_build gate fail]\n" + gate.stdout + gate.stderr
         return {"returncode": 0, "stdout": stdout, "stderr": stderr}
+
+    def _build_oracle(self, refs: NodeRefs, child_arid: str, oracle: Any, *, src_dir: Path,
+                      exe: str,
+                      language: str, build_system: str, execute: Any,
+                      closure_libraries: Sequence[Any]) -> dict[str, Any]:
+        """Build each of the oracle's builds (issue #680, `docs/workflow/phases/phase_03_build.md`
+        §I/O contract, "The oracle builds") into `binary/<binary_id>/bin_oracle/<build_id>/<exe>`, and return the
+        `binary_meta.json#oracle` record.
+
+        Each build compiles a copy of the node's `src/` in which the adapter takes the model
+        source's name, so the certified driver and control file are built unchanged around it;
+        the closure is staged into an object directory of its own. It is handed ONE pair of
+        library variables over the closure's libraries and then this build's: the harness's
+        library (if any) is the closure's, and a second pair would lose it. The certified and
+        checked builds are handed the closure's libraries alone, so no include directory or
+        link word of an oracle library reaches a generated model's build (a module of an
+        oracle library installed in a closure library's include directory is visible to it
+        there, as any undeclared module beside a declared one is). The adapter is read by no
+        gate: no leaf writes it."""
+        from tools import external_library as xl
+        from tools import oracle as oracle_mod
+        from tools.build_runtime import tool_compile_project
+        from tools.orchestration_runtime import AUDIT_LOG_BASENAMES
+
+        model = self._language_facts().model_basename(refs.spec_id)
+        adapter = oracle_mod.oracle_dir(self.repo_root, refs.spec_path) / oracle.source
+        work_root = self.repo_root / "workspace" / "tmp" / child_arid / "oracle"
+        builds: list[dict[str, Any]] = []
+        for build in oracle.builds:
+            work = work_root / build.build_id
+            build_src = work / "src"
+            build_obj = work / "build"
+            bin_oracle = self.repo_root / refs.binary_dir() / "bin_oracle" / build.build_id
+            # Only what this attempt builds: a binary an earlier attempt left must not stand
+            # in for one this build did not produce. (`work` is under this launch's own
+            # agent-run id, so nothing is there before.)
+            if bin_oracle.exists():
+                shutil.rmtree(bin_oracle)
+            # Every file of `src/` but the audit logs, then the adapter over the model source.
+            for path in sorted(src_dir.rglob("*")):
+                if path.is_file() and path.name not in AUDIT_LOG_BASENAMES:
+                    target_path = build_src / path.relative_to(src_dir)
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, target_path)
+            build_src.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(adapter, build_src / model)
+            self._stage_dependency_sources(refs, build_obj, phase="build")
+            own = xl.resolve_closure(self.repo_root, self.target, build.libraries)
+            libraries = [*closure_libraries, *own]
+            result = tool_compile_project({
+                "project_dir": str(build_src),
+                "language": language,
+                "build_system": build_system,
+                "extra_args": [*self._library_build_args(libraries, execute),
+                               *execute.build_overrides(str(build_obj), str(bin_oracle), exe)],
+                # The node's log, as every other Build command's: the project directory is
+                # under `workspace/tmp/`, and the library's default would log there.
+                "command_log_path": str(src_dir / "command_log.jsonl"),
+                "orchestration_id": self.orchestration_id,
+                "agent_run_id": child_arid,
+            })
+            if not result.get("ok") or not (bin_oracle / exe).is_file():
+                if result.get("ok"):
+                    outcome = f"left no binary at bin_oracle/{build.build_id}/{exe}"
+                elif result.get("return_code") is None:
+                    outcome = f"did not finish ({result.get('error')})"
+                else:
+                    outcome = f"exited {result.get('return_code')}"
+                tail = "\n".join((result.get("stderr") or "").splitlines()[-50:])
+                # The compiler's tail first and the verdict last: the run's failure summary
+                # keeps the last 400 characters (`_leaf_failure_summary`). The adapter is
+                # compiled under the model source's name, so the tail names that file.
+                raise RuntimeError(
+                    f"\n{tail}\noracle_build_failed: oracle build {build.build_id!r} of "
+                    f"{refs.node_key} {outcome} (the adapter {self._rel(adapter)} is compiled "
+                    f"as {model}). Fix the adapter or {oracle_mod.DECLARATION_FILE}, then "
+                    f"--resume; if the error is in a generated source other than the model, "
+                    f"--rederive generate")
+            builds.append({
+                "id": build.build_id,
+                "binary_ref": f"binary/{refs.binary_id}/bin_oracle/{build.build_id}/{exe}",
+                "command_id": result.get("command_id"),
+                # This build's own libraries, as the key's member holds them (each with its
+                # `lib_dirs`); the closure's are the binary's own `library_dirs`.
+                "libraries": xl.identity(own),
+            })
+        return {"declaration_sha256": oracle.declaration_sha256,
+                "source_sha256": oracle.source_sha256, "origin": oracle.origin,
+                "builds": builds}
 
     def _gate_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Generate.gate: run the three source checkers (lint, syntax, static) as
@@ -14009,6 +14142,7 @@ class Conductor:
                 phase in ("generate", "validate") and self._conductor_authors_runner(refs)),
             device_trace=(phase == "validate" and self._traces_execution()),
             checked_build=(phase == "build" and self._builds_checked()),
+            oracle_builds=(self._oracle_build_ids(refs) if phase == "build" else ()),
             repair=repair,
             resolved_dependencies=resolved_dependencies,
             dependency_surface=dependency_surface,
@@ -15428,6 +15562,7 @@ class Conductor:
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
                 checked_build=(phase == "build" and self._builds_checked()),
+                oracle_builds=(self._oracle_build_ids(refs) if phase == "build" else ()),
                 bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ()),
                 bundle_facts=(self._language_facts() if phase == "generate" else None),
                 control_file_basename=(self._control_file_basename(refs)
@@ -16675,6 +16810,7 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
                            *, checked_build: bool = False,
+                           oracle_builds: Sequence[str] = (),
                            bundle_sources: Sequence[str] = (),
                            bundle_facts: Any = None,
                            control_file_basename: str | None = None) -> list[str]:
@@ -16697,7 +16833,9 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
 
     `checked_build` (build only): the target's compiler declares checked flags, so the
     bounds-checked binary `bin_checked/<exe>` is a deliverable too (issue #589 PR-0) — the same
-    flag `build_launch_request` lists it under, so the stamp hashes what the launch allowed."""
+    flag `build_launch_request` lists it under, so the stamp hashes what the launch allowed.
+    `oracle_builds` (build only): the ids of the node's oracle builds (issue #680), whose
+    binaries `bin_oracle/<id>/<exe>` are deliverables, as the launch lists them."""
     if phase == "compile":
         return [f"{refs.ir_ref}/spec.ir.yaml", f"{refs.ir_ref}/ir_meta.json"]
     if phase == "generate":
@@ -16739,6 +16877,7 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
         return [
             f"{bdir}/bin/{exe}",
             *([f"{bdir}/bin_checked/{exe}"] if checked_build else []),
+            *[f"{bdir}/bin_oracle/{b}/{exe}" for b in oracle_builds],
             f"{bdir}/binary_meta.json",
             f"{refs.source_dir()}/src/command_log.jsonl",
         ]

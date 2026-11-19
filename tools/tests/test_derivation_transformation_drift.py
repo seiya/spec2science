@@ -396,6 +396,12 @@ def build_tuple() -> dict[str, str]:
         **{f"libraries: {k}": v for k, v in library_members().items()},
         "Conductor._closure_libraries": _source_digest(wc.Conductor._closure_libraries),
         "Conductor._library_build_args": _source_digest(wc.Conductor._library_build_args),
+        # The oracle's builds (issue #680 PR-2): the declaration the build reads, which
+        # builds it makes and how.
+        "tools/oracle.py": _file_digest("tools/oracle.py"),
+        "Conductor._oracle": _source_digest(wc.Conductor._oracle),
+        "Conductor._oracle_build_ids": _source_digest(wc.Conductor._oracle_build_ids),
+        "Conductor._build_oracle": _source_digest(wc.Conductor._build_oracle),
     }
 
 
@@ -1781,7 +1787,15 @@ PINNED_BUILD: dict[str, str] = {
     # execute-22's; no build command changes. (Measured by diffing `build_tuple()` against main
     # 8adea1c4's: those three rows and no other.) The digest `build-5` shipped with at 8adea1c4:
     "build-5@8adea1c4": "84ee4b2a0e88983c82e36261b2f35dd1ed53b126a0d70c54510fbb84970c1457",
-    "build-5": "dc63f773028a82aa385bc2f57d00dd629a1f8d3c4e4277d0c4548329917c9e0c",
+    # build-5 re-pinned in place by issue #680 PR-2: `Build` builds a declared oracle
+    # (`Conductor._build_oracle`, rows added with `tools/oracle.py`, `Conductor._oracle` and
+    # `Conductor._oracle_build_ids`). A node that declares no oracle — every node in the tree —
+    # is built by the same commands into the same paths and records `binary_meta.json#oracle:
+    # null`; a node that declares one has a new build key (the member's `use`,
+    # `oracle.ORACLE_USE_VERSION`), so no Build certified before is reused for it. The digest
+    # `build-5` shipped with at 3f9b6878:
+    "build-5@3f9b6878": "dc63f773028a82aa385bc2f57d00dd629a1f8d3c4e4277d0c4548329917c9e0c",
+    "build-5": "53d9be6b017c828721618b968fe08084e156597569e9a0bbfae561203ff1dd92",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
