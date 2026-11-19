@@ -91,7 +91,8 @@ def load_suite(tests_md: Path, node: str) -> dict:
     section = text.split("## 2.", 1)[1].split("\n## 3.", 1)[0]
     fences = re.findall(r"```yaml\n(.*?)```", section, re.S)
     if len(fences) != 1:
-        raise SystemExit(f"{tests_md}: §2 holds {len(fences)} YAML fences, not one")
+        # Not SystemExit, which would exit 1, the status of a finding: the handler below exits 2.
+        raise ValueError(f"{tests_md}: §2 holds {len(fences)} YAML fences, not one")
     suite = yaml.safe_load(fences[0])
     suite["setup"] = dict(suite.get("fill") or SATURATION_FILL)
     suite["scalars"] = {name: 0.0 for name in SCALARS[node]}
