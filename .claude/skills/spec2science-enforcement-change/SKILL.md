@@ -899,6 +899,17 @@ that could not converge in principle).
   fix what is already right: split the branches by what the observation can actually tell
   apart. Issue #316 shipped the second, and then the first inside the fix for it;
   `references/failure-routing.md` §"A refusal that quotes another program"
+- **Know which end of your message the READER keeps, and put the verdict there.** The bullet
+  above is about a cut YOU make; this one is about a cut someone else makes. A raise out of a
+  deterministic body reaches the operator through `_leaf_failure_summary`, which keeps the LAST
+  400 characters of stderr, so a message that opens with its tag and remedy and then quotes a
+  compiler's tail arrives as the compiler's tail alone — and when the quoted output names a
+  file the leaf wrote, it reads as the leaf's failure. Issue #680 PR-2's `oracle_build_failed`
+  shipped that way through two review rounds; the disclosure round drove it and read the
+  summary. **Rule: before writing a refusal that quotes output, name every reader of the
+  message and the end each keeps; put the tag and the remedy at that end, and pin it with a row
+  that asserts the reader's view (the summary), over a quoted output longer than the cut**
+  (`references/failure-routing.md` §"A message whose reader keeps its tail")
 - **A remedy that names `--rederive <phase>` is a claim about the keys DOWNSTREAM of that
   phase, and a re-derived phase that reproduces its output moves none of them.** A downstream
   key holds the upstream's OUTPUT HASH, so a rebuild whose bytes come out identical leaves the

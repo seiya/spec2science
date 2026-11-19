@@ -282,3 +282,27 @@ What to run before writing such a remedy: certify the chain with a fixture
 bytes, and ask `_phase_certified` for every downstream phase — the phases still certified are
 the ones the remedy has to name.
 
+## A message whose reader keeps its tail (2026-11-19, issue #680 PR-2)
+
+`Conductor._build_oracle` raises `RuntimeError` when an oracle build fails, and
+`_run_deterministic_substep` turns any raise of a deterministic body into rc 1 with
+`deterministic_<phase>_error: <message>` on stderr. The run's reason is then
+`leaf_transport_error: leaf_exit=1; <tail>`, where `_leaf_failure_summary` keeps the last 400
+characters of that stderr. The first message was `oracle_build_failed: … The adapter or
+oracle.yaml is to be fixed, then --resume …:\n<last 50 lines of the compiler's stderr>`, so the
+summary held the linker's last lines alone. The adapter is compiled under the model source's
+name, so those lines named `<spec_id>_model.o` — the generated model's file — and the run read as
+a failure of the generated code, which is the routing the refusal exists to rule out. Rounds 1
+and 2 read the message in the code and in a test that asserted `assertIn("oracle_build_failed",
+result.stderr)` on the whole stream; the disclosure round's maintainer read drove a failing
+build and read the reason the run recorded. The fix put the compiler's tail first and the tag,
+the adapter's compiled name and the remedy last, and a row asserts that
+`_leaf_failure_summary(result)` carries `oracle_build_failed` and `--resume`, over a stderr
+asserted longer than 400 characters. The same pass found a timeout reported as `exited None`
+with the library's `error` field dropped: a branch the message composition did not have.
+
+The reader can be any of: a summary cut (here), a `failure_excerpt` (`[-50:]` lines), an event
+field, a RUNBOOK entry that tells the operator which file to open. The RUNBOOK's "no tag" entry
+pointed at `dialogs/leaf.stdout.log`; a deterministic body's message is in
+`dialogs/deterministic.stderr.log` (`_persist_leaf_output(..., prefix="deterministic")`), so the
+PR also added an `oracle_build_failed` entry naming that file.
