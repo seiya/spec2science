@@ -1020,6 +1020,14 @@ def _bind_phase_closure(c: "wc.Conductor", refs: "wc.NodeRefs", phase: str = "bu
     return c
 
 
+def _author_verdict(c: wc.Conductor, refs: wc.NodeRefs, ir: dict) -> dict:
+    """What `_execute_inproc` does with a verdict on a node that declares no oracle: evaluate it
+    and write it as verdict.json (issue #680 PR-3 split the two around the oracle)."""
+    doc = c._evaluate_execute_verdict(refs, ir)
+    c._write_run_node_meta(refs, "verdict.json", doc)
+    return doc
+
+
 class _TargetedConductor(wc.Conductor):
     """A real Conductor whose target reads answer the fixture repository's own profile, else
     the checked-in one, when the test passes none (issue #284, `target_fixtures.fixture_target`).
@@ -18395,7 +18403,7 @@ class DeterministicBuildTest(unittest.TestCase):
             ir = self._predicate_ir()
             node = repo / refs.run_node_dir()
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 8.0])
-            doc = c._author_execute_verdict(refs, ir)
+            doc = _author_verdict(c, refs, ir)
             self.assertEqual(doc["self_verdict"], "pass")
             self.assertEqual(doc["failure_class"], "pass")
             on_disk = json.loads((node / "verdict.json").read_text())
@@ -18403,13 +18411,13 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual([p["status"] for p in on_disk["per_test"]], ["pass", "xfail"])
             # a guard that did not fire -> `fail`, not a quiet xfail
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 8.0], guard_pass=1.0)
-            doc2 = c._author_execute_verdict(refs, ir)
+            doc2 = _author_verdict(c, refs, ir)
             self.assertEqual([p["status"] for p in doc2["per_test"]], ["pass", "fail"])
             self.assertEqual((doc2["self_verdict"], doc2["failure_class"]),
                              ("fail", "physics_fail"))
 
     def test_author_execute_verdict_reads_the_promoted_captures(self) -> None:
-        """Z6 PR-2 (issue #255) and issue #582, pinned at the HANDLER: `_author_execute_verdict`
+        """Z6 PR-2 (issue #255) and issue #582, pinned at the HANDLER: `_evaluate_execute_verdict`
         reads the promoted captures under the run node dir. A tampered final capture is
         `physics_fail`, the `[execute fail: verdict]` report names the quantity and the value, a
         capture that cannot be read is `structural_violation` rather than a crash, and the basis
@@ -18423,7 +18431,7 @@ class DeterministicBuildTest(unittest.TestCase):
             ir = self._predicate_ir()
             node = repo / refs.run_node_dir()
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 8.0])
-            doc = c._author_execute_verdict(refs, ir)
+            doc = _author_verdict(c, refs, ir)
             self.assertEqual(doc["self_verdict"], "pass")
             basis = doc["per_test"][0]["basis"]
             self.assertEqual(set(basis), {"predicates"})
@@ -18443,7 +18451,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             # the captured state says the kernel did not scale
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 9.0])
-            doc = c._author_execute_verdict(refs, ir)
+            doc = _author_verdict(c, refs, ir)
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertEqual(doc["failure_class"], "physics_fail")
             report = wc._verdict_failure_report(doc)
@@ -18453,7 +18461,7 @@ class DeterministicBuildTest(unittest.TestCase):
 
             sdir = node / "raw" / "state_snapshots"
             (sdir / "l0_scale_identity_pass.json").write_text("{")
-            doc = c._author_execute_verdict(refs, ir)
+            doc = _author_verdict(c, refs, ir)
             self.assertEqual(doc["failure_class"], "structural_violation")
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertIn("unreadable", wc._verdict_failure_report(doc))
@@ -18461,7 +18469,7 @@ class DeterministicBuildTest(unittest.TestCase):
             # a predicate the evaluator raises on (an expr that does not parse, which Compile
             # refuses) is the structural doc, not a crash
             ir["io_contract"]["predicates"][0]["expr"] = "final.u["
-            doc = c._author_execute_verdict(refs, ir)
+            doc = _author_verdict(c, refs, ir)
             self.assertEqual(doc["failure_class"], "structural_violation")
             self.assertEqual(doc["per_test"], [])
             self.assertIn("PrimaryEvidenceError", doc["predicate_error"])
@@ -18514,7 +18522,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     # another target's run beside this one, agreeing then disagreeing:
                     # nothing of it reaches the verdict
                     _write(other, u1)
-                    doc = c._author_execute_verdict(refs, ir)
+                    doc = _author_verdict(c, refs, ir)
                     self.assertEqual((doc["self_verdict"], doc["failure_class"]),
                                      ("pass", "pass"))
                     cross = doc["per_test"][0]["basis"]["predicates"][1]
@@ -18525,7 +18533,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     self.assertFalse({"own_verdict", "comparands_absent"} & set(on_disk))
                 broken = copy.deepcopy(ir)
                 del broken["io_contract"]["tests"]
-                doc = c._author_execute_verdict(refs, broken)
+                doc = _author_verdict(c, refs, broken)
                 self.assertEqual(doc["failure_class"], "structural_violation")
                 self.assertFalse({"own_verdict", "comparands_absent"} & set(doc))
 
@@ -18535,7 +18543,7 @@ class DeterministicBuildTest(unittest.TestCase):
             c._phase_derivations[(refs.node_key, "validate")] = {
                 "derivation_key": "sha256:" + "0" * 64, "transformation": ["t"],
                 "derivation_inputs": {"ir": "sha256:" + "1" * 64}}
-            c._author_execute_verdict(refs, ir)
+            _author_verdict(c, refs, ir)
             on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
             self.assertEqual(on_disk["ir_hash"], "sha256:" + "1" * 64)
 
@@ -18546,7 +18554,7 @@ class DeterministicBuildTest(unittest.TestCase):
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
-            doc = c._author_execute_verdict(refs, {"io_contract": {}})
+            doc = _author_verdict(c, refs, {"io_contract": {}})
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertEqual(doc["failure_class"], "structural_violation")
             self.assertIn("predicate_error", doc)
@@ -18777,9 +18785,10 @@ class DeterministicBuildTest(unittest.TestCase):
         # Equality of the remainder is what is pinned, so adding a category to
         # `GATE_FAILURE_TERMINAL` without deciding which side it belongs on still fails here.
         # (The two differences were named constants with no production reader until issue
-        # #643 PR-5; they are this row's own literals now.)
+        # #643 PR-5; they are this row's own literals now.) Issue #680 PR-3 added the oracle
+        # comparison's disagreement: Generate.gate runs no oracle.
         gate_only = frozenset({"host_rendered_lint_findings", "lint_finding_unattributed"})
-        execute_only = frozenset({"device_kernels_absent"})
+        execute_only = frozenset({"device_kernels_absent", "oracle_disagreement"})
         self.assertEqual(
             wc.GATE_FAILURE_TERMINAL - gate_only,
             wc.VALIDATE_EXECUTE_FAILURE_TERMINAL - execute_only)
@@ -19523,7 +19532,7 @@ class DeterministicBuildTest(unittest.TestCase):
                                                             "evaluated": [{"satisfied": False,
                                                                            "error": "y" * 500}]}]}}
                                  for i in range(200)]}
-            with mock.patch.object(wc.Conductor, "_author_execute_verdict",
+            with mock.patch.object(wc.Conductor, "_evaluate_execute_verdict",
                                    lambda self, refs, ir: huge):
                 _out, meta = self._b1_execute(Path(td), self._B1_IR_CLEAN_VERDICT,
                                               gate_result=(0, ""))
@@ -19540,7 +19549,7 @@ class DeterministicBuildTest(unittest.TestCase):
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="O", llm_config=_cfg("claude"),
                                    env={})
-            doc = c._author_execute_verdict(self._b1_refs(), {"io_contract": {}})
+            doc = _author_verdict(c, self._b1_refs(), {"io_contract": {}})
             report = wc._verdict_failure_report(doc)
             self.assertIn("predicate_error:", report)
             self.assertIn("io_contract.tests missing/empty", report)
@@ -23134,7 +23143,7 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
 
     def test_a_malformed_test_entry_is_unevaluable_not_a_crash(self) -> None:
         """Round 3 D5: `target_cases: 5` raises TypeError in the evaluator. `_shape_verdict` runs
-        before `_author_execute_verdict`'s broad guard, so it let a malformed IR out as a transport
+        before `_evaluate_execute_verdict`'s broad guard, so it let a malformed IR out as a transport
         fail_closed. Each malformed shape reads as unevaluable, and the quality check authors."""
         for label, mutate in (
                 ("target_cases not iterable",

@@ -1,7 +1,8 @@
 """The `oracle` of a node (issue #680): the declaration (`tools/oracle.py`), the case plan,
 the build and validate keys' `oracle` member (`tools/orchestration_runtime.py`), the driver's
-startup verdict over the oracle's libraries (`run_workflow._library_verdict`) (PR-1), and the
-oracle's builds in `Build` (`Conductor._build_oracle`, PR-2).
+startup verdict over the oracle's libraries (`run_workflow._library_verdict`) (PR-1), the
+oracle's builds in `Build` (`Conductor._build_oracle`, PR-2), and the run and comparison in
+`Validate.execute` (`Conductor._compare_with_oracle`, PR-3).
 
 The libraries are the ones `test_external_library.py` builds with the real compiler, installed
 under a non-system directory; its fixture is reused.
@@ -239,9 +240,10 @@ class OracleKeyTest(_OracleFixture):
         self.assertEqual(self.inputs("build")["oracle"],
                          oracle.member(self.repo, declared, FORTRAN_CPU))
         # The `use` the workflow puts it to: a Build certified under issue #680 PR-1's member
-        # (none) is not one that built the oracle.
+        # (none) is not one that built the oracle, and a Validate certified under PR-2's (2) is
+        # not one that compared it.
         self.assertEqual(self.inputs("build")["oracle"]["use"], oracle.ORACLE_USE_VERSION)
-        self.assertEqual(oracle.ORACLE_USE_VERSION, 2)
+        self.assertEqual(oracle.ORACLE_USE_VERSION, 3)
         self.assertNotIn("oracle", self.inputs("build", OTHER_LANGUAGE))
         self.assertIsNone(self.member(target=OTHER_LANGUAGE))
 
@@ -1023,6 +1025,703 @@ class OracleRunPhaseTest(_OracleFixture):
         self.assertEqual(required, [f"{bdir}/bin/{exe}", f"{bdir}/bin_checked/{exe}",
                                     f"{bdir}/binary_meta.json",
                                     f"{refs.source_dir()}/src/command_log.jsonl"])
+
+    def launch_execute(self, oracle_text: str | None) -> tuple[list[str], Any]:
+        """The launch `run_substep` records for validate.execute, through the real
+        `run_substep` with the body and the runtime's I/O stubbed."""
+        import tools.workflow_conductor as wc
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import _TargetedConductor
+        recorded: list[dict] = []
+
+        class _Stub(_TargetedConductor):
+            def emit(self, *_a, **_k):
+                return None
+
+            def new_agent_run_id(self):
+                return "ar_execute"
+
+            def record_launch(self, child_arid, request, entry):
+                recorded.append(request)
+
+            def _launch_instant(self, *_a, **_k):
+                return 0.0
+
+            def _run_deterministic_substep(self, *_a, **_k):
+                return wc.ProcResult(returncode=0, stdout="", stderr="")
+
+            def _persist_leaf_output(self, *_a, **_k):
+                return None
+
+            def determine_substep_status(self, refs, phase, substep, paths, **_k):
+                return "pass", list(paths)
+
+            def finalize_child(self, *_a, **_k):
+                return None
+
+            def _agent_run_json(self, *_a, **_k):
+                return {}
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            spec = repo / _BUILD_SPEC
+            spec.mkdir(parents=True)
+            if oracle_text is not None:
+                (spec / oracle.ORACLE_DIR).mkdir()
+                (spec / oracle.ORACLE_DIR / oracle.DECLARATION_FILE).write_text(oracle_text)
+                (spec / oracle.ORACLE_DIR / ADAPTER).write_text(_ADAPTER_FOO)
+            stub = _Stub(repo_root=repo, orchestration_id="t", orchestration_agent_run_id="x",
+                         llm_config=sample_config_with("claude"), env={},
+                         target_profile=FORTRAN_CPU)
+            refs = wc.NodeRefs(target_id=FORTRAN_CPU.target_id, node_key=_BUILD_NODE,
+                               spec_path=_BUILD_SPEC, ir_id="x_1", pipeline_id="x_1",
+                               source_id="src_1", binary_id="bin_1", run_id="r1",
+                               source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(_EXEC_IR + _EXEC_CROSS)
+            outcome = stub.run_substep(refs, "validate", "execute")
+        self.assertEqual(outcome.status, "pass")
+        (request,) = recorded
+        return request["allowed_output_paths"], refs
+
+    def test_the_execute_launch_lists_the_record_and_validate_requires_it_not(self) -> None:
+        import tools.workflow_conductor as wc
+        with_oracle, refs = self.launch_execute(_EXEC_ORACLE)
+        without, _refs = self.launch_execute(None)
+        record = f"{refs.run_node_dir()}/{oracle.CHECK_RECORD}"
+        self.assertEqual([p for p in with_oracle if p not in without], [record])
+        self.assertEqual([p for p in without if p not in with_oracle], [])
+        other, _refs = self.launch_execute(
+            _EXEC_ORACLE.replace("language: fortran", f"language: {OTHER}"))
+        self.assertEqual(other, without)
+        # A record, as quality_check.json is: no certified artifact hashes it.
+        self.assertNotIn(record, wc.phase_required_outputs(refs, "validate"))
+
+
+#: Two cases, one `pass` test whose own predicate reads `final.v` and whose cross-target
+#: predicate compares it with a comparand's, in both cases.
+_EXEC_IR = """\
+impl_defaults:
+  toolchain: {language: fortran, build_system: make}
+  target: {class: cpu}
+case:
+  test_case_set:
+    - case_id: c_alpha
+    - case_id: c_beta
+io_contract:
+  raw_requirements:
+    required_evidence:
+      - artifact: state_snapshots
+        required: true
+        schema:
+          variables:
+            - {name: v, shape_expr: scalar}
+          time_variable: t
+          time_shape_expr: scalar
+  tests:
+    - test_id: t_alpha
+      expected_outcome: pass
+      target_cases: [c_alpha, c_beta]
+      quantities: [own, cross]
+  predicates:
+    - {test_id: t_alpha, quantity: own, target_cases: [c_alpha, c_beta], per_case: true,
+       expr: final.v, op: le, value: 1.0e-12}
+"""
+_EXEC_CROSS = """\
+    - {test_id: t_alpha, quantity: cross, target_cases: [c_alpha, c_beta], per_case: true,
+       expr: "maxabs(final.v - comparand.final.v)", op: le, value: 1.0e-12}
+"""
+#: The default build takes c_alpha, the `alt` build names c_beta.
+_EXEC_ORACLE = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\norigin: o\n"
+                "builds:\n  - id: default\n    libraries: []\n"
+                "  - id: alt\n    libraries: []\n    cases: [c_beta]\n")
+
+
+def _exec_ir(cases: tuple[str, ...], cross: bool = True,
+             outcome: str = "pass") -> str:
+    """`_EXEC_IR` (and `_EXEC_CROSS`) over `cases` instead of the two."""
+    listed = "[" + ", ".join(cases) + "]"
+    text = (_EXEC_IR + (_EXEC_CROSS if cross else "")).replace("[c_alpha, c_beta]", listed)
+    text = text.replace("    - case_id: c_alpha\n    - case_id: c_beta\n",
+                        "".join(f"    - case_id: {c}\n" for c in cases))
+    return text.replace("expected_outcome: pass", f"expected_outcome: {outcome}")
+
+
+def _write_captures(run_dir: Path, cases: list[str], value: float) -> None:
+    sdir = run_dir / "raw" / "state_snapshots"
+    (sdir / "initial").mkdir(parents=True, exist_ok=True)
+    for case_id in cases:
+        (sdir / "initial" / f"{case_id}.json").write_text(json.dumps({"v": 0.0, "t": 0.0}))
+        (sdir / f"{case_id}.json").write_text(json.dumps({"v": value, "t": 1.0}))
+
+
+class OracleExecuteTest(unittest.TestCase):
+    """`Validate.execute` runs the oracle and compares it (`Conductor._compare_with_oracle`,
+    issue #680 PR-3): the real `_execute_inproc` and the real predicates, with the library's
+    two run tools and the post_execute gate subprocess stubbed, `_ir_unevaluable` answering
+    False, and `_evaluate_execute_verdict` wrapped to count its calls. The stubbed run writes each
+    case's captures; an oracle run (`bin_oracle/` in its argv) writes the values the row asks
+    for, per build."""
+
+    def setUp(self) -> None:
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.repo = Path(td.name)
+
+    def execute(self, *, oracle_text: str | None = _EXEC_ORACLE, ir: str | None = None,
+                run_value: float = 0.0, qc_value: float | None = None, oracle_value: dict[str, float] | None = None,
+                oracle_rc: int = 0, oracle_skips: tuple[str, ...] = (),
+                oracle_broken: tuple[str, ...] = (),
+                cases: tuple[str, ...] = ("c_alpha", "c_beta"),
+                binary_meta: dict[str, Any] | None = None, ir_hash: str | None = None,
+                repo: Path | None = None) -> tuple[Any, dict[str, Any]]:
+        """`_run_deterministic_substep` on validate.execute; returns the result and what ran:
+        `oracle_runs` (each oracle run's argument dict) and `evaluations` (how many times the
+        verdict was evaluated)."""
+        import tools.workflow_conductor as wc
+        from tools.tests.test_workflow_conductor import (
+            _build_runtime,
+            _cfg,
+            _record_build_site,
+            _TargetedConductor,
+        )
+        repo = repo or self.repo
+        ir = ir if ir is not None else _EXEC_IR + _EXEC_CROSS
+        values = oracle_value or {}
+        qc_value = run_value if qc_value is None else qc_value
+        c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                               orchestration_agent_run_id="x", llm_config=_cfg("claude"),
+                               env={})
+        refs = self.refs()
+        (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+        (repo / refs.ir_ref / "spec.ir.yaml").write_text(ir, encoding="utf-8")
+        (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+        spec = repo / refs.spec_path
+        spec.mkdir(parents=True, exist_ok=True)
+        if oracle_text is not None:
+            (spec / oracle.ORACLE_DIR).mkdir(exist_ok=True)
+            (spec / oracle.ORACLE_DIR / oracle.DECLARATION_FILE).write_text(oracle_text)
+            (spec / oracle.ORACLE_DIR / ADAPTER).write_text(_ADAPTER_TEXT)
+        seen: dict[str, Any] = {"oracle_runs": [], "evaluations": 0}
+        build_runtime = _build_runtime()
+
+        def fake_run_program(args):
+            argv = args["command"]
+            project = Path(args["project_dir"])
+            threads = (args.get("env") or {}).get("OMP_NUM_THREADS")
+            if threads is not None:
+                (project / "perf.json").write_text(json.dumps(
+                    {"parallelism": {"threads_per_rank": int(threads)}}))
+            if "/bin_oracle/" in argv[0]:
+                seen["oracle_runs"].append(args)
+                build_id = Path(argv[0]).parent.name
+                if oracle_rc:
+                    return {"ok": False, "return_code": oracle_rc, "command_id": "O",
+                            "stderr": "x" * 600 + "\nadapter aborted"}
+                ran = [c_ for c_ in argv[3:] if c_ not in oracle_skips]
+                _write_captures(project, ran, values.get(build_id, 0.0))
+                for case_id in set(ran) & set(oracle_broken):
+                    (project / "raw" / "state_snapshots" / f"{case_id}.json").write_text("{")
+                return {"ok": True, "command_id": f"O-{build_id}"}
+            _write_captures(project, list(cases), run_value)
+            return {"ok": True, "command_id": "R"}
+
+        def fake_qc(args):
+            _write_captures(Path(args["env"]["RUNDIR"]), list(cases), qc_value)
+            return {"ok": True, "command_id": "Q"}
+
+        def fake_subprocess_run(argv, **kwargs):
+            assert any(str(a).endswith("validate_pipeline_semantics.py") for a in argv), argv
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        real_evaluate = wc.Conductor._evaluate_execute_verdict
+
+        def counted(self_, refs_, ir_):
+            seen["evaluations"] += 1
+            return real_evaluate(self_, refs_, ir_)
+
+        if binary_meta is not None:
+            meta_path = repo / refs.binary_dir() / "binary_meta.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(json.dumps(binary_meta))
+        if ir_hash is not None:
+            # What `run_phase` binds before the substep: the validate key's inputs.
+            c._phase_derivations[(refs.node_key, "validate")] = {
+                "derivation_key": "sha256:" + "0" * 64, "transformation": ["t"],
+                "derivation_inputs": {"ir": ir_hash}}
+        with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
+                mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
+                mock.patch.object(wc.subprocess, "run", fake_subprocess_run), \
+                mock.patch.object(wc.Conductor, "_evaluate_execute_verdict", counted), \
+                mock.patch.object(wc.Conductor, "_ir_unevaluable",
+                                  staticmethod(lambda *_a: False)):
+            _record_build_site(repo, refs)
+            # A fresh agent-run id per launch, as `new_agent_run_id` gives production.
+            self.launches = getattr(self, "launches", 0) + 1
+            child = f"child-{self.launches}"
+            result = c._run_deterministic_substep(refs, "validate", "execute", child, {})
+        seen["conductor"] = c
+        seen["child"] = child
+        return result, seen
+
+    @staticmethod
+    def refs() -> Any:
+        import tools.workflow_conductor as wc
+        from tools.tests.test_workflow_conductor import _TARGET_ID
+        return wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
+                           spec_path="spec/component/spec_x", ir_id="x_1",
+                           pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                           run_id="run_1", source_binary_id="bin_1")
+
+    def node_file(self, name: str, repo: Path | None = None) -> Path:
+        return (repo or self.repo) / self.refs().run_node_dir() / name
+
+    def read(self, name: str, repo: Path | None = None) -> dict[str, Any] | None:
+        path = self.node_file(name, repo)
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def summary(self, result: Any) -> str:
+        import tools.workflow_conductor as wc
+        return wc.Conductor._leaf_failure_summary(result)
+
+    def test_an_agreeing_oracle_writes_the_record_and_the_verdict(self) -> None:
+        result, _seen = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check = self.read(oracle.CHECK_RECORD)
+        assert check is not None
+        self.assertEqual(check["status"], "agree")
+        self.assertEqual([b["id"] for b in check["builds"]], ["default", "alt"])
+        self.assertEqual([b["cases"] for b in check["builds"]], [["c_alpha"], ["c_beta"]])
+        self.assertEqual([b["command_id"] for b in check["builds"]], ["O-default", "O-alt"])
+        self.assertEqual(check["comparison"]["failures"], [])
+        self.assertEqual(check["comparison"]["records_count"], 1)
+        self.assertEqual(self.read("verdict.json")["self_verdict"], "pass")
+        self.assertEqual(self.read("trial_meta.json")["status"], "pass")
+        self.assertNotIn("failure_category", self.read("trial_meta.json"))
+
+    def test_each_build_runs_its_own_cases_bare_and_serial_and_the_captures_are_merged(
+            self) -> None:
+        from tools.host_execution import serial_execution_env
+        _result, seen = self.execute()
+        refs = self.refs()
+        runs = seen["oracle_runs"]
+        child = seen["child"]
+        ir_spec = str((self.repo / refs.ir_ref / "spec.ir.yaml").resolve())
+        self.assertEqual(
+            [r["command"] for r in runs],
+            [[str((self.repo / refs.binary_dir() / "bin_oracle" / b / "spec_x_runner")
+                  .resolve()), "--cases", ir_spec, case]
+             for b, case in (("default", "c_alpha"), ("alt", "c_beta"))])
+        target = seen["conductor"].target
+        for r in runs:
+            self.assertEqual(r["env"], serial_execution_env(target.parallel_backend,
+                                                            target.block_size))
+            self.assertEqual(r["command_log_path"],
+                             str(self.node_file("command_log.jsonl")))
+        merged = (self.repo / "workspace" / "tmp" / child / "oracle_run" / "merged" / "raw"
+                  / "state_snapshots")
+        self.assertEqual(sorted(p.name for p in merged.glob("*.json")),
+                         ["c_alpha.json", "c_beta.json"])
+
+    def test_a_disagreement_is_terminal_writes_the_record_and_no_verdict(self) -> None:
+        import tools.workflow_conductor as wc
+        result, _seen = self.execute(oracle_value={"alt": 0.5})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check = self.read(oracle.CHECK_RECORD)
+        assert check is not None
+        self.assertEqual(check["status"], "disagree")
+        self.assertEqual([(f["case"], f["quantity"]) for f in check["comparison"]["failures"]],
+                         [("c_beta", "cross")])
+        self.assertIsNone(self.read("verdict.json"))
+        meta = self.read("trial_meta.json")
+        self.assertEqual((meta["status"], meta["failure_category"]),
+                         ("fail", oracle.DISAGREEMENT))
+        self.assertIn("case 'c_beta' 'cross'", meta["failure_excerpt"])
+        # The operator's log (`dialogs/deterministic.stderr.log`) carries the report too.
+        self.assertIn("[execute fail: oracle]", result.stderr)
+        self.assertIn(oracle.DISAGREEMENT, result.stderr.splitlines()[-1])
+        self.assertIn(oracle.DISAGREEMENT, meta["failure_excerpt"].splitlines()[-1])
+        self.assertIn(oracle.DISAGREEMENT, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+
+    def test_two_consecutive_disagreements_through_classify_failure_never_reopen_compile(
+            self) -> None:
+        import tools.workflow_conductor as wc
+        c = self.execute(oracle_value={"default": 1.0})[1]["conductor"]
+        refs = self.refs()
+        outcomes = [wc.SubstepOutcome("pj", "pass", [], 0),
+                    wc.SubstepOutcome("ex", "fail", [], 0)]
+        for _ in range(3):
+            d = c.classify_failure(refs, "validate", outcomes)
+            self.assertEqual((d.action, d.reason),
+                             ("fail_closed",
+                              f"{wc.VALIDATE_EXECUTE_REASON_PREFIX}{oracle.DISAGREEMENT}"))
+        self.assertEqual(getattr(c, "_validate_execute_fail_count", {}).get(refs.node_key, 0),
+                         0)
+        self.assertIsNone(c._read_repair_findings(
+            refs, f"{wc.VALIDATE_EXECUTE_REASON_PREFIX}{oracle.DISAGREEMENT}", "validate"))
+
+    def test_the_written_verdict_is_the_evaluated_one_with_the_ir_hash(self) -> None:
+        """The write `_execute_inproc` makes after the comparison (and on a node without an
+        oracle): verdict.json is the evaluated document, `ir_hash` included, which another
+        target's comparand selection reads."""
+        import tools.workflow_conductor as wc
+        ir_hash = "sha256:" + "1" * 64
+        for oracle_text in (_EXEC_ORACLE, None):
+            with self.subTest(oracle=oracle_text is not None), \
+                    tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                evaluated: list[dict] = []
+                real = wc.Conductor._evaluate_execute_verdict
+
+                def spy(self_, refs_, ir_, real=real, evaluated=evaluated):
+                    doc = real(self_, refs_, ir_)
+                    evaluated.append(json.loads(json.dumps(doc)))
+                    return doc
+
+                with mock.patch.object(wc.Conductor, "_evaluate_execute_verdict", spy):
+                    result, _seen = self.execute(oracle_text=oracle_text, ir_hash=ir_hash,
+                                                 repo=repo)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                written = self.read("verdict.json", repo)
+                self.assertEqual(written["ir_hash"], ir_hash)
+                self.assertEqual([written], evaluated)
+
+    def test_the_oracle_runs_on_an_xfail_verdict(self) -> None:
+        result, seen = self.execute(ir=_exec_ir(("c_alpha", "c_beta"), outcome="xfail"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("verdict.json")["self_verdict"], "xfail")
+        self.assertEqual(len(seen["oracle_runs"]), 2)
+        self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "agree")
+
+    def test_the_oracle_is_compared_with_the_serial_reference_not_the_run(self) -> None:
+        # The run and the serial reference differ by 9e-13 (they agree under the 1e-12 bound);
+        # the oracle is 6e-13 from the reference and 1.5e-12 from the run.
+        result, _seen = self.execute(run_value=0.0, qc_value=9e-13,
+                                     oracle_value={"default": 1.5e-12, "alt": 1.5e-12})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "agree")
+        result, _seen = self.execute(run_value=9e-13, qc_value=0.0,
+                                     oracle_value={"default": 1.5e-12, "alt": 1.5e-12})
+        self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "disagree")
+
+    def test_the_loader_path_holds_the_closure_s_library_dirs_then_the_build_s(self) -> None:
+        from tools.backends import registry
+        from tools.checked_build import target_compiler
+        closure, own = "/libs/closure/lib", "/libs/oracle_alt/lib"
+        meta = {"library_dirs": [closure],
+                "oracle": {"builds": [
+                    {"id": "default", "libraries": []},
+                    {"id": "alt", "libraries": [{"library_id": "x", "lib_dirs": [own]}]}]}}
+        from tools.tests.target_fixtures import fixture_target
+        variable = str(registry.capability_module(
+            "compiler", target_compiler(fixture_target(self.repo)),
+            "library_binary").LOADER_VARIABLE)
+        inherited = "/operator/own/lib"
+        with mock.patch.dict(os.environ, {variable: inherited}):
+            _result, seen = self.execute(binary_meta=meta)
+        paths = {Path(r["command"][0]).parent.name: r["env"][variable].split(os.pathsep)
+                 for r in seen["oracle_runs"]}
+        self.assertEqual(paths["default"][:1], [closure])
+        self.assertEqual(paths["alt"][:2], [closure, own])
+        # The value the run would otherwise inherit stays behind them.
+        self.assertEqual(paths["alt"][-1], inherited)
+
+    #: Case ids as long as the channel problem's (`chan_tc2_xpert_n032_dts100`), 30 of them.
+    _LONG = tuple(f"chan_tc{i}_xpert_n032_dts100_ymir" for i in range(30))
+
+    def test_each_refusal_keeps_its_reason_and_remedy_in_the_failure_summary(self) -> None:
+        """The run's failure summary keeps the last 400 characters (`_leaf_failure_summary`):
+        each refusal's reason and remedy are at that end, over a case list and a stderr that
+        are longer than the cut."""
+        cases = self._LONG
+        self.assertGreater(len(str(list(cases))), 400)
+        alt = _EXEC_ORACLE.replace("cases: [c_beta]", f"cases: [{cases[0]}]")
+        # The run row's stderr straddles the cut; the comparison's `error` is bounded to 400
+        # characters by `_shape_state_agreement`, and the two others are checked for their
+        # remedy by cause.
+        rows = {
+            "run": ({"oracle_rc": 3}, oracle.RUN_FAILED, "Fix the adapter", True),
+            "capture": ({"oracle_broken": cases[1:]}, oracle.UNEVALUABLE, "fix the adapter",
+                        False),
+            "no_cross": ({"ir": _exec_ir(cases, cross=False)}, oracle.UNEVALUABLE,
+                         "remove the declaration", False),
+            "declaration": ({"oracle_text": alt.replace(cases[0], "not_a_case")},
+                            oracle.DECLARATION_INVALID, "Fix spec/", False),
+        }
+        for name, (kwargs, reason, remedy, long_) in rows.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as td:
+                result, _seen = self.execute(**{"ir": _exec_ir(cases), "cases": cases,
+                                                 "oracle_text": alt, "repo": Path(td),
+                                                 **kwargs})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                if long_:
+                    self.assertGreater(len(result.stderr), 400, result.stderr)
+                summary = self.summary(result)
+                for needle in (reason, remedy, "--resume"):
+                    self.assertIn(needle, summary)
+                # Each cause carries its own remedy and not another's.
+                for other in ({"fix the adapter", "remove the declaration"} - {remedy.lower()}
+                              if reason == oracle.UNEVALUABLE else ()):
+                    self.assertNotIn(other, summary.lower())
+
+    def test_a_build_that_takes_no_compared_case_is_skipped_and_the_next_still_runs(
+            self) -> None:
+        # `first` names a case the IR holds and no cross-target predicate compares.
+        # A second test reads c_gamma alone and applies no cross-target judgment.
+        ir = (_EXEC_IR + _EXEC_CROSS).replace(
+            "    - case_id: c_beta\n", "    - case_id: c_beta\n    - case_id: c_gamma\n"
+        ).replace("  predicates:\n", "    - test_id: t_gamma\n      expected_outcome: pass\n"
+                  "      target_cases: [c_gamma]\n      quantities: [own]\n  predicates:\n"
+        ) + ("    - {test_id: t_gamma, quantity: own, target_cases: [c_gamma], per_case: true,\n"
+             "       expr: final.v, op: le, value: 1.0e-12}\n")
+        text = _EXEC_ORACLE.replace(
+            "builds:\n", "builds:\n  - id: first\n    libraries: []\n    cases: [c_gamma]\n")
+        result, seen = self.execute(ir=ir, oracle_text=text,
+                                    cases=("c_alpha", "c_beta", "c_gamma"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([Path(r["command"][0]).parent.name for r in seen["oracle_runs"]],
+                         ["default", "alt"])
+        builds = self.read(oracle.CHECK_RECORD)["builds"]
+        self.assertEqual([(b["id"], b["cases"], b["command_id"]) for b in builds],
+                         [("first", [], None), ("default", ["c_alpha"], "O-default"),
+                          ("alt", ["c_beta"], "O-alt")])
+
+    def test_a_long_continuation_refusal_keeps_its_verdict_at_the_tail(self) -> None:
+        """The unevaluable detail (here the list of 29 continuation cases) comes before the
+        verdict line, so the summary keeps the reason and the remedy."""
+        import tools.workflow_conductor as wc
+        cases = self._LONG
+        real = wc.Conductor._compare_with_oracle
+
+        def compare(self_, *a, **k):
+            with mock.patch("tools.primary_evidence.continuation_cases",
+                            lambda ir_: {c: object() for c in cases[1:]}):
+                return real(self_, *a, **k)
+
+        alt = _EXEC_ORACLE.replace("cases: [c_beta]", f"cases: [{cases[0]}]")
+        with mock.patch.object(wc.Conductor, "_compare_with_oracle", compare):
+            result, _seen = self.execute(ir=_exec_ir(cases), cases=cases, oracle_text=alt)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertGreater(len(result.stderr), 400)
+        summary = self.summary(result)
+        for needle in (oracle.UNEVALUABLE, "remove the declaration", "--resume"):
+            self.assertIn(needle, summary)
+
+    def test_an_unevaluable_comparison_is_fail_closed(self) -> None:
+        # The oracle's capture of c_beta is unreadable: the comparison cannot evaluate it.
+        result, _seen = self.execute(oracle_broken=("c_beta",))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(oracle.UNEVALUABLE, self.summary(result))
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+        self.assertIsNone(self.read("verdict.json"))
+
+    def test_a_compared_case_without_an_oracle_capture_is_unevaluable_and_never_agree(
+            self) -> None:
+        # The oracle exits 0 and leaves no capture of a case its build was given: no filter
+        # drops the case, and the run never reads `agree`.
+        result, seen = self.execute(oracle_skips=("c_alpha",))
+        self.assertEqual(result.returncode, 1)
+        summary = self.summary(result)
+        self.assertIn(oracle.UNEVALUABLE, summary)
+        self.assertIn("--resume", summary)
+        self.assertEqual(len(seen["oracle_runs"]), 2)
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+
+    def test_a_continuation_case_has_no_oracle_capture_and_is_named(self) -> None:
+        # The oracle runs no second pass: a compared continuation case is not handed to it,
+        # and the refusal names it.
+        # The run itself is driven as a node without continuations; the oracle comparison alone
+        # is told c_beta is one.
+        import tools.workflow_conductor as wc
+        real = wc.Conductor._compare_with_oracle
+
+        def compare(self_, *a, **k):
+            with mock.patch("tools.primary_evidence.continuation_cases",
+                            lambda ir_: {"c_beta": object()}):
+                return real(self_, *a, **k)
+
+        with mock.patch.object(wc.Conductor, "_compare_with_oracle", compare):
+            result, seen = self.execute()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]], [["c_alpha"]])
+        self.assertIn("continuation cases ['c_beta']", result.stderr)
+        # The remedy removes the declaration; it never asks for the spec's judgment to go,
+        # which also compares two declared targets.
+        self.assertIn("remove the declaration", self.summary(result))
+        self.assertNotIn("cross-target judgment", self.summary(result))
+        self.assertNotIn("fix the adapter", self.summary(result).lower())
+        self.assertIn(oracle.UNEVALUABLE, self.summary(result))
+
+    def test_an_oracle_on_an_ir_with_no_cross_target_predicate_is_fail_closed(self) -> None:
+        result, seen = self.execute(ir=_EXEC_IR)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(seen["oracle_runs"], [])
+        self.assertIn(oracle.UNEVALUABLE, self.summary(result))
+        self.assertIn("not_applicable", result.stderr)
+        self.assertIsNone(self.read("verdict.json"))
+
+    def test_an_oracle_run_that_exits_non_zero_is_fail_closed(self) -> None:
+        result, seen = self.execute(oracle_rc=3)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(seen["oracle_runs"]), 1)
+        self.assertGreater(len(result.stderr), 400)
+        summary = self.summary(result)
+        self.assertIn(oracle.RUN_FAILED, summary)
+        self.assertIn("--resume", summary)
+        self.assertIn("adapter aborted", result.stderr)
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+        self.assertIsNone(self.read("verdict.json"))
+
+    def test_a_case_plan_the_declaration_breaks_is_oracle_declaration_invalid(self) -> None:
+        text = _EXEC_ORACLE.replace("cases: [c_beta]", "cases: [c_gamma]")
+        result, seen = self.execute(oracle_text=text)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(seen["oracle_runs"], [])
+        self.assertIn(oracle.DECLARATION_INVALID, self.summary(result))
+
+    def test_the_oracle_is_not_run_when_the_run_s_own_verdict_fails(self) -> None:
+        result, seen = self.execute(run_value=1.0)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(seen["oracle_runs"], [])
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+        self.assertEqual(self.read("verdict.json")["self_verdict"], "fail")
+        self.assertNotIn("failure_category", self.read("trial_meta.json"))
+
+    def test_the_predicates_are_evaluated_once_for_the_verdict(self) -> None:
+        for kwargs in ({}, {"oracle_value": {"default": 1.0}}, {"oracle_text": None}):
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                _result, seen = self.execute(**kwargs)
+                self.assertEqual(seen["evaluations"], 1)
+
+    def test_quality_check_json_and_trial_meta_are_unchanged_by_an_agreeing_oracle(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as other:
+            plain = Path(other)
+            self.execute(oracle_text=None, repo=plain)
+            self.execute()
+            for name in ("quality_check.json", "trial_meta.json", "verdict.json"):
+                with self.subTest(name=name):
+                    self.assertEqual(self.node_file(name).read_bytes(),
+                                     self.node_file(name, plain).read_bytes())
+            self.assertIsNone(self.read(oracle.CHECK_RECORD, plain))
+
+    def test_no_record_on_a_target_of_another_language(self) -> None:
+        result, seen = self.execute(
+            oracle_text=_EXEC_ORACLE.replace("language: fortran", f"language: {OTHER}"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(seen["oracle_runs"], [])
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+        self.assertEqual(self.read("verdict.json")["self_verdict"], "pass")
+
+
+#: A driver that writes, per case it is given, the initial and final captures of `v`, the
+#: model's (or the adapter's) `m_value()`.
+_CAPTURE_DRIVER = """\
+program p
+  use m_model, only: m_value
+  implicit none
+  integer :: i, u
+  character(len=256) :: arg
+  do i = 3, command_argument_count()
+    call get_command_argument(i, arg)
+    open(newunit=u, file='raw/state_snapshots/initial/'//trim(arg)//'.json', status='replace')
+    write(u, '(a)') '{"v": 0.0, "t": 0.0}'
+    close(u)
+    open(newunit=u, file='raw/state_snapshots/'//trim(arg)//'.json', status='replace')
+    write(u, '(a,es25.17e3,a)') '{"v": ', m_value(), ', "t": 1.0}'
+    close(u)
+  end do
+end program p
+"""
+_VALUE_MODULE = """\
+module m_model
+  implicit none
+contains
+  function m_value() result(v)
+    real(8) :: v
+{body}
+  end function m_value
+end module m_model
+"""
+#: The existing code's answer, through the fixture library: foo_add(1) = 2*1 + 1.
+_VALUE_ADAPTER = _VALUE_MODULE.format(
+    body="    real(8), external :: foo_add\n    v = foo_add(1d0)")
+#: The suite asks `v` within 1e-3 of 3; the cross-target judgment asks 1e-12 of the comparand.
+_E2E_IR = """\
+case:
+  test_case_set:
+    - case_id: c_alpha
+    - case_id: c_beta
+io_contract:
+  raw_requirements:
+    required_evidence:
+      - artifact: state_snapshots
+        required: true
+        schema:
+          variables:
+            - {name: v, shape_expr: scalar}
+          time_variable: t
+          time_shape_expr: scalar
+  tests:
+    - {test_id: t, expected_outcome: pass, target_cases: [c_alpha, c_beta],
+       quantities: [own, cross]}
+  predicates:
+    - {test_id: t, quantity: own, target_cases: [c_alpha, c_beta], per_case: true,
+       expr: "abs(final.v - 3.0)", op: le, value: 1.0e-3}
+    - {test_id: t, quantity: cross, target_cases: [c_alpha, c_beta], per_case: true,
+       expr: "maxabs(final.v - comparand.final.v)", op: le, value: 1.0e-12}
+"""
+
+
+class OracleEndToEndTest(OracleBuildTest):
+    """A model built and run, its oracle built and run, and the comparison, with the real
+    compiler, `make` and the real run tool: `Build` builds both (`_build_oracle`), the test runs
+    the certified binary as the serial reference, and `_compare_with_oracle` runs the oracle
+    against the fixture library and compares. A wrong model that the node's own suite passes
+    disagrees with the oracle; the correct one agrees."""
+
+    def compare(self, model_body: str) -> dict[str, Any]:
+        import dataclasses
+
+        import yaml
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [foo]\n")
+        repo, c, refs = self.node(oracle_text=text, adapter=_VALUE_ADAPTER,
+                                  model=_VALUE_MODULE.format(body=model_body))
+        (repo / refs.source_dir() / "src" / "spec_x_runner.f90").write_text(_CAPTURE_DRIVER)
+        ir_spec = repo / refs.ir_ref / "spec.ir.yaml"
+        ir_spec.write_text(_E2E_IR)
+        ir = yaml.safe_load(_E2E_IR)
+        result = self.build(c, refs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refs = dataclasses.replace(refs, run_id="r1", source_binary_id=refs.binary_id)
+        bin_dir = repo / refs.binary_dir() / "bin"
+        raw_dirs = [("raw", "state_snapshots"), ("raw", "state_snapshots", "initial")]
+        reference = repo / "reference"
+        for raw in raw_dirs:
+            reference.joinpath(*raw).mkdir(parents=True, exist_ok=True)
+        subprocess.run([str(bin_dir / "spec_x_runner"), "--cases", str(ir_spec), "c_alpha",
+                        "c_beta"], cwd=reference, check=True)
+        declared = oracle.load(repo, _BUILD_SPEC, "fortran")
+        cmd_log = repo / refs.run_node_dir() / "command_log.jsonl"
+        cmd_log.parent.mkdir(parents=True)
+        return c._compare_with_oracle(
+            refs, "child-2", ir, declared, reference_dir=reference, bin_dir=bin_dir,
+            exe="spec_x_runner", library_dirs=(), ir_spec=ir_spec, cmd_log=cmd_log,
+            run_raw_dirs=raw_dirs)
+
+    def test_the_correct_model_agrees(self) -> None:
+        check = self.compare("    v = 2d0 * 1d0 + 1d0")
+        self.assertEqual(check["status"], "agree", check)
+        self.assertEqual(check["comparison"]["records_count"], 1)
+        self.assertEqual(check["builds"][0]["cases"], ["c_alpha", "c_beta"])
+
+    def test_a_wrong_model_the_suite_passes_disagrees_with_the_oracle(self) -> None:
+        check = self.compare("    v = 3d0 + 1d-6")
+        self.assertEqual(check["status"], "disagree", check)
+        failures = check["comparison"]["failures"]
+        self.assertEqual((failures[0]["case"], failures[0]["quantity"]), ("c_alpha", "cross"))
+        self.assertAlmostEqual(failures[0]["value"], 1e-6, delta=1e-9)
 
 
 if __name__ == "__main__":

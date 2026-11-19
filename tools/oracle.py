@@ -13,9 +13,10 @@ file that publishes the node's §5.1 surface and calls the existing code), and o
 optionally, the compared cases it runs. A node with no `oracle/` directory declares none.
 
 This module loads and shape-checks the declaration, plans which build runs which compared case,
-and computes the build key's `oracle` member. It holds `language` as an opaque token: it names
-no file extension, asks the registry nothing and imports no backend. No gate reads the adapter:
-no leaf writes it (`AGENTS.md` §Development premises).
+computes the build key's `oracle` member, and names the record and the failure reasons of the
+comparison `Validate.execute` makes (`Conductor._compare_with_oracle`). It holds `language` as
+an opaque token: it names no file extension, asks the registry nothing and imports no backend.
+No gate reads the adapter: no leaf writes it (`AGENTS.md` §Development premises).
 """
 
 from __future__ import annotations
@@ -33,9 +34,10 @@ from tools import external_library as xl
 ORACLE_DECLARATION_VERSION = 1
 #: What the workflow does with a declared oracle, carried in the key member as `use`: absent =
 #: declared and read, nothing built or compared (issue #680 PR-1); 2 = `Build` builds it
-#: (PR-2). A Build or Validate certified under an earlier use is not one that built (or
-#: compared) the oracle, so the member moves, for nodes that declare an oracle alone.
-ORACLE_USE_VERSION = 2
+#: (PR-2); 3 = `Validate.execute` runs it and compares it with the run (PR-3). A Build or
+#: Validate certified under an earlier use is not one that built (or compared) the oracle, so
+#: the member moves, for nodes that declare an oracle alone.
+ORACLE_USE_VERSION = 3
 #: The directory under a node's spec directory that holds the declaration and the adapter.
 ORACLE_DIR = "oracle"
 DECLARATION_FILE = "oracle.yaml"
@@ -46,6 +48,15 @@ _BUILD_ID = re.compile(r"[a-z0-9_]+")
 
 #: The startup refusal of a declaration that does not have the closed shape.
 DECLARATION_INVALID = "oracle_declaration_invalid"
+#: The record `Validate.execute` writes in the run node directory when it compared the run
+#: with the oracle: on agreement and on disagreement.
+CHECK_RECORD = "oracle_check.json"
+#: `trial_meta.json#failure_category` of a run that disagrees with its oracle: terminal.
+DISAGREEMENT = "oracle_disagreement"
+#: The two transport `fail_closed` reasons of the comparison: an oracle binary that did not exit
+#: 0, and a comparison that could not be evaluated (or had no cross-target predicate to use).
+RUN_FAILED = "oracle_run_failed"
+UNEVALUABLE = "oracle_unevaluable"
 #: The startup refusal of an applying oracle at a remote site, whatever it links: the host builds
 #: and runs an oracle at the local site only, as it does an external library.
 REMOTE_SITE = "oracle_at_remote_site"

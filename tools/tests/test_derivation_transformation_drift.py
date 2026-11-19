@@ -526,6 +526,14 @@ def execute_tuple() -> dict[str, str]:
         # The store the run's captures are placed, promoted and read through (issue #644, Part
         # 3 P3): the file names, the copy and the move left the conductor methods above for it.
         **{f"capture store: {k}": v for k, v in capture_store_members().items()},
+        # The oracle comparison (issue #680 PR-3): the declaration's case plan and the names it
+        # holds, the conductor's reading of the declaration, the run and the comparison, and the
+        # report a disagreement fails with.
+        "tools/oracle.py": _file_digest("tools/oracle.py"),
+        "Conductor._oracle": _source_digest(wc.Conductor._oracle),
+        "Conductor._compare_with_oracle": _source_digest(wc.Conductor._compare_with_oracle),
+        "workflow_conductor._oracle_disagreement_report":
+            _source_digest(wc._oracle_disagreement_report),
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
@@ -542,7 +550,10 @@ def verdict_tuple() -> dict[str, str]:
         "tools/verdict_evaluator.py": _file_digest("tools/verdict_evaluator.py"),
         # Z6 (issue #255): the host-evaluated primary predicates are half of the verdict.
         "tools/primary_evidence.py": _file_digest("tools/primary_evidence.py"),
-        "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
+        # The evaluation half since issue #680 PR-3: `_execute_inproc` writes the document it
+        # returns (`_write_run_node_meta`), after the oracle comparison when there is one.
+        "Conductor._evaluate_execute_verdict":
+            _source_digest(wc.Conductor._evaluate_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
         # The store the predicates' captures are found and decoded through (issue #644, Part 3
@@ -1795,7 +1806,13 @@ PINNED_BUILD: dict[str, str] = {
     # `oracle.ORACLE_USE_VERSION`), so no Build certified before is reused for it. The digest
     # `build-5` shipped with at 3f9b6878:
     "build-5@3f9b6878": "dc63f773028a82aa385bc2f57d00dd629a1f8d3c4e4277d0c4548329917c9e0c",
-    "build-5": "53d9be6b017c828721618b968fe08084e156597569e9a0bbfae561203ff1dd92",
+    # build-5 re-pinned in place by issue #680 PR-3: `tools/oracle.py` (a build-tuple member)
+    # gained the comparison's record name and reasons, and `ORACLE_USE_VERSION` moved to 3, which
+    # moves the build key of a node that declares an oracle alone (no node in the tree does).
+    # `Conductor._oracle`'s docstring names the launch. No build command or record changes. The
+    # digest `build-5` shipped with at 0260f5ba:
+    "build-5@0260f5ba": "53d9be6b017c828721618b968fe08084e156597569e9a0bbfae561203ff1dd92",
+    "build-5": "db3e77ef9b85dfd8e645a2a510ea1049db47d91ac756dba54f0e5e9028fd2f39",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2226,7 +2243,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # `execute_tuple()` against main 8adea1c4's: those four rows and no other.) The digest
     # `execute-22` shipped with at 8adea1c4:
     "execute-22@8adea1c4": "b1f87278a22c0ebf72c53d58677822a6d703ecfc0a162769777b6def2c20a238",
-    "execute-22": "f76069607d72f9416d5b4b4f2e6aea74ae4d68559241dd90e70c084d6aae6661",
+    # execute-22 re-pinned in place by issue #680 PR-3: `Validate.execute` runs and compares a
+    # declared oracle (`Conductor._compare_with_oracle`, `_oracle_disagreement_report`, rows added
+    # with `tools/oracle.py` and `Conductor._oracle`), and evaluates the verdict before it writes
+    # it. A node that declares no oracle — every node in the tree — runs the same commands and
+    # writes the same records; a node that declares one has a new validate key (the member's
+    # `use`, `oracle.ORACLE_USE_VERSION` 3), so no Validate certified before compared it. The
+    # digest `execute-22` shipped with at 0260f5ba:
+    "execute-22@0260f5ba": "f76069607d72f9416d5b4b4f2e6aea74ae4d68559241dd90e70c084d6aae6661",
+    "execute-22": "4ae0b95b6820f77832ee6670497811d3ddba17145f01cb5037ef5db8e76c0304",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2494,7 +2519,12 @@ PINNED_VERDICT: dict[str, str] = {
     # against main efbf8454's: that row and no other.) The digest `verdict-20` shipped with at
     # efbf8454:
     "verdict-20@efbf8454": "2e7a0a471203d54aabb53bd3cae9c4166ab37833eb108e9cf889fd51dfb6f211",
-    "verdict-20": "46376f99b2c95312f68a779650ba33d6d4ec20f98502e254bd7f4f7db791e0be",
+    # verdict-20 re-pinned in place by issue #680 PR-3: `_author_execute_verdict` split into its
+    # evaluation (`Conductor._evaluate_execute_verdict`, the member now) and the write, which
+    # `_execute_inproc` does after the oracle comparison. The document written is byte-identical.
+    # The digest `verdict-20` shipped with at 0260f5ba:
+    "verdict-20@0260f5ba": "46376f99b2c95312f68a779650ba33d6d4ec20f98502e254bd7f4f7db791e0be",
+    "verdict-20": "14827cb21fd16d0de0fd717337390d8f9e6b1f28b8244ad07ea0dcc50d995b31",
 }
 
 
