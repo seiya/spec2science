@@ -2574,9 +2574,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         "prompt_fragments": ("fragments", "runner_output_document", "generate_rules_document",
                              "EXEMPLAR_GATE_DRIFT_NOTE"),
         # `physics_harness_uses` (issue #316): what the isolation gate lets a physics source `use`
-        # from a harness that runs the program as several ranks.
+        # from a harness that runs the program as several ranks. `harness_block_drift` (issue
+        # #690): the comparison of a harness's §5.1 with the block, which the operator's
+        # spec-input check runs through `host_render`.
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
-                          "physics_harness_uses"),
+                          "physics_harness_uses", "harness_block_drift"),
         # Issue #289, R4-b PR-3: what the validator's source gates, the bundle acceptance layer
         # and the make control-file gate take off a language's source reader; what the §5.1
         # gates and the dependency-fact resolver take off its signature module; and what the
@@ -2901,7 +2903,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # live workflow would find out.
         module = registry.capability_module("language", "fortran", "runner_render")
         for name in ("render_runner", "assert_harness_pin", "ir_content_violations",
-                     "physics_harness_uses"):
+                     "physics_harness_uses", "harness_block_drift"):
             self.assertTrue(hasattr(module, name), name)
 
     def test_the_declaration_rules_do_not_block_a_single_value_migrating(self) -> None:
