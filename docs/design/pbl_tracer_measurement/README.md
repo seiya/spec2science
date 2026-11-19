@@ -51,7 +51,11 @@ PYTHONPATH=. python3 tools/tests/data/drive_ir/pr3_evidence/verify_spec.py \
 make -C docs/design/pbl_tracer_measurement SCALE_ROOT=<tree> BUILD=<dir>/O2
 make -C docs/design/pbl_tracer_measurement SCALE_ROOT=<tree> BUILD=<dir>/O3fma \
     FFLAGS="-O3 -march=native -mfma -cpp -ffree-line-length-none"
+make -C docs/design/pbl_tracer_measurement SCALE_ROOT=<tree> BUILD=<dir>/O0 \
+    FFLAGS="-O0 -cpp -ffree-line-length-none"
 python3 docs/design/pbl_tracer_measurement/crosscheck.py <dir>/O3fma/driver <dir>/O2/driver
+python3 docs/design/pbl_tracer_measurement/crosscheck.py <dir>/O3fma/driver <dir>/O0/driver
+python3 docs/design/pbl_tracer_measurement/crosscheck.py <dir>/O0/driver <dir>/O2/driver
 ```
 
 ## Results
