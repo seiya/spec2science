@@ -554,7 +554,8 @@ class OutputFormatTests(unittest.TestCase):
         parallel backend declares a launcher, and the capture token of `output.format`."""
         # Kills: dropping a token, a fixed `distributed_state` answer, or a fixed capture format.
         # It does not tell the launcher capability from another one only `mpi` declares
-        # (`compiler_wrapper`): no declared backend separates the two.
+        # (`compiler_wrapper`), nor from the backend id `mpi` itself: no declared backend
+        # separates the three.
         from tools.backends import registry
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)

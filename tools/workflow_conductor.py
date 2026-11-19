@@ -6221,7 +6221,7 @@ class Conductor:
         `infrastructure` direct dependency until R4-a PR-3): the certified harness whose
         plumbing its runner glue drives. On a `harness` node it is the node ITSELF (issue #169)
         — a harness's self-test bundle declares the execution model the harness implements, so
-        it negotiates against its own manifest. `infrastructure` is read off the NODE_KEY, the
+        it is shown a manifest under its own node key, holding the set its target implies. `infrastructure` is read off the NODE_KEY, the
         host's own identity for the node, never off the IR's self-declared `meta.spec_kind`;
         see `_bundle_shape`.
 

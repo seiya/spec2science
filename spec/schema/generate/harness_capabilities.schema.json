@@ -14,7 +14,7 @@
       "minimum": 1
     },
     "manifests": {
-      "description": "One entry per harness node_key; the host renders one, for the target's harness. An absent node_key provides nothing.",
+      "description": "One entry per harness node_key; the host renders one, for the target's harness.",
       "type": "array",
       "minItems": 1,
       "items": {

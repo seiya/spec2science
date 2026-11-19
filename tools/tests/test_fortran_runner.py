@@ -2135,7 +2135,8 @@ class DistributedFormRefusalTest(unittest.TestCase):
 
 
 class HarnessPinTableTest(unittest.TestCase):
-    """The renderer's harness table, against the manifest and the harness spec."""
+    """The renderer's harness table, against the set each checked-in target implies for its
+    harness and against the harness spec."""
 
     def test_the_distributed_column_is_the_targets(self) -> None:
         # The column agrees with the set each checked-in target implies for the harness it

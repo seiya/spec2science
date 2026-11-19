@@ -49,7 +49,8 @@ optimization boundary.
   `spec/schema/generate/harness_capabilities.schema.json` (JSON Schema draft-07).
 - Canonical validators: `tools/codegen_bundle.py` — `validate_bundle` for the bundle
   document, `harness_capability_manifest_violations` for the harness capability manifest
-  document. The schema is the
+  document (the grammar of a document the host renders; nothing calls it at run time,
+  §The manifest document). The schema is the
   declarative copy of the field grammar a draft-07 pattern can carry; the module is the
   enforcement point and additionally holds the rules a pattern cannot express — the
   reserved build filenames, the language extension allowlist (which is also what refuses a
@@ -413,9 +414,10 @@ the interface block they pin by the harness's `spec_id`; issue #690 moves that s
 tokens.)
 
 The launch gate does not compare the profile with the harness it names. A run under a profile
-that names a harness of the other process model, or of another output format, fails closed
-later, at the first of these it reaches (measured for
-[issue #690](https://github.com/seiya/spec2science/issues/690)):
+that names a harness of the other process model, or of another output format, is refused at the
+first of these it reaches (measured for
+[issue #690](https://github.com/seiya/spec2science/issues/690)); a run that ends before
+`Validate` reaches at most the second, and certifies no `Validate` output:
 - a launcher target over a single-process harness: the harness's runs report one rank, and
   `Validate.execute`'s quality check refuses the launcher shape (`launch_match`);
 - a target with no launcher over a distributed harness: a harness source that uses the parallel

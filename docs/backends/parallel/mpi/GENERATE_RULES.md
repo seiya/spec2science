@@ -10,9 +10,10 @@
 A program built for a target whose parallel backend is `mpi` runs as `execution.ranks` processes
 started by the launcher (`LAUNCHER.md`), arranged in the process grid the host imposes
 (`execution.process_grid`, then each `execution.sweep.grids` entry), and its quality check
-re-runs it as one process. The target's harness provides `distributed_state@2` because `mpi`
-declares a launcher (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Harness capability ABI, which
-also names where a run over a single-process harness fails).
+re-runs it as one process. The host derives `distributed_state@2` for the target's harness
+because `mpi` declares a launcher, and the harness the profile names must serve it
+(`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Harness capability ABI, which also names where a
+run over a single-process harness fails).
 
 The host-rendered driver (`tools/backends/language/fortran/runner.py`, its distributed form)
 distributes each case; the kernel decides none of it.
