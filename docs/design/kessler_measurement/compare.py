@@ -13,6 +13,9 @@ written by this script, so the evaluation of its judgment shows only that the ju
 and evaluable, and says nothing of any kernel. What is checked of it is its forcing, with a nonzero
 exit on a miss: a case's inputs must meet a refusal clause of Controlled Spec §4 exactly when the case
 is `xfail`, and a non-convergence case must abort in the original at cell 4.
+
+Exit status: 0 when nothing is found, 1 on a deviation (`compare`) or a failed judgment, an
+uncovered test, a schema violation or a miss (`screen`), and 2 on an error.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import math
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import yaml
@@ -449,4 +453,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:  # an error is not a finding: 2, apart from the 1 of a deviation or a miss
+        traceback.print_exc()
+        sys.exit(2)

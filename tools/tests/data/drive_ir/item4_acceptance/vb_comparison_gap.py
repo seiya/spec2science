@@ -396,8 +396,10 @@ def print_table2(results: list[dict]) -> bool:
             print(f"(b) {r['variant']} / {r['node']}: beyond: " + "; ".join(r["beyond"]))
         if r["compare_err"]:
             print(f"(b) {r['variant']} / {r['node']}: compare.py error: {r['compare_err']}")
-    return all(c["status"] == "agree" and c["compare_rc"] == 0 and c["self_verdict"] == "pass"
-               for c in control.values())
+    # compare.py exits 2 on an error: a variant whose comparison errored was not measured.
+    return (all(c["status"] == "agree" and c["compare_rc"] == 0 and c["self_verdict"] == "pass"
+                for c in control.values())
+            and all(r["compare_rc"] in (0, 1) for r in results))
 
 
 def main() -> int:
