@@ -2277,6 +2277,54 @@ class HarnessPinTableTest(unittest.TestCase):
         self.assertEqual(seen, {"fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_netcdf",
                                 "cpp_gpu"})
 
+    def test_the_drift_comparison_names_each_kind_of_difference(self) -> None:
+        """`host_render.harness_block_drift` on each language's sample harness §5.1, mutated
+        one way at a time: a module parameter's value, a block symbol removed, a block symbol's
+        argument changed — each is named — and an operation beyond the block is not compared."""
+        import yaml as _yaml
+        from tools import host_render
+        from tools.validate_pipeline_semantics import _section51_fence_body
+        root = Path(__file__).resolve().parents[2]
+        for language, sid in (("fortran", "harness_fortran_cpu"), ("cuda_cpp", "harness_cpp_gpu")):
+            body, err = _section51_fence_body(
+                root / "spec/infrastructure/infra/harness" / sid / "controlled_spec.md")
+            self.assertIsNone(err)
+            provides = provides_for(sid)
+
+            def drift(struct: dict) -> list[str]:
+                return host_render.harness_block_drift(
+                    language, sid, _yaml.safe_dump(struct, sort_keys=False),
+                    harness_provides=provides)
+
+            base = _yaml.safe_load(body)
+            with self.subTest(language=language, change="none"):
+                self.assertEqual(drift(copy.deepcopy(base)), [])
+            with self.subTest(language=language, change="module parameter"):
+                struct = copy.deepcopy(base)
+                next(m for m in struct["module_parameters"]
+                     if m["name"] == "case_id_len")["value"] = "32"
+                got = drift(struct)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("case_id_len", got[0])
+            with self.subTest(language=language, change="omitted"):
+                struct = copy.deepcopy(base)
+                struct["procedures"] = [p for p in struct["procedures"]
+                                        if p["name"] != f"{sid}__read_case"]
+                self.assertEqual(drift(struct), [f"§5.1 omits '{sid}__read_case'"])
+            with self.subTest(language=language, change="declared differently"):
+                struct = copy.deepcopy(base)
+                proc = next(p for p in struct["procedures"] if p["name"] == f"{sid}__read_case")
+                proc["args"][0]["intent"] = "inout"
+                self.assertEqual(drift(struct),
+                                 [f"§5.1 declares '{sid}__read_case' differently from the block"])
+            with self.subTest(language=language, change="an operation beyond the block"):
+                struct = copy.deepcopy(base)
+                extra = copy.deepcopy(next(p for p in struct["procedures"]
+                                           if p["name"] == f"{sid}__read_case"))
+                extra["name"] = f"{sid}__project_extra"
+                struct["procedures"].append(extra)
+                self.assertEqual(drift(struct), [])
+
     def test_every_symbol_of_each_block_takes_the_harness_s_own_name(self) -> None:
         """Issue #690: each block names every symbol by the placeholder, so the substitution
         gives a harness under any name all of them. A stanza left under a sample harness's
