@@ -33,6 +33,8 @@ PYTHONPATH=. python3 tools/tests/data/drive_ir/pr3_evidence/verify_spec.py \
     --library scale_bl_oracle=<dir>/default --compared-only [--show-values]
 ```
 
+`<dir>` is an absolute path in every command of this section and of §Oracle library: `make -C` resolves a relative `BUILD` against `docs/design/pbl_tracer_measurement/`, and the commands run from the repository root resolve a relative path against the root, so a relative `<dir>` names two different directories.
+
 The script compiles the adapter at `-O2`. At another level, the library is built at that level into a directory of its own and the level is appended to the adapter's flags:
 
 ```sh
