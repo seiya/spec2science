@@ -1478,7 +1478,7 @@ case:
       time:
         dt: 60.0
       surface:
-        sflx_q: 0.0002
+        sflx_q: -1.0
       tracer:
         mass: 0.0
       judge:
