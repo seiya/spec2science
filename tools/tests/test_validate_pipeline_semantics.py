@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import yaml
 
+from tools.tests.target_fixtures import provides_for
 import tools.validate_pipeline_semantics as vps
 from tools import capture_store
 from tools.backends import registry as backend_registry
@@ -17210,7 +17211,8 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
             vps._validate_model_source_isolation(
                 NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp, exec_dir=tmp,
                               pipeline_dir=tmp), "fortran", src, [src / "bx_model.f90"],
-                violations, harness_spec_id=harness)
+                violations, harness_spec_id=harness,
+                harness_provides=provides_for(harness) if harness else frozenset())
             return violations
 
     def _with(self, statement: str) -> str:
@@ -17321,6 +17323,42 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
         self.assertTrue(any("the distributed binding of harness" in x and "no binding" in x
                             for x in v), v)
         self.assertTrue(any("file I/O" in x for x in v), v)
+
+    def test_the_caller_hands_the_gate_the_pipeline_targets_derived_set(self) -> None:
+        """Issue #690: `_validate_generate_outputs_for_generation` passes the isolation gate the
+        capability set
+        of the pipeline's target (`target_profile.harness_capabilities`), so a distributed-state
+        `use` is admitted over a launcher target's harness and refused over a single-process
+        one. Driven through the caller, under the same harness id on both targets, so only the
+        derived set differs."""
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
+        harness = "harness_fortran_cpu_mpi"
+        model = _MODEL_OK.replace(
+            "! allow(C003)\n",
+            f"! allow(C003)\n  use {harness}_model, only: {harness}__comm_rank\n")
+
+        def isolation_findings(parallel: dict) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                install_target_profile(root, profile_with(
+                    parallel=parallel, harness={"infrastructure_id": harness}))
+                pipe = root / pipe_ref("component__bx__0.1.0", "p1")
+                src = pipe / "source" / "src_1" / "src"
+                src.mkdir(parents=True)
+                (src / "bx_model.f90").write_text(model)
+                execution = NodeExecution(node_key="component/bx@0.1.0", node_dir=pipe,
+                                          exec_dir=pipe, pipeline_dir=pipe)
+                violations: list[str] = []
+                with unittest.mock.patch.object(vps, "_execution_m3c_language",
+                                                return_value="fortran"):
+                    vps._validate_generate_outputs_for_generation(root, execution, "src_1",
+                                                                  violations)
+            return [v for v in violations if "harness" in v and "bx_model.f90" in v]
+
+        self.assertEqual(isolation_findings({"backend": "mpi"}), [])
+        refused = isolation_findings({"backend": "openmp"})
+        self.assertEqual(len(refused), 1, refused)
+        self.assertIn("must not `use` the harness module", refused[0])
 
     def test_a_physics_source_may_use_the_harness_for_its_distributed_operations_only(
             self) -> None:
@@ -19361,7 +19399,8 @@ class ComposingInitPostGenerateTests(unittest.TestCase):
         src.mkdir(parents=True)
         (src / f"{drv.CMP_SUB}_model.f90").write_text(model_text, encoding="utf-8")
         (src / f"{drv.CMP_SUB}_runner.f90").write_text(drv.f_runner.render_runner(
-            ir, drv.CMP_SUB, "harness_fortran_cpu", target=drv.CPU), encoding="utf-8")
+            ir, drv.CMP_SUB, "harness_fortran_cpu", target=drv.CPU,
+                harness_provides=provides_for("harness_fortran_cpu")), encoding="utf-8")
         rules = registry.capability_module("language", "fortran", "control_file").rules(
             standard="f2008", parallel_backend="openmp")
         (src / "Makefile").write_text(control_file.render_node(
@@ -19468,7 +19507,8 @@ class ComposingFixturePostGenerateTests(unittest.TestCase):
         src.mkdir(parents=True)
         (src / f"{drv.ROTATING}_model.f90").write_text(model_text, encoding="utf-8")
         (src / f"{drv.ROTATING}_runner.f90").write_text(drv.f_runner.render_runner(
-            ir, drv.ROTATING, "harness_fortran_cpu", target=drv.CPU), encoding="utf-8")
+            ir, drv.ROTATING, "harness_fortran_cpu", target=drv.CPU,
+                harness_provides=provides_for("harness_fortran_cpu")), encoding="utf-8")
         with tempfile.TemporaryDirectory() as graph_repo:
             closure = drv.rotating_closure(drv.rotating_closure_graph(Path(graph_repo)))
         (src / "Makefile").write_text(
@@ -22105,7 +22145,10 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU, second_target
         other = second_target(FORTRAN_CPU, "fortran_cpu_other")
 
-        def fake(language, ir, spec_id, harness_sid):
+        handed: dict[str, frozenset[str]] = {}
+
+        def fake(language, ir, spec_id, harness_sid, *, harness_provides):
+            handed[harness_sid] = harness_provides
             return ["shared finding", f"only for {harness_sid}"] \
                 if harness_sid == "harness_only_here" else ["shared finding"]
 
@@ -22114,7 +22157,10 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
             tmp = Path(t)
             install_target_profile(tmp, FORTRAN_CPU)
             from tools.tests.target_fixtures import profile_with
-            special = profile_with(other, harness={"infrastructure_id": "harness_only_here"})
+            # Another output format too, so the set each target's render is asked under is its
+            # own (issue #690), not one default.
+            special = profile_with(other, harness={"infrastructure_id": "harness_only_here"},
+                                   output={"format": "netcdf"})
             install_target_profile(tmp, special)
             ensure_spec_entry(
                 tmp, f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}@0.7.0")
@@ -22128,6 +22174,11 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         self.assertEqual(sorted(x.split(": ", 1)[1] for x in v), sorted([
             "shared finding",
             f"only for harness_only_here [target {special.target_id}]"]))
+        from tools.target_profile import harness_capabilities
+        self.assertEqual(handed, {
+            FORTRAN_CPU.harness["infrastructure_id"]: harness_capabilities(FORTRAN_CPU),
+            "harness_only_here": harness_capabilities(special)})
+        self.assertNotEqual(*handed.values())
 
 
 

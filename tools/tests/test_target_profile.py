@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,9 +39,9 @@ class _ScratchRepo:
             "  - spec_kind: infrastructure\n    spec_id: harness_x\n"
             "    spec_version: \"0.7.0\"\n    status: controlled_draft\n"
             "    deps_path: spec/infrastructure/harness_x/deps.yaml\n"
-            "  - spec_kind: component\n    spec_id: not_a_harness\n"
+            "  - spec_kind: component\n    spec_id: harness_but_component\n"
             "    spec_version: \"0.5.0\"\n    status: controlled_draft\n"
-            "    deps_path: spec/component/not_a_harness/deps.yaml\n",
+            "    deps_path: spec/component/harness_but_component/deps.yaml\n",
             encoding="utf-8")
         _load_spec_catalog.cache_clear()
 
@@ -534,6 +535,26 @@ class OutputFormatTests(unittest.TestCase):
                 tp.load_target_profile(repo.root, "t1")
         self.assertIn("output.format: 'Net CDF' is not a lowercase token", ctx.exception.detail)
 
+    def test_a_harness_id_without_the_prefix_is_refused_by_the_loader(self) -> None:
+        """Issue #690: the Project names its harness, and the name begins `harness_` — the two
+        isolation gates recognise a harness module by that prefix, so a harness named otherwise
+        would be invisible to them. The checked-in profiles pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            for bad in ("sample_cpu", "xharness_cpu", "harness"):
+                with self.subTest(harness=bad):
+                    repo.write("t1", harness__infrastructure_id=bad)
+                    with self.assertRaises(tp.TargetProfileError) as ctx:
+                        tp.load_target_profile(repo.root, "t1")
+                    self.assertIn(f"harness.infrastructure_id: {bad!r} does not begin with "
+                                  f"{tp.HARNESS_ID_PREFIX!r}", ctx.exception.detail)
+            repo.write("t1", harness__infrastructure_id="harness_sample_cpu")
+            self.assertEqual(tp.load_target_profile(repo.root, "t1").harness["infrastructure_id"],
+                             "harness_sample_cpu")
+        for target_id in tp.list_target_ids(REPO_ROOT):
+            with self.subTest(target=target_id):
+                tp.load_target_profile(REPO_ROOT, target_id)
+
     def test_the_launch_gate_refuses_a_format_no_backend_declares(self) -> None:
         # Kills: deleting the launch gate's clause (the run would fail at its first capture
         # read, after Generate and Build were paid for).
@@ -622,6 +643,13 @@ class SchemaAgreementTests(unittest.TestCase):
             schema["properties"]["harness"]["properties"]["version_constraint"]["pattern"], r"\S")
         self.assertEqual(schema["definitions"]["token"]["pattern"],
                          f"^{tp.TOKEN_PATTERN.pattern}(?![\\s\\S])")
+        # The harness id is a token that begins with the prefix (issue #690): the token pattern
+        # with its first character class replaced by the prefix, which begins with a letter.
+        harness_pattern = schema["properties"]["harness"]["properties"]["infrastructure_id"][
+            "pattern"]
+        self.assertEqual(harness_pattern, f"^{re.escape(tp.HARNESS_ID_PREFIX)}"
+                         f"{tp.TOKEN_PATTERN.pattern.removeprefix('[a-z0-9]')}(?![\\s\\S])")
+        self.assertTrue(re.fullmatch(r"[a-z0-9]", tp.HARNESS_ID_PREFIX[0]))
 
 
 class LaunchGateTests(unittest.TestCase):
@@ -998,8 +1026,10 @@ class LaunchGateTests(unittest.TestCase):
     def test_a_harness_the_catalog_does_not_carry_as_infrastructure_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
-            for harness in ({"infrastructure_id": "absent", "version_constraint": ">=0.1.0"},
-                            {"infrastructure_id": "not_a_harness", "version_constraint": ">=0.1.0"},
+            # Each id carries the prefix, so the shape check passes and the CATALOG refuses it.
+            for harness in ({"infrastructure_id": "harness_absent",
+                             "version_constraint": ">=0.1.0"},
+                            {"infrastructure_id": "harness_but_component", "version_constraint": ">=0.1.0"},
                             {"infrastructure_id": "harness_x", "version_constraint": ">=2.0.0"}):
                 with self.subTest(harness=harness):
                     profile = self._profile(repo, harness=harness)

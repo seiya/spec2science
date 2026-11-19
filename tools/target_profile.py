@@ -57,6 +57,14 @@ PIPELINES_ROOT = "workspace/pipelines"
 #: An axis value: an opaque token, lowercase so no reader has to normalize case.
 TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.+-]*")
 
+#: The prefix every harness id begins with (`harness.infrastructure_id`, issue #690). The Project
+#: names its harness; the framework fixes this one property of the name, because the two
+#: isolation gates over a physics source (each language backend's
+#: `model_harness_isolation_violations`) recognise a harness module by it. A harness named
+#: otherwise would be invisible to them: a physics source could `use` it and call its capture
+#: operations, writing its own evidence.
+HARNESS_ID_PREFIX = "harness_"
+
 #: The phases a run can stop at WITHOUT executing the binary, compared case-insensitively. A
 #: run ending at one of them is not asked the registry's execution half of the launch gate,
 #: because building for a class launches no binary (issue #289, R4-b PR-1; whether a MACHINE of
@@ -411,6 +419,13 @@ def _shape_violations(doc: Any) -> list[str]:
                          ("toolchain", "linker"), ("parallel", "backend"),
                          ("harness", "infrastructure_id"), ("output", "format")):
         token(obj_key, key)
+    harness = doc.get("harness")
+    harness_id = harness.get("infrastructure_id") if isinstance(harness, dict) else None
+    if (isinstance(harness_id, str) and TOKEN_PATTERN.fullmatch(harness_id)
+            and not harness_id.startswith(HARNESS_ID_PREFIX)):
+        out.append(f"harness.infrastructure_id: {harness_id!r} does not begin with "
+                   f"{HARNESS_ID_PREFIX!r}, the prefix the isolation gates recognise a harness "
+                   f"module by; rename the harness node")
     execution = doc.get("execution")
     if isinstance(execution, dict) and "threads_per_rank" in execution:
         threads = execution["threads_per_rank"]

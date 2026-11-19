@@ -28,6 +28,7 @@ from pathlib import Path
 
 import yaml
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools import verdict_evaluator
@@ -53,7 +54,8 @@ def package(out: Path, node: str, *, arch: str = "sm_60") -> list[str]:
     (out / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, out / "ir")
     (out / f"{sid}_runner.cu").write_text(
-        runner.render_runner(ir, sid, "harness_cpp_gpu", target=GPU))
+        runner.render_runner(ir, sid, "harness_cpp_gpu", target=GPU,
+            harness_provides=provides_for("harness_cpp_gpu")))
     (out / f"{sid}_model.cuh").write_text(header.render(sid, ir["public_api"], spec_kind=kind))
     (out / "harness_cpp_gpu_model.cuh").write_text(
         header.render("harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"))

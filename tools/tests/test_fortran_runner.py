@@ -25,17 +25,17 @@ from pathlib import Path
 
 import yaml
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
-    EXPECTED_HARNESS_SPEC_ID,
-    _HARNESS_PINS,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
     _SINGLE_PROCESS_INTERFACE,
     _used_harness_ops,
     assert_harness_pin,
+    harness_interface_block,
     ir_content_violations,
     render_runner,
 )
@@ -308,7 +308,7 @@ _RANK_MODEL = textwrap.dedent(f"""\
 
 def _harness_signatures() -> list[dict]:
     """The certified harness IR public_api.signatures, synthesized from §5.1."""
-    struct = parse_signatures_from_fortran(_HARNESS_PINS[EXPECTED_HARNESS_SPEC_ID].interface)
+    struct = parse_signatures_from_fortran(harness_interface_block(HARNESS, provides_for(HARNESS)))
     return [
         {"symbol": signature["name"], "signature": signature}
         for signature in [*struct["procedures"], *struct["types"]]
@@ -519,7 +519,8 @@ _EIGHT_ARG_HARNESS_STUB = _HARNESS_STUB.replace(_STUB_WRITE_PERF_HEAD, _STUB_WRI
 
 class RenderShapeTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        self.txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
 
     def test_program_and_uses(self) -> None:
         self.assertIn(f"program {BOUNDARY_SID}_runner", self.txt)
@@ -579,7 +580,8 @@ class RenderShapeTest(unittest.TestCase):
         ir["drive"]["step"] = [
             {**step, "cases": ["l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"]},
             {**step, "cases": ["l0_invalid_ny_xfail"]}]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("    select case (cid)\n    case ('l0_periodic_x_wrap_pass')\n"
                       "      entry_no = 1\n    case ('l0_periodic_y_wrap_pass')\n"
                       "      entry_no = 1\n    case ('l0_invalid_ny_xfail')\n      entry_no = 2\n",
@@ -594,7 +596,8 @@ class RenderShapeTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         schema["variables"].append({"name": "orphan_r1", "shape_expr": "[7]"})
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("  real(dp), allocatable :: st_orphan_r1(:)", txt)
         self.assertIn("    harness_fortran_cpu__capture_array_r1, &", txt)
         self.assertIn(f"  type({HARNESS}__h_var) :: cvars(6)", txt)
@@ -643,7 +646,8 @@ class RenderShapeTest(unittest.TestCase):
         # The perf line carries no thread count of the profile's: a render under another
         # count is the same text.
         other = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target={
-            **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7}})
+            **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7}},
+                harness_provides=provides_for(HARNESS))
         self.assertNotEqual(_TARGET_PROFILE.threads_per_rank, 7)
         self.assertEqual(self.txt, other)
 
@@ -672,14 +676,17 @@ class RenderShapeTest(unittest.TestCase):
 
 class DeterminismTest(unittest.TestCase):
     def test_byte_identical(self) -> None:
-        a = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        b = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        a = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
+        b = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertEqual(a, b)
 
 
 class PerfParallelismRenderTest(unittest.TestCase):
     def test_the_perf_record_s_counts_and_the_rank_1_capture(self) -> None:
-        txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         # The runner passes no thread count: the harness's writer records its run-time count
         # (issue #512) — neither the profile's nor the IR's `backend_overrides.openmp.num_threads`,
         # which nothing runs with.
@@ -687,7 +694,8 @@ class PerfParallelismRenderTest(unittest.TestCase):
         self.assertIn(perf_line % 0, txt)
         other = {**_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7},
                  "hardware": {"class": "gpu", "architecture": "a"}}
-        other_txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=other)
+        other_txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=other,
+            harness_provides=provides_for(HARNESS))
         # The rank and device counts are `host_execution.perf_parallelism`'s (issue #316): a
         # class whose backend states one device per rank records it, where the renderer used
         # to write 0 for every class.
@@ -704,7 +712,8 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         mutate(ir)
         with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
 
     def test_rank_over_4(self) -> None:
         self._expect(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
@@ -724,7 +733,8 @@ class RenderErrorMatrixTest(unittest.TestCase):
 
     def test_over_long_spec_id(self) -> None:
         with self.assertRaises(RenderError):
-            render_runner(_boundary_ir(), "z" * 56, HARNESS, target=_TARGET_PROFILE.doc)
+            render_runner(_boundary_ir(), "z" * 56, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
 
     _rename_snapshot_var = staticmethod(_rename_state)
 
@@ -743,12 +753,14 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         self._rename_snapshot_var(ir, "field_ghost", "f" * 61)
         with self.assertRaises(RenderError) as cm:
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("exceeds the 63-char identifier limit", str(cm.exception))
         # A long name that fits the limit and every rendered line renders.
         ir = copy.deepcopy(_boundary_ir())
         self._rename_snapshot_var(ir, "field_ghost", "f" * 50)
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("  real(dp), allocatable :: st_" + "f" * 50 + "(:,:)", txt)
 
     def test_snapshot_variables_that_fold_to_one_identifier_are_refused(self) -> None:
@@ -762,9 +774,11 @@ class RenderErrorMatrixTest(unittest.TestCase):
             with self.subTest(name=name):
                 ir = copy.deepcopy(_boundary_ir())
                 self._rename_snapshot_var(ir, "field_ghost", name)
-                txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+                txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                    harness_provides=provides_for(HARNESS))
                 self.assertIn(f"  real(dp), allocatable :: st_{name}(:,:)", txt)
-                self.assertEqual(ir_content_violations(ir, BOUNDARY_SID, HARNESS), [])
+                self.assertEqual(ir_content_violations(ir, BOUNDARY_SID, HARNESS,
+                    harness_provides=provides_for(HARNESS)), [])
 
     def test_over_long_case_id_fails_closed(self) -> None:
         # 70 chars: over the harness `case_id_len = 64`, which `__parse_cases` truncates a parsed
@@ -777,7 +791,8 @@ class RenderErrorMatrixTest(unittest.TestCase):
         exact = "c_" + "x" * (CASE_ID_LEN - 2)
         self.assertEqual(len(exact), CASE_ID_LEN)
         ir["case"]["test_case_set"][0]["case_id"] = exact
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         # the runner takes the ids from argv: the width it stores them at is the harness's
         self.assertIn(f"  integer, parameter :: case_id_len = {CASE_ID_LEN}", txt)
 
@@ -820,8 +835,10 @@ class RenderErrorMatrixTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         ok = "l0_v1.2-alpha"  # a dash INSIDE the id stays legal; only a leading one does not
         ir["case"]["test_case_set"][0]["case_id"] = ok
-        render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertEqual(ir_content_violations(ir, BOUNDARY_SID, HARNESS), [])
+        render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
+        self.assertEqual(ir_content_violations(ir, BOUNDARY_SID, HARNESS,
+            harness_provides=provides_for(HARNESS)), [])
 
     def test_non_ascii_in_name_fails_closed(self) -> None:
         # Fortran's default character kind counts BYTES; `CASE_ID_LEN` and the 100-column
@@ -845,7 +862,8 @@ class RenderErrorMatrixTest(unittest.TestCase):
         with self.assertRaisesRegex(RenderError, "reaches the linter's 100-column limit"):
             ir = copy.deepcopy(_boundary_ir())
             _long_name_mut(ir)
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
 
 
 def _over_long_case_id_mut(ir: dict) -> None:
@@ -906,9 +924,12 @@ class IrContentViolationsTest(unittest.TestCase):
     cannot silently reopen (e.g. a control char in an IR name — R1-F1 — now surfaces at compile instead of killing the workflow at render)."""
 
     def test_clean_ir_has_no_violations(self) -> None:
-        self.assertEqual(ir_content_violations(_boundary_ir(), BOUNDARY_SID, HARNESS), [])
-        self.assertEqual(ir_content_violations(_metrics_ir(), "prob_x", HARNESS), [])
-        self.assertEqual(ir_content_violations(_rank34_metrics_ir(), RANK_SID, HARNESS), [])
+        self.assertEqual(ir_content_violations(_boundary_ir(), BOUNDARY_SID, HARNESS,
+            harness_provides=provides_for(HARNESS)), [])
+        self.assertEqual(ir_content_violations(_metrics_ir(), "prob_x", HARNESS,
+            harness_provides=provides_for(HARNESS)), [])
+        self.assertEqual(ir_content_violations(_rank34_metrics_ir(), RANK_SID, HARNESS,
+            harness_provides=provides_for(HARNESS)), [])
 
     def test_content_vs_identity_classification(self) -> None:
         for label, mutate, spec_id, is_identity in _RENDER_FAILCLOSE_CASES:
@@ -918,8 +939,10 @@ class IrContentViolationsTest(unittest.TestCase):
                     mutate(ir)
                 # Sanity: every table row is a genuine render fail-close.
                 with self.assertRaises(RenderError):
-                    render_runner(ir, spec_id, HARNESS, target=_TARGET_PROFILE.doc)
-                v = ir_content_violations(ir, spec_id, HARNESS)
+                    render_runner(ir, spec_id, HARNESS, target=_TARGET_PROFILE.doc,
+                        harness_provides=provides_for(HARNESS))
+                v = ir_content_violations(ir, spec_id, HARNESS,
+                    harness_provides=provides_for(HARNESS))
                 if is_identity:
                     self.assertEqual(v, [], f"{label}: identity defect must be excluded")
                 else:
@@ -929,7 +952,7 @@ class IrContentViolationsTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
             "time_variable"] = "tau"
-        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
+        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS, harness_provides=provides_for(HARNESS))
         self.assertTrue(any("time_variable is 'tau'" in x and "'t'" in x for x in v), v)
 
     def test_malformed_non_iterable_field_does_not_crash(self) -> None:
@@ -939,11 +962,11 @@ class IrContentViolationsTest(unittest.TestCase):
         # violations); it is converted to a renderable-failure violation instead.
         ir = copy.deepcopy(_boundary_ir())
         ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] = 5
-        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
+        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS, harness_provides=provides_for(HARNESS))
         self.assertTrue(v and any("not renderable" in x for x in v), v)
         ir = copy.deepcopy(_boundary_ir())
         ir["case"]["test_case_set"] = 5
-        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
+        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS, harness_provides=provides_for(HARNESS))
         self.assertTrue(v and any("not renderable" in x for x in v), v)
 
 
@@ -1045,7 +1068,8 @@ class DerivedNameLengthTest(unittest.TestCase):
         ir = _boundary_ir()
         long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__capture_commit") + 1)
         with self.assertRaises(RenderError) as ctx:
-            render_runner(ir, BOUNDARY_SID, long_harness, target=_TARGET_PROFILE.doc)
+            render_runner(ir, BOUNDARY_SID, long_harness, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(long_harness))
         # `identity=True`: a harness id is node identity, so the compile.static mirror excludes
         # it rather than routing it to a re-author that cannot change it.
         self.assertTrue(ctx.exception.identity)
@@ -1068,7 +1092,8 @@ class LineWidthTest(unittest.TestCase):
         ir = _boundary_ir()
         long_id = "l0_periodic_x_wrap_with_a_fairly_long_descriptive_name_pass"  # 58 chars
         ir["case"]["test_case_set"][0]["case_id"] = long_id
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertLessEqual(self._maxw(txt), 100)
 
     def test_the_column_limit_is_the_linter_s_declaration(self) -> None:
@@ -1083,14 +1108,16 @@ class LineWidthTest(unittest.TestCase):
             "linter", registry.linter_for_language("fortran"), "lint")
         self.assertEqual(fortran_runner.max_rendered_line(), lint.LINE_LENGTH_LIMIT)
         ir = _boundary_ir()
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         widest = self._maxw(txt)
         self.assertLess(widest, 100)
         lowered = widest - 5
         with mock.patch.object(lint, "LINE_LENGTH_LIMIT", lowered):
             self.assertEqual(fortran_runner.max_rendered_line(), lowered)
             with self.assertRaises(RenderError) as cm:
-                render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+                render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                    harness_provides=provides_for(HARNESS))
         self.assertIn(f"{lowered}-column limit", str(cm.exception))
 
     def test_every_limit_read_follows_the_linter_s_declaration_upward(self) -> None:
@@ -1105,7 +1132,8 @@ class LineWidthTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         _long_name_mut(ir)
         with mock.patch.object(lint, "LINE_LENGTH_LIMIT", raised):
-            txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+            txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
         self.assertEqual(self._maxw(txt), 100)
         self.assertIn(f"get_array_r2('{_NAME_AT_100}', &", txt)
 
@@ -1116,13 +1144,15 @@ class LineWidthTest(unittest.TestCase):
         ir = copy.deepcopy(_boundary_ir())
         _long_name_mut(ir)
         with self.assertRaises(RenderError) as cm:
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("reaches the linter's 100-column limit (100 columns", str(cm.exception))
         self.assertFalse(cm.exception.identity)
         # one char shorter renders, and every line is at most 99 wide
         ir2 = copy.deepcopy(_boundary_ir())
         _rename_state(ir2, "field_ghost", _NAME_AT_100[:-1])
-        txt = render_runner(ir2, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(ir2, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertEqual(self._maxw(txt), 99)
 
     def test_a_loop_drive_ir_is_held_to_the_same_limit(self) -> None:
@@ -1138,14 +1168,18 @@ class LineWidthTest(unittest.TestCase):
                 ir["drive"]["history"][name] = ir["drive"]["history"].pop("w")
                 if refused:
                     with self.assertRaises(RenderError) as cm:
-                        render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+                        render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+                            harness_provides=provides_for(HARNESS))
                     self.assertIn("100-column limit", str(cm.exception))
                     self.assertFalse(cm.exception.identity)
-                    self.assertEqual(len(ir_content_violations(ir, "drv_toy", HARNESS)), 1)
+                    self.assertEqual(len(ir_content_violations(ir, "drv_toy", HARNESS,
+                        harness_provides=provides_for(HARNESS))), 1)
                 else:
-                    txt = render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+                    txt = render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+                        harness_provides=provides_for(HARNESS))
                     self.assertLess(self._maxw(txt), 100)
-                    self.assertEqual(ir_content_violations(ir, "drv_toy", HARNESS), [])
+                    self.assertEqual(ir_content_violations(ir, "drv_toy", HARNESS,
+                        harness_provides=provides_for(HARNESS)), [])
 
 
 class FortranLiteralEscapingTest(unittest.TestCase):
@@ -1165,18 +1199,36 @@ class HarnessPinTest(unittest.TestCase):
         self.src = _HARNESS_STUB
 
     def test_clean_pin(self) -> None:
-        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src,
+            harness_provides=provides_for(HARNESS))
 
-    def test_wrong_harness_id(self) -> None:
-        # Assert the MESSAGE, not just the raise. Neutering the `harness_spec_id` guard leaves this
-        # test passing on the exception the symbol lookup raises a few lines later ("renderer
-        # depends on harness symbol ... not present"), so the guard itself had no observer and the
-        # distinct, actionable refusal could have been lost while the test stayed green. A reviewer
-        # measured that: replacing the condition with `False` left the whole suite passing.
+    def test_a_harness_under_another_name_is_driven_by_the_block_under_its_own_names(
+            self) -> None:
+        """Issue #690: the framework holds no harness name. A harness the Project names otherwise
+        passes the pin when its IR and source publish the block under ITS `<spec_id>__` names,
+        and fails it on one changed signature — the refusal names the symbol, not the id."""
+        other = "harness_sample_cpu"
+        # Every name, the derived type an argument is declared with included.
+        sigs = json.loads(json.dumps(self.sigs).replace(f"{HARNESS}__", f"{other}__"))
+        src = self.src.replace(HARNESS, other)
+        provides = provides_for(HARNESS)
+        assert_harness_pin(self.ir, BOUNDARY_SID, other, sigs, src, harness_provides=provides)
+        # The block it is held to is the original one under the other names, symbol for symbol.
+        self.assertEqual(harness_interface_block(other, provides),
+                         harness_interface_block(HARNESS, provides).replace(HARNESS, other))
+        # The original names do not satisfy it: the pin reads the names it was given.
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, "harness_other", self.sigs, self.src)
-        self.assertIn("is not one this renderer targets", str(cm.exception))
-        self.assertIn("harness_fortran_cpu, harness_fortran_cpu_mpi", str(cm.exception))
+            assert_harness_pin(self.ir, BOUNDARY_SID, other, self.sigs, self.src,
+                               harness_provides=provides)
+        self.assertIn(f"omits '{other}__", str(cm.exception))
+        sym = f"{other}__read_case"
+        changed = copy.deepcopy(sigs)
+        entry = next(e for e in changed if e["symbol"] == sym)
+        entry["signature"]["args"][0]["intent"] = "inout"
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, other, changed, src,
+                               harness_provides=provides)
+        self.assertIn(f"IR signature for {sym!r} differs", str(cm.exception))
 
     def test_embedded_interface_carrying_a_prototype_is_a_renderer_bug(self) -> None:
         # The pinned harness surface is §5.1's operations and its one type, and no interface
@@ -1187,11 +1239,11 @@ class HarnessPinTest(unittest.TestCase):
         with_proto = _HARNESS_V3_INTERFACE + (
             "\nabstract interface\n  subroutine ghost(x)\n    real, intent(in) :: x\n"
             "  end subroutine ghost\nend interface\n")
-        pins = {**fortran_runner._HARNESS_PINS,
-                HARNESS: fortran_runner._HarnessPin(interface=with_proto, distributed=False)}
-        with mock.patch.object(fortran_runner, "_HARNESS_PINS", pins), \
+        with mock.patch.object(fortran_runner, "_SINGLE_PROCESS_INTERFACE",
+                               with_proto.replace(f"{HARNESS}__", fortran_runner._PLACEHOLDER)), \
                 self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("carries no interface prototype", str(cm.exception))
         self.assertIn("ghost", str(cm.exception))
 
@@ -1212,14 +1264,16 @@ class HarnessPinTest(unittest.TestCase):
         args = perf["signature"]["args"]
         args.insert(len(args) - 1, {**copy.deepcopy(args[-1]), "name": "threads_per_rank"})
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, old_sigs, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, old_sigs, self.src,
+                harness_provides=provides_for(HARNESS))
         self.assertIn(sym, str(cm.exception))
         old_src = _EIGHT_ARG_HARNESS_STUB
         self.assertNotEqual(old_src, self.src)
         self.assertIn("mpi_ranks, threads_per_rank, gpu_devices)", old_src)
         self.assertIn("intent(in) :: threads_per_rank", old_src)
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, old_src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, old_src,
+                harness_provides=provides_for(HARNESS))
         self.assertIn(sym, str(cm.exception))
 
     def test_ir_signature_drift(self) -> None:
@@ -1229,7 +1283,8 @@ class HarnessPinTest(unittest.TestCase):
                 time_arg = next(a for a in e["signature"]["args"] if a["name"] == "t")
                 time_arg["name"] = "tstamp"
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src,
+                harness_provides=provides_for(HARNESS))
 
     def test_old_vocab_ir_signatures_fail_closed_not_crash(self) -> None:
         # C2: a stale IR that still carries the OLD Fortran length token (`len: ':'`) in a string
@@ -1244,7 +1299,8 @@ class HarnessPinTest(unittest.TestCase):
                 if ent.get("spec", {}).get("type") == "string":
                     ent["spec"]["len"] = ":"  # revert to the removed Fortran token
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, stale, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, stale, self.src,
+                harness_provides=provides_for(HARNESS))
 
     def test_attribute_form_export_in_the_certified_harness_passes_the_pin(self) -> None:
         # Issue #363: harness §3 leaves the export of `dp` / `case_id_len` free, and the
@@ -1256,7 +1312,8 @@ class HarnessPinTest(unittest.TestCase):
             self.assertIn(f"integer, parameter :: {name}", src)
             src = src.replace(f"integer, parameter :: {name}",
                               f"integer, parameter, public :: {name}", 1)
-        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src,
+            harness_provides=provides_for(HARNESS))
 
     def test_a_public_type_header_passes_the_pin_and_a_private_one_does_not(self) -> None:
         # Issue #343: the pin compares a type layout the way the Generate gate does
@@ -1265,10 +1322,12 @@ class HarnessPinTest(unittest.TestCase):
         header = "type :: harness_fortran_cpu__h_var"
         self.assertIn(header, self.src)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
-                           self.src.replace(header, "type, public :: harness_fortran_cpu__h_var"))
+                           self.src.replace(header, "type, public :: harness_fortran_cpu__h_var"),
+                               harness_provides=provides_for(HARNESS))
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
-                header, "type, private :: harness_fortran_cpu__h_var"))
+                header, "type, private :: harness_fortran_cpu__h_var"),
+                    harness_provides=provides_for(HARNESS))
         self.assertIn("harness_fortran_cpu__h_var", str(cm.exception))
 
     def test_an_abi_identical_type_spelling_passes_the_pin_and_a_second_definition_does_not(
@@ -1285,7 +1344,7 @@ class HarnessPinTest(unittest.TestCase):
             self.assertIn(needle, self.src)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
             header, "type harness_fortran_cpu__h_var\n", 1).replace(
-            end, "end type\n", 1))
+            end, "end type\n", 1), harness_provides=provides_for(HARNESS))
         helper = ("  subroutine harness_fortran_cpu__decoy()\n"
                   "    type :: harness_fortran_cpu__h_var\n"
                   "      integer :: k\n"
@@ -1309,7 +1368,8 @@ class HarnessPinTest(unittest.TestCase):
                                          "      integer :: history_capacity\n"
                                          "      logical :: restart") + tail, 1))):
             with self.subTest(label), self.assertRaises(RenderError) as cm:
-                assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, source)
+                assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, source,
+                    harness_provides=provides_for(HARNESS))
             self.assertIn(cue, str(cm.exception))
 
     def test_an_abi_identical_procedure_spelling_passes_the_pin(self) -> None:
@@ -1323,7 +1383,8 @@ class HarnessPinTest(unittest.TestCase):
         self.assertEqual(self.src.count(o2), 1)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
             o1, "real(dp), dimension(:), intent(in) :: a\n", 1).replace(
-            o2, "character(len=*), intent(in) :: name\n    real(kind=dp), intent(in) :: x\n", 1))
+            o2, "character(len=*), intent(in) :: name\n    real(kind=dp), intent(in) :: x\n", 1),
+                harness_provides=provides_for(HARNESS))
 
     def test_an_attribute_statement_on_a_pinned_dummy_fails_the_pin(self) -> None:
         # The membership comparison this replaced accepted `optional :: x` beside the pinned
@@ -1332,7 +1393,7 @@ class HarnessPinTest(unittest.TestCase):
         self.assertEqual(self.src.count(decl), 1)
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
-                decl, decl + "    optional :: x\n", 1))
+                decl, decl + "    optional :: x\n", 1), harness_provides=provides_for(HARNESS))
         self.assertIn("harness_fortran_cpu__capture_real", str(cm.exception))
 
     def test_a_local_type_shadowing_a_pinned_type_fails_the_pin(self) -> None:
@@ -1348,7 +1409,8 @@ class HarnessPinTest(unittest.TestCase):
                     "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_VAR\n"
                     + self.src[body:])
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, shadowed)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, shadowed,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("harness_fortran_cpu__capture_open", str(cm.exception))
 
     def test_an_unresolvable_certified_source_is_a_render_error(self) -> None:
@@ -1358,7 +1420,8 @@ class HarnessPinTest(unittest.TestCase):
             "    endsubroutine = 1.0\n  end subroutine wedge\n", 1)
         self.assertNotEqual(wedged, self.src)
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, wedged)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, wedged,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("no longer resolves through the Fortran structure front end",
                       str(cm.exception))
         # Where, not only how many: the first error's statement and snippet.
@@ -1370,7 +1433,8 @@ class HarnessPinTest(unittest.TestCase):
                                "integer, parameter, public :: case_id_len = 32", 1)
         self.assertNotEqual(src, self.src)
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("does not declare the pinned module parameter", str(cm.exception))
 
     def test_case_id_len_value_drift_is_caught(self) -> None:
@@ -1382,7 +1446,8 @@ class HarnessPinTest(unittest.TestCase):
                                    "integer, parameter :: case_id_len = 32")
         self.assertNotEqual(bad_src, self.src)
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("case_id_len", str(cm.exception))
 
     def test_dp_kind_value_drift_is_caught(self) -> None:
@@ -1391,7 +1456,8 @@ class HarnessPinTest(unittest.TestCase):
                                    "integer, parameter :: dp = real32")
         self.assertNotEqual(bad_src, self.src)
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src,
+                harness_provides=provides_for(HARNESS))
 
     def test_combined_parameter_declaration_still_pins(self) -> None:
         # `integer, parameter :: dp = real64, case_id_len = 64` is the same ABI; per-entity
@@ -1401,14 +1467,16 @@ class HarnessPinTest(unittest.TestCase):
             "  integer, parameter :: case_id_len = 64\n",
             "  integer, parameter :: dp = real64, case_id_len = 64\n")
         self.assertNotEqual(combined, self.src)
-        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, combined)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, combined,
+            harness_provides=provides_for(HARNESS))
 
     def test_one_constant_drives_bound_declaration_and_pin(self) -> None:
         # Three things must agree, or the case_id bound stops describing the real truncation
         # width: the `_case_ids` bound, the width the rendered runner declares for its own
         # `case_ids(:)` buffer, and the parameter value pinned against the certified harness.
         # All three are `CASE_ID_LEN`; this test is the invariant, stated once.
-        txt = render_runner(self.ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        txt = render_runner(self.ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn(f"  integer, parameter :: case_id_len = {CASE_ID_LEN}", txt)
         self.assertIn(f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
                       _HARNESS_V3_PARAMETERS)
@@ -1416,19 +1484,22 @@ class HarnessPinTest(unittest.TestCase):
         ir = copy.deepcopy(self.ir)
         ir["case"]["test_case_set"][0]["case_id"] = over
         with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))
 
     def test_source_signature_drift(self) -> None:
         bad_src = self.src.replace(
             "subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)",
             "subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, nc, ok)")
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, bad_src,
+                harness_provides=provides_for(HARNESS))
 
     def test_missing_symbol_in_ir(self) -> None:
         pruned = [e for e in self.sigs if not e["symbol"].endswith("__capture_commit")]
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, pruned, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, pruned, self.src,
+                harness_provides=provides_for(HARNESS))
 
     def test_empty_signatures_fail_closed(self) -> None:
         # An uncertified / absent harness IR (empty, None, or non-list public_api.signatures)
@@ -1441,18 +1512,21 @@ class HarnessPinTest(unittest.TestCase):
                      [{"symbol": " ", "signature": {}}],
                      [{"symbol": "harness_fortran_cpu__capture_commit", "signature": {}}]):
             with self.assertRaises(RenderError) as cm:
-                assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, sigs, self.src)
+                assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, sigs, self.src,
+                    harness_provides=provides_for(HARNESS))
             self.assertIn("no usable public_api.signatures", str(cm.exception))
             self.assertNotIn("omits", str(cm.exception))
 
     def test_empty_source_fail_closed(self) -> None:
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, "")
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, "",
+                harness_provides=provides_for(HARNESS))
 
     def test_signature_entry_without_signature_fail_closed(self) -> None:
         junk = [{"symbol": e["symbol"]} for e in self.sigs]
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, junk, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, junk, self.src,
+                harness_provides=provides_for(HARNESS))
 
     def test_type_component_reorder_drift(self) -> None:
         # Derived-type components are compared as an ORDERED list (component layout is ABI);
@@ -1462,7 +1536,8 @@ class HarnessPinTest(unittest.TestCase):
             if e["symbol"].endswith("__h_var"):
                 e["signature"]["components"].reverse()
         with self.assertRaises(RenderError):
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src,
+                harness_provides=provides_for(HARNESS))
 
 
     def test_type_component_reorder_drift_in_the_harness_SOURCE(self) -> None:
@@ -1480,7 +1555,8 @@ class HarnessPinTest(unittest.TestCase):
             "    character(len=:), allocatable :: name\n")
         self.assertNotEqual(reordered, self.src, "the reorder did not apply to the stub")
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, reordered)
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, reordered,
+                harness_provides=provides_for(HARNESS))
         self.assertIn("model source signature", str(cm.exception))
 
 
@@ -1504,12 +1580,14 @@ class HarnessPinTest(unittest.TestCase):
         self.assertIn("read_case", _used_harness_ops(self.ir))
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
-                               self._without(self.src, symbol))
+                               self._without(self.src, symbol),
+                                   harness_provides=provides_for(HARNESS))
         self.assertIn(f"certified harness model source omits {symbol!r}", str(cm.exception))
         # ...and in the certified IR's signatures, the pin's other half.
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS,
-                               [e for e in self.sigs if e["symbol"] != symbol], self.src)
+                               [e for e in self.sigs if e["symbol"] != symbol], self.src,
+                                   harness_provides=provides_for(HARNESS))
         self.assertIn(f"public_api.signatures omits {symbol!r}", str(cm.exception))
 
     def test_a_drifted_read_case_is_refused(self) -> None:
@@ -1521,7 +1599,7 @@ class HarnessPinTest(unittest.TestCase):
                 "character(len=*), intent(in) :: case_id\n        logical, intent(out) :: ok\n"
                 "        ok = len_trim(case_id) > 0",
                 "character(len=*), intent(in) :: id\n        logical, intent(out) :: ok\n"
-                "        ok = len_trim(id) > 0"))
+                "        ok = len_trim(id) > 0"), harness_provides=provides_for(HARNESS))
         self.assertIn("harness_fortran_cpu__read_case", str(cm.exception))
 
     def test_the_getters_are_pinned_exactly_when_the_ir_uses_them(self) -> None:
@@ -1530,13 +1608,15 @@ class HarnessPinTest(unittest.TestCase):
             self.assertIn(getter, used)
             with self.subTest(getter=getter), self.assertRaises(RenderError) as cm:
                 assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
-                                   self._without(self.src, f"harness_fortran_cpu__{getter}"))
+                                   self._without(self.src, f"harness_fortran_cpu__{getter}"),
+                                       harness_provides=provides_for(HARNESS))
             self.assertIn(f"omits 'harness_fortran_cpu__{getter}'", str(cm.exception))
         unused = ("get_array_r1", "get_array_r3", "get_array_r4", "get_bool")
         for getter in unused:
             self.assertNotIn(getter, used)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self._without(
-            self.src, *(f"harness_fortran_cpu__{g}" for g in unused)))
+            self.src, *(f"harness_fortran_cpu__{g}" for g in unused)),
+                harness_provides=provides_for(HARNESS))
 
     def test_the_scalar_put_is_pinned_on_a_loop_for_its_series(self) -> None:
         # A node that captures no scalar state: the scalar put is the series' on a loop node (each
@@ -1553,11 +1633,14 @@ class HarnessPinTest(unittest.TestCase):
         one_call, looped = scalarless(call_ir(0)), scalarless(loop_ir(0))
         self.assertNotIn("capture_real", _used_harness_ops(one_call))
         cut = self._without(self.src, symbol)
-        assert_harness_pin(one_call, "drv_toy", HARNESS, self.sigs, cut)
+        assert_harness_pin(one_call, "drv_toy", HARNESS, self.sigs, cut,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("capture_real", _used_harness_ops(looped))
-        assert_harness_pin(looped, "drv_toy", HARNESS, self.sigs, self.src)
+        assert_harness_pin(looped, "drv_toy", HARNESS, self.sigs, self.src,
+            harness_provides=provides_for(HARNESS))
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(looped, "drv_toy", HARNESS, self.sigs, cut)
+            assert_harness_pin(looped, "drv_toy", HARNESS, self.sigs, cut,
+                harness_provides=provides_for(HARNESS))
         self.assertIn(f"omits {symbol!r}", str(cm.exception))
 
     def test_the_rank_1_put_is_pinned_only_for_a_rank_1_state(self) -> None:
@@ -1571,9 +1654,11 @@ class HarnessPinTest(unittest.TestCase):
         looped["drive"].update(sampled(_variables_of(looped)))
         for ir in (self.ir, looped):
             self.assertNotIn("capture_array_r1", _used_harness_ops(ir))
-            assert_harness_pin(ir, BOUNDARY_SID, HARNESS, self.sigs, cut)
+            assert_harness_pin(ir, BOUNDARY_SID, HARNESS, self.sigs, cut,
+                harness_provides=provides_for(HARNESS))
         with self.assertRaises(RenderError) as cm:
-            assert_harness_pin(call_ir(0), "drv_toy", HARNESS, self.sigs, cut)
+            assert_harness_pin(call_ir(0), "drv_toy", HARNESS, self.sigs, cut,
+                harness_provides=provides_for(HARNESS))
         self.assertIn(f"omits {symbol!r}", str(cm.exception))
 
     def test_the_rendered_runner_calls_nothing_of_the_harness_the_pin_does_not_ask(self) -> None:
@@ -1585,7 +1670,8 @@ class HarnessPinTest(unittest.TestCase):
                                ("call", call_ir(0), "drv_toy"),
                                ("procedure", procedure_ir(), "drv_toy")):
             with self.subTest(label):
-                txt = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc)
+                txt = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc,
+                    harness_provides=provides_for(HARNESS))
                 named = set(re.findall(r"harness_fortran_cpu__(\w+)", txt)) - {"h_var"}
                 self.assertEqual(named, set(_used_harness_ops(ir)))
 
@@ -1602,7 +1688,8 @@ class HarnessPinTest(unittest.TestCase):
         self.assertEqual(len(shapes), 4 + 5 + 21)
         for label, ir, sid in shapes:
             with self.subTest(label):
-                txt = render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)
+                txt = render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC,
+                    harness_provides=provides_for(DIST_HARNESS))
                 named = set(re.findall(r"harness_fortran_cpu_mpi__(\w+)", txt)) - {"h_var"}
                 self.assertEqual(named, set(_used_harness_ops(ir, distributed=True)))
 
@@ -1622,7 +1709,8 @@ class CaptureOpenRenderTest(unittest.TestCase):
     def test_the_series_names_leave_out_step_and_a_case_holds_only_its_own_rows(self) -> None:
         # `step` is the commit's, not a name; a continuation case commits only the rows after
         # its restart step, and a one-call node none.
-        loop = render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+        loop = render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("  character(len=5), parameter :: series_names(4) = &\n"
                       "    [character(len=5) :: &\n"
                       "    'u_min', &\n    'u_max', &\n    'w_min', &\n    'w_max' &\n    ]\n",
@@ -1632,7 +1720,8 @@ class CaptureOpenRenderTest(unittest.TestCase):
                   "restart_every_c > 0 .and. n_c > step0)")
         self.assertIn(f"call {HARNESS}__capture_open(cid, cvars, {points}, series_names, "
                       "max(n_c - step0, 0))\n", _unwrap(loop))
-        one = render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+        one = render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("  character(len=1), parameter :: series_names(0) = &\n", one)
         self.assertIn(f"call {HARNESS}__capture_open(cid, &\n"
                       "      cvars, 0, series_names, 0)", one)
@@ -1641,9 +1730,11 @@ class CaptureOpenRenderTest(unittest.TestCase):
         from tools.tests.test_driver_render import MPI_FIXTURES, _mpi_runner_text
         for label, ir, text in (
                 ("loop", loop_ir(0), render_runner(loop_ir(0), "drv_toy", HARNESS,
-                                                   target=_TARGET_PROFILE.doc)),
+                                                   target=_TARGET_PROFILE.doc,
+                                                       harness_provides=provides_for(HARNESS))),
                 ("init", init_ir(0), render_runner(init_ir(0), "drv_toy", HARNESS,
-                                                   target=_TARGET_PROFILE.doc)),
+                                                   target=_TARGET_PROFILE.doc,
+                                                       harness_provides=provides_for(HARNESS))),
                 ("distributed", MPI_FIXTURES["fx_loop"](), _mpi_runner_text("fx_loop"))):
             with self.subTest(label):
                 flags = self._flags(text)
@@ -1674,16 +1765,19 @@ class CaptureOpenRenderTest(unittest.TestCase):
 
         one = count("history_every_c(1)")
         self.assertEqual({"u": one, "w": one, "ok": one}, capacities(
-            render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)))
+            render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))))
         self.assertEqual(set(capacities(_mpi_runner_text("fx_loop")).values()), {one})
         self.assertEqual({"0"}, set(capacities(
-            render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)).values()))
+            render_runner(call_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for(HARNESS))).values()))
         # two strides, one variable sampled by neither: each its own group's count
         ir = loop_ir(0)
         ir["drive"]["history"] = {"w": "inputs.ew", "u": "inputs.eu"}
         for case in ir["case"]["test_case_set"]:
             case["inputs"].update(eu=2, ew=3)
-        caps = capacities(render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc))
+        caps = capacities(render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS)))
         self.assertEqual(caps["ok"], "0")
         self.assertEqual({caps["u"], caps["w"]},
                          {count("history_every_c(1)"), count("history_every_c(2)")})
@@ -1698,13 +1792,15 @@ class CaptureOpenRenderTest(unittest.TestCase):
                 "restart_every_c > 0 .and. n_c > step0)")
         for label, text in (
                 ("serial", render_runner(loop_ir(0), "drv_toy", HARNESS,
-                                         target=_TARGET_PROFILE.doc)),
+                                         target=_TARGET_PROFILE.doc,
+                                             harness_provides=provides_for(HARNESS))),
                 ("distributed", _mpi_runner_text("fx_loop"))):
             with self.subTest(label):
                 self.assertRegex(_unwrap(text), r"__capture_open\(cid, cvars, "
                                  + re.escape(want) + r", series_names, ")
         self.assertRegex(_unwrap(render_runner(call_ir(0), "drv_toy", HARNESS,
-                                               target=_TARGET_PROFILE.doc)),
+                                               target=_TARGET_PROFILE.doc,
+                                                   harness_provides=provides_for(HARNESS))),
                          r"__capture_open\(cid, cvars, 0, series_names, 0\)")
 
     def test_the_distributed_form_declares_the_global_extents(self) -> None:
@@ -1721,7 +1817,8 @@ class CaptureOpenRenderTest(unittest.TestCase):
         self.assertIn("    cvars(1)%name = 'u'\n", loop)
         self.assertIn("    cvars(1)%shape(1:3) = shape(gl_u)\n", loop)
         # the serial form declares the state's own extents
-        serial = render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+        serial = render_runner(loop_ir(0), "drv_toy", HARNESS, target=_TARGET_PROFILE.doc,
+            harness_provides=provides_for(HARNESS))
         self.assertIn("    cvars(1)%shape(1:1) = shape(st_u)\n", serial)
 
 
@@ -1761,7 +1858,8 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             target = _MPI_TARGET_DOC if harness == DIST_HARNESS else _TARGET_PROFILE.doc
-            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, harness, target=target))
+            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, harness, target=target,
+                harness_provides=provides_for(harness)))
             r = subprocess.run(list(_lint.check_argv(".")), cwd=d,
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1828,7 +1926,8 @@ def _build_and_run(d: Path, ir: dict, sid: str, model: str, flags: list[str] | N
     (d / "harness_fortran_cpu_model.f90").write_text(
         (DRIVER_E2E / "harness_fortran_cpu_model.f90").read_text())
     (d / f"{sid}_model.f90").write_text(model)
-    (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc))
+    (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc,
+        harness_provides=provides_for(HARNESS)))
     objects = []
     for stem in ("harness_fortran_cpu_model", f"{sid}_model", f"{sid}_runner"):
         built = subprocess.run(["gfortran", *flags, "-c", f"{stem}.f90", "-o", f"{stem}.o"],
@@ -1972,7 +2071,8 @@ class GfortranSmokeTest(unittest.TestCase):
             compiler = str(Path(_require_mpi_pair()) / wrapper.COMPILER_WRAPPER)
             harness_src = DRIVER_E2E / "mpi" / f"{DIST_HARNESS}_model.f90"
             target = _MPI_TARGET_DOC
-        runner = render_runner(ir, sid, harness, target=target)
+        runner = render_runner(ir, sid, harness, target=target,
+            harness_provides=provides_for(harness))
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             mods = d / "mods"
@@ -2087,14 +2187,17 @@ class DistributedHarnessBoundTest(unittest.TestCase):
         a clean IR, and reports the render's own refusal of `drive.distribute` (gate (n)'s
         backstop) as an IR content defect, which a Compile re-author can repair. Until PR-B2 the
         form was refused here as a node-identity defect, which the mirror excluded."""
-        self.assertEqual(ir_content_violations(_distributed_ir(), DIST_SID, DIST_HARNESS), [])
+        self.assertEqual(ir_content_violations(_distributed_ir(), DIST_SID, DIST_HARNESS,
+            harness_provides=provides_for(DIST_HARNESS)), [])
         ir = _distributed_ir()
         args = ir["public_api"]["signatures"][0]["signature"]["args"]
         next(a for a in args if a["name"] == "w")["dims"] = ["3", "nx + 2"]
-        found = ir_content_violations(ir, DIST_SID, DIST_HARNESS)
+        found = ir_content_violations(ir, DIST_SID, DIST_HARNESS,
+            harness_provides=provides_for(DIST_HARNESS))
         self.assertEqual(len(found), 1, found)
         self.assertIn("drive.distribute: w: dims token 'nx + 2'", found[0])
-        self.assertEqual(ir_content_violations(ir, DIST_SID, HARNESS), [])
+        self.assertEqual(ir_content_violations(ir, DIST_SID, HARNESS,
+            harness_provides=provides_for(HARNESS)), [])
 
 
 class DistributedFormRefusalTest(unittest.TestCase):
@@ -2103,7 +2206,8 @@ class DistributedFormRefusalTest(unittest.TestCase):
     reports it (`ir_content_violations`) for a Compile re-author."""
 
     def _render(self, ir: dict, sid: str) -> str:
-        return render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)
+        return render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC,
+            harness_provides=provides_for(DIST_HARNESS))
 
     def test_each_refusal(self) -> None:
         from tools.tests.test_driver_render import recon_ir
@@ -2131,54 +2235,144 @@ class DistributedFormRefusalTest(unittest.TestCase):
                     self._render(ir, "fx_recon")
                 self.assertIn(needle, str(cm.exception))
                 self.assertFalse(cm.exception.identity)
-                self.assertEqual(len(ir_content_violations(ir, "fx_recon", DIST_HARNESS)), 1)
+                self.assertEqual(len(ir_content_violations(ir, "fx_recon", DIST_HARNESS,
+                    harness_provides=provides_for(DIST_HARNESS))), 1)
 
 
 class HarnessPinTableTest(unittest.TestCase):
-    """The renderer's harness table, against the set each checked-in target implies for its
-    harness and against the harness spec."""
+    """The renderer's interface blocks, against the harness spec each checked-in target names
+    under the tokens that target implies (issue #690)."""
 
-    def test_the_distributed_column_is_the_targets(self) -> None:
-        # The column agrees with the set each checked-in target implies for the harness it
-        # names (`target_profile.harness_capabilities`, issue #690).
-        from tools import target_profile as tp
-        from tools.backends.language.fortran import runner as fortran_runner
-        from tools.codegen_bundle import capability_name
+    def test_each_targets_harness_spec_publishes_the_block_its_tokens_imply(self) -> None:
+        """Issue #690: for every checked-in target of a language that renders a runner, every
+        stanza of that backend's block for the target's derived tokens equals the stanza of the
+        same symbol in the §5.1 of the harness the target names — the comparison
+        `host_render.harness_block_drift` makes, which `skills/spec-input-check` names. The
+        witness: the same §5.1 under the OTHER process model's tokens drifts, so the comparison
+        is not empty by construction."""
+        from tools import host_render, target_profile as tp
+        from tools.backends import registry
+        from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
+        from tools.validate_pipeline_semantics import _section51_fence_body
         root = Path(__file__).resolve().parents[2]
         seen = set()
         for target_id in tp.list_target_ids(root):
             profile = tp.load_target_profile(root, target_id)
-            node_key = tp.harness_node_key_for_target(root, profile)
-            sid = node_key.split("/", 1)[1].split("@", 1)[0]
-            if sid not in fortran_runner._HARNESS_PINS:
+            language = profile.toolchain["language"]
+            if not registry.provides("language", language, "runner_render"):
                 continue
-            seen.add(sid)
-            self.assertEqual(
-                fortran_runner._HARNESS_PINS[sid].distributed,
-                any(capability_name(t) == "distributed_state"
-                    for t in tp.harness_capabilities(profile)), node_key)
-        self.assertEqual(seen, set(fortran_runner._HARNESS_PINS))
+            sid = tp.harness_node_key_for_target(root, profile).split("/", 1)[1].split("@")[0]
+            body, err = _section51_fence_body(
+                root / "spec/infrastructure/infra/harness" / sid / "controlled_spec.md")
+            self.assertIsNone(err, sid)
+            provides = tp.harness_capabilities(profile)
+            with self.subTest(target=target_id, harness=sid):
+                self.assertEqual(host_render.harness_block_drift(
+                    language, sid, body, harness_provides=provides), [])
+                if language == "fortran":
+                    self.assertTrue(host_render.harness_block_drift(
+                        language, sid, body,
+                        harness_provides=provides ^ {DISTRIBUTED_STATE_TOKEN}))
+            seen.add(target_id)
+        self.assertEqual(seen, {"fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_netcdf",
+                                "cpp_gpu"})
 
-    def test_each_pinned_interface_is_its_harness_specs_section_5_1(self) -> None:
+    def test_the_drift_comparison_names_each_kind_of_difference(self) -> None:
+        """`host_render.harness_block_drift` on each language's sample harness §5.1, mutated
+        one way at a time: a module parameter's value, a block symbol removed, a block symbol's
+        argument changed — each is named — and an operation beyond the block is not compared."""
         import yaml as _yaml
-        from tools.backends.language.fortran import runner as fortran_runner
-        from tools.backends.language.fortran.signatures import render_signatures_to_fortran
+        from tools import host_render
+        from tools.validate_pipeline_semantics import _section51_fence_body
         root = Path(__file__).resolve().parents[2]
-        for sid, pin in fortran_runner._HARNESS_PINS.items():
-            with self.subTest(harness=sid):
-                spec = (root / "spec/infrastructure/infra/harness" / sid
-                        / "controlled_spec.md").read_text(encoding="utf-8")
-                block = re.search(r"### 5\.1.*?```yaml\n(.*?)```", spec, re.S).group(1)
-                rendered = render_signatures_to_fortran(_yaml.safe_load(block))
-                # The module parameters are pinned separately (`_HARNESS_V3_PARAMETERS`).
-                body = "\n".join(line for line in rendered.splitlines()
-                                  if not line.startswith("integer, parameter ::"))
-                self.assertEqual(body.strip(), pin.interface.strip())
+        for language, sid in (("fortran", "harness_fortran_cpu"), ("cuda_cpp", "harness_cpp_gpu")):
+            body, err = _section51_fence_body(
+                root / "spec/infrastructure/infra/harness" / sid / "controlled_spec.md")
+            self.assertIsNone(err)
+            provides = provides_for(sid)
+
+            def drift(struct: dict) -> list[str]:
+                return host_render.harness_block_drift(
+                    language, sid, _yaml.safe_dump(struct, sort_keys=False),
+                    harness_provides=provides)
+
+            base = _yaml.safe_load(body)
+            with self.subTest(language=language, change="none"):
+                self.assertEqual(drift(copy.deepcopy(base)), [])
+            with self.subTest(language=language, change="module parameter"):
+                struct = copy.deepcopy(base)
+                next(m for m in struct["module_parameters"]
+                     if m["name"] == "case_id_len")["value"] = "32"
+                got = drift(struct)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("case_id_len", got[0])
+            with self.subTest(language=language, change="dp"):
+                struct = copy.deepcopy(base)
+                next(m for m in struct["module_parameters"]
+                     if m["name"] == "dp")["value"] = "float32"
+                got = drift(struct)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("dp", got[0])
+            with self.subTest(language=language, change="a type's component order"):
+                struct = copy.deepcopy(base)
+                h_var = next(t for t in struct["types"] if t["name"] == f"{sid}__h_var")
+                h_var["components"].reverse()
+                self.assertEqual(drift(struct),
+                                 [f"§5.1 declares '{sid}__h_var' differently from the block"])
+            with self.subTest(language=language, change="a type omitted"):
+                struct = copy.deepcopy(base)
+                struct["types"] = [t for t in struct["types"] if t["name"] != f"{sid}__h_var"]
+                self.assertIn(f"§5.1 omits '{sid}__h_var'", drift(struct))
+            with self.subTest(language=language, change="an entry that does not render"):
+                # Codex, round 2: the loader checks the top-level shape only.
+                struct = copy.deepcopy(base)
+                next(p for p in struct["procedures"]
+                     if p["name"] == f"{sid}__read_case")["args"] = None
+                got = drift(struct)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("args must be a list", got[0])
+            with self.subTest(language=language, change="a body that does not load"):
+                got = host_render.harness_block_drift(language, sid, "- not a mapping\n",
+                                                      harness_provides=provides)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("§5.1 does not load", got[0])
+            with self.subTest(language=language, change="omitted"):
+                struct = copy.deepcopy(base)
+                struct["procedures"] = [p for p in struct["procedures"]
+                                        if p["name"] != f"{sid}__read_case"]
+                self.assertEqual(drift(struct), [f"§5.1 omits '{sid}__read_case'"])
+            with self.subTest(language=language, change="declared differently"):
+                struct = copy.deepcopy(base)
+                proc = next(p for p in struct["procedures"] if p["name"] == f"{sid}__read_case")
+                proc["args"][0]["intent"] = "inout"
+                self.assertEqual(drift(struct),
+                                 [f"§5.1 declares '{sid}__read_case' differently from the block"])
+            with self.subTest(language=language, change="an operation beyond the block"):
+                struct = copy.deepcopy(base)
+                extra = copy.deepcopy(next(p for p in struct["procedures"]
+                                           if p["name"] == f"{sid}__read_case"))
+                extra["name"] = f"{sid}__project_extra"
+                struct["procedures"].append(extra)
+                self.assertEqual(drift(struct), [])
+
+    def test_every_symbol_of_each_block_takes_the_harness_s_own_name(self) -> None:
+        """Issue #690: each block names every symbol by the placeholder, so the substitution
+        gives a harness under any name all of them. A stanza left under a sample harness's
+        name would pass the pin for that sample alone (its id substitutes to itself)."""
+        from tools.backends.language.fortran import runner as fortran_runner
+        from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
+        single = provides_for(HARNESS)
+        for provides in (single, single | {DISTRIBUTED_STATE_TOKEN}):
+            with self.subTest(provides=sorted(provides)):
+                block = fortran_runner.harness_interface_block("harness_q", provides)
+                names = set(re.findall(r"\b\w+__\w+", block))
+                self.assertTrue(names)
+                self.assertEqual({n for n in names if not n.startswith("harness_q__")}, set())
 
     def test_the_distributed_pin_holds_against_its_own_interface_and_names_what_it_used(
             self) -> None:
         from tools.backends.language.fortran import runner as fortran_runner
-        iface = fortran_runner._HARNESS_PINS[DIST_HARNESS].interface
+        iface = fortran_runner.harness_interface_block(DIST_HARNESS, provides_for(DIST_HARNESS))
         struct = parse_signatures_from_fortran(iface)
         sigs = [{"symbol": s["name"], "signature": s}
                 for s in [*struct["procedures"], *struct["types"]]]
@@ -2190,26 +2384,31 @@ class HarnessPinTableTest(unittest.TestCase):
                   "  integer, parameter :: dp = real64\n"
                   f"  integer, parameter :: case_id_len = {CASE_ID_LEN}\n" + iface[:cut]
                   + "contains\n" + iface[cut:] + f"end module {DIST_HARNESS}_model\n")
-        assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, sigs, source)
+        assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, sigs, source,
+            harness_provides=provides_for(DIST_HARNESS))
         for dropped in ("__gather_r2", "__init", "__partition", "__reduce_max"):
             with self.subTest(dropped=dropped):
                 bad = [e for e in sigs if not e["symbol"].endswith(dropped)]
                 with self.assertRaises(RenderError) as cm:
-                    assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, bad, source)
+                    assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, bad, source,
+                        harness_provides=provides_for(DIST_HARNESS))
                 self.assertIn(f"omits '{DIST_HARNESS}{dropped}'", str(cm.exception))
         # The single-process pin asks none of them.
         single = [e for e in sigs if "__init" not in e["symbol"]]
-        self.assertIsNone(fortran_runner.physics_harness_uses("harness_fortran_cpu").get(
+        self.assertIsNone(fortran_runner.physics_harness_uses("harness_fortran_cpu",
+            harness_provides=provides_for("harness_fortran_cpu")).get(
             "harness_fortran_cpu_model"))
         self.assertTrue(single)
 
     def test_the_seam_answers(self) -> None:
         from tools.backends.language.fortran import runner as fortran_runner
-        uses = fortran_runner.physics_harness_uses(f" {DIST_HARNESS} ")
+        uses = fortran_runner.physics_harness_uses(f" {DIST_HARNESS} ",
+            harness_provides=provides_for(DIST_HARNESS))
         self.assertEqual(set(uses), {f"{DIST_HARNESS}_model"})
         self.assertEqual(uses[f"{DIST_HARNESS}_model"], frozenset(
             f"{DIST_HARNESS}__{op}" for op in fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS))
-        self.assertEqual(fortran_runner.physics_harness_uses("harness_fortran_cpu"), {})
+        self.assertEqual(fortran_runner.physics_harness_uses("harness_fortran_cpu",
+            harness_provides=provides_for("harness_fortran_cpu")), {})
 
 
 class HostVerdictRunnerSurfaceTest(unittest.TestCase):
@@ -2250,7 +2449,8 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
         for label, ir, sid, harness in self._variants():
             with self.subTest(label):
                 yield ir, sid, harness, render_runner(ir, sid, harness,
-                                                      target=_TARGET_PROFILE.doc)
+                                                      target=_TARGET_PROFILE.doc,
+                                                          harness_provides=provides_for(harness))
 
     def test_no_retired_callback_writer_or_record_is_named(self) -> None:
         for _ir, _sid, _harness, text in self._each():
@@ -2297,7 +2497,8 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
             changed["io_contract"].pop("tests", None)
             changed["io_contract"].pop("predicates", None)
             self.assertEqual(text, render_runner(changed, sid, harness,
-                                                 target=_TARGET_PROFILE.doc))
+                                                 target=_TARGET_PROFILE.doc,
+                                                     harness_provides=provides_for(harness)))
 
     def test_the_pin_asks_for_no_retired_symbol(self) -> None:
         """The surface the pin holds a harness to names none of the retired writers and record
@@ -2308,7 +2509,7 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
                 "__write_diagnostics", "__write_metrics_basis", "__h_check", "__h_metric",
                 "__h_case_result", "__h_mb_entry"))], [])
         assert_harness_pin(_boundary_ir(), BOUNDARY_SID, HARNESS, _harness_signatures(),
-                           _HARNESS_STUB)
+                           _HARNESS_STUB, harness_provides=provides_for(HARNESS))
 
 
 if __name__ == "__main__":

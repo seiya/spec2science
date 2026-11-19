@@ -34,6 +34,7 @@ from unittest import mock
 
 import pytest
 
+from tools.tests.target_fixtures import provides_for
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
@@ -16142,10 +16143,22 @@ class WriteRunnerTest(unittest.TestCase):
 
         other = types.ModuleType("zz_write_runner_lang")
         runner = types.ModuleType("zz_write_runner_lang.runner")
-        runner.render_runner = lambda ir, spec_id, harness, target: f"! rendered by zz for {spec_id}\n"
-        runner.assert_harness_pin = lambda *a, **k: None
+        handed: list[tuple[str, frozenset[str]]] = []
+
+        def render(ir, spec_id, harness, *, target, harness_provides):
+            handed.append(("render", harness_provides))
+            return f"! rendered by zz for {spec_id}\n"
+
+        def pin(ir, spec_id, harness, signatures, source, *, harness_provides):
+            handed.append(("pin", harness_provides))
+
+        runner.render_runner = render
+        runner.assert_harness_pin = pin
         runner.ir_content_violations = lambda *a, **k: []
         other.runner = runner
+        # The token set both are handed is the run target's derived set (issue #690); a sentinel
+        # no default spells shows it is read there.
+        sentinel = frozenset({"zz_sentinel@9"})
         # The names the host gives this language's files are its `bundle_facts` (issue #289).
         other.bundle = _fortran_named_bundle_facts("zz_write_runner_lang.bundle")
         record = backend_registry.Backend(
@@ -16163,10 +16176,27 @@ class WriteRunnerTest(unittest.TestCase):
                 self._seed_harness_pipeline(repo)
                 c = self._conductor(repo)
                 self.assertTrue(c._conductor_authors_runner(refs))
-                c._write_runner(refs)
+                import sys as _sys
+
+                from tools import target_profile as _tp
+                real = _tp.harness_capabilities
+                asked: list[object] = []
+
+                def derived(profile):
+                    # The sentinel for `_write_runner`'s own read alone: the resolver that
+                    # selects the certified harness hashes the real set into its key.
+                    if _sys._getframe(1).f_code.co_name != "_write_runner":
+                        return real(profile)
+                    asked.append(profile)
+                    return sentinel
+
+                with mock.patch.object(_tp, "harness_capabilities", derived):
+                    c._write_runner(refs)
             text = (repo / refs.source_dir() / "src"
                     / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
         self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
+        self.assertEqual([p.toolchain["language"] for p in asked], ["zz_wr"])
+        self.assertEqual(handed, [("pin", sentinel), ("render", sentinel)])
 
     def test_write_runner_names_a_declaration_that_outruns_its_package(self) -> None:
         """The clauses added to fix the previous round, which were themselves unobserved.
@@ -16229,7 +16259,8 @@ class WriteRunnerTest(unittest.TestCase):
             ir = _boundary_ir()
             ir["dependency"]["direct_deps"] = [
                 {"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
-            expected = render_runner(ir, self.SID, "harness_fortran_cpu", target=_TARGET_PROFILE.doc)
+            expected = render_runner(ir, self.SID, "harness_fortran_cpu", target=_TARGET_PROFILE.doc,
+                harness_provides=provides_for("harness_fortran_cpu"))
             self.assertEqual(runner.read_text(encoding="utf-8"), expected)
 
     def test_write_runner_fail_closed_on_missing_harness(self) -> None:
@@ -16267,7 +16298,8 @@ class WriteRunnerTest(unittest.TestCase):
             ir["dependency"]["direct_deps"] = [
                 {"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]
             self.assertEqual(runner.read_text(encoding="utf-8"),
-                             render_runner(ir, self.SID, "harness_fortran_cpu", target=_TARGET_PROFILE.doc))
+                             render_runner(ir, self.SID, "harness_fortran_cpu", target=_TARGET_PROFILE.doc,
+                                 harness_provides=provides_for("harness_fortran_cpu")))
 
     def test_write_runner_ignores_source_meta_ir_ref(self) -> None:
         # Even a present-but-bogus `ir_ref` must be entirely disregarded: the field is no
@@ -25606,7 +25638,8 @@ class CudaCppLintAttributionTest(unittest.TestCase):
         from tools.tests import test_driver_render as fixtures
         # The one shape the linter is clean over today: `test_the_driver_of_every_shape_...`.
         ir = ir if ir is not None else fixtures.init_ir(1)
-        runner = cpp_runner.render_runner(ir, self.SID, "harness_cpp_gpu", target=fixtures.GPU)
+        runner = cpp_runner.render_runner(ir, self.SID, "harness_cpp_gpu", target=fixtures.GPU,
+            harness_provides=provides_for("harness_cpp_gpu"))
         if host_finding:
             self.assertIn("int main(int argc, char** argv) {", runner)
             runner = runner.replace("int main(int argc, char** argv) {",

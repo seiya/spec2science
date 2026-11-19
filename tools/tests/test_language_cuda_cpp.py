@@ -32,6 +32,7 @@ from tools.backends.parallel.cuda import directives as cuda_directives
 from tools.backends.parallel.cuda import execution as cuda_execution
 from tools.backends.parallel.cuda import trace as cuda_trace
 from tools.tests import skip_probes
+from tools.tests.target_fixtures import provides_for
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVCC = shutil.which("nvcc")
@@ -1151,23 +1152,26 @@ class PhysicsGateTests(unittest.TestCase):
         """Issue #316: the seam question a distributed harness raises, answered for this
         language's one harness — the isolation gate asks it of every host-rendered node."""
         from tools import host_render
-        self.assertEqual(host_render.physics_harness_uses("cuda_cpp", "harness_cpp_gpu"), {})
+        self.assertEqual(host_render.physics_harness_uses("cuda_cpp", "harness_cpp_gpu",
+            harness_provides=provides_for("harness_cpp_gpu")), {})
 
     def test_isolation_refuses_the_harness(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp)
-            model = src / "p_model.cu"
-            out = self._isolation(src, '#include "harness_cpp_gpu_model.cuh"\nint x;\n')
-            self.assertTrue(any(str(model) in v and "harness" in v for v in out), out)
-            for reference in ("void f() { harness_cpp_gpu_model::harness_cpp_gpu__capture_real("
-                              "g, n, 1.0); }",
-                              "namespace h = harness_cpp_gpu_model;",
-                              "void f() { harness_cpp_gpu__capture_commit(g, 1, t); }"):
-                out = self._isolation(src, reference + "\n")
-                self.assertTrue(any(str(model) in v for v in out), (reference, out))
-            self.assertEqual([], self._isolation(
-                src, '// #include "harness_cpp_gpu_model.cuh"\n'
-                     'const char* m = "harness_cpp_gpu_model::";\n'))
+        # Under the sample's name and under a Project's (issue #690): the gate recognises a
+        # harness by the prefix every harness id begins with, not by the sample's name.
+        for h in ("harness_cpp_gpu", "harness_sample_gpu"):
+            with self.subTest(harness=h), tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp)
+                model = src / "p_model.cu"
+                out = self._isolation(src, f'#include "{h}_model.cuh"\nint x;\n')
+                self.assertTrue(any(str(model) in v and "harness" in v for v in out), out)
+                for reference in (f"void f() {{ {h}_model::{h}__capture_real(g, n, 1.0); }}",
+                                  f"namespace h = {h}_model;",
+                                  f"void f() {{ {h}__capture_commit(g, 1, t); }}"):
+                    out = self._isolation(src, reference + "\n")
+                    self.assertTrue(any(str(model) in v for v in out), (reference, out))
+                self.assertEqual([], self._isolation(
+                    src, f'// #include "{h}_model.cuh"\n'
+                         f'const char* m = "{h}_model::";\n'))
 
     def test_a_forbidden_output_name_is_refused_in_a_literal_and_only_there(self) -> None:
         forbidden = ("perf.json", "verdict.json")

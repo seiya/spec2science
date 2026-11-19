@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
+from tools.tests.target_fixtures import provides_for
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 from tools.tests.target_fixtures import composed_pure_template
@@ -68,7 +69,8 @@ _SPEC_PATH = "spec/problem/ocean/shallow_water2d"
 
 def _runner_text() -> str:
     from tools.backends.language.fortran.runner import render_runner
-    return render_runner(_node_ir(), _SPEC_ID, _HARNESS_SPEC_ID, target=_TARGET_PROFILE.doc)
+    return render_runner(_node_ir(), _SPEC_ID, _HARNESS_SPEC_ID, target=_TARGET_PROFILE.doc,
+        harness_provides=provides_for(_HARNESS_SPEC_ID))
 
 
 def _valid_bundle() -> dict:

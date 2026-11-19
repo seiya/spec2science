@@ -34,6 +34,7 @@ from tools.backends.language.cuda_cpp import declarations as cpp_decls
 from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import lines as cpp_lines
 from tools.backends.language.cuda_cpp import signatures as cpp_signatures
+from tools.target_profile import HARNESS_ID_PREFIX
 
 
 def code_view(text: str) -> str:
@@ -538,7 +539,10 @@ def _structure_refusal(path: Path, errors: list[str], gate: str) -> str:
 # Any mention of a harness's namespace or operations in code — a qualified name, a
 # `namespace h = harness_<x>_model;` alias, a `using` of it (round 1 of this change's review: the
 # alias passed a `::`-anchored pattern).
-_HARNESS_REFERENCE_RE = re.compile(r"\bharness_\w*_model\b|\bharness_\w+__\w+")
+# A harness is recognised by the prefix every harness id begins with (`HARNESS_ID_PREFIX`, which
+# the target profile's shape check holds every harness id to, issue #690).
+_HARNESS_REFERENCE_RE = re.compile(
+    rf"\b{re.escape(HARNESS_ID_PREFIX)}\w*_model\b|\b{re.escape(HARNESS_ID_PREFIX)}\w+__\w+")
 
 #: Names that open, rename, delete or truncate a file, run a command, register an exit handler or
 #: embed assembly, and mean nothing else: refused as a TOKEN anywhere in a leaf source's code,
@@ -607,7 +611,7 @@ def model_harness_isolation_violations(
     for path in [*model_files, *others]:
         source = path.read_text(encoding="utf-8", errors="ignore")
         harness_includes = [name for _line, name in quoted_includes(source)
-                            if Path(name).name.startswith("harness_")]
+                            if Path(name).name.startswith(HARNESS_ID_PREFIX)]
         code = cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source)))
         if harness_includes or _HARNESS_REFERENCE_RE.search(code):
             violations.append(

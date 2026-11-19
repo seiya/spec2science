@@ -95,6 +95,7 @@ import tools.validate_pipeline_semantics as vps  # noqa: E402
 from tools import host_render  # noqa: E402
 from tools.backends import registry  # noqa: E402
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
+from tools.tests.target_fixtures import provides_for
 
 #: The SAMPLED half. Regenerable: `--write-baseline` rewrites it, and `--check-baseline`'s growth
 #: finding tells the maintainer to do exactly that when a token appears in a neutral role.
@@ -2573,9 +2574,11 @@ class RegistryConsistencyTests(unittest.TestCase):
         "prompt_fragments": ("fragments", "runner_output_document", "generate_rules_document",
                              "EXEMPLAR_GATE_DRIFT_NOTE"),
         # `physics_harness_uses` (issue #316): what the isolation gate lets a physics source `use`
-        # from a harness that runs the program as several ranks.
+        # from a harness that runs the program as several ranks. `harness_block_drift` (issue
+        # #690): the comparison of a harness's §5.1 with the block, which the operator's
+        # spec-input check runs through `host_render`.
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
-                          "physics_harness_uses"),
+                          "physics_harness_uses", "harness_block_drift"),
         # Issue #289, R4-b PR-3: what the validator's source gates, the bundle acceptance layer
         # and the make control-file gate take off a language's source reader; what the §5.1
         # gates and the dependency-fact resolver take off its signature module; and what the
@@ -2900,7 +2903,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # live workflow would find out.
         module = registry.capability_module("language", "fortran", "runner_render")
         for name in ("render_runner", "assert_harness_pin", "ir_content_violations",
-                     "physics_harness_uses"):
+                     "physics_harness_uses", "harness_block_drift"):
             self.assertTrue(hasattr(module, name), name)
 
     def test_the_declaration_rules_do_not_block_a_single_value_migrating(self) -> None:
@@ -3003,8 +3006,10 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         with self._patched(record):
             self.assertIsNotNone(host_render.runner_render_refusal("zz_liar"))
-            for call in (lambda: host_render.physics_harness_uses("zz_liar", "hx"),
-                         lambda: host_render.render_runner("zz_liar", {}, "bx", "hx", target=_TARGET_PROFILE.doc)):
+            for call in (lambda: host_render.physics_harness_uses("zz_liar", "hx",
+                harness_provides=provides_for("hx")),
+                         lambda: host_render.render_runner("zz_liar", {}, "bx", "hx", target=_TARGET_PROFILE.doc,
+                             harness_provides=provides_for("hx"))):
                 with self.assertRaises(host_render.RunnerRenderUnavailable):
                     call()
 
@@ -3022,7 +3027,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         with self._patched(record):
             with self.assertRaises(ModuleNotFoundError):
-                host_render.physics_harness_uses("zz_broken", "hx")
+                host_render.physics_harness_uses("zz_broken", "hx",
+                    harness_provides=provides_for("hx"))
 
     def test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given(self) -> None:
         """That the seam is asked the NODE's language, semantically rather than by spelling.
@@ -3040,22 +3046,40 @@ class CapabilityOwnershipTests(unittest.TestCase):
         other = types.ModuleType("zz_other_lang_backend")
         other_runner = types.ModuleType("zz_other_lang_backend.runner")
         answer = {"zz_only_module": frozenset({"zz_only_name"})}
-        other_runner.physics_harness_uses = lambda harness: answer
-        other_runner.render_runner = lambda ir, spec_id, harness, target: "! rendered by zz_other\n"
+        handed: list[frozenset[str]] = []
+
+        def uses(harness, *, harness_provides):
+            handed.append(harness_provides)
+            return answer
+
+        def render(ir, spec_id, harness, *, target, harness_provides):
+            handed.append(harness_provides)
+            return "! rendered by zz_other\n"
+
+        other_runner.physics_harness_uses = uses
+        other_runner.render_runner = render
         other.runner = other_runner
         record = registry.Backend(
             "language", "zz_other", "zz_other_lang_backend",
             backend_provides=frozenset({"runner_render"}))
         with mock.patch.dict(sys.modules, {"zz_other_lang_backend": other}), \
                 self._patched(record):
-            self.assertEqual(answer, host_render.physics_harness_uses("zz_other", "hx"))
-            self.assertIn("zz_other", host_render.render_runner("zz_other", {}, "bx", "hx", target=_TARGET_PROFILE.doc))
+            # The seam forwards the token set it is given (issue #690): a value no default spells.
+            zz_tokens = frozenset({"zz_token@7"})
+            self.assertEqual(answer, host_render.physics_harness_uses(
+                "zz_other", "hx", harness_provides=zz_tokens))
+            self.assertIn("zz_other", host_render.render_runner(
+                "zz_other", {}, "bx", "hx", target=_TARGET_PROFILE.doc,
+                harness_provides=zz_tokens))
+            self.assertEqual(handed, [zz_tokens, zz_tokens])
             # ...and the incumbent still answers for itself, so the assertion above cannot pass
             # by the seam having been broken for everyone.
             self.assertNotEqual(answer, host_render.physics_harness_uses(
-                "fortran", "harness_fortran_cpu"))
+                "fortran", "harness_fortran_cpu",
+                    harness_provides=provides_for("harness_fortran_cpu")))
             self.assertIn("harness_fortran_cpu_mpi_model", host_render.physics_harness_uses(
-                "fortran", "harness_fortran_cpu_mpi"))
+                "fortran", "harness_fortran_cpu_mpi",
+                    harness_provides=provides_for("harness_fortran_cpu_mpi")))
 
     def test_every_caller_of_the_seam_passes_the_NODE_S_language(self) -> None:
         """The call sites, not just the seam — measured, each was unobserved.
@@ -3081,9 +3105,16 @@ class CapabilityOwnershipTests(unittest.TestCase):
         uses = {"zz_second_harness_model": frozenset({"zz_only_op"})}
         other = types.ModuleType("zz_second_lang")
         runner = types.ModuleType("zz_second_lang.runner")
-        runner.render_runner = lambda ir, spec_id, harness, target: "! zz_second\n"
-        runner.ir_content_violations = lambda ir, spec_id, harness: ["zz_second says no"]
-        runner.physics_harness_uses = lambda harness: uses
+        runner.render_runner = (
+            lambda ir, spec_id, harness, *, target, harness_provides: "! zz_second\n")
+        asked: list[frozenset[str]] = []
+
+        def objections(ir, spec_id, harness, *, harness_provides):
+            asked.append(harness_provides)
+            return ["zz_second says no"]
+
+        runner.ir_content_violations = objections
+        runner.physics_harness_uses = lambda harness, *, harness_provides: uses
         other.runner = runner
         other.bundle = types.ModuleType("zz_second_lang.bundle")
         other.bundle.SOURCE_EXTENSIONS = (".zz",)
@@ -3115,7 +3146,9 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 ["zz_second says no"],
                 list(host_render.ir_content_violations(
                     vps._m3c_language(ir, "make", "zz_second"), ir, "bx",
-                    "harness_fortran_cpu")))
+                    "harness_fortran_cpu", harness_provides=frozenset({"zz_token@3"}))))
+            # ...forwarding the token set it was given (issue #690), a value no default spells.
+            self.assertEqual(asked, [frozenset({"zz_token@3"})])
             # (2) the isolation gate asks THIS language's renderer which harness names a physics
             # source may use, and hands them to THIS language's reader. Driven through the gate
             # body, not through the seam: hard-coding the language inside the gate is what the
@@ -3320,7 +3353,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         with self._patched(record):
             with self.assertRaises(ModuleNotFoundError):     # the seam, unchanged
-                host_render.physics_harness_uses("zz_missing_pkg", "hx")
+                host_render.physics_harness_uses("zz_missing_pkg", "hx",
+                    harness_provides=provides_for("hx"))
             with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
                 violations = ["a sibling gate already found this"]
                 vps._validate_model_source_isolation(
@@ -3339,7 +3373,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         with mock.patch.dict(sys.modules, {"zz_broken_runner_pkg": pkg}), self._patched(record):
             with self.assertRaises(AttributeError):          # the seam, unchanged
-                host_render.physics_harness_uses("zz_broken_runner", "hx")
+                host_render.physics_harness_uses("zz_broken_runner", "hx",
+                    harness_provides=provides_for("hx"))
             with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
                 violations = ["a sibling gate already found this"]
                 vps._validate_model_source_isolation(
@@ -3485,12 +3520,15 @@ class CapabilityOwnershipTests(unittest.TestCase):
             self.assertIsNotNone(expected)
             self.assertEqual(expected, host_render.runner_render_refusal("zz_no_renderer"))
             for call in (
-                    lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx", target=_TARGET_PROFILE.doc),
-                    lambda: host_render.physics_harness_uses("zz_no_renderer", "hx"),
+                    lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx", target=_TARGET_PROFILE.doc,
+                        harness_provides=provides_for("hx")),
+                    lambda: host_render.physics_harness_uses("zz_no_renderer", "hx",
+                        harness_provides=provides_for("hx")),
                     lambda: host_render.ir_content_violations(
-                        "zz_no_renderer", {}, "bx", "hx"),
+                        "zz_no_renderer", {}, "bx", "hx", harness_provides=provides_for("hx")),
                     lambda: host_render.assert_harness_pin(
-                        "zz_no_renderer", {}, "bx", "hx", [], "")):
+                        "zz_no_renderer", {}, "bx", "hx", [], "",
+                            harness_provides=provides_for("hx"))):
                 with self.assertRaises(host_render.RunnerRenderUnavailable) as ctx:
                     call()
                 self.assertEqual(expected, str(ctx.exception))

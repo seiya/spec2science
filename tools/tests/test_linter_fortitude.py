@@ -33,6 +33,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.backends.linter.fortitude import lint  # noqa: E402
+from tools.tests.target_fixtures import provides_for
 
 #: A source that satisfies the declared set, used as the subject of the resolution checks. It
 #: carries a plain `implicit none` with NO allow directive above it — the form the leaf-read
@@ -509,7 +510,7 @@ class HostRenderedRunnerTests(unittest.TestCase):
 
         return fixtures.render_runner(
             getattr(fixtures, ir_name)(), fixtures.BOUNDARY_SID, fixtures.HARNESS,
-            target=fixtures._TARGET_PROFILE.doc)
+            target=fixtures._TARGET_PROFILE.doc, harness_provides=provides_for(fixtures.HARNESS))
 
     def test_the_rendered_runner_passes_the_declared_rule_set(self) -> None:
         for ir_name in ("_boundary_ir", "_metrics_ir"):

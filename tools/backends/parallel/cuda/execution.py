@@ -2,7 +2,7 @@
 
 What the host sets is the thread-block size a profile imposes on the run's kernel launches
 (`execution.block_size`, and each value of `execution.sweep.block_size`): the target's harness
-reads it at start from `BLOCK_SIZE_VARIABLE` (`harness_cpp_gpu` §3.3), and the host-rendered
+reads it at start from `BLOCK_SIZE_VARIABLE` (its controlled_spec §3.3), and the host-rendered
 runner hands it to the node's sources, which launch every kernel with it. With no block size
 imposed the environment is empty and the harness uses its default. Which device a run uses is
 the execution site's fact, not the parallel model's (`tools/execution_sites.py`, issue #293).

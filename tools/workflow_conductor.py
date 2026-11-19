@@ -5929,6 +5929,7 @@ class Conductor:
         runtime-owned, before the substeps run so the write is outside the FS-diff window)."""
         from tools.host_render import (
             render_runner, assert_harness_pin, RunnerRenderUnavailable)
+        from tools.target_profile import harness_capabilities
         from tools.orchestration_runtime import _certified_ir_dir, _certified_model_source
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # The target's language decides WHICH backend renders the glue. Read through the SAME
@@ -5991,9 +5992,13 @@ class Conductor:
                 f"harness dependency {harness_nk}: certified IR under "
                 f"{self._rel(harness_ir_dir)} carries no usable public_api.signatures to pin "
                 f"against (re-certify the harness)")
+        # The interface block the driver is written against is the one for the capabilities the
+        # run's target implies (issue #690); the pin and the render take the same set.
+        harness_provides = harness_capabilities(self.target)
         try:
             assert_harness_pin(
-                language, ir, refs.spec_id, harness_sid, harness_signatures, source_text)
+                language, ir, refs.spec_id, harness_sid, harness_signatures, source_text,
+                harness_provides=harness_provides)
         except RunnerRenderUnavailable as e:
             # The declaration/tree gap, named where it lands. `_conductor_authors_runner`
             # approved authorship on a DECLARATION and the seam cannot dispatch on it — a
@@ -6012,7 +6017,7 @@ class Conductor:
         # unreachable — deleting it left the suite green — and an unreachable duplicate of an
         # error path is worse than none: it reads as a second live guard.
         runner_text = render_runner(language, ir, refs.spec_id, harness_sid,
-                                    target=self.target.doc)
+                                    target=self.target.doc, harness_provides=harness_provides)
         path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
