@@ -2,11 +2,7 @@
 
 The flux at `0.5.0` (issue #610 PR-B1: §5.1 `u` gained `dims`) has no certified kernel until a run
 certifies it, so `latest` answers None for the flux and `deps_of` asserts for `advdiff1d_linear`:
-run `verify_spec.py <ir> --gate-only` for those two until then.
-
-`latest` answers the newest pipeline's model, so for `pbl_tracer_diffusion_1d_column` it is the model
-certified on the tree of `aa9d90e6`, of an earlier revision of the node: that model accepts `ks = 1`,
-and its row moves `l0_ks_below_two_xfail` until a run certifies a model of the current revision."""
+run `verify_spec.py <ir> --gate-only` for those two until then."""
 import glob,os,subprocess,sys,yaml,concurrent.futures as cf
 S=os.path.dirname(os.path.abspath(__file__))
 def latest(kind,sid):
