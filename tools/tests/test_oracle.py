@@ -1137,6 +1137,16 @@ _EXEC_ORACLE = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\norig
                 "  - id: alt\n    libraries: []\n    cases: [c_beta]\n")
 
 
+def _exec_ir(cases: tuple[str, ...], cross: bool = True,
+             outcome: str = "pass") -> str:
+    """`_EXEC_IR` (and `_EXEC_CROSS`) over `cases` instead of the two."""
+    listed = "[" + ", ".join(cases) + "]"
+    text = (_EXEC_IR + (_EXEC_CROSS if cross else "")).replace("[c_alpha, c_beta]", listed)
+    text = text.replace("    - case_id: c_alpha\n    - case_id: c_beta\n",
+                        "".join(f"    - case_id: {c}\n" for c in cases))
+    return text.replace("expected_outcome: pass", f"expected_outcome: {outcome}")
+
+
 def _write_captures(run_dir: Path, cases: list[str], value: float) -> None:
     sdir = run_dir / "raw" / "state_snapshots"
     (sdir / "initial").mkdir(parents=True, exist_ok=True)
@@ -1158,9 +1168,11 @@ class OracleExecuteTest(unittest.TestCase):
         self.repo = Path(td.name)
 
     def execute(self, *, oracle_text: str | None = _EXEC_ORACLE, ir: str | None = None,
-                run_value: float = 0.0, oracle_value: dict[str, float] | None = None,
+                run_value: float = 0.0, qc_value: float | None = None, oracle_value: dict[str, float] | None = None,
                 oracle_rc: int = 0, oracle_skips: tuple[str, ...] = (),
                 oracle_broken: tuple[str, ...] = (),
+                cases: tuple[str, ...] = ("c_alpha", "c_beta"),
+                binary_meta: dict[str, Any] | None = None, ir_hash: str | None = None,
                 repo: Path | None = None) -> tuple[Any, dict[str, Any]]:
         """`_run_deterministic_substep` on validate.execute; returns the result and what ran:
         `oracle_runs` (each oracle run's argument dict) and `evaluations` (how many times the
@@ -1175,6 +1187,7 @@ class OracleExecuteTest(unittest.TestCase):
         repo = repo or self.repo
         ir = ir if ir is not None else _EXEC_IR + _EXEC_CROSS
         values = oracle_value or {}
+        qc_value = run_value if qc_value is None else qc_value
         c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                                orchestration_agent_run_id="x", llm_config=_cfg("claude"),
                                env={})
@@ -1204,16 +1217,16 @@ class OracleExecuteTest(unittest.TestCase):
                 if oracle_rc:
                     return {"ok": False, "return_code": oracle_rc, "command_id": "O",
                             "stderr": "x" * 600 + "\nadapter aborted"}
-                cases = [c_ for c_ in argv[3:] if c_ not in oracle_skips]
-                _write_captures(project, cases, values.get(build_id, 0.0))
-                for case_id in set(cases) & set(oracle_broken):
+                ran = [c_ for c_ in argv[3:] if c_ not in oracle_skips]
+                _write_captures(project, ran, values.get(build_id, 0.0))
+                for case_id in set(ran) & set(oracle_broken):
                     (project / "raw" / "state_snapshots" / f"{case_id}.json").write_text("{")
                 return {"ok": True, "command_id": f"O-{build_id}"}
-            _write_captures(project, ["c_alpha", "c_beta"], run_value)
+            _write_captures(project, list(cases), run_value)
             return {"ok": True, "command_id": "R"}
 
         def fake_qc(args):
-            _write_captures(Path(args["env"]["RUNDIR"]), ["c_alpha", "c_beta"], run_value)
+            _write_captures(Path(args["env"]["RUNDIR"]), list(cases), qc_value)
             return {"ok": True, "command_id": "Q"}
 
         def fake_subprocess_run(argv, **kwargs):
@@ -1226,6 +1239,15 @@ class OracleExecuteTest(unittest.TestCase):
             seen["evaluations"] += 1
             return real_evaluate(self_, refs_, ir_)
 
+        if binary_meta is not None:
+            meta_path = repo / refs.binary_dir() / "binary_meta.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(json.dumps(binary_meta))
+        if ir_hash is not None:
+            # What `run_phase` binds before the substep: the validate key's inputs.
+            c._phase_derivations[(refs.node_key, "validate")] = {
+                "derivation_key": "sha256:" + "0" * 64, "transformation": ["t"],
+                "derivation_inputs": {"ir": ir_hash}}
         with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
                 mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
                 mock.patch.object(wc.subprocess, "run", fake_subprocess_run), \
@@ -1329,6 +1351,99 @@ class OracleExecuteTest(unittest.TestCase):
                          0)
         self.assertIsNone(c._read_repair_findings(
             refs, f"{wc.VALIDATE_EXECUTE_REASON_PREFIX}{oracle.DISAGREEMENT}", "validate"))
+
+    def test_the_written_verdict_is_the_evaluated_one_with_the_ir_hash(self) -> None:
+        """The write `_execute_inproc` makes after the comparison (and on a node without an
+        oracle): verdict.json is the evaluated document, `ir_hash` included, which another
+        target's comparand selection reads."""
+        import tools.workflow_conductor as wc
+        ir_hash = "sha256:" + "1" * 64
+        for oracle_text in (_EXEC_ORACLE, None):
+            with self.subTest(oracle=oracle_text is not None), \
+                    tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                evaluated: list[dict] = []
+                real = wc.Conductor._evaluate_execute_verdict
+
+                def spy(self_, refs_, ir_):
+                    doc = real(self_, refs_, ir_)
+                    evaluated.append(json.loads(json.dumps(doc)))
+                    return doc
+
+                with mock.patch.object(wc.Conductor, "_evaluate_execute_verdict", spy):
+                    result, _seen = self.execute(oracle_text=oracle_text, ir_hash=ir_hash,
+                                                 repo=repo)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                written = self.read("verdict.json", repo)
+                self.assertEqual(written["ir_hash"], ir_hash)
+                self.assertEqual([written], evaluated)
+
+    def test_the_oracle_runs_on_an_xfail_verdict(self) -> None:
+        result, seen = self.execute(ir=_exec_ir(("c_alpha", "c_beta"), outcome="xfail"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read("verdict.json")["self_verdict"], "xfail")
+        self.assertEqual(len(seen["oracle_runs"]), 2)
+        self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "agree")
+
+    def test_the_oracle_is_compared_with_the_serial_reference_not_the_run(self) -> None:
+        # The run and the serial reference differ by 9e-13 (they agree under the 1e-12 bound);
+        # the oracle is 6e-13 from the reference and 1.5e-12 from the run.
+        result, _seen = self.execute(run_value=0.0, qc_value=9e-13,
+                                     oracle_value={"default": 1.5e-12, "alt": 1.5e-12})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "agree")
+        result, _seen = self.execute(run_value=9e-13, qc_value=0.0,
+                                     oracle_value={"default": 1.5e-12, "alt": 1.5e-12})
+        self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "disagree")
+
+    def test_the_loader_path_holds_the_closure_s_library_dirs_then_the_build_s(self) -> None:
+        from tools.checked_build import target_compiler
+        from tools.backends import registry
+        closure, own = "/libs/closure/lib", "/libs/oracle_alt/lib"
+        meta = {"library_dirs": [closure],
+                "oracle": {"builds": [
+                    {"id": "default", "libraries": []},
+                    {"id": "alt", "libraries": [{"library_id": "x", "lib_dirs": [own]}]}]}}
+        _result, seen = self.execute(binary_meta=meta)
+        target = seen["conductor"].target
+        variable = str(registry.capability_module(
+            "compiler", target_compiler(target), "library_binary").LOADER_VARIABLE)
+        paths = {Path(r["command"][0]).parent.name: r["env"][variable].split(os.pathsep)
+                 for r in seen["oracle_runs"]}
+        self.assertEqual(paths["default"][:1], [closure])
+        self.assertEqual(paths["alt"][:2], [closure, own])
+
+    #: Case ids as long as the channel problem's (`chan_tc2_xpert_n032_dts100`), 30 of them.
+    _LONG = tuple(f"chan_tc{i}_xpert_n032_dts100_ymir" for i in range(30))
+
+    def test_each_refusal_keeps_its_reason_and_remedy_in_the_failure_summary(self) -> None:
+        """The run's failure summary keeps the last 400 characters (`_leaf_failure_summary`):
+        each refusal's reason and remedy are at that end, over a case list and a stderr that
+        are longer than the cut."""
+        cases = self._LONG
+        self.assertGreater(len(str(list(cases))), 400)
+        alt = _EXEC_ORACLE.replace("cases: [c_beta]", f"cases: [{cases[0]}]")
+        # The run row's stderr straddles the cut; the comparison's `error` is bounded to 400
+        # characters by `_shape_state_agreement`, and the two others are checked for their
+        # remedy by cause.
+        rows = {
+            "run": ({"oracle_rc": 3}, oracle.RUN_FAILED, "Fix the adapter", True),
+            "capture": ({"oracle_broken": cases[1:]}, oracle.UNEVALUABLE, "fix the adapter",
+                        False),
+            "no_cross": ({"ir": _exec_ir(cases, cross=False)}, oracle.UNEVALUABLE,
+                         "remove the declaration", False),
+        }
+        for name, (kwargs, reason, remedy, long_) in rows.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as td:
+                result, _seen = self.execute(**{"ir": _exec_ir(cases), "cases": cases,
+                                                 "oracle_text": alt, "repo": Path(td),
+                                                 **kwargs})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                if long_:
+                    self.assertGreater(len(result.stderr), 400, result.stderr)
+                summary = self.summary(result)
+                for needle in (reason, remedy, "--resume"):
+                    self.assertIn(needle, summary)
 
     def test_an_unevaluable_comparison_is_fail_closed(self) -> None:
         # The oracle's capture of c_beta is unreadable: the comparison cannot evaluate it.

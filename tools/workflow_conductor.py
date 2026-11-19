@@ -455,9 +455,10 @@ def _oracle_disagreement_report(check: dict[str, Any]) -> str:
         detail = (f"value={f.get('value')!r} rhs={f.get('rhs')!r}" if "value" in f
                   else f"reason={f.get('reason')!r} error={f.get('error')!r}")
         lines.append(f"  case {f.get('case')!r} {f.get('quantity')!r}: {detail}")
-    lines.append(f"{oracle_mod.DISAGREEMENT}: see {oracle_mod.CHECK_RECORD}; the adapter, the "
-                 f"spec or the generated code is wrong (phase_04_validate.md §4-1), and the "
-                 f"run ends here")
+    lines.append(f"{oracle_mod.DISAGREEMENT}: see {oracle_mod.CHECK_RECORD}. Fix the adapter or "
+                 f"oracle.yaml and --resume; or fix the spec and bump spec_version; or "
+                 f"--rederive generate for a defect of the generated code (docs/RUNBOOK.md, "
+                 f"\"Certifying a node against its oracle\")")
     return "\n".join(lines)
 
 
@@ -13175,8 +13176,7 @@ class Conductor:
         # The device trace's summary (issue #307) is cleared for the same reason: the gate that
         # reads it must never read a previous attempt's.
         from tools import oracle as oracle_mod
-        for _stale in ("verdict.json", "trial_meta.json", KERNEL_TRACE_ARTIFACT,
-                       oracle_mod.CHECK_RECORD):
+        for _stale in ("verdict.json", "trial_meta.json", KERNEL_TRACE_ARTIFACT):
             _prev = node_dir / _stale
             if _prev.exists():
                 _prev.unlink()
@@ -14151,31 +14151,40 @@ class Conductor:
                            if res.get("return_code") is None
                            else f"exited {res.get('return_code')}")
                 tail = "\n".join((res.get("stderr") or "").splitlines()[-50:])
+                # The run's tail and the case list first, the verdict last: the run's failure
+                # summary keeps the last 400 characters (`_leaf_failure_summary`).
                 raise RuntimeError(
-                    f"\n{tail}\n{oracle_mod.RUN_FAILED}: oracle build {build.build_id!r} of "
-                    f"{refs.node_key} {outcome} on cases {first}. The run's own tests passed: "
-                    f"fix the adapter or {declaration}, then --resume")
+                    f"\n{tail}\n(oracle build {build.build_id!r} ran cases {first})\n"
+                    f"{oracle_mod.RUN_FAILED}: oracle build {build.build_id!r} of "
+                    f"{refs.node_key} {outcome}; the run's own tests passed. Fix the adapter or "
+                    f"{declaration}, then --resume")
+            # `case_plan` gives each case to one build and `merged/` is new, so no file of a
+            # moved case is there before it: `move_case` refuses nothing here.
             for case_id in first:
-                moved = store.move_case(capture_store.snapshot_dir(run_dir),
-                                        capture_store.snapshot_dir(merged), case_id)
-                if moved is not None:
-                    raise RuntimeError(
-                        f"{oracle_mod.UNEVALUABLE}: the oracle's captures of case {case_id!r} "
-                        f"of {refs.node_key} cannot be merged: {moved}")
+                store.move_case(capture_store.snapshot_dir(run_dir),
+                                capture_store.snapshot_dir(merged), case_id)
         agreement = self._shape_state_agreement(ir, reference_dir, "oracle", merged,
                                                 target.output_format)
         status = agreement.get("status")
         if status not in ("agree", "disagree"):
-            why = (agreement.get("error") if status == "unevaluable" else
-                   "its IR holds no cross-target predicate, so nothing would be compared")
+            # The cause and its remedy, by what the comparison could not do; the detail first
+            # and the verdict last, as above.
             skipped = sorted(c for cs in plan.values() for c in cs if c in conts)
+            if status != "unevaluable":
+                detail = "its IR holds no cross-target predicate, so nothing is compared"
+                remedy = ("give a node an oracle only where a cross-target judgment compares "
+                          "it: fix the spec or remove the declaration")
+            elif skipped:
+                detail = (f"{agreement.get('error')}; the oracle runs no second pass, and the "
+                          f"continuation cases {skipped} have no oracle capture")
+                remedy = ("apply no cross-target judgment to a test of a continuation case "
+                          "(the spec), or remove the declaration")
+            else:
+                detail = str(agreement.get("error"))
+                remedy = f"an oracle capture is absent or unreadable: fix the adapter or {declaration}"
             raise RuntimeError(
-                f"{oracle_mod.UNEVALUABLE}: {refs.node_key} declares an oracle "
-                f"({declaration}) and the comparison with it is {status}: {why}"
-                + (f"; the oracle runs no second pass, and the continuation cases {skipped} "
-                   f"have no oracle capture" if skipped else "")
-                + ". Fix the declaration or the spec (a node is given an oracle only where a "
-                "cross-target predicate compares it), then --resume")
+                f"{detail}\n{oracle_mod.UNEVALUABLE}: the comparison of {refs.node_key} with "
+                f"its oracle is {status}; {remedy}, then --resume")
         return {"status": status, "node_key": refs.node_key, "run_id": refs.run_id,
                 "declaration_sha256": oracle.declaration_sha256,
                 "source_sha256": oracle.source_sha256, "origin": oracle.origin,
