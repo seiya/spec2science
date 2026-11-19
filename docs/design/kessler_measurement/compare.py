@@ -62,20 +62,55 @@ DEVIATIONS = [
     "Kessler guards: index range, dt, negative qv / qc / qr, cptot, cvtot; terminal-velocity guards: "
     "index range, dens, refstate_dens; the original has none (Kessler §4)",
 ]
+#: The pre-call content the saturation suite's §2 states in prose rather than in its YAML block
+#: (the halo fill values of its `column` lists, and `cptot`, `cvtot`, `qsat`, `rhoe_d`). The Kessler
+#: suite holds the same in its `fill:` entry.
+SATURATION_FILL = {"temp": 222.0, "dens": 0.77, "qv": 0.0123, "qc": 0.0321, "cptot": 1111.0,
+                   "cvtot": 777.0, "qsat": -999.0, "rhoe_d": -999.0}
+#: The scalars each §2 names; each is a logical result that starts at `0`.
+SCALARS = {"saturation": ("guard_pass", "converged"), "kessler": ("guard_pass",)}
 FLOOR = 1e-15
 #: Driver -> the same sources built with `ALT_CONSTANTS=1`, for the cases with `constants: alt`.
 ALT_DRIVER: dict[Path, Path] = {}
 REL = 1e-12
 
 
-def load_suite(tests_md: Path) -> dict:
-    """The one fenced YAML block of `tests.md` §2."""
+def load_suite(tests_md: Path, node: str) -> dict:
+    """The one fenced YAML block of `tests.md` §2, in the shape the rest of this script reads.
+
+    Since `ca9c2862` the block names no `setup`, `scalars`, `refusal` or `nonconvergence_check`:
+    `setup` is Kessler's `fill` and the saturation suite's prose (`SATURATION_FILL`); a literal
+    `column` list is a `cells` rule of all `ka` cells; `zero_at_cell_4` is an override; a refused
+    case leaves `guard_pass = 0`, except a case of a non-converging cell of the saturation
+    adjustment (`nonconverging`), which leaves `guard_pass = 1`, `converged = 0`."""
     text = tests_md.read_text(encoding="utf-8")
     section = text.split("## 2.", 1)[1].split("\n## 3.", 1)[0]
     fences = re.findall(r"```yaml\n(.*?)```", section, re.S)
     if len(fences) != 1:
         raise SystemExit(f"{tests_md}: §2 holds {len(fences)} YAML fences, not one")
-    return yaml.safe_load(fences[0])
+    suite = yaml.safe_load(fences[0])
+    suite["setup"] = dict(suite.get("fill") or SATURATION_FILL)
+    suite["scalars"] = {name: 0.0 for name in SCALARS[node]}
+    for case in suite["cases"]:
+        if "column" in case:
+            case["columns"] = {n: {"cells": cells} for n, cells in case.pop("column").items()}
+        if "zero_at_cell_4" in case:
+            case.setdefault("overrides", []).append(
+                {"var": case.pop("zero_at_cell_4"), "k": 4, "value": 0.0})
+    for case in suite["cases"]:
+        if refused(case):
+            case["nonconvergence_check"] = nonconverging(suite, case)
+            case["refusal"] = ({"guard_pass": 1.0, "converged": 0.0}
+                               if case["nonconvergence_check"] and node == "saturation" else {})
+    return suite
+
+
+def nonconverging(suite: dict, case: dict) -> bool:
+    """A refused case of an operation that iterates whose inputs meet no refusal clause of
+    Controlled Spec §4: what refuses it is a cell that does not converge (cell 4, which the
+    screen's forcing check confirms on the original)."""
+    return (case["operation"] in ("saturation_adjustment", "adjustment")
+            and not refusal_clauses(suite, case))
 
 
 def build_initial(suite: dict, case: dict) -> dict[str, list[float]]:
@@ -84,12 +119,12 @@ def build_initial(suite: dict, case: dict) -> dict[str, list[float]]:
     state = {name: [float(value)] * ka for name, value in suite["setup"].items()}
     for name, rule in case.get("columns", {}).items():
         cells = state[name][:]
-        for n, k in enumerate(range(ks, ke + 1)):
-            if isinstance(rule, dict):
-                value = rule["cells"][n]
-            else:
-                value = rule[0] + rule[1] * n
-            cells[k - 1] = float(value)
+        if isinstance(rule, dict):
+            # Literal, all `ka` cells, the halo being the fill value.
+            cells = [float(value) for value in rule["cells"]]
+        else:
+            for n, k in enumerate(range(ks, ke + 1)):
+                cells[k - 1] = float(rule[0] + rule[1] * n)
         state[name] = cells
     columns = case.get("columns", {})
     if "qv" in columns:
@@ -198,7 +233,7 @@ def synthetic_ir(suite: dict, predicates: list[dict]) -> dict:
         "io_contract": {
             "raw_requirements": {"required_evidence": [
                 {"artifact": "state_snapshots", "required": True, "schema": schema}]},
-            "primary_predicates": predicates,
+            "predicates": predicates,
         },
     }
 
@@ -259,7 +294,7 @@ def gate_violations(tests_md: Path, suite: dict, predicates: list[dict]) -> list
 def cmd_screen(args: argparse.Namespace) -> int:
     here = Path(__file__).resolve().parent
     spec_dir, pred_file = NODES[args.node]
-    suite = load_suite(REPO / spec_dir / "tests.md")
+    suite = load_suite(REPO / spec_dir / "tests.md", args.node)
     run = Path(args.work) / args.node / "reference"
     other = Path(args.work) / args.node / "comparand"
     ALT_DRIVER[Path(args.driver)] = Path(args.alt_driver)
@@ -271,7 +306,7 @@ def cmd_screen(args: argparse.Namespace) -> int:
     violations = gate_violations(REPO / spec_dir / "tests.md", suite, predicates)
     for line in violations:
         print(f"GATE {line}")
-    comparand = pe.ComparandEvidence("low_optimization", "-", "-", other.resolve(), "-", "json")
+    comparand = pe.ComparandEvidence("low_optimization", "-", "-", other.resolve(), "json")
     records = pe.evaluate_primary_predicates(ir, run, output_format="json",
                                              comparands=[comparand])
     failed = 0
@@ -307,7 +342,6 @@ def cmd_screen(args: argparse.Namespace) -> int:
 def refusal_clauses(suite: dict, case: dict) -> list[str]:
     """The clauses of Controlled Spec §4 this case's inputs meet."""
     grid = case_inputs(suite, case)["grid"]
-    base = suite["grid"]
     state = build_initial(suite, case)
     out = []
     if grid["ks"] < 1:
@@ -323,7 +357,8 @@ def refusal_clauses(suite: dict, case: dict) -> list[str]:
                 "adjustment": ("temp", "dens", "cptot", "cvtot"),
                 "terminal_velocity": ("dens", "refstate_dens")}[case["operation"]]
     signed = ("qv", "qc", "qr") if case["operation"] == "adjustment" else ()
-    for k in range(base["ks"] - 1, base["ke"]):
+    # The cells the call reads: an index-range case's halo cells hold values the guard refuses.
+    for k in range(max(grid["ks"], 1) - 1, min(grid["ke"], grid["ka"])):
         out += [f"{n}({k + 1}) <= 0" for n in positive if state[n][k] <= 0]
         out += [f"{n}({k + 1}) < 0" for n in signed if state[n][k] < 0]
     return out
@@ -353,7 +388,7 @@ def forcing_misses(suite: dict, driver: Path) -> list[str]:
 
 def cmd_compare(args: argparse.Namespace) -> int:
     spec_dir, _ = NODES[args.node]
-    suite = load_suite(REPO / spec_dir / "tests.md")
+    suite = load_suite(REPO / spec_dir / "tests.md", args.node)
     snaps = Path(args.run_dir) / "raw" / "state_snapshots"
     ALT_DRIVER[Path(args.driver)] = Path(args.alt_driver)
     print("deviations, not banded:")
