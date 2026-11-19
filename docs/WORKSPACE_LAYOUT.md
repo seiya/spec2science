@@ -126,7 +126,7 @@ workspace/
                 │           ├── perf.json
                 │           ├── quality_check.json
                 │           ├── kernel_trace.csv              (a traced target only: the device trace's per-kernel summary)
-                │           ├── oracle_check.json             (a node with an oracle for the target's language, whose run reached the comparison: its record; issue #680)
+                │           ├── oracle_check.json             (a node with an oracle for the target's language whose run agreed or disagreed with it: the comparison's record; issue #680)
                 │           ├── raw/
                 │           ├── stdout.log
                 │           ├── stderr.log

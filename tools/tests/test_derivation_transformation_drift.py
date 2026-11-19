@@ -2251,7 +2251,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # `use`, `oracle.ORACLE_USE_VERSION` 3), so no Validate certified before compared it. The
     # digest `execute-22` shipped with at 0260f5ba:
     "execute-22@0260f5ba": "f76069607d72f9416d5b4b4f2e6aea74ae4d68559241dd90e70c084d6aae6661",
-    "execute-22": "f21cf894aaad79583b3b2593c99e6af722a2720245e99e946356d3e987f7f0da",
+    "execute-22": "cc9c0fa6274d04d5a9986c28be3864a79a335034b4760edc0c8258271398a94c",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

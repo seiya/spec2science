@@ -13175,7 +13175,6 @@ class Conductor:
         # external invariant for two correctness-critical routing decisions.
         # The device trace's summary (issue #307) is cleared for the same reason: the gate that
         # reads it must never read a previous attempt's.
-        from tools import oracle as oracle_mod
         for _stale in ("verdict.json", "trial_meta.json", KERNEL_TRACE_ARTIFACT):
             _prev = node_dir / _stale
             if _prev.exists():
@@ -14027,6 +14026,7 @@ class Conductor:
         # (self_verdict ∈ {pass, xfail}) leaves the execute substep passing; the judge then
         # authors semantic_review.json only.
         verdict_doc = self._evaluate_execute_verdict(refs, ir)
+        from tools import oracle as oracle_mod
         # 6. The oracle (issue #680, `docs/workflow/phases/phase_04_validate.md` §4-1): on a run
         # whose own tests pass, before the verdict is written, so a disagreement leaves none and
         # `classify_failure` reads its category off trial_meta.json. A run that fails its own
@@ -14177,8 +14177,11 @@ class Conductor:
             elif skipped:
                 detail = (f"{agreement.get('error')}; the oracle runs no second pass, and the "
                           f"continuation cases {skipped} have no oracle capture")
-                remedy = ("apply no cross-target judgment to a test of a continuation case "
-                          "(the spec), or remove the declaration")
+                # A designed stop (issue #680 plan §12): the first time-marching node with an
+                # oracle decides the second pass. The remedy does not touch the spec: the
+                # judgment also compares two declared targets.
+                remedy = ("an oracle cannot yet be compared on a continuation case: remove "
+                          "the declaration")
             else:
                 detail = str(agreement.get("error"))
                 remedy = f"an oracle capture is absent or unreadable: fix the adapter or {declaration}"

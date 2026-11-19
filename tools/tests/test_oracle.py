@@ -1331,6 +1331,9 @@ class OracleExecuteTest(unittest.TestCase):
         self.assertEqual((meta["status"], meta["failure_category"]),
                          ("fail", oracle.DISAGREEMENT))
         self.assertIn("case 'c_beta' 'cross'", meta["failure_excerpt"])
+        # The operator's log (`dialogs/deterministic.stderr.log`) carries the report too.
+        self.assertIn("[execute fail: oracle]", result.stderr)
+        self.assertIn(oracle.DISAGREEMENT, result.stderr.splitlines()[-1])
         self.assertIn(oracle.DISAGREEMENT, meta["failure_excerpt"].splitlines()[-1])
         self.assertIn(oracle.DISAGREEMENT, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
 
@@ -1404,14 +1407,19 @@ class OracleExecuteTest(unittest.TestCase):
                 "oracle": {"builds": [
                     {"id": "default", "libraries": []},
                     {"id": "alt", "libraries": [{"library_id": "x", "lib_dirs": [own]}]}]}}
-        _result, seen = self.execute(binary_meta=meta)
-        target = seen["conductor"].target
+        from tools.tests.target_fixtures import fixture_target
         variable = str(registry.capability_module(
-            "compiler", target_compiler(target), "library_binary").LOADER_VARIABLE)
+            "compiler", target_compiler(fixture_target(self.repo)),
+            "library_binary").LOADER_VARIABLE)
+        inherited = "/operator/own/lib"
+        with mock.patch.dict(os.environ, {variable: inherited}):
+            _result, seen = self.execute(binary_meta=meta)
         paths = {Path(r["command"][0]).parent.name: r["env"][variable].split(os.pathsep)
                  for r in seen["oracle_runs"]}
         self.assertEqual(paths["default"][:1], [closure])
         self.assertEqual(paths["alt"][:2], [closure, own])
+        # The value the run would otherwise inherit stays behind them.
+        self.assertEqual(paths["alt"][-1], inherited)
 
     #: Case ids as long as the channel problem's (`chan_tc2_xpert_n032_dts100`), 30 of them.
     _LONG = tuple(f"chan_tc{i}_xpert_n032_dts100_ymir" for i in range(30))
@@ -1444,6 +1452,31 @@ class OracleExecuteTest(unittest.TestCase):
                 summary = self.summary(result)
                 for needle in (reason, remedy, "--resume"):
                     self.assertIn(needle, summary)
+                # Each cause carries its own remedy and not another's.
+                for other in {"fix the adapter", "remove the declaration"} - {remedy.lower()}:
+                    self.assertNotIn(other, summary.lower())
+
+    def test_a_build_that_takes_no_compared_case_is_skipped_and_the_next_still_runs(
+            self) -> None:
+        # `first` names a case the IR holds and no cross-target predicate compares.
+        # A second test reads c_gamma alone and applies no cross-target judgment.
+        ir = (_EXEC_IR + _EXEC_CROSS).replace(
+            "    - case_id: c_beta\n", "    - case_id: c_beta\n    - case_id: c_gamma\n"
+        ).replace("  predicates:\n", "    - test_id: t_gamma\n      expected_outcome: pass\n"
+                  "      target_cases: [c_gamma]\n      quantities: [own]\n  predicates:\n"
+        ) + ("    - {test_id: t_gamma, quantity: own, target_cases: [c_gamma], per_case: true,\n"
+             "       expr: final.v, op: le, value: 1.0e-12}\n")
+        text = _EXEC_ORACLE.replace(
+            "builds:\n", "builds:\n  - id: first\n    libraries: []\n    cases: [c_gamma]\n")
+        result, seen = self.execute(ir=ir, oracle_text=text,
+                                    cases=("c_alpha", "c_beta", "c_gamma"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([Path(r["command"][0]).parent.name for r in seen["oracle_runs"]],
+                         ["default", "alt"])
+        builds = self.read(oracle.CHECK_RECORD)["builds"]
+        self.assertEqual([(b["id"], b["cases"], b["command_id"]) for b in builds],
+                         [("first", [], None), ("default", ["c_alpha"], "O-default"),
+                          ("alt", ["c_beta"], "O-alt")])
 
     def test_an_unevaluable_comparison_is_fail_closed(self) -> None:
         # The oracle's capture of c_beta is unreadable: the comparison cannot evaluate it.
@@ -1483,6 +1516,10 @@ class OracleExecuteTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]], [["c_alpha"]])
         self.assertIn("continuation cases ['c_beta']", result.stderr)
+        # The remedy removes the declaration; it never asks for the spec's judgment to go,
+        # which also compares two declared targets.
+        self.assertIn("remove the declaration", self.summary(result))
+        self.assertNotIn("cross-target judgment", self.summary(result))
         self.assertIn(oracle.UNEVALUABLE, self.summary(result))
 
     def test_an_oracle_on_an_ir_with_no_cross_target_predicate_is_fail_closed(self) -> None:
