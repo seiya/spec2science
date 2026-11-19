@@ -56,11 +56,13 @@ from tools import capture_store
 #: `history_samples` counts history records, each holding the variables due at its step; and
 #: `required_evidence` looks for `restart_points` where the driver writes them.
 #: Since issue #691 a `state_history` / `restart_points` row of `required_evidence` carries the
-#: IR's declared `required`, where versions 4 to 6 reported `false`. The constant did not move,
+#: IR's declared `required`. A `state_history` row reported `false` from 1ab81fff (issue #589
+#: PR-1b, under version 4) and a `restart_points` row, which version 6 introduced, reported
+#: `false` throughout version 6 until issue #691. The constant did not move,
 #: on the issue #396 ground above: the value echoes the IR's declaration, which the judge holds
 #: in `io_contract.yaml`, rather than a fact about `raw/` (`present` and the per-case counts do
-#: not move). So version 6 names two windows, and a version-6 review made after the merge of
-#: issue #691 read the declared value.
+#: not move). So version 6 names two windows, told apart by the orchestration's
+#: `repo_revision`; `phase_04_validate.md` §4-2-1 says how.
 RAW_EXCERPT_POLICY_VERSION = 6
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.

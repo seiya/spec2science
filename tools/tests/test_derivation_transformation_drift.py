@@ -2626,7 +2626,10 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "quality_check_document": "same-phase",
     "binary_meta_document": "input",           # the build output hash
     "source_meta_document": "input",           # the generate output hash
-    "raw_evidence_excerpt_document": "derived",  # RAW_EXCERPT_POLICY_VERSION over raw/
+    # RAW_EXCERPT_POLICY_VERSION over raw/. Not strictly: issue #396 and issue #691 changed
+    # what the excerpt holds without moving the version (`tools/raw_evidence_excerpt.py`), so
+    # recomputing what a recorded judge saw needs the orchestration's `repo_revision` too.
+    "raw_evidence_excerpt_document": "derived",
     "phase_contract_document": "compile-docs",
     "ir_algorithm_example_document": "compile-docs",
     "ir_algorithm_2d_example_document": "compile-docs",
