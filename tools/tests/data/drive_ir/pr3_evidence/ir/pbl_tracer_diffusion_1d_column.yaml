@@ -799,6 +799,131 @@ case:
         (floor(c) - 1))
       rhoq_t: -999.0
       flx: -999.0
+  - case_id: l0_ke_at_ka
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 10
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 9
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: fz
+          k: 10
+          value: 1100.0
+        - var: cz
+          k: 10
+          value: 1200.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz: (inputs.initial.columns.cz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1200.0
+      fz: (inputs.initial.columns.fz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1100.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
   - case_id: l0_kh_all_positive
     inputs:
       grid:
@@ -1195,11 +1320,11 @@ case:
         (floor(c) - 1))
       rhoq_t: -999.0
       flx: -999.0
-  - case_id: l0_ks_below_one
+  - case_id: l0_ks_below_two
     inputs:
       grid:
         ka: 10
-        ks: 0
+        ks: 1
         ke: 9
       time:
         dt: 60.0
@@ -2311,7 +2436,7 @@ algorithm:
     - mass
     outputs:
     - guard_pass
-    description: Refuse (guard_pass = false, outputs undefined, return) when ks < 1, ke > ka, ke < ks + 2 or dt <= 0 (these first, so
+    description: Refuse (guard_pass = false, outputs undefined, return) when ks < 2, ke > ka, ke < ks + 2 or dt <= 0 (these first, so
       that no out-of-range cell is indexed); or dens(k) <= 0 at some k = ks..ke; or fz(k+1) <= fz(k) or cz(k+1) <= cz(k) for some k
       = ks..ke-1; or (f2h_above(k)*dens(k+1) + f2h_below(k)*dens(k))*kh(k) < 0 for some k = ks..ke-1; or dens(ks) + dt*mass*sflx_q/(fz(ks+1)
       - fz(ks)) <= 0. The program is never terminated.
@@ -2573,6 +2698,7 @@ io_contract:
     - l0_kh_gap
     - l0_three_cells
     - l0_range
+    - l0_ke_at_ka
     quantities:
     - conservation
     - guard_pass
@@ -2599,6 +2725,7 @@ io_contract:
     - l0_uniform_tracer
     - l0_three_cells
     - l0_range
+    - l0_ke_at_ka
     quantities:
     - guard_pass
     - pbl_top
@@ -2629,10 +2756,10 @@ io_contract:
     quantities:
     - guard_pass
     - halo_zero
-  - test_id: l0_ks_below_one_xfail
+  - test_id: l0_ks_below_two_xfail
     expected_outcome: xfail
     target_cases:
-    - l0_ks_below_one
+    - l0_ks_below_two
     quantities:
     - guard_pass
   - test_id: l0_ke_above_ka_xfail
@@ -3126,10 +3253,10 @@ io_contract:
     expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
     op: le
     value: 1.0e-12
-  - test_id: l0_ks_below_one_xfail
+  - test_id: l0_ks_below_two_xfail
     quantity: guard_pass
     target_cases:
-    - l0_ks_below_one
+    - l0_ks_below_two
     per_case: true
     expr: final.guard_pass
     op: eq
@@ -3213,7 +3340,7 @@ public_api:
     - l0_uniform_tracer_pass
     - l0_three_cell_closed_form_pass
     - l0_halo_zero_pass
-    - l0_ks_below_one_xfail
+    - l0_ks_below_two_xfail
     - l0_ke_above_ka_xfail
     - l0_too_few_cells_xfail
     - l0_dt_nonpositive_xfail
@@ -3372,10 +3499,11 @@ drive:
     - l0_dt_nonpositive
     - l0_fz_nonincreasing
     - l0_ke_above_ka
+    - l0_ke_at_ka
     - l0_kh_all_positive
     - l0_kh_gap
     - l0_kh_zero
-    - l0_ks_below_one
+    - l0_ks_below_two
     - l0_pbl_profile
     - l0_pbl_profile_passive
     - l0_range

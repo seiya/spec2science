@@ -10,7 +10,7 @@
 - `spec_ref.controlled_spec_path`: `spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published `operation` at `L0`: the conservation of the tracer by the tendency, the relation between the tendency and the face flux, the backward-Euler flux, the closed-form solution of the smallest system, the top of the solved layer that the scan of Controlled Spec §3 gives (a profile with `kh = 0` aloft, one with `kh > 0` at every face, one with a gap), the column with no diffusivity, the uniform tracer, the effect of `mass`, an index range other than `ks=2`, `ke=9` with its smallest valid extent, the halo contract, and the input guard of Controlled Spec §4.
+This suite verifies the published `operation` at `L0`: the conservation of the tracer by the tendency, the relation between the tendency and the face flux, the backward-Euler flux, the closed-form solution of the smallest system, the top of the solved layer that the scan of Controlled Spec §3 gives (a profile with `kh = 0` aloft, one with `kh > 0` at every face, one with a gap), the column with no diffusivity, the uniform tracer, the effect of `mass`, an index range other than `ks=2`, `ke=9` with its smallest valid extent, the last interior cell at the top of the array (`ke = ka`), the halo contract, and the input guard of Controlled Spec §4.
 
 The symmetry pairs of `docs/TESTS.md` §Symmetry pairs are not judged: a one-dimensional column has no axis exchange, and a reversal of the column is not a symmetry of the scheme (Controlled Spec §3, Not defined here). The CFL number is `N/A`: the `operation` is implicit and has no explicit transport. The comparison with theory is the conservation, the flux relations and the closed form of §6.
 
@@ -24,10 +24,10 @@ The block below is the suite's whole input. Every case has `ka=10`, and every ca
 - `expected` is the outcome §6 states.
 - The driver holds these states in every case: the rank-1 arrays of extent `ka` `dens`, `qtrc`, `kh`, `cz`, `fz`, `f2h_above`, `f2h_below`, `rhoq_t`, `flx`, and the scalar `guard_pass`, which is the logical result of the `operation` and takes no pre-call content. Every array dummy binds the state of its own name, `ka`, `ks`, `ke` the inputs `grid.ka`, `grid.ks`, `grid.ke`, `dt` the input `time.dt`, `sflx_q` the input `surface.sflx_q`, `mass` the input `tracer.mass`, and `guard_pass` the state `guard_pass`.
 - The pre-call content of a state is written over the coordinate `c` of §5, with `floor(c)` equal to $k-1$, and the mask of the cells $k=2..9$, `m = min(1, floor(c)) * min(1, 9 - floor(c))`, which does not read the case's `ks`, `ke`. A variable with no rule is its `fill` number. With $f$ its `fill` value, a variable with a `[a, b]` rule is the expression `(1 - m)*f + m*(a + b*(floor(c) - 1))`, and one with a `cells` rule is that list of ten numbers, the input `initial.columns.<var>.cells`. An override of cell `k` with value `v` turns the expression `E` of its variable into `E*(1 - p) + p*v`, with `p = max(0, 1 - abs(floor(c) - (k - 1)))`. Every multiplication by a mask is by exactly `0` or `1`, so each cell holds exactly the value of its own rule.
-- `grid`, on an index-range case, gives the `ks`, `ke` passed to the `operation`; the state is the one the rules above describe. So on `l0_three_cells` the cells `5..9`, and on `l0_range` the cells `2` and `9`, are halo cells of the call, which the masks of §5 read through the case's own `ks`, `ke`. `l0_range` holds `dens = -1` at the cells `2` and `9`, a value the input guard refuses at an interior cell and does not read at a halo cell.
-- The grid is stretched: the cells `2..8` are `50`, `70`, `90`, `120`, `150`, `180` and `220` `m` thick, each with its centre midway between its faces, and the centre of cell `9` is `135` `m` above its lower face. The weights `f2h_above`, `f2h_below` are not those of the geometry: the `operation` takes them as inputs. The interior `kh` of the block's rule is positive at the faces `2..6` and `0` at the faces `7..9`, a mixed layer under a layer with no turbulence, so its scan stops at `ke-2 = 7` and $k_{pbl}$ is `8`. The other profiles are each case's: `l0_kh_all_positive` is positive at every face, so $k_{pbl}$ is `ks+2 = 4`; `l0_kh_gap` is positive at the faces `5..7` and `0` at face `4`, so the scan stops at face `4` and $k_{pbl}$ is `6`; on `l0_range` the scan reads the faces `6`, `5`, `4`, all positive, so $k_{pbl}$ is `ks+2 = 5`; on `l0_three_cells` the scan reads no face and $k_{pbl}$ is `ke-1 = 3`.
+- `grid`, on an index-range case, gives the `ks`, `ke` passed to the `operation`; the state is the one the rules above describe. So on `l0_three_cells` the cells `5..9`, and on `l0_range` the cells `2` and `9`, are halo cells of the call, and on `l0_ke_at_ka` the cell `10` is an interior cell of it; the masks of §5 read each through the case's own `ks`, `ke`. `l0_ke_at_ka` sets `fz` and `cz` of cell `10` above those of cell `9`, as `l0_ke_above_ka` does, so that its column is valid with `ke = ka`. `l0_range` holds `dens = -1` at the cells `2` and `9`, a value the input guard refuses at an interior cell and does not read at a halo cell.
+- The grid is stretched: the cells `2..8` are `50`, `70`, `90`, `120`, `150`, `180` and `220` `m` thick, each with its centre midway between its faces, and the centre of cell `9` is `135` `m` above its lower face. The weights `f2h_above`, `f2h_below` are not those of the geometry: the `operation` takes them as inputs. The interior `kh` of the block's rule is positive at the faces `2..6` and `0` at the faces `7..9`, a mixed layer under a layer with no turbulence, so its scan stops at `ke-2 = 7` and $k_{pbl}$ is `8`. The other profiles are each case's: `l0_kh_all_positive` is positive at every face, so $k_{pbl}$ is `ks+2 = 4`; `l0_kh_gap` is positive at the faces `5..7` and `0` at face `4`, so the scan stops at face `4` and $k_{pbl}$ is `6`; on `l0_range` the scan reads the faces `6`, `5`, `4`, all positive, so $k_{pbl}$ is `ks+2 = 5`; on `l0_ke_at_ka` the block's rule holds, the scan stops at its first face `ke-2 = 8`, where `kh` is `0`, and $k_{pbl}$ is `ke-1 = 9`; on `l0_three_cells` the scan reads no face and $k_{pbl}$ is `ke-1 = 3`.
 - `l0_pbl_profile_passive` has `sflx_q = -1` with `mass = 0`, so $\rho^*_{ks}$ is `dens(ks) = 1.15` while `dens(ks) + dt*sflx_q/`$\Delta z_{ks}$ is $1.15-60\cdot1/50<0$: a valid input that a guard reading $\rho^*_{ks}$ without `mass`, or refusing a negative `sflx_q`, refuses.
-- `l0_surface_density_nonpositive` has `sflx_q = -1` with `mass = 1`, so $\rho^*_{ks}=1.15-60\cdot1/50<0$. `l0_dens_nonpositive` and `l0_cz_nonincreasing` hold the invalid value at the last interior cell `ke`, and `l0_diffusivity_negative` at the last interior face `ke-1`, cells the solve never uses; `l0_fz_nonincreasing` holds it at the face `ke`, which the solve reads as $\Delta z_{k_{pbl}}$, so a kernel without the guard divides by zero there. `l0_ke_above_ka` sets `fz` and `cz` of cell `10` above those of cell `9`, so that within the column no clause but `ke > ka` holds.
+- `l0_surface_density_nonpositive` has `sflx_q = -1` with `mass = 1`, so $\rho^*_{ks}=1.15-60\cdot1/50<0$. `l0_dens_nonpositive` and `l0_cz_nonincreasing` hold the invalid value at the last interior cell `ke`, and `l0_diffusivity_negative` at the last interior face `ke-1`, cells the solve never uses; `l0_fz_nonincreasing` holds it at the face `ke`, which the solve reads as $\Delta z_{k_{pbl}}$, so a kernel without the guard divides by zero there. `l0_ke_above_ka` sets `fz` and `cz` of cell `10` above those of cell `9`, so that within the column no clause but `ke > ka` holds. `l0_ks_below_two` passes `ks = 1`, the largest value the clause `ks < 2` refuses (Controlled Spec §1: the source writes its flux at `ks-1`), on a column in which the cell `1`, then interior, meets no other clause.
 
 ```yaml
 grid: {ka: 10, ks: 2, ke: 9}
@@ -42,7 +42,8 @@ cases:
 - {case_id: l0_uniform_tracer, expected: pass, dt: 60.0, sflx_q: 0.0, mass: 1.0, ke_pbl: 8, columns: {qtrc: [0.01, 0.0]}}
 - {case_id: l0_three_cells, expected: pass, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, ke_pbl: 3, grid: {ks: 2, ke: 4}}
 - {case_id: l0_range, expected: pass, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, ke_pbl: 5, grid: {ks: 3, ke: 8}, overrides: [{var: dens, k: 2, value: -1.0}, {var: dens, k: 9, value: -1.0}]}
-- {case_id: l0_ks_below_one, expected: xfail, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, grid: {ks: 0, ke: 9}}
+- {case_id: l0_ke_at_ka, expected: pass, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, ke_pbl: 9, grid: {ks: 2, ke: 10}, overrides: [{var: fz, k: 10, value: 1100.0}, {var: cz, k: 10, value: 1200.0}]}
+- {case_id: l0_ks_below_two, expected: xfail, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, grid: {ks: 1, ke: 9}}
 - {case_id: l0_ke_above_ka, expected: xfail, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, grid: {ks: 2, ke: 11}, overrides: [{var: fz, k: 10, value: 1100.0}, {var: cz, k: 10, value: 1200.0}]}
 - {case_id: l0_too_few_cells, expected: xfail, dt: 60.0, sflx_q: 2.0e-4, mass: 1.0, grid: {ks: 2, ke: 3}}
 - {case_id: l0_dt_nonpositive, expected: xfail, dt: 0.0, sflx_q: 2.0e-4, mass: 1.0}
@@ -88,19 +89,19 @@ Every `pass` test also requires `guard_pass == 1` on each of its cases.
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`
   - `expected_outcome`: `pass`
   - `quantities`: `conservation`, `guard_pass`
-  - `judgment`: `guard_pass == 1`, and, on `l0_pbl_profile`, `l0_pbl_profile_passive`, `l0_kh_all_positive`, `l0_kh_gap`, `l0_three_cells` and `l0_range`, the tendency carries no net source, the surface flux included: `abs(sum(pairs*final.rhoq_t*dz)) / sum(pairs*abs(final.rhoq_t)*dz)` is `<= 1e-12` (`conservation`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
+  - `judgment`: `guard_pass == 1`, and, on `l0_pbl_profile`, `l0_pbl_profile_passive`, `l0_kh_all_positive`, `l0_kh_gap`, `l0_three_cells`, `l0_range` and `l0_ke_at_ka`, the tendency carries no net source, the surface flux included: `abs(sum(pairs*final.rhoq_t*dz)) / sum(pairs*abs(final.rhoq_t)*dz)` is `<= 1e-12` (`conservation`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
 - `test_id`: `l0_flux_divergence_pass`
   - `level`: `L0`
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`
   - `expected_outcome`: `pass`
   - `quantities`: `flux_divergence`, `guard_pass`
-  - `judgment`: `guard_pass == 1`, and, on `l0_pbl_profile`, `l0_pbl_profile_passive`, `l0_kh_all_positive`, `l0_kh_gap`, `l0_three_cells` and `l0_range`, the tendency at each cell `ks..ke-1` is the divergence of the face flux, with no surface flux in it: `maxabs(pairs*(final.rhoq_t*dz + final.flx - roll(final.flx, 1))) / maxabs(interior*final.flx)` is `<= 1e-12` (`flux_divergence`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
+  - `judgment`: `guard_pass == 1`, and, on `l0_pbl_profile`, `l0_pbl_profile_passive`, `l0_kh_all_positive`, `l0_kh_gap`, `l0_three_cells`, `l0_range` and `l0_ke_at_ka`, the tendency at each cell `ks..ke-1` is the divergence of the face flux, with no surface flux in it: `maxabs(pairs*(final.rhoq_t*dz + final.flx - roll(final.flx, 1))) / maxabs(interior*final.flx)` is `<= 1e-12` (`flux_divergence`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
 - `test_id`: `l0_implicit_flux_pass`
   - `level`: `L0`
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`
   - `expected_outcome`: `pass`
   - `quantities`: `guard_pass`, `implicit_flux`
-  - `judgment`: `guard_pass == 1`, and, on `l0_pbl_profile`, `l0_pbl_profile_passive`, `l0_kh_all_positive`, `l0_kh_gap`, `l0_three_cells` and `l0_range`, the flux at each solved face is the backward-Euler flux over the new mixing ratio `x` that `rhoq_t` determines, with `mass` in $\rho^*_{ks}$: `maxabs(faces*(final.flx*dzc + K*(roll(x, -1) - x))) / maxabs(faces*final.flx*dzc)` is `<= 1e-12` (`implicit_flux`). A flux over the old mixing ratio, or a $\rho^*_{ks}$ without `mass`, does not meet it. The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
+  - `judgment`: `guard_pass == 1`, and, on `l0_pbl_profile`, `l0_pbl_profile_passive`, `l0_kh_all_positive`, `l0_kh_gap`, `l0_three_cells`, `l0_range` and `l0_ke_at_ka`, the flux at each solved face is the backward-Euler flux over the new mixing ratio `x` that `rhoq_t` determines, with `mass` in $\rho^*_{ks}$: `maxabs(faces*(final.flx*dzc + K*(roll(x, -1) - x))) / maxabs(faces*final.flx*dzc)` is `<= 1e-12` (`implicit_flux`). A flux over the old mixing ratio, or a $\rho^*_{ks}$ without `mass`, does not meet it. The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
 - `test_id`: `l0_pbl_top_pass`
   - `level`: `L0`
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`
@@ -131,14 +132,14 @@ Every `pass` test also requires `guard_pass == 1` on each of its cases.
   - `expected_outcome`: `pass`
   - `quantities`: `guard_pass`, `halo_zero`
   - `judgment`: `guard_pass == 1`, and, on every `pass` case, `maxabs(halo*final.rhoq_t)` and `maxabs(halo*final.flx)` are `== 0` (together `halo_zero`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `rhoq_t` and `flx` is `<= 1e-12`.
-- `test_id`: `l0_ks_below_one_xfail`
+- `test_id`: `l0_ks_below_two_xfail`
   - `level`: `L0`
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`
   - `expected_outcome`: `xfail`
-  - `case`: `l0_ks_below_one`
-  - `xfail_condition`: `ks < 1`
+  - `case`: `l0_ks_below_two`
+  - `xfail_condition`: `ks < 2`
   - `quantities`: `guard_pass`
-  - `judgment`: on `l0_ks_below_one`, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The outputs are not defined on a refused call (Controlled Spec §4), so the flag alone is judged. The cross-target judgment is not applied.
+  - `judgment`: on `l0_ks_below_two` (`ks = 1`), the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The outputs are not defined on a refused call (Controlled Spec §4), so the flag alone is judged. The cross-target judgment is not applied.
 - `test_id`: `l0_ke_above_ka_xfail`
   - `level`: `L0`
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`

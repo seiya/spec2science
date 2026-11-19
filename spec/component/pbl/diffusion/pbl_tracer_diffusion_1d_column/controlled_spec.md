@@ -20,7 +20,7 @@ Differences from that source, each recorded here:
 - The time step: the source's `DDT` is `real(DP)` and is converted to the working precision, which in double precision is the same value; here `dt` is `real(dp)`.
 - The history output: the flux, which the source writes to the history output as `ZFLX_<TRACER_NAME>_BL` and to no argument, is the output argument `flx` here. The argument `TRACER_NAME`, which only names that output, is not published.
 - The cells the source leaves undefined: the source writes `RHOQ_t` at `KS..KE` only, and its flux at `KS-1..KE` only, leaving every other cell undefined. Here `rhoq_t` is `0` at every halo cell and `flx` is `0` at every cell outside `ks..kpbl-1` (§3), which agrees with the source at every cell the source writes as `0`.
-- The refusal of invalid input (§4): the source has no check on the index range, `dt`, the density, the heights or the diffusivity. With `KE = KS+1` the source's solver reads an element below the start of its own work array, so its result is not defined there; this `component` refuses `ke < ks+2`.
+- The refusal of invalid input (§4): the source has no check on the index range, `dt`, the density, the heights or the diffusivity. With `KE = KS+1` the source's solver reads an element below the start of its own work array, so its result is not defined there; this `component` refuses `ke < ks+2`. With `KS = 1` the source writes its flux at `KS-1`, the index `0`, below the start of its own flux array `flx(KA,IA,JA)`, so its result is not defined there either; this `component` refuses `ks < 2`, so the cell `ks-1`, whose flux is `0` (§3), is always a halo cell.
 - The path compiled with `_OPENACC`, which is not specified here: it forms the main diagonal by another expression, `b(k) = -a(k) + dt*RHOKh(k-1)*rFDZ(k-1)*rRC(k) + 1`, which is the value $1-a_k-c_k$ of §3 to the last bit, and solves the system in place by the partition method with 16 partitions (`matrix_solver_tridiagonal_pm.h`) instead of the Thomas algorithm. The two paths differ in rounding only.
 - Single precision, which is not specified or measured here.
 
@@ -75,7 +75,7 @@ where $\mathtt{flx}(k_{pbl})=0$: at the cell `ks` the surface flux that enters $
 **Not defined here.** The CFL number is not defined: the `operation` is implicit and has no explicit transport. A column admits no spatial symmetry of the scheme: the surface flux enters the lowest interior cell only, and the scan for $k_{pbl}$ runs downward from `ke-2`.
 
 ## 4. Failure conditions and constraints
-**`tendency`** treats as invalid input: `ks<1`, `ke>ka`, `ke<ks+2`, `dt<=0`; `dens<=0` at an interior cell; `fz(k+1)<=fz(k)` or `cz(k+1)<=cz(k)` for some $k=ks..ke-1$; $\left(\mathtt{f2h\_above}(k)\,\mathtt{dens}(k+1)+\mathtt{f2h\_below}(k)\,\mathtt{dens}(k)\right)\mathtt{kh}(k)<0$ for some $k=ks..ke-1$; and $\mathtt{dens}(ks)+\mathtt{dt}\,\mathtt{mass}\,\mathtt{sflx\_q}/(\mathtt{fz}(ks+1)-\mathtt{fz}(ks))\le0$, the density $\rho^*_{ks}$ of §3.
+**`tendency`** treats as invalid input: `ks<2`, `ke>ka`, `ke<ks+2`, `dt<=0`; `dens<=0` at an interior cell; `fz(k+1)<=fz(k)` or `cz(k+1)<=cz(k)` for some $k=ks..ke-1$; $\left(\mathtt{f2h\_above}(k)\,\mathtt{dens}(k+1)+\mathtt{f2h\_below}(k)\,\mathtt{dens}(k)\right)\mathtt{kh}(k)<0$ for some $k=ks..ke-1$; and $\mathtt{dens}(ks)+\mathtt{dt}\,\mathtt{mass}\,\mathtt{sflx\_q}/(\mathtt{fz}(ks+1)-\mathtt{fz}(ks))\le0$, the density $\rho^*_{ks}$ of §3.
 
 The index clauses are decided before any array is read, so a refused index range reads no cell outside `1..ka`.
 
