@@ -468,17 +468,20 @@ class RequiredEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _RawDir(self)
 
-    def test_a_stride_of_zero_is_no_missing_history(self) -> None:
-        # issue #644 P4b: nor missing restart points (a stride of 0 commits none). Kills:
-        # `restart_points` dropped from `_OPTIONAL_GROUP_ARTIFACTS`.
+    def test_required_is_the_declared_value_for_every_artifact(self) -> None:
+        # issue #691: a `state_history` / `restart_points` row carries the IR's declared
+        # `required` (`true` when the key is absent), also on a run with no record of the
+        # group; whether a case owes records is given by its strides, which the judge reads
+        # in the tests document. Kills: the override (`and artifact not in {...}`) restored
+        # for either artifact.
         contract = {"raw_requirements": {"required_evidence": [
             {"artifact": "state_history"}, {"artifact": "step_series"},
             {"artifact": "restart_points", "required": True}]}}
         rows = {r["artifact"]: r for r in self._rows(contract)}
-        self.assertFalse(rows["state_history"]["required"])
+        self.assertTrue(rows["state_history"]["required"])
         self.assertFalse(rows["state_history"]["present"])
         self.assertTrue(rows["step_series"]["required"])
-        self.assertFalse(rows["restart_points"]["required"])
+        self.assertTrue(rows["restart_points"]["required"])
         self.assertFalse(rows["restart_points"]["present"])
 
     def _rows(self, contract=None) -> list[dict]:
@@ -544,9 +547,12 @@ class RequiredEvidenceTest(unittest.TestCase):
                                               "step_series": False, "restart_points": False})
 
     def test_required_false_is_carried(self):
+        # Each canonical artifact, so a row hard-wired to `True` for a group is red.
+        artifacts = ("state_snapshots", "state_history", "step_series", "restart_points")
         contract = _contract(raw_requirements={"required_evidence": [
-            {"artifact": "state_snapshots", "required": False}]})
-        self.assertFalse(self._rows(contract)[0]["required"])
+            {"artifact": a, "required": False} for a in artifacts]})
+        rows = {r["artifact"]: r["required"] for r in self._rows(contract)}
+        self.assertEqual(rows, dict.fromkeys(artifacts, False))
 
 
 class ExcerptIsBoundedTest(unittest.TestCase):
@@ -629,7 +635,9 @@ class ExcerptIsBoundedTest(unittest.TestCase):
         # since issue #589: `source` went, and each case carries `history_samples` and `series`.
         # 5 since issue #644 P4: every case has a `series`, whose `t` is one entry per row. 6
         # since issue #644 P4b: each case carries `restart_points`, and `required_evidence`
-        # looks for them where the driver writes them.
+        # looks for them where the driver writes them. Not bumped by issue #691: the
+        # `state_history` / `restart_points` rows' `required` echoes the IR's declaration (the
+        # issue #396 ground), so version 6 names two windows.
         self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 6)
 
 
