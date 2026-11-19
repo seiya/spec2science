@@ -672,7 +672,7 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
                 f"{distribution!r}), but requirements.txt does not install it")
 
-    #: Modules the conductor imports on the verdict path of EVERY run (`_author_execute_verdict`
+    #: Modules the conductor imports on the verdict path of EVERY run (`_evaluate_execute_verdict`
     #: imports them at the first Validate.execute), read as the third-party top-level imports of
     #: each file. A distribution they need that the launch probe does not refuse a host for fails
     #: a billed run one phase after the probe said it could start.

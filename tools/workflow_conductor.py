@@ -444,6 +444,23 @@ def _execute_failure_excerpt(text: str) -> str:
 _VERDICT_FAIL_MARKER = "[execute fail: verdict]"
 
 
+def _oracle_disagreement_report(check: dict[str, Any]) -> str:
+    """The `[execute fail: oracle]` block of a run that disagrees with its oracle (issue #680):
+    each failed comparison `_shape_state_agreement` kept (at most five), and the remedy. The
+    category is terminal, so no leaf is shown it; the operator is."""
+    from tools import oracle as oracle_mod
+    lines = [("[execute fail: oracle] the run's own tests pass and its state disagrees with "
+              "the oracle's under the IR's cross-target predicates:")]
+    for f in (check.get("comparison") or {}).get("failures") or []:
+        detail = (f"value={f.get('value')!r} rhs={f.get('rhs')!r}" if "value" in f
+                  else f"reason={f.get('reason')!r} error={f.get('error')!r}")
+        lines.append(f"  case {f.get('case')!r} {f.get('quantity')!r}: {detail}")
+    lines.append(f"{oracle_mod.DISAGREEMENT}: see {oracle_mod.CHECK_RECORD}; the adapter, the "
+                 f"spec or the generated code is wrong (phase_04_validate.md §4-1), and the "
+                 f"run ends here")
+    return "\n".join(lines)
+
+
 def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
     """The `[execute fail: verdict]` block for a `self_verdict=fail` run.
 
@@ -586,9 +603,16 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # invalid launch configuration), reaches this class too, and the remedy names
 # `--rederive generate` for it. `Generate.gate`'s presence floor does not stop either before the
 # run — it asks only that a kernel exist; verify G6 is the one rule there, for the first. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
+#
+# `oracle_disagreement` (issue #680, operator decision O5) is a run whose own tests pass and
+# whose state disagrees with its node's oracle. The host cannot tell which side is wrong — the
+# adapter, the spec or the generated code — and no leaf is shown the oracle, so a warm repair has
+# nothing to converge on, and two of them would reopen Compile through C2 over a comparison no
+# regeneration of the IR addresses. Nothing is revoked; the operator triages and resumes
+# (`docs/workflow/phases/phase_04_validate.md` §4-1).
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"static_frontend_unavailable",
-     "host_authored_artifact_violation", "device_kernels_absent"}
+     "host_authored_artifact_violation", "device_kernels_absent", "oracle_disagreement"}
 )
 
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
@@ -1581,6 +1605,7 @@ def build_launch_request(
     device_trace: bool = False,
     checked_build: bool = False,
     oracle_builds: tuple[str, ...] = (),
+    oracle_check: bool = False,
     repair: dict[str, str] | None = None,
     resolved_dependencies: tuple[dict[str, str], ...] = (),
     dependency_surface: tuple[dict[str, Any], ...] = (),
@@ -1614,6 +1639,9 @@ def build_launch_request(
     delivers the bounds-checked binary at `bin_checked/<exe>` too (issue #589 PR-0).
     oracle_builds are the ids of the node's oracle builds (build only, issue #680): Build
     delivers `bin_oracle/<id>/<exe>` for each.
+    oracle_check says the node declares an oracle for the target's language (validate.execute
+    only, issue #680), so execute delivers `oracle_check.json`. A record, like
+    `quality_check.json`: `phase_required_outputs` does not list it.
     """
     spec = refs.spec_path
     role = child_agent_role(step)
@@ -1777,6 +1805,11 @@ def build_launch_request(
             # trace, and execute promotes the trace's per-kernel summary (issue #307).
             if device_trace:
                 outs.append(f"{rundir}/{KERNEL_TRACE_ARTIFACT}")
+            # A node that declares an oracle (issue #680): the record of the comparison, written
+            # on agreement and on disagreement.
+            if oracle_check:
+                from tools.oracle import CHECK_RECORD
+                outs.append(f"{rundir}/{CHECK_RECORD}")
             outs += [
                 f"{rundir}/stdout.log",
                 f"{rundir}/stderr.log",
@@ -6058,9 +6091,9 @@ class Conductor:
         """The oracle this node declares for the target's language (issue #680,
         `tools/oracle.py`), or None. A malformed declaration raises `OracleDeclarationError`:
         the driver refused it before any phase (`oracle_declaration_invalid`), so only an
-        `oracle.yaml` edited during the run meets it here — inside the Build body a transport
-        fail_closed, and out of `run_phase`'s two deliverable lists an exception that ends the
-        conductor."""
+        `oracle.yaml` edited during the run meets it here — inside the Build and execute bodies
+        a transport fail_closed, and out of the deliverable lists (`run_phase`'s step result and
+        `run_substep`'s launch) an exception that ends the conductor."""
         from tools import oracle as oracle_mod
         return oracle_mod.load(self.repo_root, refs.spec_path,
                                str(self.target.toolchain["language"]))
@@ -12787,7 +12820,7 @@ class Conductor:
             doc = evaluate_verdict(io_contract.get("tests"),
                                    evaluate_primary_predicates(
                                        ir, shape_dir, output_format=output_format))
-        except Exception:  # noqa: BLE001 - as `_author_execute_verdict`: a malformed IR is a named
+        except Exception:  # noqa: BLE001 - as `_evaluate_execute_verdict`: a malformed IR is a named
             # outcome, never a transport fail_closed (`target_cases: 5` raises TypeError).
             return None
         if not doc["per_test"]:
@@ -13141,7 +13174,9 @@ class Conductor:
         # external invariant for two correctness-critical routing decisions.
         # The device trace's summary (issue #307) is cleared for the same reason: the gate that
         # reads it must never read a previous attempt's.
-        for _stale in ("verdict.json", "trial_meta.json", KERNEL_TRACE_ARTIFACT):
+        from tools import oracle as oracle_mod
+        for _stale in ("verdict.json", "trial_meta.json", KERNEL_TRACE_ARTIFACT,
+                       oracle_mod.CHECK_RECORD):
             _prev = node_dir / _stale
             if _prev.exists():
                 _prev.unlink()
@@ -13991,7 +14026,29 @@ class Conductor:
         # classify_failure reads verdict.json#failure_class to route it. An all-clean verdict
         # (self_verdict ∈ {pass, xfail}) leaves the execute substep passing; the judge then
         # authors semantic_review.json only.
-        verdict_doc = self._author_execute_verdict(refs, ir)
+        verdict_doc = self._evaluate_execute_verdict(refs, ir)
+        # 6. The oracle (issue #680, `docs/workflow/phases/phase_04_validate.md` §4-1): on a run
+        # whose own tests pass, before the verdict is written, so a disagreement leaves none and
+        # `classify_failure` reads its category off trial_meta.json. A run that fails its own
+        # tests is routed by them, and the oracle does not run.
+        oracle = (self._oracle(refs) if verdict_doc.get("self_verdict") in ("pass", "xfail")
+                  else None)
+        if oracle is not None:
+            check = self._compare_with_oracle(
+                refs, child_arid, ir, oracle, reference_dir=qc_tmp, bin_dir=bin_dir, exe=exe,
+                library_dirs=library_dirs, ir_spec=ir_spec, cmd_log=cmd_log,
+                run_raw_dirs=run_raw_dirs)
+            self._write_run_node_meta(refs, oracle_mod.CHECK_RECORD, check)
+            if check["status"] == "disagree":
+                block = _oracle_disagreement_report(check)
+                trial_meta["status"] = "fail"
+                trial_meta["failure_category"] = oracle_mod.DISAGREEMENT
+                trial_meta["failure_excerpt"] = _execute_failure_excerpt(block)
+                (node_dir / "trial_meta.json").write_text(
+                    json.dumps(trial_meta, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8")
+                return {"returncode": 0, "stdout": stdout, "stderr": stderr + "\n" + block}
+        self._write_run_node_meta(refs, "verdict.json", verdict_doc)
         if verdict_doc.get("self_verdict") == "fail":
             # Persist the failing predicate(s) as `failure_excerpt`, symmetric with the structural
             # branch above: the dev rollback revokes Generate's artifact before terminalizing and
@@ -14011,12 +14068,128 @@ class Conductor:
             stderr += "\n" + block
         return {"returncode": 0, "stdout": stdout, "stderr": stderr}
 
-    def _author_execute_verdict(self, refs: NodeRefs, ir: dict[str, Any]) -> dict[str, Any]:
-        """Author verdict.json from ``io_contract.tests`` and the host-evaluated
+    def _compare_with_oracle(self, refs: NodeRefs, child_arid: str, ir: dict[str, Any],
+                             oracle: Any, *, reference_dir: Path, bin_dir: Path, exe: str,
+                             library_dirs: Sequence[str], ir_spec: Path, cmd_log: Path,
+                             run_raw_dirs: Sequence[tuple[str, ...]]) -> dict[str, Any]:
+        """Run the node's oracle (issue #680) on the cases the IR's cross-target predicates
+        compare, and compare its captures with the serial reference's under those predicates;
+        return the `oracle_check.json` record, whose `status` is `agree` or `disagree`.
+
+        Each build runs its cases (`oracle.case_plan`) as the serial reference runs: bare, one
+        process, one thread, the binary `Build` left at `bin_oracle/<build_id>/<exe>`, with
+        the loader path over the closure's library directories and then this build's. Its
+        captures are moved into one directory, which `_shape_state_agreement` compares with
+        the reference unchanged and unrestricted: a compared case with no oracle capture (a
+        continuation case, which the oracle runs no second pass for) is `unevaluable`, never
+        `agree`. Raises — a transport `fail_closed`, never a Generate retry, since no
+        re-authored model changes it — on a declaration whose case plan is refused
+        (`oracle_declaration_invalid`), on an oracle run that does not exit 0
+        (`oracle_run_failed`), and on a comparison that is `unevaluable` or `not_applicable`
+        (`oracle_unevaluable`: the node declares an oracle and its IR compares nothing). Each
+        message ends with its reason and remedy: the run's failure summary keeps the tail."""
+        from tools import external_library as xl
+        from tools import oracle as oracle_mod
+        from tools.build_runtime import tool_run_program
+        from tools.host_execution import serial_execution_env
+        from tools.primary_evidence import continuation_cases
+
+        target = self.target
+        declaration = self._rel(oracle_mod.oracle_dir(self.repo_root, refs.spec_path)
+                                / oracle_mod.DECLARATION_FILE)
+        try:
+            plan = oracle_mod.case_plan(ir, oracle)
+        except oracle_mod.OracleDeclarationError as exc:
+            raise RuntimeError(
+                f"{oracle_mod.DECLARATION_INVALID}: the oracle of {refs.node_key}: {exc}. Fix "
+                f"{declaration}, then --resume") from None
+        built = {b.get("id"): b for b in
+                 ((_read_json(bin_dir.parent / "binary_meta.json") or {}).get("oracle")
+                  or {}).get("builds") or [] if isinstance(b, dict)}
+        conts = continuation_cases(ir)
+        store = capture_store.store(target.output_format)
+        root = self.repo_root / "workspace" / "tmp" / child_arid / "oracle_run"
+        # Only this comparison's captures: a capture an earlier body left under the same id
+        # would be compared as the oracle's, or refuse the merge.
+        if root.exists():
+            shutil.rmtree(root)
+        merged = root / "merged"
+        merged.mkdir(parents=True)
+        runs: list[dict[str, Any]] = []
+        for build in oracle.builds:
+            cases = plan[build.build_id]
+            # The oracle runs no second pass: a continuation case is left without a capture,
+            # which the comparison below answers `unevaluable`.
+            first = [c for c in cases if c not in conts]
+            record = built.get(build.build_id) or {}
+            entry: dict[str, Any] = {"id": build.build_id,
+                                     "binary_ref": record.get("binary_ref"),
+                                     "cases": cases, "command_id": None}
+            runs.append(entry)
+            if not first:
+                continue
+            run_dir = root / build.build_id
+            for raw_dir in run_raw_dirs:
+                run_dir.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
+            own_dirs = [d for lib in record.get("libraries") or [] if isinstance(lib, dict)
+                        for d in lib.get("lib_dirs") or []]
+            dirs = list(dict.fromkeys([*library_dirs, *own_dirs]))
+            binary = (bin_dir.parent / "bin_oracle" / build.build_id / exe).resolve()
+            res = tool_run_program({
+                "project_dir": str(run_dir),
+                "command": [str(binary), "--cases", str(ir_spec), *first],
+                "env": {**serial_execution_env(target.parallel_backend, target.block_size),
+                        **xl.loader_env(target, dirs, os.environ)},
+                "command_log_path": str(cmd_log),
+                "capture_limit": _FULL_CAPTURE_LIMIT,
+                "orchestration_id": self.orchestration_id,
+                "agent_run_id": child_arid,
+            })
+            entry["command_id"] = res.get("command_id")
+            if not res.get("ok"):
+                outcome = (f"did not finish ({res.get('error')})"
+                           if res.get("return_code") is None
+                           else f"exited {res.get('return_code')}")
+                tail = "\n".join((res.get("stderr") or "").splitlines()[-50:])
+                raise RuntimeError(
+                    f"\n{tail}\n{oracle_mod.RUN_FAILED}: oracle build {build.build_id!r} of "
+                    f"{refs.node_key} {outcome} on cases {first}. The run's own tests passed: "
+                    f"fix the adapter or {declaration}, then --resume")
+            for case_id in first:
+                moved = store.move_case(capture_store.snapshot_dir(run_dir),
+                                        capture_store.snapshot_dir(merged), case_id)
+                if moved is not None:
+                    raise RuntimeError(
+                        f"{oracle_mod.UNEVALUABLE}: the oracle's captures of case {case_id!r} "
+                        f"of {refs.node_key} cannot be merged: {moved}")
+        agreement = self._shape_state_agreement(ir, reference_dir, "oracle", merged,
+                                                target.output_format)
+        status = agreement.get("status")
+        if status not in ("agree", "disagree"):
+            why = (agreement.get("error") if status == "unevaluable" else
+                   "its IR holds no cross-target predicate, so nothing would be compared")
+            skipped = sorted(c for cs in plan.values() for c in cs if c in conts)
+            raise RuntimeError(
+                f"{oracle_mod.UNEVALUABLE}: {refs.node_key} declares an oracle "
+                f"({declaration}) and the comparison with it is {status}: {why}"
+                + (f"; the oracle runs no second pass, and the continuation cases {skipped} "
+                   f"have no oracle capture" if skipped else "")
+                + ". Fix the declaration or the spec (a node is given an oracle only where a "
+                "cross-target predicate compares it), then --resume")
+        return {"status": status, "node_key": refs.node_key, "run_id": refs.run_id,
+                "declaration_sha256": oracle.declaration_sha256,
+                "source_sha256": oracle.source_sha256, "origin": oracle.origin,
+                "command_log_ref": self._rel(cmd_log), "builds": runs,
+                "comparison": {k: agreement.get(k)
+                               for k in ("records_count", "failures", "worst")}}
+
+    def _evaluate_execute_verdict(self, refs: NodeRefs, ir: dict[str, Any]) -> dict[str, Any]:
+        """The verdict.json document from ``io_contract.tests`` and the host-evaluated
         ``io_contract.predicates`` over the promoted captures under the run node directory
         (issue #582; `tools/primary_evidence.py` reads each case's initial and final
-        captures, which `_promote_run_evidence` has already placed there). Returns the authored doc. A missing / malformed test or predicate
-        (which the Compile-stage gate forbids) is authored as a ``structural_violation``
+        captures, which `_promote_run_evidence` has already placed there); it writes nothing.
+        A missing / malformed test or predicate (which the Compile-stage gate forbids) is
+        evaluated as a ``structural_violation``
         verdict; classify_failure's execute branch then routes it to the escalate diagnostician
         (prod) / fail_closed (dev) — the diagnostician can reopen Compile for the IR defect —
         rather than crashing execute."""
@@ -14062,7 +14235,6 @@ class Conductor:
         ir_hash = inputs.get("ir") if isinstance(inputs, dict) else None
         if isinstance(ir_hash, str) and ir_hash:
             doc["ir_hash"] = ir_hash
-        self._write_run_node_meta(refs, "verdict.json", doc)
         return doc
 
     def run_substep(self, refs: NodeRefs, phase: str, substep: str | None,
@@ -14143,6 +14315,8 @@ class Conductor:
             device_trace=(phase == "validate" and self._traces_execution()),
             checked_build=(phase == "build" and self._builds_checked()),
             oracle_builds=(self._oracle_build_ids(refs) if phase == "build" else ()),
+            oracle_check=(phase == "validate" and substep == "execute"
+                          and self._oracle(refs) is not None),
             repair=repair,
             resolved_dependencies=resolved_dependencies,
             dependency_surface=dependency_surface,
@@ -16181,7 +16355,7 @@ class Conductor:
                         self._validate_execute_fail_count[refs.node_key] = 0
                     reason = f"{VALIDATE_EXECUTE_REASON_PREFIX}{fclass}"
                     # A `predicate_error` verdict is a missing/malformed `io_contract.tests` / `predicates`
-                    # (_author_execute_verdict's guard), i.e. a defect in the already-certified IR
+                    # (_evaluate_execute_verdict's guard), i.e. a defect in the already-certified IR
                     # that Generate cannot author. Attribute it to the IR with the same `_ir`
                     # suffix the C2 backstop and the host-rendered-runner re-attribution use: the
                     # diagnostician gets the attribution in prod, and in dev the suffix is what
