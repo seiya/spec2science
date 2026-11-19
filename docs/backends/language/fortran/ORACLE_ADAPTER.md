@@ -16,17 +16,17 @@ the build's libraries added (`docs/workflow/phases/phase_03_build.md`). So the a
 - **one free-form file** under the target's `toolchain.standard` (`f2008` on the declared
   Fortran targets): a non-standard construct in it fails the oracle build, not a gate;
 - **one module named `<spec_id>_model`**, the module the driver `use`s;
-- free to `use` any module its build's libraries declare (`spec/libraries/<library_id>.yaml`
-  `modules:`), and those alone: the include directories handed to the oracle build are the
-  closure's and its build's.
+- free to `use` the modules its build's libraries declare (`spec/libraries/<library_id>.yaml`
+  `modules:`), whose module files the startup verdict and the build key resolve and hash; the
+  include directories handed to the oracle build are the closure's and its build's.
 
 ## 2. The surface it publishes
 
 The module publishes every procedure of the node's `controlled_spec.md` §5.1 under the same name,
 with the same arguments in the same order and the same type, kind, rank and `intent` each: the
 driver is rendered from the IR's `public_api` and calls them as a generated model publishes them.
-A `module_parameters` entry the signatures name (`dp`) is declared as a generated model declares
-it; a derived type of §5.1 is declared with the same components.
+A `module_parameters` entry the signatures name (`dp`) is the kind the adapter declares the
+arguments with; a derived type of §5.1 is declared with the same components.
 
 ## 3. The array form
 
