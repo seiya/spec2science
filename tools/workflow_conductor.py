@@ -6230,8 +6230,8 @@ class Conductor:
         acceptance layer (`_leaf_bundle_violations`, which negotiates `capability_requirements`
         against it). One source, so the capabilities the leaf is shown are by construction the
         capabilities it is judged against, and the harness it is judged against is the one its
-        runner is linked to. An `infrastructure` node no manifest declares provides nothing, so
-        every requirement is unsatisfied.
+        runner is linked to. The capability set itself is the target's
+        (`target_profile.harness_capabilities`, issue #690), not a property of the node key.
 
         The resolution itself lives in the runtime (`harness_node_key_for`), because the
         generate derivation inputs and the pipeline closure name the same harness. The launch
@@ -6263,6 +6263,7 @@ class Conductor:
         by construction. `run_phase` renders it before any generate substep runs, so it is always
         on disk here."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
+        from tools.target_profile import harness_capabilities
         ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
         tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
         # The runner RAISES on an unreadable file, as the ir/tests reads above do.
@@ -6283,7 +6284,8 @@ class Conductor:
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
-                    self._leaf_harness_node_key(refs.node_key)),
+                    self._leaf_harness_node_key(refs.node_key),
+                    harness_capabilities(self.target)),
                 indent=2, ensure_ascii=False),
             "target_profile": self._leaf_target_profile_document(),
             "ir_document": ir_text,
@@ -6347,6 +6349,7 @@ class Conductor:
         producer's do — the caller converts it into a `pure_context_assembly_failed` fail_closed
         transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
+        from tools.target_profile import harness_capabilities
         from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
         ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
         tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
@@ -6375,7 +6378,8 @@ class Conductor:
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
-                    self._leaf_harness_node_key(refs.node_key)),
+                    self._leaf_harness_node_key(refs.node_key),
+                    harness_capabilities(self.target)),
                 indent=2, ensure_ascii=False),
             "target_profile": self._leaf_target_profile_document(),
             "ir_document": ir_text,
@@ -6435,8 +6439,7 @@ class Conductor:
 
         Fail-closed layers, in order (each stops at the first that fails so one defect is one
         report): `validate_bundle` (schema + cross-field invariants) -> single-node unit shape
-        -> harness capability negotiation (the manifest MUST exist — an undeclared harness
-        satisfies nothing) -> the M3c literal
+        -> harness capability negotiation (against the set the target implies) -> the M3c literal
         name constraint the host-rendered runner glue `use`s ->
         `derive_build_graph` cross-origin object/module collisions. The pure leaf has
         no repository write authority, so a corrupted bundle can only propagate as content here — these layers are what
@@ -6455,15 +6458,15 @@ class Conductor:
         everything but the document and its build-graph derivation. One assembly, read by the
         pure loop above and frozen into a `workshop leaf`'s wrapper (`_freeze_wrapper_context`),
         so the contract a wrapper's `derive` reports against is the one the hand-off applies."""
-        from tools.codegen_bundle import (
-            harness_provided_capabilities, published_operations_from_ir)
+        from tools.codegen_bundle import published_operations_from_ir
+        from tools.target_profile import harness_capabilities
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        # Capability negotiation against the target's harness, resolved by the same
-        # `_leaf_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
-        # the context advertises is always one this layer accepts. Its manifest MUST be declared
-        # (an undeclared harness provides nothing => every requirement unsatisfied, fail-closed).
+        # Capability negotiation against the set the run's target implies for its harness
+        # (issue #690), the same set the manifest the leaf is SHOWN lists — so a capability the
+        # context advertises is always one this layer accepts. The harness is resolved by the
+        # same `_leaf_harness_node_key`, and only names the set in the findings.
         harness_nk = self._leaf_harness_node_key(refs.node_key)
-        provided = harness_provided_capabilities(harness_nk)
+        provided = harness_capabilities(self.target)
         return {
             "node_key": refs.node_key, "spec_id": refs.spec_id,
             "shape": (self._bundle_shape(refs) or ""),

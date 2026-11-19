@@ -19,7 +19,7 @@ from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdo
 from pathlib import Path
 from unittest import mock
 
-from tools import codegen_bundle
+from tools import orchestration_runtime
 from tools import llm_config as lc
 from tools import run_workflow
 from tools import target_profile as tp
@@ -4905,12 +4905,11 @@ class RunWorkflowTests(unittest.TestCase):
 # legitimately contains it.
 _HARNESS_ID = "harness_fortran_cpu"
 _HARNESS_REF = "spec/infrastructure/harness_fortran_cpu"
-#: The runner harness's catalogued version, which a scratch catalog registers: its manifest row
-#: is then the checkout's (`capture_format_json@1`, which the launch gate asks of the target's
-#: harness since issue #644), and so it is in a real subprocess too, where no patch reaches.
+#: The runner harness's catalogued version, which a scratch catalog registers, read from the
+#: checkout's catalog so that a version bump of the sample harness edits no test (issue #690).
 _HARNESS_VERSION = next(
-    nk.rsplit("@", 1)[1] for nk in codegen_bundle.HARNESS_CAPABILITY_MANIFESTS
-    if nk.startswith(f"infrastructure/{_HARNESS_ID}@"))
+    entry["spec_version"] for entry in orchestration_runtime._spec_catalog_entries(REPO_ROOT)
+    if entry.get("spec_kind") == "infrastructure" and entry.get("spec_id") == _HARNESS_ID)
 
 
 def _seed_target_profile_into(repo_root: Path, *, target_id: str = "fortran_cpu",
@@ -10614,13 +10613,6 @@ class TargetProfileLaunchTests(unittest.TestCase):
                                   constraint=">=0.1.0 <1.0.0")
         from tools.orchestration_runtime import _load_spec_catalog
         _load_spec_catalog.cache_clear()
-        # Each scratch harness writes the `json` captures its target reads: the manifest row the
-        # launch gate asks for it (`capture_format_json@1`, issue #644).
-        rows = mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS, {
-            nk: frozenset({"sync_single_case@1", "capture_format_json@1"})
-            for nk in ("infrastructure/harness_a@0.7.0", "infrastructure/harness_b@0.2.0")})
-        rows.start()
-        self.addCleanup(rows.stop)  # type: ignore[attr-defined]
 
     def _main(self, repo_root: Path, *extra: str,
               until: str = "validate") -> tuple[int, list[dict], list[list[str]]]:

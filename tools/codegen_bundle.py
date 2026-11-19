@@ -379,7 +379,7 @@ def _projected_toolchain(toolchain: Mapping[str, Any],
 # --------------------------------------------------------------------------------------
 # Harness capability ABI (A6). A token is `<name>@<abi_version>`; the version is exact,
 # never a range. Negotiation matches the whole token, so version ordering never implies
-# compatibility — compatibility is declared by adding a token to a manifest.
+# compatibility — compatibility is declared by adding a token to the set a target implies.
 # --------------------------------------------------------------------------------------
 
 HARNESS_CAPABILITY_ABI_VERSION = 1
@@ -406,57 +406,43 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
     "distributed": "distributed_state",
 }
 
-# Tool-side manifest data, deliberately NOT a section of the harness `controlled_spec.md`:
-# adding it there would edit a certified artifact and force recertification for no change
-# in generated behavior.
+# The token generations the framework's drivers and templates are written against. A harness
+# does not declare them: the target profile that names the harness implies them
+# (`target_profile.harness_capabilities`, issue #690), so the harness node's name and version are
+# the Project's and the framework holds neither.
 #
-# `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
-# version: at this writing the canonical interface block of `harness_fortran_cpu@0.11.0` §5.1
-# (19 operations, 1 published type, `dp = float64`, `case_id_len = 64`), under the providing
-# harness node's own `<spec_id>__` names and bound to its target language by that language's
-# backend. The token names the block of whichever version the catalog holds, not one generation
-# of it: `0.10.0` (issue #589) extends the block by `__read_case` and the typed getters under the
-# same token, because no physics bundle calls an operation of the block,
-# `assert_harness_pin` is the mechanical enforcer of its text, and no consumer distinguishes a
-# generation; `0.11.0` (issue #644) replaces its emitters and snapshot writer by the capture
-# operations, under the same token for the same reason. Until `0.9.0` (issue #582) the block also held the writers of the two documents
-# the runner no longer writes, and their types, which no consuming node's bundle code called,
-# and the host-rendered runner stopped calling them with the issue's PR-H. Its `__write_perf`, which no consuming
-# node's bundle code calls either (the host-rendered runner calls it, and so does the providing
-# harness's own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
-# shared-memory runtime gives the program itself (issue #512); the distributed harness's §5.1
-# has the eight-argument writer instead.
-# The device harness's §5.1 likewise begins with the block with the eight-argument
-# writer (issue #289, R4-b PR-5), followed by `__block_size`, the threads per block the host imposes on the program's
-# kernels (issue #512), which the CUDA C++ runner calls. Each runner's `assert_harness_pin` pins
-# its harness's §5.1 as that harness publishes it. Its mechanical enforcer remains
-# the language backend's `assert_harness_pin`; this contract names the ABI, it does not
-# re-check it. `distributed_state@2` (issue #512; `@1` was issue #316's,
-# R4-c, over one dimension) is defined as the distributed-state operations of the providing
-# harness's §3.3 — the rank queries, the process grid the host imposes and its queries, the
-# block partition and the halo exchange along one grid dimension, the gather onto rank 0 of an
-# array partitioned along up to two grid dimensions with its tile check, and the global
-# reductions — which the harness publishes after the `sync_single_case@1` block, together with
-# the rule that the writers are called on rank 0 only. Its mechanical enforcer is the one
-# `sync_single_case@1` has: the harness's own `Generate.static` pin of §5.1, and the language
-# backend's `assert_harness_pin` for a physics source's operations on that harness.
-# `capture_format_<id>@1` (issue #644) names the output format the harness's capture
-# operations write, `<id>` a member of the `output_format` axis. The `netcdf` harness's
-# `sync_single_case@1` block is the single-process block without `__real_token` (18
-# operations): a format that stores a real as its IEEE value spells no token, and neither
-# the host-rendered runner nor the harness's own self-test calls one. The launch gate holds it equal
-# to the target's `output.format` (`target_profile._capture_format_violations`); no bundle
-# requires it, since the target decides the format and a bundle writes no capture.
-HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
-    "infrastructure/harness_fortran_cpu@0.11.0": frozenset(
-        {"sync_single_case@1", "capture_format_json@1"}),
-    "infrastructure/harness_cpp_gpu@0.5.0": frozenset(
-        {"sync_single_case@1", "capture_format_json@1"}),
-    "infrastructure/harness_fortran_cpu_mpi@0.5.0": frozenset(
-        {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}),
-    "infrastructure/harness_fortran_cpu_netcdf@0.1.0": frozenset(
-        {"sync_single_case@1", "capture_format_netcdf@1"}),
-}
+# `sync_single_case@1` is the synchronous single-case block the target language's backend pins
+# (`assert_harness_pin`): the operations and the published type the host-rendered runner calls,
+# under the providing harness node's own `<spec_id>__` names, with `dp = float64` and
+# `case_id_len = 64`. The token names the block the backend pins, not one harness version:
+# `harness_fortran_cpu@0.10.0` (issue #589) extended it by `__read_case` and the typed getters,
+# and `0.11.0` (issue #644) replaced its emitters and snapshot writer by the capture operations,
+# under the same token, because no physics bundle calls an operation of the block and no
+# consumer distinguishes a generation. Its `__write_perf` takes no `threads_per_rank` argument
+# on a single-process target (issue #512); a distributed or device harness publishes the
+# eight-argument writer instead (`harness_fortran_cpu_mpi`, `harness_cpp_gpu` in the sample
+# Project). The mechanical enforcer is the language backend's `assert_harness_pin`; this
+# contract names the ABI, it does not re-check it.
+#
+# `distributed_state@2` (issue #512; `@1` was issue #316's, R4-c, over one dimension) is the
+# distributed-state block the language backend pins after the `sync_single_case@1` block: the
+# rank queries, the process grid the host imposes and its queries, the block partition and the
+# halo exchange along one grid dimension, the gather onto rank 0 of an array partitioned along
+# up to two grid dimensions with its tile check, and the global reductions, with the rule that
+# the writers are called on rank 0 only. A target provides it when its parallel backend declares
+# a `launcher`.
+#
+# `capture_format_<id>@1` (issue #644) names the output format the harness's capture operations
+# write, `<id>` the target's `output.format`. No bundle requires it, since the target decides
+# the format and a bundle writes no capture.
+SYNC_SINGLE_CASE_TOKEN = "sync_single_case@1"
+DISTRIBUTED_STATE_TOKEN = "distributed_state@2"
+
+
+def capture_format_token(format_id: str) -> str:
+    """The capability token of the output format `format_id` (an `output_format` axis value,
+    used here as an opaque token)."""
+    return f"capture_format_{format_id}@1"
 
 
 # --------------------------------------------------------------------------------------
@@ -520,39 +506,24 @@ def load_harness_capabilities_schema(repo_root: Path | None = None) -> dict[str,
     return copy.deepcopy(_load_schema_cached(str(root / HARNESS_CAPABILITIES_SCHEMA_PATH)))
 
 
-def harness_capability_manifest_document() -> dict[str, Any]:
-    """`HARNESS_CAPABILITY_MANIFESTS` in the document form of
-    `harness_capabilities.schema.json` — the shape the harness spec adopts at Z6."""
-    return {
-        "harness_capability_abi_version": HARNESS_CAPABILITY_ABI_VERSION,
-        "manifests": [
-            {"node_key": node_key, "provides": sorted(provides)}
-            for node_key, provides in sorted(HARNESS_CAPABILITY_MANIFESTS.items())
-        ],
-    }
+def harness_capability_manifest_document_for(
+        node_key: str | None, provides: Iterable[str]) -> dict[str, Any]:
+    """The manifest document of ONE harness — the projection a producing leaf is shown, and the
+    document the `Generate` derivation key hashes (`harness.manifest`).
 
+    `node_key` is the harness the run's target names, or the node itself on a harness
+    (`orchestration_runtime.harness_node_key_for`, issue #284 — through
+    `Conductor._leaf_harness_node_key`, which `_leaf_bundle_violations` also resolves the
+    acceptance layer from). `provides` is the set the target implies
+    (`target_profile.harness_capabilities`, issue #690), the same set the acceptance layer
+    negotiates against, so the context and the negotiation cannot disagree.
 
-def harness_capability_manifest_document_for(node_key: str | None) -> dict[str, Any]:
-    """The manifest document narrowed to ONE harness's entry — the projection a pure leaf sees.
-
-    A pure producer negotiates against exactly one harness: the one its run's target names, or
-    the node itself on a harness (`orchestration_runtime.harness_node_key_for`, issue #284 —
-    through `Conductor._leaf_harness_node_key`, which `_leaf_bundle_violations` also resolves the
-    acceptance layer from). Handing it the FULL table instead would show it
-    capabilities that another harness provides and its own does not, licensing a
-    `capability_requirements` token the acceptance layer then rejects as
-    `bundle_capability_unsatisfied` — a repair-budget burn on a bundle the leaf had no way to know
-    was unsatisfiable. Narrowing here means the context and the negotiation cannot disagree,
-    rather than asking the leaf to filter the table by node_key correctly.
-
-    `None`, or a node_key no manifest declares, yields an EMPTY `manifests` list. That mirrors
-    `harness_provided_capabilities`'s fail-closed `None`: a leaf whose harness cannot be resolved
-    must be shown nothing, never another harness's capabilities."""
-    provides = HARNESS_CAPABILITY_MANIFESTS.get(node_key) if node_key is not None else None
+    `None` yields an EMPTY `manifests` list: a leaf whose harness cannot be resolved is shown
+    nothing."""
     return {
         "harness_capability_abi_version": HARNESS_CAPABILITY_ABI_VERSION,
         "manifests": ([{"node_key": node_key, "provides": sorted(provides)}]
-                      if provides is not None else []),
+                      if node_key is not None else []),
     }
 
 
@@ -1191,8 +1162,8 @@ def _as_token_list(value: Any) -> list[Any] | None:
     `Mapping` is rejected too: iterating a dict yields its KEYS, so `{"sync_single_case@1":
     false}` would silently be read as providing that token — a fail-open. Any other iterable
     (list, tuple, set, frozenset, generator) is accepted — a caller passing the `frozenset`
-    that `harness_provided_capabilities` returns is the natural symmetric call, and treating
-    it as "not a token list" would fail OPEN."""
+    that `target_profile.harness_capabilities` returns is the natural symmetric call, and
+    treating it as "not a token list" would fail OPEN."""
     if value is None or isinstance(value, (str, bytes, collections.abc.Mapping)):
         return None
     if not isinstance(value, collections.abc.Iterable):
@@ -1204,9 +1175,9 @@ def harness_capability_manifest_violations(doc: Any) -> list[str]:
     """Canonical validator of a harness capability manifest document
     (`spec/schema/generate/harness_capabilities.schema.json`).
 
-    The manifests themselves live in `HARNESS_CAPABILITY_MANIFESTS` as tool-side data;
-    this function is what checks that data — and, at Z6, the spec-side `capabilities`
-    section that replaces it — against the declared shape."""
+    The host derives the one manifest a run uses from the target profile
+    (`harness_capability_manifest_document_for`); this function is the grammar of that
+    document."""
     if not isinstance(doc, dict):
         return ["harness capability manifest must be a JSON object"]
     violations = _closed_object_violations(
@@ -1265,24 +1236,16 @@ def harness_capability_manifest_violations(doc: Any) -> list[str]:
     return violations
 
 
-def harness_provided_capabilities(node_key: str) -> frozenset[str] | None:
-    """The capability set a harness node provides, or `None` when no manifest declares it.
-
-    `None` means "nothing is provided": an undeclared harness satisfies no requirement.
-    It is distinguished from the empty set only so a caller can report the two differently."""
-    return HARNESS_CAPABILITY_MANIFESTS.get(node_key)
-
-
 def unsatisfied_capability_requirements(
         required: Iterable[str], provided: Iterable[str] | None) -> list[str]:
     """The required tokens the target does not provide, in requirement order.
 
     Matching is on the WHOLE `name@version` token: `sync_single_case@2` is not satisfied by
     a harness providing `sync_single_case@1`. Version ordering never implies compatibility;
-    compatibility is declared by adding a token to a manifest.
+    compatibility is declared by adding a token to the set a target implies.
 
     A token outside `CAPABILITY_VOCABULARY` (or malformed) is reported as unsatisfied even
-    when a manifest happens to list it — an unrecognized capability is never negotiated.
+    when the provided set happens to list it — an unrecognized capability is never negotiated.
 
     Untrusted input yields a result, never an exception, and never a fail-open. A `required`
     that is not a non-empty token collection — `None`, a bare string, a number, a `Mapping`
@@ -1294,8 +1257,8 @@ def unsatisfied_capability_requirements(
     keys — is discarded because it cannot satisfy anything.)
 
     The report is a list of strings in requirement order. An unordered `required` (a set —
-    `harness_provided_capabilities` returns a `frozenset`, so a caller can hold both sides
-    that way) is reported in a deterministic order instead of an arbitrary one."""
+    `target_profile.harness_capabilities` returns a `frozenset`, so a caller can hold both
+    sides that way) is reported in a deterministic order instead of an arbitrary one."""
     required_tokens = _as_token_list(required)
     if required_tokens is None:
         return [_token_clause(required)]
@@ -1727,14 +1690,15 @@ def pure_bundle_contract_violation(
     Fail-closed layers, in order, each STOPPING at the first that fails (so one defect is one
     report AND a later layer never runs on a doc an earlier one already rejected): shape
     vocabulary -> schema (`validate_bundle`) -> single-node unit shape -> (m3c) no `runner`-role
-    file -> harness capability negotiation (the manifest MUST exist — an undeclared harness
-    satisfies nothing) -> the file-shape layer (m3c: the literal names the host-rendered driver
+    file -> harness capability negotiation (against the set the target implies; an empty or
+    `None` set satisfies nothing) -> the file-shape layer (m3c: the literal names the host-rendered driver
     `use`s; harness: `harness_bundle_shape_violation`) -> the L1c published surface ->
     `build_graph(doc)` (the caller's assembly derivation, which raises RuntimeError on a
     cross-origin object/module collision or a straddle).
 
-    `harness_provided` is the caller-resolved harness capability set (`None` = undeclared harness
-    = nothing provided, fail-closed); `harness_label` only names it in the findings text.
+    `harness_provided` is the caller-resolved harness capability set
+    (`target_profile.harness_capabilities`; `None` = nothing provided, fail-closed);
+    `harness_label` only names it in the findings text.
     `ir_published_operations` (L1c) is the IR's `public_api.published_operations` name
     list (`None` = a legacy IR with no public_api pin → the surface layer is inert); when present
     and the node's `spec_kind` is one of `L1C_PUBLISHED_SURFACE_SPEC_KINDS`, the bundle's `operation` entrypoint

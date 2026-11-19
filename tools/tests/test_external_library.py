@@ -1068,7 +1068,7 @@ class KeyMemberTests(_Fixture):
                     mock.patch.object(ort, "_pipeline_closure_for_key", return_value=[]), \
                     mock.patch.object(ort, "_harness_for_key", return_value="h@1"), \
                     mock.patch("tools.codegen_bundle.harness_capability_manifest_document_for",
-                               return_value={}):
+                               autospec=True, return_value={}):
                 return ort.phase_derivation_inputs(
                     self.repo, node_key="component/n@0.1.0", step=step,
                     spec_ref="spec/component/n", ir_ref="workspace/i", resolver=resolver)

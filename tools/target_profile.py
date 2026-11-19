@@ -885,49 +885,29 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
             f"target_harness_mismatch: {node_key} is an infrastructure node, and target "
             f"{profile.target_id} runs over {harness_nk}; run a harness only for the target "
             f"whose harness it is")
-    out += _process_model_violations(profile, harness_nk)
-    if reason is None:
-        out += _capture_format_violations(profile, harness_nk)
     return out
 
 
-def _capture_format_violations(profile: TargetProfile, harness_nk: str) -> list[str]:
-    """The harness must write the format the target's store reads (issue #644 O8): its
-    manifest row names it as `capture_format_<id>@1`. A mismatch certifies nothing — the store
-    finds no record of any case — and without this clause it is found at `Validate.execute`,
-    after Compile, Generate and Build were paid for."""
-    from tools.codegen_bundle import harness_provided_capabilities
-    token = f"capture_format_{profile.output_format}@1"
-    if token in (harness_provided_capabilities(harness_nk) or ()):
-        return []
-    return [f"output.format: target {profile.target_id} reads its captures as "
-            f"{profile.output_format}, and harness {harness_nk} does not provide {token}"]
+def harness_capabilities(profile: TargetProfile) -> frozenset[str]:
+    """The capability set the harness of `profile` provides, derived from the profile alone
+    (issue #690): `sync_single_case@1` always; `distributed_state@2` when the parallel backend
+    declares a `launcher`; `capture_format_<output.format>@1`.
 
-
-def _process_model_violations(profile: TargetProfile, harness_nk: str) -> list[str]:
-    """The parallel backend and the harness must agree on how many processes a program is
-    (issue #316): a backend that declares a `launcher` starts several, and only a harness that
-    provides `distributed_state` drives a program as several — the one that starts and ends the
-    runtime and gathers the state onto one rank; a distributed harness, conversely, needs the
-    launcher that starts its ranks. Either mismatch would certify nothing it claims: the runs of
-    a single-process harness under a launcher write every output once per process, and a
-    distributed harness run without one is a one-process program."""
+    No harness declares its set. The profile that names the harness already states the parallel
+    backend it is driven under and the format it writes, and those are the only facts the
+    tokens carry. A harness whose surface does not publish the block a token implies fails the
+    language backend's pin (`assert_harness_pin`) at the first render over it; one that writes
+    another format fails its own `Validate.execute`, whose store finds no record."""
     from tools.backends import registry as backend_registry
-    from tools.codegen_bundle import capability_name, harness_provided_capabilities
-    if backend_registry.unimplemented_reason("parallel", profile.parallel_backend) is not None:
-        return []  # refused above, in the parallel axis' own words
-    launches = backend_registry.provides("parallel", profile.parallel_backend, "launcher")
-    distributed = any(capability_name(t) == "distributed_state"
-                      for t in (harness_provided_capabilities(harness_nk) or ()))
-    if launches and not distributed:
-        return [(f"parallel.backend: {profile.parallel_backend} starts the program as several "
-                 f"processes under its launcher, and harness {harness_nk} provides no "
-                 f"distributed_state capability to drive them; name a harness that does")]
-    if distributed and not launches:
-        return [(f"harness: {harness_nk} drives the program as several processes "
-                 f"(distributed_state), and parallel backend {profile.parallel_backend} declares "
-                 f"no launcher to start them; use a parallel backend that does")]
-    return []
+    from tools.codegen_bundle import (
+        DISTRIBUTED_STATE_TOKEN,
+        SYNC_SINGLE_CASE_TOKEN,
+        capture_format_token,
+    )
+    out = {SYNC_SINGLE_CASE_TOKEN, capture_format_token(profile.output_format)}
+    if backend_registry.provides("parallel", profile.parallel_backend, "launcher"):
+        out.add(DISTRIBUTED_STATE_TOKEN)
+    return frozenset(out)
 
 
 def resolve_run_target(repo_root: Path, requested: str | None, *,

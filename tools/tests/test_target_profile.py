@@ -7,7 +7,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
 from unittest import mock
 
 import yaml
@@ -72,37 +71,6 @@ _DELETE = object()
 
 
 _HARNESS_X = "infrastructure/harness_x@0.7.0"
-
-#: The scratch catalog's harness rows, installed for every row of the module: each writes the
-#: `json` captures the default `output.format` reads (`capture_format_json@1`, the launch gate's
-#: `_capture_format_violations`, issue #644). A row about that clause replaces them.
-_SCRATCH_MANIFESTS = {
-    f"infrastructure/harness_x@{v}": frozenset({"sync_single_case@1", "capture_format_json@1"})
-    for v in ("0.4.0", "0.7.0")}
-_MANIFEST_PATCH: Any = None
-
-
-def setUpModule() -> None:
-    global _MANIFEST_PATCH
-    from tools import codegen_bundle
-    _MANIFEST_PATCH = mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS,
-                                      _SCRATCH_MANIFESTS)
-    _MANIFEST_PATCH.start()
-
-
-def tearDownModule() -> None:
-    if _MANIFEST_PATCH is not None:
-        _MANIFEST_PATCH.stop()
-
-
-def _distributed_harness_x() -> Any:
-    """The scratch catalog's harness, declared as providing `distributed_state@1`."""
-    from tools import codegen_bundle
-    return mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS, {
-        "infrastructure/harness_x@0.7.0": frozenset(
-            {"sync_single_case@1", "state_registration@1", "distributed_state@1",
-             "capture_format_json@1"})})
-
 
 class CheckedInProfileTests(unittest.TestCase):
     def test_the_checked_in_profile_loads_gates_clean_and_names_the_catalog_harness(self) -> None:
@@ -223,7 +191,8 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
-        self.assertEqual(harness, "infrastructure/harness_fortran_cpu_mpi@0.5.0")
+        # The version is the catalog's, so a bump of the sample harness edits no test (#690).
+        self.assertTrue(harness.startswith("infrastructure/harness_fortran_cpu_mpi@"), harness)
         for phase in sorted(tp.NON_EXECUTING_PHASES) + ["validate"]:
             self.assertEqual(tp.target_profile_violations(
                 REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
@@ -567,10 +536,7 @@ class OutputFormatTests(unittest.TestCase):
 
     def test_the_launch_gate_refuses_a_format_no_backend_declares(self) -> None:
         # Kills: deleting the launch gate's clause (the run would fail at its first capture
-        # read, after Generate and Build were paid for). And, the scratch harness providing no
-        # `capture_format_other_format@1`, it kills asking the harness clause on top of this
-        # refusal (dropping `if reason is None` in `target_profile_violations`): that refusal
-        # stands alone.
+        # read, after Generate and Build were paid for).
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             repo.write("t1", output__format="other_format")
@@ -582,38 +548,46 @@ class OutputFormatTests(unittest.TestCase):
             ["output.format: " + registry.unavailable_reason("output_format", "other_format")])
 
 
-    def _harness_x_providing(self, *tokens: str) -> Any:
-        from tools import codegen_bundle
-        return mock.patch.dict(codegen_bundle.HARNESS_CAPABILITY_MANIFESTS,
-                               {_HARNESS_X: frozenset(tokens)})
-
-    def test_a_harness_that_writes_no_format_is_refused_at_launch(self) -> None:
-        # Kills: deleting `_capture_format_violations` (or its call): a harness that names no
-        # format would pass the launch gate, and the store would find no record of any case at
-        # `Validate.execute`, after Compile, Generate and Build were paid for.
-        with tempfile.TemporaryDirectory() as tmp, \
-                self._harness_x_providing("sync_single_case@1"):
+    def test_the_harness_capabilities_follow_from_the_profile(self) -> None:
+        """Issue #690: no harness declares its capability set; the profile that names it
+        implies it. `sync_single_case@1` always, `distributed_state@2` exactly when the
+        parallel backend declares a launcher, and the capture token of `output.format`."""
+        # Kills: dropping a token, deriving `distributed_state` from anything but the launcher
+        # capability, or a fixed capture format.
+        from tools.backends import registry
+        with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
-            repo.write("t1")
-            violations = tp.target_profile_violations(
-                repo.root, tp.load_target_profile(repo.root, "t1"))
-        self.assertEqual(violations, [
-            f"output.format: target t1 reads its captures as json, and harness {_HARNESS_X} "
-            "does not provide capture_format_json@1"])
+            for backend in ("openmp", "none", "mpi"):
+                for fmt in ("json", "netcdf"):
+                    with self.subTest(backend=backend, fmt=fmt):
+                        repo.write("t1", parallel__backend=backend, output__format=fmt)
+                        profile = tp.load_target_profile(repo.root, "t1")
+                        expected = {"sync_single_case@1", f"capture_format_{fmt}@1"}
+                        if registry.provides("parallel", backend, "launcher"):
+                            expected.add("distributed_state@2")
+                        self.assertEqual(tp.harness_capabilities(profile), frozenset(expected))
+            self.assertIn("distributed_state@2", tp.harness_capabilities(
+                tp.load_target_profile(repo.root, "t1")))
 
-    def test_a_harness_that_writes_another_format_is_refused_at_launch(self) -> None:
-        # Kills: a clause that asks whether the harness names ANY format (a `capture_format_`
-        # prefix) rather than the target's own: the store would read a format the harness did
-        # not write.
-        with tempfile.TemporaryDirectory() as tmp, \
-                self._harness_x_providing("sync_single_case@1", "capture_format_netcdf@1"):
-            repo = _ScratchRepo(tmp)
-            repo.write("t1")
-            violations = tp.target_profile_violations(
-                repo.root, tp.load_target_profile(repo.root, "t1"))
-        self.assertEqual([v for v in violations if v.startswith("output.format: ")], [
-            f"output.format: target t1 reads its captures as json, and harness {_HARNESS_X} "
-            "does not provide capture_format_json@1"])
+    def test_the_checked_in_profiles_imply_what_their_harnesses_were_certified_under(
+            self) -> None:
+        """The derived set of each checked-in target equals the table row its harness carried
+        until issue #690 (measured as M9 there), so the `harness.manifest` member of every
+        `Generate` key is unchanged. A profile edit that changes the set moves the key through
+        `target.profile` anyway; this row states which set each sample target is on."""
+        expected = {
+            "cpp_gpu": {"sync_single_case@1", "capture_format_json@1"},
+            "fortran_cpu": {"sync_single_case@1", "capture_format_json@1"},
+            "fortran_cpu_mpi": {"sync_single_case@1", "distributed_state@2",
+                                "capture_format_json@1"},
+            "fortran_cpu_netcdf": {"sync_single_case@1", "capture_format_netcdf@1"},
+        }
+        self.assertEqual(set(tp.list_target_ids(REPO_ROOT)), set(expected))
+        for tid, tokens in expected.items():
+            with self.subTest(target=tid):
+                self.assertEqual(tp.harness_capabilities(
+                    tp.load_target_profile(REPO_ROOT, tid)), frozenset(tokens))
+
 
 class SchemaAgreementTests(unittest.TestCase):
     """The schema is the declarative copy of `PROFILE_SHAPE` (spec/schema/SCHEMA.md)."""
@@ -756,20 +730,18 @@ class LaunchGateTests(unittest.TestCase):
                                                                   until_phase=phase)
                         self.assertIn(f"execution.ranks: 2 ranks need a launcher, and parallel "
                                       f"backend {backend} declares none", violations)
-            # One rank needs none; a launcher backend takes any count (over a harness that
-            # drives several processes — `test_the_backend_and_the_harness_agree_on_processes`).
+            # One rank needs none; a launcher backend takes any count.
             # Asked for the harness, the node that target's run starts with.
             self.assertEqual(tp.target_profile_violations(
                 repo.root, self._profile(repo, execution__ranks=1)), [])
-            with _distributed_harness_x():
-                for ranks in (1, 4):
-                    with self.subTest(backend="mpi", ranks=ranks):
-                        self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
-                            repo, parallel__backend="mpi", execution__ranks=ranks),
-                            node_key=_HARNESS_X), [])
-                self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
-                    repo, parallel__backend="mpi", execution__ranks=4,
-                    execution__process_grid=[2, 2]), node_key=_HARNESS_X), [])
+            for ranks in (1, 4):
+                with self.subTest(backend="mpi", ranks=ranks):
+                    self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
+                        repo, parallel__backend="mpi", execution__ranks=ranks),
+                        node_key=_HARNESS_X), [])
+            self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
+                repo, parallel__backend="mpi", execution__ranks=4,
+                execution__process_grid=[2, 2]), node_key=_HARNESS_X), [])
             # Issue #512: a process grid arranges the ranks a launcher starts, so it needs one
             # too — a one-rank grid included, which the count check alone admits.
             for backend in ("openmp", "none"):
@@ -780,38 +752,18 @@ class LaunchGateTests(unittest.TestCase):
                                   f"launcher starts, and parallel backend {backend} declares "
                                   f"none", tp.target_profile_violations(repo.root, profile))
 
-    def test_the_backend_and_the_harness_agree_on_processes(self) -> None:
-        """Issue #316 (R4-c PR-4): a backend that declares a launcher needs a harness that
-        provides `distributed_state`, and such a harness needs a backend with a launcher. Both
-        directions are refused, at every phase; the agreeing pairs are accepted."""
+    def test_a_launcher_backend_and_one_without_both_gate_clean(self) -> None:
+        """Issue #690: the launch gate no longer compares the backend with a harness
+        declaration (the set is derived from the backend, `harness_capabilities`), so a profile
+        on either kind of backend gates clean for its harness and for a physics node."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
-            for phase in (None, "Build", "Validate"):
-                with self.subTest(phase=phase, direction="launcher without distributed"):
-                    violations = tp.target_profile_violations(
-                        repo.root, self._profile(repo, parallel__backend="mpi"),
-                        until_phase=phase)
-                    self.assertIn(
-                        "parallel.backend: mpi starts the program as several processes under "
-                        "its launcher, and harness infrastructure/harness_x@0.7.0 provides no "
-                        "distributed_state capability to drive them; name a harness that does",
-                        violations)
-                with self.subTest(phase=phase, direction="distributed without launcher"), \
-                        _distributed_harness_x():
-                    for backend in ("openmp", "none"):
-                        violations = tp.target_profile_violations(
+            for backend in ("mpi", "openmp", "none"):
+                for node_key in (None, _HARNESS_X):
+                    with self.subTest(backend=backend, node_key=node_key):
+                        self.assertEqual(tp.target_profile_violations(
                             repo.root, self._profile(repo, parallel__backend=backend),
-                            until_phase=phase)
-                        self.assertIn(
-                            "harness: infrastructure/harness_x@0.7.0 drives the program as "
-                            "several processes (distributed_state), and parallel backend "
-                            f"{backend} declares no launcher to start them; use a parallel "
-                            "backend that does", violations)
-            with _distributed_harness_x():
-                self.assertEqual(tp.target_profile_violations(
-                    repo.root, self._profile(repo, parallel__backend="mpi"),
-                    node_key=_HARNESS_X), [])
-            self.assertEqual(tp.target_profile_violations(repo.root, self._profile(repo)), [])
+                            node_key=node_key), [])
 
     def test_a_compiler_pin_with_a_compiler_wrapper_is_refused(self) -> None:
         """Issue #316: a backend that compiles through its compiler wrapper runs it in the
@@ -1098,7 +1050,7 @@ class LauncherTargetAdmissionTests(unittest.TestCase):
         return tp.resolve_run_target(repo.root, "t1", **kwargs)
 
     def test_a_physics_spec_is_admitted_in_every_phase(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _distributed_harness_x():
+        with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             repo.write("t1", parallel__backend="mpi")
             for node_key in self._PHYSICS:
@@ -1111,32 +1063,13 @@ class LauncherTargetAdmissionTests(unittest.TestCase):
                             node_key=node_key, until_phase=phase), [])
 
     def test_the_harness_of_that_target_is_admitted_in_every_phase(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, _distributed_harness_x():
+        with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             repo.write("t1", parallel__backend="mpi")
             for phase in self._PHASES:
                 with self.subTest(phase=phase):
                     self.assertEqual(self._resolve(repo, node_key=_HARNESS_X,
                                                    until_phase=phase).target_id, "t1")
-
-    def test_a_launcher_over_a_single_process_harness_is_still_refused(self) -> None:
-        # What the deleted refusal used to precede: mpi over a harness that provides no
-        # distributed_state is refused under the profile's own reason, for a physics node too,
-        # behind a phase's hardware reason when there is one.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = _ScratchRepo(tmp)
-            repo.write("t1", parallel__backend="mpi")
-            profile = tp.load_target_profile(repo.root, "t1")
-            violations = tp.target_profile_violations(repo.root, profile, until_phase="Validate")
-            self.assertTrue(violations, violations)
-            self.assertTrue(violations[0].startswith("parallel.backend: mpi starts the program "
-                                                     "as several processes"), violations)
-            with self.assertRaises(tp.TargetProfileError) as cm:
-                self._resolve(repo)
-            self.assertEqual(cm.exception.reason, "target_profile_invalid")
-            with mock.patch.object(tp, "hardware_violations", return_value=["hardware: refused"]):
-                self.assertEqual(tp.target_profile_violations(repo.root, profile)[0],
-                                 "hardware: refused")
 
     def test_a_backend_that_declares_no_launcher_is_not_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

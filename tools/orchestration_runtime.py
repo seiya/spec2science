@@ -2102,7 +2102,8 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               hash of its profile, which the producer is shown (issue #284);
 #             harness — the ONE harness the producer negotiates against — the target's
 #               (`harness_node_key_for`) — and the manifest document it is shown
-#               (`harness_capability_manifest_document_for`);
+#               (`harness_capability_manifest_document_for` over the set the target
+#               implies, `target_profile.harness_capabilities`);
 #             closure[] — every PIPELINE closure node (`pipeline_closure_nodes`: the sidecar's
 #               closure plus the target's harness) in pipeline order, each `{node_key, surface}`
 #               (`_published_surface`). The members and their order are what the control file
@@ -3008,7 +3009,11 @@ def phase_derivation_inputs(
         spec = need("spec_ref", spec_ref)
         harness_nk = _harness_for_key(repo_root, node_key, target)
         from tools.codegen_bundle import harness_capability_manifest_document_for
-        manifest = harness_capability_manifest_document_for(harness_nk)
+        from tools.target_profile import harness_capabilities
+        # The set is a function of `target.profile`, already a member; the document is kept as
+        # a member so that its derivation from the profile (issue #690) moved no key.
+        manifest = harness_capability_manifest_document_for(
+            harness_nk, harness_capabilities(target))
         generate_inputs: dict[str, Any] = {
             "ir": ir_hash,
             "spec": {

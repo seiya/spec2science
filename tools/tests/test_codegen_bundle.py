@@ -22,6 +22,7 @@ from unittest import mock
 
 from tools import capture_store
 from tools import codegen_bundle as cb
+from tools import target_profile as tp
 from tools import workflow_conductor as wc
 from tools.backends import registry as backend_registry
 from tools.tests.llm_samples import sample_config_with as _cfg
@@ -29,7 +30,27 @@ from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
-HARNESS = "infrastructure/harness_fortran_cpu@0.11.0"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _target_harness(target_id: str) -> str:
+    """The harness node key the checked-in target names, read from the catalog, so that a
+    version bump of a sample harness edits no test (issue #690)."""
+    return tp.harness_node_key_for_target(REPO_ROOT, tp.load_target_profile(REPO_ROOT, target_id))
+
+
+def _target_provides(target_id: str) -> frozenset[str]:
+    """The capability set the checked-in target implies for its harness (issue #690)."""
+    return tp.harness_capabilities(tp.load_target_profile(REPO_ROOT, target_id))
+
+
+def _manifest_doc() -> dict:
+    """The manifest document of the sample CPU target's harness, the validator rows' input."""
+    return cb.harness_capability_manifest_document_for(
+        _target_harness("fortran_cpu"), _target_provides("fortran_cpu"))
+
+
+HARNESS = _target_harness("fortran_cpu")
 
 
 def _module_name(path: str) -> str:
@@ -235,7 +256,7 @@ class CapabilityNegotiationTest(unittest.TestCase):
     """Acceptance 3: exact-token negotiation against the harness capability ABI."""
 
     def test_current_harness_satisfies_the_current_bundle(self) -> None:
-        provided = cb.harness_provided_capabilities(HARNESS)
+        provided = _target_provides("fortran_cpu")
         # Issue #644: the harness also names the output format its capture operations write.
         self.assertEqual(provided, frozenset({"sync_single_case@1", "capture_format_json@1"}))
         self.assertEqual(
@@ -246,36 +267,40 @@ class CapabilityNegotiationTest(unittest.TestCase):
         # bound storage was negotiated by — is neither in the vocabulary nor provided by a harness,
         # and a bundle still asking for it is told so at the schema's next layer.
         self.assertNotIn("state_registration", cb.CAPABILITY_VOCABULARY)
-        for node_key, provides in cb.HARNESS_CAPABILITY_MANIFESTS.items():
-            with self.subTest(node_key=node_key):
-                self.assertFalse([t for t in provides if t.startswith("state_registration")])
+        for target_id in tp.list_target_ids(REPO_ROOT):
+            with self.subTest(target=target_id):
+                self.assertFalse([t for t in _target_provides(target_id)
+                                  if t.startswith("state_registration")])
         doc = _minimal_bundle()
         doc["capability_requirements"].append("state_registration@1")
         self.assertTrue(any("state_registration" in v for v in cb.validate_bundle(doc)))
 
-    def test_manifest_schema_example_states_the_live_manifest(self) -> None:
+    def test_manifest_schema_example_states_a_derivable_set(self) -> None:
         # The example in `harness_capabilities.schema.json` is what a reader of the schema
-        # takes as the harness's capability set; keep it equal to the tool-side manifest
-        # (the round-3 census found nothing else reading it).
+        # takes as a harness's capability set; each of its sets is one some checked-in target
+        # implies (issue #690), so the example cannot illustrate a set no target derives.
         example = cb.load_harness_capabilities_schema()["examples"][0]
-        by_node = {m["node_key"]: set(m["provides"]) for m in example["manifests"]}
-        self.assertEqual(by_node, {k: set(v) for k, v in cb.HARNESS_CAPABILITY_MANIFESTS.items()})
+        derivable = {_target_provides(tid) for tid in tp.list_target_ids(REPO_ROOT)}
+        self.assertTrue(example["manifests"])
+        for manifest in example["manifests"]:
+            with self.subTest(node_key=manifest["node_key"]):
+                self.assertIn(frozenset(manifest["provides"]), derivable)
 
-    def test_distributed_state_is_provided_by_the_mpi_harness_alone(self) -> None:
+    def test_distributed_state_is_provided_by_the_mpi_target_alone(self) -> None:
         # Issue #316 (R4-c PR-3): a `distributed` bundle's requirement set is satisfied by the
-        # harness of the process-parallel target and by no other; the single-process harnesses
+        # harness of the process-parallel target and by no other; the single-process targets
         # keep the set they had, so their consumers' negotiation is unchanged.
         distributed = ["sync_single_case@1", "distributed_state@2"]
-        mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.5.0")
+        mpi = _target_provides("fortran_cpu_mpi")
         self.assertEqual(cb.unsatisfied_capability_requirements(distributed, mpi), [])
         # Issue #512: `@2` replaced `@1` (the one-dimensional arrangement); a bundle still
         # asking for `@1` is not satisfied by the two-dimensional harness.
         self.assertEqual(cb.unsatisfied_capability_requirements(
             ["sync_single_case@1", "distributed_state@1"], mpi),
             ["distributed_state@1"])
-        for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.5.0"):
-            with self.subTest(harness=single):
-                provided = cb.harness_provided_capabilities(single)
+        for single in ("fortran_cpu", "cpp_gpu"):
+            with self.subTest(target=single):
+                provided = _target_provides(single)
                 self.assertEqual(provided,
                                  frozenset({"sync_single_case@1", "capture_format_json@1"}))
                 self.assertEqual(
@@ -284,14 +309,16 @@ class CapabilityNegotiationTest(unittest.TestCase):
 
     def test_version_skew_is_unsatisfied_no_ordering_is_assumed(self) -> None:
         # @2 is NOT satisfied by a harness providing @1: compatibility is declared by
-        # adding a token to a manifest, never inferred from version ordering.
-        provided = cb.harness_provided_capabilities(HARNESS)
+        # adding a token to the set a target implies, never inferred from version ordering.
+        provided = _target_provides("fortran_cpu")
         self.assertEqual(
             cb.unsatisfied_capability_requirements(["sync_single_case@2"], provided),
             ["sync_single_case@2"])
 
-    def test_undeclared_harness_provides_nothing(self) -> None:
-        self.assertIsNone(cb.harness_provided_capabilities("infrastructure/harness_gpu@0.1.0"))
+    def test_an_unresolved_harness_is_shown_and_provides_nothing(self) -> None:
+        self.assertEqual(cb.harness_capability_manifest_document_for(None, {"sync_single_case@1"}),
+                         {"harness_capability_abi_version": cb.HARNESS_CAPABILITY_ABI_VERSION,
+                          "manifests": []})
         self.assertEqual(
             cb.unsatisfied_capability_requirements(["sync_single_case@1"], None),
             ["sync_single_case@1"])
@@ -1462,37 +1489,37 @@ class EntrypointAttributionTest(unittest.TestCase):
 
 class HarnessManifestValidatorTest(unittest.TestCase):
     """`harness_capability_manifest_violations` is the canonical validator the harness
-    capability schema names, and the tool-side manifest data is its first input."""
+    capability schema names, and the document each checked-in target derives is its first
+    input."""
 
-    def test_the_shipped_manifest_document_is_valid(self) -> None:
-        self.assertEqual(
-            cb.harness_capability_manifest_violations(cb.harness_capability_manifest_document()), [])
+    def test_every_checked_in_target_derives_a_valid_document(self) -> None:
+        for target_id in tp.list_target_ids(REPO_ROOT):
+            with self.subTest(target=target_id):
+                self.assertEqual(cb.harness_capability_manifest_violations(
+                    cb.harness_capability_manifest_document_for(
+                        _target_harness(target_id), _target_provides(target_id))), [])
 
     def test_the_manifest_document_is_byte_stable(self) -> None:
-        # The manifests are frozensets: rendering them unsorted would make the document
-        # hash-order-dependent as soon as one harness provides a second capability.
-        multi = {"infrastructure/harness_gpu@0.1.0": frozenset(
-            {"async_device_resident@1", "full_state_capture@1", "trusted_reductions@1"})}
-        with mock.patch.dict(cb.HARNESS_CAPABILITY_MANIFESTS, multi):
-            document = cb.harness_capability_manifest_document()
-        entry = next(m for m in document["manifests"]
-                     if m["node_key"] == "infrastructure/harness_gpu@0.1.0")
-        self.assertEqual(entry["provides"], sorted(entry["provides"]))
-        self.assertEqual([m["node_key"] for m in document["manifests"]],
-                         sorted(m["node_key"] for m in document["manifests"]))
+        # The set is a frozenset: rendering it unsorted would make the document (and the
+        # `Generate` key that hashes it) hash-order-dependent.
+        tokens = ["trusted_reductions@1", "async_device_resident@1", "full_state_capture@1"]
+        for order in (tokens, list(reversed(tokens)), frozenset(tokens)):
+            document = cb.harness_capability_manifest_document_for(
+                "infrastructure/harness_gpu@0.1.0", order)
+            self.assertEqual(document["manifests"][0]["provides"], sorted(tokens))
 
     def test_non_object_input_is_a_clause(self) -> None:
         self.assertEqual(cb.harness_capability_manifest_violations([]),
                          ["harness capability manifest must be a JSON object"])
 
     def test_unknown_capability_name_is_rejected(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"][0]["provides"] = ["gpu_magic@1"]
         self.assertTrue(any("harness capability vocabulary" in v
                             for v in cb.harness_capability_manifest_violations(doc)))
 
     def test_a_non_infrastructure_node_provides_nothing(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"][0]["node_key"] = FLUX
         self.assertTrue(any("must be an infrastructure node_key" in v
                             for v in cb.harness_capability_manifest_violations(doc)))
@@ -1502,13 +1529,13 @@ class HarnessManifestValidatorTest(unittest.TestCase):
         for bad in ("infrastructure/../../etc@x", "infrastructure/Harness@1",
                     "infrastructure/harness@", "infrastructure/"):
             with self.subTest(node_key=bad):
-                doc = cb.harness_capability_manifest_document()
+                doc = _manifest_doc()
                 doc["manifests"][0]["node_key"] = bad
                 self.assertTrue(any("must be an infrastructure node_key" in v
                                     for v in cb.harness_capability_manifest_violations(doc)), bad)
 
     def test_malformed_abi_version_and_empty_manifests_are_rejected(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["harness_capability_abi_version"] = "1"
         doc["manifests"] = []
         violations = cb.harness_capability_manifest_violations(doc)
@@ -1519,7 +1546,7 @@ class HarnessManifestValidatorTest(unittest.TestCase):
         # The generation is a PIN, not a floor: reading a generation-2 manifest under
         # generation-1 semantics would assume the forward compatibility the exact-token
         # match refuses.
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["harness_capability_abi_version"] = cb.HARNESS_CAPABILITY_ABI_VERSION + 1
         self.assertIn(
             f"harness_capability_abi_version {cb.HARNESS_CAPABILITY_ABI_VERSION + 1} is not "
@@ -1527,11 +1554,11 @@ class HarnessManifestValidatorTest(unittest.TestCase):
             cb.harness_capability_manifest_violations(doc))
 
     def test_unknown_key_is_rejected(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"][0]["build_command"] = "make harness"
         self.assertIn("manifests[0].unknown key 'build_command' (the object is closed)",
                       cb.harness_capability_manifest_violations(doc))
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["install_script"] = "./setup.sh"
         self.assertIn("unknown key 'install_script' (the object is closed)",
                       cb.harness_capability_manifest_violations(doc))
@@ -1539,27 +1566,27 @@ class HarnessManifestValidatorTest(unittest.TestCase):
     def test_abi_version_boolean_and_zero_are_rejected(self) -> None:
         for abi in (True, 0, -1, 1.0):
             with self.subTest(abi=abi):
-                doc = cb.harness_capability_manifest_document()
+                doc = _manifest_doc()
                 doc["harness_capability_abi_version"] = abi
                 self.assertIn("harness_capability_abi_version must be a positive integer",
                               cb.harness_capability_manifest_violations(doc))
 
     def test_duplicate_node_key_and_token_are_rejected(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"].append(dict(doc["manifests"][0]))
         self.assertTrue(any("is declared more than once" in v
                             for v in cb.harness_capability_manifest_violations(doc)))
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"][0]["provides"] = ["sync_single_case@1", "sync_single_case@1"]
         self.assertTrue(any("must not repeat" in v
                             for v in cb.harness_capability_manifest_violations(doc)))
 
     def test_empty_provides_and_non_object_entry_are_rejected(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"][0]["provides"] = []
         self.assertIn("manifests[0].provides must be a non-empty array",
                       cb.harness_capability_manifest_violations(doc))
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         doc["manifests"] = ["harness_fortran_cpu"]
         self.assertIn("manifests[0] must be an object",
                       cb.harness_capability_manifest_violations(doc))
@@ -2116,7 +2143,7 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertEqual(token["pattern"], cb.CAPABILITY_TOKEN_PATTERN)
 
     def test_manifest_document_conforms_to_its_schema_shape(self) -> None:
-        doc = cb.harness_capability_manifest_document()
+        doc = _manifest_doc()
         self.assertEqual(doc["harness_capability_abi_version"], cb.HARNESS_CAPABILITY_ABI_VERSION)
         node_key_re = re.compile(
             self.capability_schema["properties"]["manifests"]["items"]["properties"]["node_key"]
@@ -2183,7 +2210,7 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertTrue(self.capability_schema["x-forbidden-examples"])
         for example in self.capability_schema["x-forbidden-examples"]:
             with self.subTest(note=example["note"]):
-                doc = cb.harness_capability_manifest_document()
+                doc = _manifest_doc()
                 for key in ("provides", "node_key"):
                     if key in example:
                         doc["manifests"][0][key] = example[key]
@@ -2293,57 +2320,21 @@ class ContractPlumbingTest(unittest.TestCase):
             with self.subTest(node=f"{kind}/{spec_id}@{version}"):
                 self.assertRegex(f"{kind}/{spec_id}@{version}", re.compile(cb.NODE_KEY_PATTERN))
 
-    def test_harness_manifest_keys_track_the_catalogued_harness_versions(self) -> None:
-        # `HARNESS_CAPABILITY_MANIFESTS` is keyed by node_key, so a harness `spec_version`
-        # bump that moves `spec_catalog.yaml` without moving the manifest key leaves the new
-        # node_key undeclared. `harness_provided_capabilities` then returns None ("provides
-        # nothing") and every dependent's non-empty `capability_requirements` fails
-        # `bundle_capability_unsatisfied` — fleet-wide, in a BILLED run, with a green unit
-        # suite. Pin both directions against the catalog so the omission fails here instead.
-        catalog = (Path(__file__).resolve().parents[2] / "spec" / "registry"
-                   / "spec_catalog.yaml").read_text(encoding="utf-8")
-        entries = re.findall(
-            r"- spec_kind:\s*(\S+)\s*\n\s*spec_id:\s*(\S+)\s*\n\s*spec_version:\s*(\S+)"
-            r"(?:\s*\n\s*\S+:.*)*?\s*\n\s*family:\s*(\S+)",
-            catalog)
-        self.assertTrue(entries, "spec_catalog.yaml parse produced no entries")
-        catalogued = {f"{kind}/{spec_id}@{version}"
-                      for kind, spec_id, version, _family in entries}
-        harnesses = {f"{kind}/{spec_id}@{version}"
-                     for kind, spec_id, version, family in entries
-                     if kind == "infrastructure" and family == "harness"}
-        # Non-vacuity canary, deliberately VERSION-FREE: it proves the parse found the harness
-        # entry (so the checks below are not an empty loop) without pinning a version this test
-        # would then false-fail on at the next bump — the failure it must report is a stale
-        # MANIFEST, never a stale assertion.
-        self.assertEqual({node_key.rsplit("@", 1)[0] for node_key in harnesses},
-                         {"infrastructure/harness_fortran_cpu", "infrastructure/harness_cpp_gpu",
-                          "infrastructure/harness_fortran_cpu_mpi",
-                          "infrastructure/harness_fortran_cpu_netcdf"},
-                         "the parsed harness set is not the expected harness set: either the "
-                         "catalog entry stopped parsing (fix the parser) or a harness was "
-                         "added/renamed (fix THIS assertion) — never the manifest")
-        # (1) No stale key: every declared manifest names a node_key the catalog carries.
-        for node_key in cb.HARNESS_CAPABILITY_MANIFESTS:
-            with self.subTest(node_key=node_key):
-                self.assertIn(node_key, catalogued,
-                              "HARNESS_CAPABILITY_MANIFESTS declares a node_key absent from "
-                              "spec_catalog.yaml (stale after a version bump?)")
-        # (2) No missing key: every catalogued `family: harness` node declares a manifest.
-        for node_key in harnesses:
-            with self.subTest(node_key=node_key):
-                self.assertIsNotNone(
-                    cb.harness_provided_capabilities(node_key),
-                    "a catalogued harness provides no capabilities — add its node_key to "
-                    "HARNESS_CAPABILITY_MANIFESTS (see docs/RUNBOOK.md, updating a shared "
-                    "dependency spec)")
-        # (3) The schema's documentary example names a declared manifest, so the shipped
-        # example cannot drift into illustrating an undeclared harness.
-        example_keys = {m["node_key"]
-                        for example in self.capability_schema.get("examples", [])
-                        for m in example.get("manifests", [])}
-        self.assertTrue(example_keys)
-        self.assertLessEqual(example_keys, set(cb.HARNESS_CAPABILITY_MANIFESTS))
+    def test_every_checked_in_target_harness_resolves_and_derives_a_valid_document(
+            self) -> None:
+        # Issue #690: the capability set is the target's, not a table keyed on a harness
+        # version, so a harness version bump edits no framework file. What a bump can still
+        # break is the profile's `version_constraint` against the catalog: each checked-in
+        # target's harness must resolve, and the document derived for it must validate.
+        target_ids = tp.list_target_ids(REPO_ROOT)
+        self.assertTrue(target_ids)
+        for target_id in target_ids:
+            with self.subTest(target=target_id):
+                node_key = _target_harness(target_id)
+                self.assertTrue(node_key.startswith("infrastructure/"), node_key)
+                self.assertEqual(cb.harness_capability_manifest_violations(
+                    cb.harness_capability_manifest_document_for(
+                        node_key, _target_provides(target_id))), [])
 
     def test_negotiation_survives_hostile_input(self) -> None:
         # A caller may negotiate before validating, so untrusted shapes must yield a result —
@@ -2376,10 +2367,10 @@ class ContractPlumbingTest(unittest.TestCase):
 
     def test_negotiation_never_fails_open(self) -> None:
         # The failure direction of a negotiation gate is always CLOSED. A set is a legal
-        # Iterable[str] (harness_provided_capabilities returns a frozenset); a bare string is
+        # Iterable[str] (`harness_capabilities` returns a frozenset); a bare string is
         # one malformed token; None and a number are not token collections at all. None of
         # them may read as "nothing required".
-        provided = cb.harness_provided_capabilities(HARNESS)
+        provided = _target_provides("fortran_cpu")
         self.assertEqual(
             cb.unsatisfied_capability_requirements({"sync_single_case@2"}, provided),
             ["sync_single_case@2"])
@@ -2400,7 +2391,7 @@ class ContractPlumbingTest(unittest.TestCase):
     def test_a_mapping_is_not_a_token_collection(self) -> None:
         # Iterating a dict yields its KEYS: a mapping on either side must not be read as
         # tokens, or `provided={"sync_single_case@1": false}` would silently satisfy it.
-        provided = cb.harness_provided_capabilities(HARNESS)
+        provided = _target_provides("fortran_cpu")
         self.assertEqual(cb.unsatisfied_capability_requirements({}, provided), ["{}"])
         self.assertEqual(
             cb.unsatisfied_capability_requirements({"gpu_magic@1": 1}, set()),
@@ -2961,7 +2952,8 @@ class PureContractLayersTests(unittest.TestCase):
 
     def test_the_conductor_hands_the_contract_the_harness_and_the_published_surface(self) -> None:
         """The conductor's acceptance entry, driven with its real input derivation: the harness's
-        node key and the IR's published operations reach the contract."""
+        node key, the set its target implies and the IR's published operations reach the
+        contract."""
         from types import SimpleNamespace
 
         import yaml
@@ -2977,7 +2969,8 @@ class PureContractLayersTests(unittest.TestCase):
                 _bundle_shape=lambda refs: "m3c",
                 _read_toolchain=lambda refs: {"language": "fortran"},
                 _runner_basename=lambda refs: "bx_runner.f90",
-                _build_leaf_bundle_graph=lambda refs, d: None)
+                _build_leaf_bundle_graph=lambda refs, d: None,
+                target=tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi"))
             holder._leaf_bundle_violation_inputs = (
                 lambda refs: wc.Conductor._leaf_bundle_violation_inputs(holder, refs))
             refs = SimpleNamespace(ir_ref=ir_ref, node_key=self._NK, spec_id="bx")
@@ -2986,6 +2979,9 @@ class PureContractLayersTests(unittest.TestCase):
                 wc.Conductor._leaf_bundle_violations(holder, refs, {})
         self.assertEqual(spy.call_args.kwargs["harness_label"],
                          "infrastructure/harness_fortran_cpu_mpi@0.4.0")
+        # The negotiated set is the run target's (issue #690): the launcher target's.
+        self.assertEqual(spy.call_args.kwargs["harness_provided"], frozenset(
+            {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}))
         self.assertEqual(spy.call_args.kwargs["ir_published_operations"], ["bx__step"])
         self.assertEqual(spy.call_args.kwargs["language"], "fortran")
 

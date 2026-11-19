@@ -227,7 +227,7 @@ class OracleKeyTest(_OracleFixture):
                 mock.patch.object(ort, "_harness_for_key", return_value="h@1"), \
                 mock.patch.object(ort, "_target_toolchain_identity", return_value={}), \
                 mock.patch("tools.codegen_bundle.harness_capability_manifest_document_for",
-                           return_value={}):
+                           autospec=True, return_value={}):
             return ort.phase_derivation_inputs(
                 self.repo, node_key=NODE, step=step, spec_ref=SPEC, ir_ref="workspace/i",
                 source_ref="workspace/s", binary_ref="workspace/b",

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "spec/schema/generate/harness_capabilities.schema.json",
   "title": "harness capability manifest document",
-  "description": "Canonical form of a harness capability manifest: the capability set one harness node provides to a CodegenBundle, under a versioned ABI. tools/codegen_bundle.py holds the manifests as tool-side data (HARNESS_CAPABILITY_MANIFESTS), renders them in this document form (harness_capability_manifest_document), and validates them against this shape (harness_capability_manifest_violations); the harness controlled_spec.md is NOT edited to carry them, because that would recertify a certified artifact for no change in generated behavior. When the harness spec is next re-specified on content grounds (Z6, docs/design/zero_base_architecture.md), the manifest moves into a spec-side capabilities section of exactly this shape. Negotiation matches an exact name@version token: version ordering never implies compatibility, and an undeclared harness provides nothing (fail-closed).",
+  "description": "Canonical form of a harness capability manifest: the capability set one harness node provides to a CodegenBundle, under a versioned ABI. No person writes it: the host derives the set from the target profile that names the harness (tools/target_profile.py:harness_capabilities, issue #690), renders it in this document form (tools/codegen_bundle.py:harness_capability_manifest_document_for) and validates the shape with harness_capability_manifest_violations. Negotiation matches an exact name@version token: version ordering never implies compatibility, and a harness that does not resolve provides nothing (fail-closed).",
   "type": "object",
   "additionalProperties": false,
   "required": ["harness_capability_abi_version", "manifests"],
@@ -14,7 +14,7 @@
       "minimum": 1
     },
     "manifests": {
-      "description": "One entry per harness node_key. A harness_capability_abi_version-compatible consumer treats an absent node_key as providing nothing.",
+      "description": "One entry per harness node_key; the host renders one, or none when the target's harness does not resolve. An absent node_key provides nothing.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -28,7 +28,7 @@
             "pattern": "^infrastructure/[a-z0-9][a-z0-9_]*(?:\\.[a-z0-9][a-z0-9_]*)*@[0-9][0-9A-Za-z._-]*(?![\\s\\S])"
           },
           "provides": {
-            "description": "The capability tokens this harness provides, duplicate-free. sync_single_case@1 is defined as the synchronous single-case block of the catalogued harness version, at this writing the canonical interface block of harness_fortran_cpu@0.11.0 section 5.1 (19 operations, 1 published type, dp = float64, case_id_len = 64, 0.10.0 extending the block by read_case and the typed getters and 0.11.0 replacing its emitters and snapshot writer by the capture operations) under the providing harness node's own names, bound to its target language by that language's backend (its performance-record writer, which no consuming node's bundle code calls, takes no threads_per_rank argument there; harness_fortran_cpu_mpi@0.5.0 section 5.1 begins with the block with the eight-argument writer; harness_cpp_gpu@0.5.0 section 5.1 likewise begins with the block with the eight-argument writer, followed by __block_size, which the CUDA C++ runner calls; harness_fortran_cpu_netcdf@0.1.0 section 5.1 is the single-process block without __real_token, 18 operations); the language backend's assert_harness_pin remains its mechanical enforcer. distributed_state@2 is defined as the distributed-state operations of harness_fortran_cpu_mpi@0.5.0 section 3.3 (rank queries, the process grid the host imposes and its queries, block partition and halo exchange along one grid dimension, gather onto rank 0 of an array partitioned along up to two grid dimensions with its tile check, global reductions), published after that block, with the writers called on rank 0 only. capture_format_<id>@1 names the output format the harness's capture operations write, <id> a member of the output_format axis; the launch gate holds it equal to the target profile's output.format, and no bundle requires it.",
+            "description": "The capability tokens this harness provides, duplicate-free. sync_single_case@1 is the synchronous single-case block the target language's backend pins (assert_harness_pin) under the providing harness node's own names: the operations and the published type the host-rendered runner calls, dp = float64, case_id_len = 64; every target provides it. distributed_state@2 is the distributed-state block the language backend pins after it (rank queries, the process grid the host imposes and its queries, block partition and halo exchange along one grid dimension, gather onto rank 0 of an array partitioned along up to two grid dimensions with its tile check, global reductions), with the writers called on rank 0 only; a target whose parallel backend declares a launcher provides it. capture_format_<id>@1 names the output format the harness's capture operations write, <id> the target profile's output.format; no bundle requires it.",
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
@@ -64,14 +64,8 @@
     {
       "harness_capability_abi_version": 1,
       "manifests": [
-        {"node_key": "infrastructure/harness_cpp_gpu@0.5.0",
-         "provides": ["capture_format_json@1", "sync_single_case@1"]},
-        {"node_key": "infrastructure/harness_fortran_cpu@0.11.0",
-         "provides": ["capture_format_json@1", "sync_single_case@1"]},
-        {"node_key": "infrastructure/harness_fortran_cpu_mpi@0.5.0",
-         "provides": ["capture_format_json@1", "distributed_state@2", "sync_single_case@1"]},
-        {"node_key": "infrastructure/harness_fortran_cpu_netcdf@0.1.0",
-         "provides": ["capture_format_netcdf@1", "sync_single_case@1"]}
+        {"node_key": "infrastructure/harness_sample_mpi@1.0.0",
+         "provides": ["capture_format_json@1", "distributed_state@2", "sync_single_case@1"]}
       ]
     }
   ],

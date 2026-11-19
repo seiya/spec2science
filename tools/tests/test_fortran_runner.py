@@ -2137,18 +2137,25 @@ class DistributedFormRefusalTest(unittest.TestCase):
 class HarnessPinTableTest(unittest.TestCase):
     """The renderer's harness table, against the manifest and the harness spec."""
 
-    def test_the_distributed_column_is_the_manifests(self) -> None:
+    def test_the_distributed_column_is_the_targets(self) -> None:
+        # The column agrees with the set each checked-in target implies for the harness it
+        # names (`target_profile.harness_capabilities`, issue #690).
+        from tools import target_profile as tp
         from tools.backends.language.fortran import runner as fortran_runner
-        from tools.codegen_bundle import HARNESS_CAPABILITY_MANIFESTS, capability_name
+        from tools.codegen_bundle import capability_name
+        root = Path(__file__).resolve().parents[2]
         seen = set()
-        for node_key, provides in HARNESS_CAPABILITY_MANIFESTS.items():
+        for target_id in tp.list_target_ids(root):
+            profile = tp.load_target_profile(root, target_id)
+            node_key = tp.harness_node_key_for_target(root, profile)
             sid = node_key.split("/", 1)[1].split("@", 1)[0]
             if sid not in fortran_runner._HARNESS_PINS:
                 continue
             seen.add(sid)
             self.assertEqual(
                 fortran_runner._HARNESS_PINS[sid].distributed,
-                any(capability_name(t) == "distributed_state" for t in provides), node_key)
+                any(capability_name(t) == "distributed_state"
+                    for t in tp.harness_capabilities(profile)), node_key)
         self.assertEqual(seen, set(fortran_runner._HARNESS_PINS))
 
     def test_each_pinned_interface_is_its_harness_specs_section_5_1(self) -> None:

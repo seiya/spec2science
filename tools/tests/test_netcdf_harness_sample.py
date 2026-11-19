@@ -91,15 +91,17 @@ class NetcdfHarnessSampleTest(unittest.TestCase):
         profile = nh.TARGET
         self.assertEqual(profile.output_format, "netcdf")
         harness = tp.harness_node_key_for_target(REPO, profile)
-        self.assertEqual(harness, f"infrastructure/{nh.HARNESS}@0.1.0")
+        self.assertTrue(harness.startswith(f"infrastructure/{nh.HARNESS}@"), harness)
         self.assertEqual(tp.target_profile_violations(REPO, profile, node_key=harness), [])
+        # Its harness writes the format the target reads: the set the target implies
+        # (issue #690), which the profile without its `output` section does not.
+        self.assertIn("capture_format_netcdf@1", tp.harness_capabilities(profile))
+        as_json = replace(profile, doc={k: v for k, v in profile.doc.items() if k != "output"})
+        self.assertNotIn("capture_format_netcdf@1", tp.harness_capabilities(as_json))
         json_harness = tp.harness_node_key_for_target(
             REPO, tp.load_target_profile(REPO, "fortran_cpu"))
-        self.assertEqual(tp._capture_format_violations(profile, json_harness), [(
-            f"output.format: target fortran_cpu_netcdf reads its captures as netcdf, and "
-            f"harness {json_harness} does not provide capture_format_netcdf@1")])
-        as_json = replace(profile, doc={k: v for k, v in profile.doc.items() if k != "output"})
-        self.assertEqual(len(tp._capture_format_violations(as_json, harness)), 1)
+        self.assertTrue(any("target_harness_mismatch" in v for v in tp.target_profile_violations(
+            REPO, profile, node_key=json_harness)))
 
     def test_a_consumer_on_the_target_links_the_library_its_harness_declares(self) -> None:
         """The plan's main shape (§4.3: on a `netcdf` target every node links the I/O library):
