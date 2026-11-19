@@ -935,7 +935,7 @@ case:
       surface:
         sflx_q: 0.0002
       tracer:
-        mass: 1.0
+        mass: 0.5
       judge:
         ke_pbl: 4
       initial:
@@ -1069,7 +1069,7 @@ case:
         ks: 2
         ke: 9
       time:
-        dt: 60.0
+        dt: 45.0
       surface:
         sflx_q: 0.0002
       tracer:
