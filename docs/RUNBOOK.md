@@ -666,6 +666,19 @@ A disagreement ends the run: `Validate.execute` fails with `trial_meta.json#fail
 
 Three further outcomes are a transport `fail_closed` of `Validate.execute` (no leaf ran), reported as listed under "no tag" in §3-1: `oracle_run_failed`, `oracle_unevaluable` and `oracle_declaration_invalid`.
 
+**The two microphysics nodes.** `microphysics_saturation_liquid_1d_column` and `microphysics_kessler_warm_rain_1d_column` declare the original SCALE procedures as their oracle, over the libraries `scale_mp_oracle` and `scale_mp_oracle_alt`. Build both by the measurement directory's `lib` target (`docs/design/kessler_measurement/README.md` §Oracle library) and list them in `sites.yaml` under the local site, each directory as an absolute path, as both `include` and `lib` (in an existing file, add the two entries to `sites.local.libraries`):
+
+```yaml
+sites_version: 1
+sites:
+  local:
+    libraries:
+      scale_mp_oracle:     {include: <dir>/default, lib: <dir>/default}
+      scale_mp_oracle_alt: {include: <dir>/alt, lib: <dir>/alt}
+```
+
+Without them, on a target of the oracle's language, a run of either node that reaches `Build`, and a run past `Compile` of a node whose closure holds one of them, ends `library_unavailable` at startup; at a remote site it is refused as `oracle_at_remote_site` (§0-1, "Refused at startup — external libraries").
+
 ## 3-1. Resuming a failed workflow (`--resume`)
 
 **A `--resume` across a `LEAF_PROMPT_CONTRACT_VERSION` bump runs** ([issue #643](https://github.com/seiya/spec2science/issues/643)): the version is in no derivation key, so the keys decide what re-derives, as on a fresh run. A bump of a reading-contract version moves its phase's key and re-derives that phase on a resume as on a fresh run. §3-0 lists each bump's cost.

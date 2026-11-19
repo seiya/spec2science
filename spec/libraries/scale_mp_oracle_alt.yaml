@@ -1,0 +1,9 @@
+# The archive of scale_mp_oracle built with the suites' `alt_constants` (`ALT_CONSTANTS=1`),
+# since the original holds its constants as compile-time parameters.
+library_version: 1
+library_id: scale_mp_oracle_alt
+language: fortran
+modules: [scale_precision, scale_io, scale_const, scale_file_history, scale_atmos_saturation,
+          scale_atmos_phy_mp_common, scale_atmos_phy_mp_kessler]
+procedures: []
+link: [scale_mp_oracle_alt]

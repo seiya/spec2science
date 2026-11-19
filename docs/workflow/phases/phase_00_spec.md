@@ -3,6 +3,8 @@
 ## Overview
 The phase that manually writes the `Controlled Spec`, `tests`, and `deps` and establishes the starting point of the core workflow. It is not an LLM-using phase and is outside the scope of orchestration.
 
+The files may be drafted from existing code by the conversion flow (`skills/spec-from-code`); the person who commits them is their author, and the flow is outside orchestration as this phase is.
+
 ## I/O contract
 - execution input: the requirements, physics requirements, and dependency-selection policy given outside the workflow
 - verification input: none
@@ -10,6 +12,7 @@ The phase that manually writes the `Controlled Spec`, `tests`, and `deps` and es
   - `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`
   - `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md` (every `spec_kind` but `profile`, which has none — `docs/SPEC.md` req. 5)
   - `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
+  - optional: `spec/<spec_kind>/<domain>/<family>/<spec_id>/oracle/`, the declaration of existing code the node's generated variant is compared with, and its adapter (`docs/SPEC.md` requirement 17 is canonical)
 
 ## Required requirements
 - Define the intent of the physics algorithm (A) in the `Controlled Spec`.

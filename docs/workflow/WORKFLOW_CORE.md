@@ -33,7 +33,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 
 ## Workflow overview
 ### phase sequence
-0. `Spec` (manual): create `controlled_spec.md`, `tests.md`, and `deps.yaml`.
+0. `Spec` (manual): create `controlled_spec.md`, `tests.md`, and `deps.yaml`, and optionally the node's `oracle` (`docs/SPEC.md` requirement 17). From existing code they may be drafted by the conversion flow, an operator `SKILL` outside orchestration (`skills/spec-from-code`).
 1. `Compile`: integrate the natural-language specification + dependency resolution into a **single structural IR** (`spec.ir.yaml`).
 2. `Generate`: take the IR as input and generate the source of `model` and `runner`. (On an M3c physics node — a non-`infrastructure` node whose target toolchain the host renders a runner for; the runner is glue over the target's harness — the leaf authors `model` alone (the file name is the language's `bundle_facts`; for `fortran`, [BUNDLE_BINDING.md](../backends/language/fortran/BUNDLE_BINDING.md) §1) and the `runner` is host-rendered by the conductor as the node's driver; see phase_02 §2-1.)
 3. `Build`: deterministically turn the generated source into a binary with a standard build tool.
@@ -244,7 +244,7 @@ In this section, the input of each phase is described separately as `execution i
 ### 0. Spec (manual)
 - execution input: the requirements, physics requirements, and dependency-selection policy given outside the workflow
 - verification input: none
-- output: `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md` (every `spec_kind` but `profile`), `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`
+- output: `spec/<spec_kind>/<domain>/<family>/<spec_id>/controlled_spec.md`, `spec/<spec_kind>/<domain>/<family>/<spec_id>/tests.md` (every `spec_kind` but `profile`), `spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml`, and optionally `spec/<spec_kind>/<domain>/<family>/<spec_id>/oracle/` (`docs/SPEC.md` requirement 17)
 
 ### 1. Compile
 - execution input: `controlled_spec.md`, `tests.md`, `deps.yaml`, `spec/registry/spec_catalog.yaml`

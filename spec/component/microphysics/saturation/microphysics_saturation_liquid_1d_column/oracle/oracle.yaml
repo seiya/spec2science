@@ -1,0 +1,15 @@
+# The original of this node (docs/SPEC.md requirement 17). The adapter is adapter.f90; the two
+# libraries are built by docs/design/kessler_measurement/Makefile's `lib` target, and the site
+# lists them (docs/RUNBOOK.md §Certifying a node against its oracle).
+oracle_version: 1
+language: fortran
+source: adapter.f90
+origin: "scale-met/scale-dev tag 5.5.5 (ddc1e1d2d; item 2 recorded dc58155, which the remote does not hold): scalelib/src/common/scale_precision.F90, scale_const.F90; scalelib/src/atmosphere/common/scale_atmos_hydrometeor.F90, scale_atmos_saturation.F90; scalelib/src/atmosphere/physics/microphysics/scale_atmos_phy_mp_common.F90; with the six stubs of docs/design/kessler_measurement/stubs/"
+builds:
+  - id: default
+    libraries: [scale_mp_oracle]
+  # The original holds its constants as compile-time parameters: the `constants: alt` cases
+  # run against the library built with the suite's `alt_constants`.
+  - id: alt
+    libraries: [scale_mp_oracle_alt]
+    cases: [l0_qsat_alt, l0_satadj_alt_subsat, l0_satadj_alt_supersat]

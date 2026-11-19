@@ -1,6 +1,7 @@
 # Offline build of the original SCALE physics modules against six stub modules.
 # `SCALE_ROOT` names a tree of scale-met/scale-dev at the commit README.md states; it is read only.
-#   make SCALE_ROOT=<tree> [BUILD=<dir>]
+#   make SCALE_ROOT=<tree> [BUILD=<dir>]          the offline driver
+#   make SCALE_ROOT=<tree> [BUILD=<dir>] lib      the archive the two nodes' oracles link
 ifndef SCALE_ROOT
 $(error SCALE_ROOT is not set: pass the scale-dev tree, see README.md)
 endif
@@ -41,9 +42,19 @@ SOURCES := \
   $(SELF)driver.F90
 
 OBJECTS := $(addprefix $(BUILD)/,$(notdir $(SOURCES:.F90=.o)))
+# The library is every object but the driver's; its module files are in $(BUILD).
+LIB_OBJECTS := $(filter-out $(BUILD)/driver.o,$(OBJECTS))
+LIB_NAME := scale_mp_oracle$(if $(ALT_CONSTANTS),_alt)
 
 $(BUILD)/driver: $(OBJECTS)
 	$(FC) $(FFLAGS) -o $@ $(OBJECTS)
+
+.PHONY: lib
+lib: $(BUILD)/lib$(LIB_NAME).a
+
+$(BUILD)/lib$(LIB_NAME).a: $(LIB_OBJECTS)
+	rm -f $@
+	ar rcs $@ $(LIB_OBJECTS)
 
 # One serial rule per source: each object needs every module before it in `SOURCES`.
 define COMPILE_RULE
