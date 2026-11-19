@@ -1373,7 +1373,7 @@ class OracleExecuteTest(unittest.TestCase):
                 evaluated: list[dict] = []
                 real = wc.Conductor._evaluate_execute_verdict
 
-                def spy(self_, refs_, ir_):
+                def spy(self_, refs_, ir_, real=real, evaluated=evaluated):
                     doc = real(self_, refs_, ir_)
                     evaluated.append(json.loads(json.dumps(doc)))
                     return doc
@@ -1405,8 +1405,8 @@ class OracleExecuteTest(unittest.TestCase):
         self.assertEqual(self.read(oracle.CHECK_RECORD)["status"], "disagree")
 
     def test_the_loader_path_holds_the_closure_s_library_dirs_then_the_build_s(self) -> None:
-        from tools.checked_build import target_compiler
         from tools.backends import registry
+        from tools.checked_build import target_compiler
         closure, own = "/libs/closure/lib", "/libs/oracle_alt/lib"
         meta = {"library_dirs": [closure],
                 "oracle": {"builds": [
