@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `microphysics_kessler_warm_rain_1d_column`
-- `spec_version`: `0.1.0`
+- `spec_version`: `0.1.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `microphysics`
@@ -78,7 +78,7 @@ $$
 \mathtt{vterm\_r}(k)=-36.34\,\left(\mathtt{dens}(k)(q_r+z)\right)^{0.1364}\,\frac{\mathtt{refstate\_dens}(ks)}{\mathtt{refstate\_dens}(k)}\,(1-z).
 $$
 
-**Conservation.** Where the $\dot q_v$ limiter does not bind, step 3 conserves $q_v+q_c+q_r$ and the moist internal energy $TC_v+q_vL_{00}$, and `__saturation_adjustment` conserves $q_v+q_c$ and conserves $TC_v+q_vL_{00}$ to within its convergence threshold of `1e-6 K`. So `rhoe_t`$\,\mathtt{dt}=-\rho L_{00}(q_v^{final}-q_v^{input})$. Where the $\dot q_v$ limiter binds, total water is not conserved, as in the source.
+**Conservation.** Where the $\dot q_v$ limiter does not bind, step 3 conserves $q_v+q_c+q_r$ and the moist internal energy $TC_v+q_vL_{00}$, and `__saturation_adjustment` conserves $q_v+q_c$ and conserves $TC_v+q_vL_{00}$ to within its convergence threshold of `1e-6 K`. Where the $\dot q_v$ limiter binds, total water is not conserved, as in the source. Whether it binds or not, `rhoe_t`$\,\mathtt{dt}=-\rho L_{00}(q_v^{final}-q_v^{input})$: step 3 sets $\rho\dot e$ from the limited $\dot q_v$, which is the change of `qv` in step 3, and step 5 adds `rhoe_d`$/\mathtt{dt}$, which is $-L_{00}\rho$ times the change of `qv` in step 4.
 
 **Not defined here.** The CFL number is not defined, because the `operation`s have no transport. A column admits no spatial symmetry of the scheme: `__adjustment` is pointwise, and `__terminal_velocity` couples cells only through the reference level $ks$, so a translation with a translated reference profile gives the same result translated.
 
@@ -348,7 +348,7 @@ Forbid a default value for a constant, and forbid reading a constant from anythi
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`). The constants the suite fixes fall into the `case` section of `spec.ir.yaml` as case inputs.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column/tests.md`, with `test_profile_version` of `0.3.0`.
+The corresponding `tests.md` is `spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column/tests.md`, with `test_profile_version` of `0.3.1`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `max` and `min` of §3 steps 1 and 2, the step $z$ of `terminal_velocity`, the powers of $q_r$ at $q_r=0$, the dependency's iteration, and the refusal of §4 are made explicit as non-differentiable operations.

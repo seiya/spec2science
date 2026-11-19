@@ -211,7 +211,7 @@ specs:
 
   - spec_kind: component
     spec_id: microphysics_kessler_warm_rain_1d_column
-    spec_version: 0.1.0
+    spec_version: 0.1.1
     status: controlled_draft
     domain: microphysics
     family: kessler

@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `microphysics_kessler_warm_rain_1d_column_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.3.1`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `microphysics_kessler_warm_rain_1d_column`
-- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.spec_version`: `0.1.1`
 - `spec_ref.controlled_spec_path`: `spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column/controlled_spec.md`
 
 ## 1. Test purpose
@@ -115,7 +115,7 @@ The host-rendered driver calls the case's `operation` once, on the states of §2
 - `evaporation`: with `ref = dq_evap*dt` and `tref = -dv*(L00 + initial.temp*(cvv - cl))/final.cvtot`, `maxabs(interior*(dr + ref)) / maxabs(interior*ref)`, `maxabs(interior*(dv - ref)) / maxabs(interior*ref)`, `maxabs(interior*final.qc)` and `maxabs(interior*(final.temp - initial.temp - tref))`.
 - `eps_floor`: with `ref = dq_evap*dt`, `maxabs(interior*(dv - ref)) / maxabs(interior*ref)`.
 - `water_energy`: with `em = final.temp*final.cvtot + final.qv*L00` and `em0 = initial.temp*initial.cvtot + initial.qv*L00`, `maxabs(interior*(dv + dc + dr))`, `max(interior*abs(em - em0)/abs(2e-6*dqs_final*(L00 + final.temp*(cvv - cl))))` and `maxabs(interior*(rhoe_t*dt + dens*L00*dv)) / max(maxabs(interior*dens*L00*dv), 10)`.
-- `limiter`: `maxabs(interior*final.qr)` on `l0_limiter_qr`, `maxabs(interior*final.qc)` on `l0_limiter_qc`, `maxabs(interior*final.qv)` on `l0_limiter_qv`; on `l0_limiter_qv`, with `ref = (dq_auto + dq_accr - dq_evap)*dt`, `maxabs(interior*(dr - ref)) / maxabs(interior*ref)`; on all three, `min(interior*X)` for each of `qv`, `qc`, `qr`.
+- `limiter`: `maxabs(interior*final.qr)` on `l0_limiter_qr`, `maxabs(interior*final.qc)` on `l0_limiter_qc`, `maxabs(interior*final.qv)` on `l0_limiter_qv`; on `l0_limiter_qv`, with `ref = (dq_auto + dq_accr - dq_evap)*dt`, `maxabs(interior*(dr - ref)) / maxabs(interior*ref)`, and `maxabs(interior*(rhoe_t*dt + dens*L00*dv)) / max(maxabs(interior*dens*L00*dv), 10)`; on all three, `min(interior*X)` for each of `qv`, `qc`, `qr`.
 - `saturated`: `max(interior*abs(final.qv - qs_final)/(2e-6*abs(dqs_final)))`; `max(pairs*abs(drift_ratio - 1))`, with `drift_ratio = (em - em0)/((final.qv - qs_final)*(L00 + final.temp*(cvv - cl)))` and `em`, `em0` those of `water_energy`; and `min(interior*final.qc + halo)`.
 - `evaporate_number`: with `ref = max(-pcsat, 0)*dens/(4/3*pi*dwatr*(8e-6)**3)` and `star = initial.qc - 1e-3*max(initial.qc - 1e-3, 0)*dt`, `maxabs(interior*(evaporate - ref)) / max(maxabs(interior*ref), 1)` and `maxabs(interior*(pcsat - (final.qc - star)/dt)) / maxabs(interior*pcsat)`; on `l0_cloud_evaporates`, `l0_evaporate_dens`, `l0_evaporate_range` and `l0_evaporate_one_cell`, `min(interior*evaporate + halo)`; on `l0_supersaturated`, `maxabs(interior*evaporate)` and `min(interior*pcsat + halo)`.
 - `evaporate_closed_form`: at the one cell `first` marks, where the saturation step evaporates all the cloud water and `qc` was below the autoconversion threshold, with `ref = initial.qc/dt*dens/(4/3*pi*dwatr*(8e-6)**3)`, `maxabs(first*(evaporate - ref)) / maxabs(first*ref)`.
@@ -174,7 +174,7 @@ Every `pass` test also requires `guard_pass == 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `pass`
   - `quantities`: `guard_pass`, `limiter`
-  - `judgment`: `guard_pass == 1`, and, on `l0_limiter_qr` the `qr` limiter binds at every interior cell: `maxabs(interior*final.qr)` is `<= 1e-17`. On `l0_limiter_qc` the `qc` limiter binds at every interior cell and each cell ends subsaturated through the virtual branch: `maxabs(interior*final.qc)` is `== 0`. On `l0_limiter_qv` the `qv` limiter binds at every interior cell: `maxabs(interior*final.qv)` is `<= 1e-17`. On `l0_limiter_qv` total water is not conserved, and rain is not scaled to conserve it: with `ref = (dq_auto + dq_accr - dq_evap)*dt`, `maxabs(interior*(dr - ref)) / maxabs(interior*ref)` is `<= 1e-12`. On all three, `min(interior*X)` is `>= -1e-17` for each of `qv`, `qc`, `qr` (together `limiter`). A limited remainder is of order `1e-19` and its sign depends on rounding. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
+  - `judgment`: `guard_pass == 1`, and, on `l0_limiter_qr` the `qr` limiter binds at every interior cell: `maxabs(interior*final.qr)` is `<= 1e-17`. On `l0_limiter_qc` the `qc` limiter binds at every interior cell and each cell ends subsaturated through the virtual branch: `maxabs(interior*final.qc)` is `== 0`. On `l0_limiter_qv` the `qv` limiter binds at every interior cell: `maxabs(interior*final.qv)` is `<= 1e-17`. On `l0_limiter_qv` total water is not conserved, and rain is not scaled to conserve it: with `ref = (dq_auto + dq_accr - dq_evap)*dt`, `maxabs(interior*(dr - ref)) / maxabs(interior*ref)` is `<= 1e-12`; and the energy tendency follows the vapour that actually changed, the limited one: `maxabs(interior*(rhoe_t*dt + dens*L00*dv)) / max(maxabs(interior*dens*L00*dv), 10)` is `<= 1e-12`. On all three, `min(interior*X)` is `>= -1e-17` for each of `qv`, `qc`, `qr` (together `limiter`). A limited remainder is of order `1e-19` and its sign depends on rounding. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
 - `test_id`: `l0_supersaturated_saturates_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
