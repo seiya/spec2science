@@ -11463,17 +11463,19 @@ class Conductor:
                       language: str, build_system: str, execute: Any,
                       closure_libraries: Sequence[Any]) -> dict[str, Any]:
         """Build each of the oracle's builds (issue #680, `docs/workflow/phases/phase_03_build.md`
-        §Oracle builds) into `binary/<binary_id>/bin_oracle/<build_id>/<exe>`, and return the
+        §I/O contract, "The oracle builds") into `binary/<binary_id>/bin_oracle/<build_id>/<exe>`, and return the
         `binary_meta.json#oracle` record.
 
         Each build compiles a copy of the node's `src/` in which the adapter takes the model
         source's name, so the certified driver and control file are built unchanged around it;
         the closure is staged into an object directory of its own. It is handed ONE pair of
-        library variables over the closure's libraries and then this build's, each once: the
-        harness's library (if any) is the closure's, and a second pair would lose it. The
-        certified and checked builds are handed the closure's libraries alone, so a generated
-        model cannot reach the existing code through an oracle library and agree with it by
-        construction. The adapter is read by no gate: no leaf writes it."""
+        library variables over the closure's libraries and then this build's: the harness's
+        library (if any) is the closure's, and a second pair would lose it. The certified and
+        checked builds are handed the closure's libraries alone, so no include directory or
+        link word of an oracle library reaches a generated model's build (a module of an
+        oracle library installed in a closure library's include directory is visible to it
+        there, as any undeclared module beside a declared one is). The adapter is read by no
+        gate: no leaf writes it."""
         from tools import external_library as xl
         from tools import oracle as oracle_mod
         from tools.build_runtime import tool_compile_project
@@ -11503,10 +11505,7 @@ class Conductor:
             shutil.copy2(adapter, build_src / model)
             self._stage_dependency_sources(refs, build_obj, phase="build")
             own = xl.resolve_closure(self.repo_root, self.target, build.libraries)
-            linked: dict[str, Any] = {}
-            for resolved in (*closure_libraries, *own):
-                linked.setdefault(resolved.declaration.library_id, resolved)
-            libraries = list(linked.values())
+            libraries = [*closure_libraries, *own]
             result = tool_compile_project({
                 "project_dir": str(build_src),
                 "language": language,

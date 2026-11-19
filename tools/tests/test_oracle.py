@@ -812,6 +812,32 @@ class OracleBuildTest(_OracleFixture):
         self.assertIn("left no binary at bin_oracle/default/spec_x_runner", result.stderr)
         self.assertFalse(stale.exists())
 
+    def test_an_oracle_build_that_exits_non_zero_is_fail_closed_though_it_left_a_binary(
+            self) -> None:
+        """A make that fails after linking (a later target) leaves a binary; the exit status,
+        not the file, decides."""
+        from tools.tests.test_workflow_conductor import _build_runtime
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [foo]\n")
+        repo, c, refs = self.node(oracle_text=text)
+        build_runtime = _build_runtime()
+        real_compile = build_runtime.tool_compile_project
+
+        def fails_after_linking(args):
+            result = real_compile(args)
+            if "/oracle/" in args["project_dir"]:
+                return {**result, "ok": False, "return_code": 2}
+            return result
+
+        with mock.patch.object(build_runtime, "tool_compile_project", fails_after_linking):
+            result = self.build(c, refs)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("oracle_build_failed: oracle build 'default'", result.stderr)
+        self.assertIn("exited 2", result.stderr)
+        # The build did leave its binary: the exit status alone refused it.
+        self.assertTrue(
+            (repo / refs.binary_dir() / "bin_oracle" / "default" / "spec_x_runner").is_file())
+
     def test_an_oracle_at_a_remote_site_is_refused_before_anything_is_staged(self) -> None:
         import tools.workflow_conductor as wc
         from tools.execution_sites import Site
