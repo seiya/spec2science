@@ -6,7 +6,8 @@ evidence, a hand-written transcription of each `tests.md` and not an output of `
 `verify_all.py` runs every node; the kernels are the operator's `workspace/pipelines/`.
 
   PYTHONPATH=. python3 <this file> <ir.yaml> --model <model.f90> [--dep <dep.f90>]...
-      [--library <library_id>]... [--gate-only] [--keep <dir>] [--mutate 'old=>new']...
+      [--library <library_id>[=<dir>]]... [--flag=<flag>]... [--compared-only] [--gate-only] [--keep <dir>]
+      [--mutate 'old=>new']...
 
 1. `validate_compile_ir_dir` with the repository as root: Compile.static's gates, incl. the
    quantities / expected_outcome / history lines against the real tests.md.
@@ -20,7 +21,14 @@ prints which tests the defect moved; exit status is then always 0 unless the bui
 `--library <library_id>` (repeatable, issue #644 P2) links the `external library` of that
 declaration (`spec/libraries/<library_id>.yaml`), located by the compiler's own search, as a site
 entry with no directory is (`tools/external_library.py` `resolve`), and runs the binary with the
-loader path the host composes.
+loader path the host composes. `--library <library_id>=<dir>` locates it in `<dir>` instead, as a
+site entry whose `include` and `lib` are both `<dir>` is, and compiles with its include flags, so
+an oracle adapter that reads the library's module files can stand in as the model (issue #680).
+
+`--flag=<flag>` (repeatable) appends a compiler flag to every compile and the link, e.g. another
+optimisation level. `--compared-only` runs only the cases an oracle is compared on
+(`tools/oracle.py` `compared_cases`) and judges only the tests whose cases are all among them: an
+oracle has no input guard, so the original cannot run a refused case (issue #680).
 """
 from __future__ import annotations
 
@@ -75,19 +83,27 @@ def gate(ir: dict) -> list[str]:
         return vps.validate_compile_ir_dir(REPO, d)
 
 
-def libraries(library_ids: list[str]) -> list:
-    """Each declared library located by the compiler's own search: what a site entry naming no
-    directory resolves to."""
+def libraries(specs: list[str]) -> list:
+    """Each declared library, `<library_id>` or `<library_id>=<dir>`: located by the compiler's
+    own search, as a site entry naming no directory is, or in `<dir>`."""
     from types import SimpleNamespace
 
     from tools.execution_sites import SiteLibrary
-    site = SimpleNamespace(site_id="local", library=lambda _library_id: SiteLibrary())
-    return [xl.resolve(xl.load_declaration(REPO, i), site, target_compiler(FORTRAN_CPU))
-            for i in library_ids]
+    out = []
+    for spec in specs:
+        library_id, _, where = spec.partition("=")
+        entry = SiteLibrary(include=where, lib=where) if where else SiteLibrary()
+        site = SimpleNamespace(site_id="local", library=lambda _library_id, e=entry: e)
+        out.append(xl.resolve(xl.load_declaration(REPO, library_id), site,
+                              target_compiler(FORTRAN_CPU)))
+    return out
 
 
 def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
-        resolved: list | tuple = ()) -> None:
+        resolved: list | tuple = (), extra_flags: list[str] | tuple = (),
+        only: set[str] | None = None) -> None:
+    include, link = xl.make_values(target_compiler(FORTRAN_CPU), list(resolved))
+    flags = [*FLAGS, *extra_flags, *include.split()]
     (work / "ir").mkdir()
     (work / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     pe.write_case_inputs(ir, work / "ir")
@@ -108,17 +124,16 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
         dst = work / f"s{i}_{src.name}"
         dst.write_text(text)
         obj = f"s{i}.o"
-        r = subprocess.run(["gfortran", *FLAGS, "-c", dst.name, "-o", obj], cwd=work,
+        r = subprocess.run(["gfortran", *flags, "-c", dst.name, "-o", obj], cwd=work,
                            capture_output=True, text=True)
         if r.returncode:
             raise SystemExit(f"compile {src}: {r.stderr[-3000:]}")
         objs.append(obj)
-    r = subprocess.run(["gfortran", *FLAGS, "-c", "runner.f90", "-o", "runner.o"], cwd=work,
+    r = subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "runner.o"], cwd=work,
                        capture_output=True, text=True)
     if r.returncode:
         raise SystemExit("compile runner: " + r.stderr[-3000:])
-    link = xl.make_values(target_compiler(FORTRAN_CPU), list(resolved))[1].split()
-    r = subprocess.run(["gfortran", *FLAGS, *objs, "runner.o", *link, "-o", "bin"], cwd=work,
+    r = subprocess.run(["gfortran", *flags, *objs, "runner.o", *link.split(), "-o", "bin"], cwd=work,
                        capture_output=True, text=True, check=False)
     if r.returncode:
         raise SystemExit("link: " + r.stderr[-3000:])
@@ -127,7 +142,7 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
     env = {**os.environ, "OMP_NUM_THREADS": "4"}
     env.update(xl.loader_env(FORTRAN_CPU, xl.library_dirs(list(resolved)), os.environ))
     ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"]
-                 if pe.RESTART_CASE_KEY not in c)
+                 if pe.RESTART_CASE_KEY not in c and (only is None or c["case_id"] in only))
     proc = subprocess.run([str(work / "bin"), "--cases", str(work / "ir" / "spec.ir.yaml"), *ids],
                           cwd=work / "run", capture_output=True, text=True, timeout=3000,
                           env=env)
@@ -145,6 +160,8 @@ def main() -> int:
     ap.add_argument("--model")
     ap.add_argument("--dep", action="append", default=[])
     ap.add_argument("--library", action="append", default=[])
+    ap.add_argument("--flag", action="append", default=[])
+    ap.add_argument("--compared-only", action="store_true")
     ap.add_argument("--gate-only", action="store_true")
     ap.add_argument("--keep")
     ap.add_argument("--mutate", action="append", default=[])
@@ -161,19 +178,27 @@ def main() -> int:
     if a.keep and base.exists():
         shutil.rmtree(base)
     base.mkdir(parents=True, exist_ok=True)
+    only = None
+    if a.compared_only:
+        from tools.oracle import compared_cases
+        only = set(compared_cases(ir))
     try:
         run(ir, Path(a.model).resolve(), [Path(d).resolve() for d in a.dep], base, a.mutate,
-            libraries(a.library))
+            libraries(a.library), a.flag, only)
         records = pe.evaluate_primary_predicates(ir, base / "run", output_format="json")
         verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
-        expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
+        expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]
+                    if only is None or set(t["target_cases"]) <= only}
         got = {t["test_id"]: t["status"] for t in verdict["per_test"]}
         bad = {k: (got.get(k), v) for k, v in expected.items() if got.get(k) != v}
-        print(f"TESTS: {len(expected)}; status != expected: {len(bad)}; self_verdict {verdict['self_verdict']}")
+        whole = "" if only is not None else f"; self_verdict {verdict['self_verdict']}"
+        print(f"TESTS: {len(expected)}; status != expected: {len(bad)}{whole}")
         for k, v in bad.items():
             print("  MOVED", k, v)
         for r in records:
             d = dict(r) if isinstance(r, dict) else r
+            if only is not None and d.get("test_id") not in expected:
+                continue
             if a.show_values or not d.get("satisfied", False):
                 print("  rec", json.dumps({k: v for k, v in d.items() if k != "reads" and k != "expr"}, default=str)[:400])
         if a.mutate:
