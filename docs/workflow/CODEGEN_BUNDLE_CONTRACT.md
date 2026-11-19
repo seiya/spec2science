@@ -412,15 +412,16 @@ version, so a harness version bump edits no framework file. (The language backen
 the interface block they pin by the harness's `spec_id`; issue #690 moves that selection to the
 tokens.)
 
-The launch gate does not compare the profile with the harness it names. A profile that names a
-harness of the other process model, or of another output format, fails closed later, at a cost
-bounded by one harness certification (measured on issue #690's PR-1 review):
+The launch gate does not compare the profile with the harness it names. A run under a profile
+that names a harness of the other process model, or of another output format, fails closed
+later, at the first of these it reaches (measured for
+[issue #690](https://github.com/seiya/spec2science/issues/690)):
 - a launcher target over a single-process harness: the harness's runs report one rank, and
   `Validate.execute`'s quality check refuses the launcher shape (`launch_match`);
-- a target with no launcher over a distributed harness: the harness source needs the parallel
-  backend's binding, which the target's compiler did not find without the backend's compiler
-  wrapper, so the harness's own `Generate` gate refuses it; a compiler that finds the binding
-  by default was not measured;
+- a target with no launcher over a distributed harness: a harness source that uses the parallel
+  backend's binding does not compile with the target's compiler without the backend's compiler
+  wrapper, so the harness's own `Generate` gate refuses it; a compiler that finds the binding by
+  default was not measured;
 - an output-format mismatch: the target's store reads no record of any case at
   `Validate.execute`.
 
@@ -478,8 +479,10 @@ values. Like `sync_single_case@1` it names operations of the harness source, so 
 ### The manifest document
 
 The capability set of one harness has a document form,
-`spec/schema/generate/harness_capabilities.schema.json` (canonical validator:
-`tools/codegen_bundle.py:harness_capability_manifest_violations`).
+`spec/schema/generate/harness_capabilities.schema.json`, whose grammar is
+`tools/codegen_bundle.py:harness_capability_manifest_violations`. No production code calls the
+validator: the host renders the document from the token constants, and the unit suite holds each
+checked-in target's rendered document to the grammar.
 `harness_capability_manifest_document_for(node_key, provides)` renders the set the target
 implies into it, as one entry; a harness that does not resolve fails the run closed before any
 document is rendered. That document is

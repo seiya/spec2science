@@ -552,8 +552,9 @@ class OutputFormatTests(unittest.TestCase):
         """Issue #690: no harness declares its capability set; the profile that names it
         implies it. `sync_single_case@1` always, `distributed_state@2` exactly when the
         parallel backend declares a launcher, and the capture token of `output.format`."""
-        # Kills: dropping a token, deriving `distributed_state` from anything but the launcher
-        # capability, or a fixed capture format.
+        # Kills: dropping a token, a fixed `distributed_state` answer, or a fixed capture format.
+        # It does not tell the launcher capability from another one only `mpi` declares
+        # (`compiler_wrapper`): no declared backend separates the two.
         from tools.backends import registry
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)

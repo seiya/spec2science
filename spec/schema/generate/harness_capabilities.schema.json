@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "spec/schema/generate/harness_capabilities.schema.json",
   "title": "harness capability manifest document",
-  "description": "Canonical form of a harness capability manifest: the capability set one harness node provides to a CodegenBundle, under a versioned ABI. No person writes it: the host derives the set from the target profile that names the harness (tools/target_profile.py:harness_capabilities, issue #690), renders it in this document form (tools/codegen_bundle.py:harness_capability_manifest_document_for) and validates the shape with harness_capability_manifest_violations. Negotiation matches an exact name@version token: version ordering never implies compatibility, and a harness that does not resolve fails the run closed.",
+  "description": "Canonical form of a harness capability manifest: the capability set one harness node provides to a CodegenBundle, under a versioned ABI. No person writes it: the host derives the set from the target profile that names the harness (tools/target_profile.py:harness_capabilities, issue #690), renders it in this document form (tools/codegen_bundle.py:harness_capability_manifest_document_for). harness_capability_manifest_violations is the grammar of the document; no production code calls it, and the unit suite holds each checked-in target's rendered document to it. Negotiation matches an exact name@version token: version ordering never implies compatibility, and a harness that does not resolve fails the run closed.",
   "type": "object",
   "additionalProperties": false,
   "required": ["harness_capability_abi_version", "manifests"],
