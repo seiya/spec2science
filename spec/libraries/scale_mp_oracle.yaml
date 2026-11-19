@@ -1,0 +1,9 @@
+# The original SCALE microphysics modules with six stubs, which the oracles of the two
+# microphysics nodes link (docs/design/kessler_measurement/README.md §Oracle library).
+library_version: 1
+library_id: scale_mp_oracle
+language: fortran
+modules: [scale_precision, scale_io, scale_const, scale_file_history, scale_atmos_saturation,
+          scale_atmos_phy_mp_common, scale_atmos_phy_mp_kessler]
+procedures: []
+link: [scale_mp_oracle]

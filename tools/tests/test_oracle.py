@@ -1724,5 +1724,56 @@ class OracleEndToEndTest(OracleBuildTest):
         self.assertAlmostEqual(failures[0]["value"], 1e-6, delta=1e-9)
 
 
+
+class CorpusOracleTest(unittest.TestCase):
+    """The corpus's oracle declarations (issue #680 PR-4), read without the site and without
+    building anything: each loads for its own language, and every case it names is a `pass`
+    case of its node's `tests.md` §2, named once. A case named outside the IR is found otherwise
+    only at `Validate.execute`, after a billed `Compile` and `Generate`."""
+
+    REPO = Path(__file__).resolve().parents[2]
+
+    @staticmethod
+    def _tests_md_cases(spec_dir: Path) -> list[dict[str, Any]]:
+        import re
+
+        import yaml
+        text = (spec_dir / "tests.md").read_text(encoding="utf-8")
+        section = text.split("\n## 2.", 1)[1].split("\n## 3.", 1)[0]
+        fences = re.findall(r"```yaml\n(.*?)```", section, re.S)
+        cases = [case for fence in fences
+                 for case in (yaml.safe_load(fence) or {}).get("cases", [])]
+        assert cases, f"{spec_dir}/tests.md §2 holds no case list"
+        return cases
+
+    def test_the_corpus_oracle_declarations_load_and_name_cases_of_their_tests_md(self) -> None:
+        import yaml
+        declared: dict[str, oracle.Oracle] = {}
+        for path in sorted(self.REPO.glob(f"spec/**/{oracle.ORACLE_DIR}/"
+                                          f"{oracle.DECLARATION_FILE}")):
+            spec_dir = path.parent.parent
+            spec_ref = spec_dir.relative_to(self.REPO).as_posix()
+            language = yaml.safe_load(path.read_text(encoding="utf-8"))["language"]
+            loaded = oracle.load(self.REPO, spec_ref, language)
+            assert loaded is not None
+            declared[spec_dir.name] = loaded
+            cases = {c["case_id"]: c for c in self._tests_md_cases(spec_dir)}
+            named = [case_id for build in loaded.builds for case_id in build.cases or ()]
+            self.assertEqual(len(named), len(set(named)), spec_ref)
+            for case_id in named:
+                self.assertIn(case_id, cases, spec_ref)
+                self.assertEqual(cases[case_id].get("expected"), "pass", (spec_ref, case_id))
+            # The two microphysics nodes: the original holds its constants at compile time, so
+            # the `alt` build takes exactly the `constants: alt` pass cases.
+            if spec_dir.parent.parent.name == "microphysics":
+                alt = {b.build_id: b for b in loaded.builds}["alt"]
+                self.assertEqual(
+                    set(alt.cases or ()),
+                    {i for i, c in cases.items()
+                     if c.get("constants") == "alt" and c.get("expected") == "pass"}, spec_ref)
+        self.assertLessEqual({"microphysics_saturation_liquid_1d_column",
+                              "microphysics_kessler_warm_rain_1d_column"}, set(declared))
+
+
 if __name__ == "__main__":
     unittest.main()
