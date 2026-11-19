@@ -598,12 +598,6 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         self.assertEqual(
             self.c._leaf_bundle_violation_inputs(self.refs)["harness_label"], _HARNESS)
 
-    def test_narrowing_is_fail_closed_for_an_unresolvable_harness(self) -> None:
-        # None => EMPTY manifests. Never "show a set because we could not pick a harness".
-        self.assertEqual(
-            cb.harness_capability_manifest_document_for(None, {"sync_single_case@1"})["manifests"],
-            [])
-
     def test_the_harness_is_the_targets_whatever_the_ir_lists(self) -> None:
         """Issue #284: the harness a non-infrastructure node negotiates against is the one its
         run's target names — an IR is not read at all, so a stale IR listing another harness
@@ -2929,9 +2923,17 @@ class PureHarnessShapeTests(unittest.TestCase):
                 self.c._build_leaf_harness_context(self.refs)
             self.assertIn("pure_controlled_spec_document_unsliceable", str(caught.exception))
         spec_file.write_text(_HARNESS_SPEC_TEXT, encoding="utf-8")
-        # ...and the manifest it is shown is its OWN.
+        # ...and the manifest it is shown is its OWN, with the set its target implies: on a
+        # launcher target that set holds `distributed_state@2` (issue #690), the set the
+        # acceptance layer negotiates the harness's own bundle against.
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
+        from tools.tests.target_fixtures import profile_with
+        self.c.target_profile = profile_with(parallel={"backend": "mpi"})
+        shown = json.loads(self.c._build_leaf_harness_context(self.refs)["harness_capabilities"])
+        self.assertEqual(shown["manifests"][0]["provides"], sorted(
+            self.c._leaf_bundle_violation_inputs(self.refs)["harness_provided"]))
+        self.assertIn("distributed_state@2", shown["manifests"][0]["provides"])
 
     def test_the_lint_rule_set_reaches_the_leaf_from_the_BACKEND(self) -> None:
         """The rules §5 does not state (round 4 measured four of seven missing) reach the leaf

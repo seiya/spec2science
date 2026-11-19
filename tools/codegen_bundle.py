@@ -506,7 +506,7 @@ def load_harness_capabilities_schema(repo_root: Path | None = None) -> dict[str,
 
 
 def harness_capability_manifest_document_for(
-        node_key: str | None, provides: Iterable[str]) -> dict[str, Any]:
+        node_key: str, provides: Iterable[str]) -> dict[str, Any]:
     """The manifest document of ONE harness — the projection a producing leaf is shown, and the
     document the `Generate` derivation key hashes (`harness.manifest`).
 
@@ -515,14 +515,11 @@ def harness_capability_manifest_document_for(
     `Conductor._leaf_harness_node_key`, which `_leaf_bundle_violations` also resolves the
     acceptance layer from). `provides` is the set the target implies
     (`target_profile.harness_capabilities`, issue #690), the same set the acceptance layer
-    negotiates against, so the context and the negotiation cannot disagree.
-
-    `None` yields an EMPTY `manifests` list: a leaf whose harness cannot be resolved is shown
-    nothing."""
+    negotiates against, so the context and the negotiation cannot disagree. A harness that does
+    not resolve raises in `harness_node_key_for` before any document is rendered."""
     return {
         "harness_capability_abi_version": HARNESS_CAPABILITY_ABI_VERSION,
-        "manifests": ([{"node_key": node_key, "provides": sorted(provides)}]
-                      if node_key is not None else []),
+        "manifests": [{"node_key": node_key, "provides": sorted(provides)}],
     }
 
 

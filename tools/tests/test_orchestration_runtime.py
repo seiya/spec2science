@@ -21801,6 +21801,20 @@ class DerivationInputsTests(unittest.TestCase):
                     "harness_capability_abi_version": 1,
                     "manifests": [{"node_key": self._HARNESS, "provides": [
                         "capture_format_json@1", "sync_single_case@1"]}]}))})
+            # ...and on a launcher target the set it implies, `distributed_state@2` included:
+            # the document a producer on that target is shown. (The closure entries are
+            # stubbed: the seeded harness is certified for the fixture's own target only.)
+            from tools.tests.target_fixtures import profile_with
+            launcher = profile_with(parallel={"backend": "mpi"})
+            with mock.patch.object(ort, "_generate_closure_entry", return_value={}):
+                launcher_inputs = self._inputs(repo, refs, "generate", target=launcher)
+            self.assertEqual(
+                launcher_inputs["harness"]["manifest"],
+                tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes({
+                    "harness_capability_abi_version": 1,
+                    "manifests": [{"node_key": self._HARNESS, "provides": [
+                        "capture_format_json@1", "distributed_state@2",
+                        "sync_single_case@1"]}]})))
             self._publish(repo, "infrastructure", "harness_fortran_cpu", self._HARNESS,
                           self._SURFACE_B)
             self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)

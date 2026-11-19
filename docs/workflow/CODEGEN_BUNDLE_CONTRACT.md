@@ -481,7 +481,8 @@ The capability set of one harness has a document form,
 `spec/schema/generate/harness_capabilities.schema.json` (canonical validator:
 `tools/codegen_bundle.py:harness_capability_manifest_violations`).
 `harness_capability_manifest_document_for(node_key, provides)` renders the set the target
-implies into it, with one entry, or none when the harness does not resolve. That document is
+implies into it, as one entry; a harness that does not resolve fails the run closed before any
+document is rendered. That document is
 what a producing leaf is shown and what the `Generate` derivation key hashes
 (`harness.manifest`):
 
@@ -498,7 +499,7 @@ what a producing leaf is shown and what the `Generate` derivation key hashes
 Negotiation is two pure functions and is fail-closed:
 
 - `target_profile.harness_capabilities(profile)` returns the set the target implies for its
-  harness. An empty or `None` set provides nothing and satisfies no requirement.
+  harness.
 - `unsatisfied_capability_requirements(required, provided)` returns the required tokens
   that are not provided, matching on the **exact `name@version` token**. Version ordering
   is not assumed to imply compatibility: a bundle requiring `sync_single_case@2` is not

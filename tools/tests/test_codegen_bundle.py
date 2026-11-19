@@ -315,10 +315,7 @@ class CapabilityNegotiationTest(unittest.TestCase):
             cb.unsatisfied_capability_requirements(["sync_single_case@2"], provided),
             ["sync_single_case@2"])
 
-    def test_an_unresolved_harness_is_shown_and_provides_nothing(self) -> None:
-        self.assertEqual(cb.harness_capability_manifest_document_for(None, {"sync_single_case@1"}),
-                         {"harness_capability_abi_version": cb.HARNESS_CAPABILITY_ABI_VERSION,
-                          "manifests": []})
+    def test_nothing_provided_satisfies_nothing(self) -> None:
         self.assertEqual(
             cb.unsatisfied_capability_requirements(["sync_single_case@1"], None),
             ["sync_single_case@1"])
