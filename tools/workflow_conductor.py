@@ -11491,10 +11491,10 @@ class Conductor:
             build_obj = work / "build"
             bin_oracle = self.repo_root / refs.binary_dir() / "bin_oracle" / build.build_id
             # Only what this attempt builds: a binary an earlier attempt left must not stand
-            # in for one this build did not produce.
-            for directory in (work, bin_oracle):
-                if directory.exists():
-                    shutil.rmtree(directory)
+            # in for one this build did not produce. (`work` is under this launch's own
+            # agent-run id, so nothing is there before.)
+            if bin_oracle.exists():
+                shutil.rmtree(bin_oracle)
             # Every file of `src/` but the audit logs, then the adapter over the model source.
             for path in sorted(src_dir.rglob("*")):
                 if path.is_file() and path.name not in AUDIT_LOG_BASENAMES:
@@ -11515,7 +11515,6 @@ class Conductor:
                 # The node's log, as every other Build command's: the project directory is
                 # under `workspace/tmp/`, and the library's default would log there.
                 "command_log_path": str(src_dir / "command_log.jsonl"),
-                "capture_limit": _FULL_CAPTURE_LIMIT,
                 "orchestration_id": self.orchestration_id,
                 "agent_run_id": child_arid,
             })
@@ -11525,9 +11524,11 @@ class Conductor:
                 tail = "\n".join((result.get("stderr") or "").splitlines()[-50:])
                 raise RuntimeError(
                     f"oracle_build_failed: oracle build {build.build_id!r} of {refs.node_key} "
-                    f"(adapter {self._rel(adapter)}) {outcome}; the adapter or "
+                    f"(adapter {self._rel(adapter)}) {outcome}. The adapter or "
                     f"{self._rel(adapter.parent / oracle_mod.DECLARATION_FILE)} is to be "
-                    f"fixed, then --resume:\n{tail}")
+                    f"fixed, then --resume; or, when the error is in a generated source other "
+                    f"than the model (a helper that uses the model's own names, which the "
+                    f"adapter does not publish), --rederive generate:\n{tail}")
             builds.append({
                 "id": build.build_id,
                 "binary_ref": f"binary/{refs.binary_id}/bin_oracle/{build.build_id}/{exe}",

@@ -1795,7 +1795,7 @@ PINNED_BUILD: dict[str, str] = {
     # `oracle.ORACLE_USE_VERSION`), so no Build certified before is reused for it. The digest
     # `build-5` shipped with at 3f9b6878:
     "build-5@3f9b6878": "dc63f773028a82aa385bc2f57d00dd629a1f8d3c4e4277d0c4548329917c9e0c",
-    "build-5": "3568e3a8606fbb59353133a38837a55e2c55c7625e2ec706436a2091214b38ef",
+    "build-5": "6bfc0f2b8ceedcf9b7470996f12add264211a039b04067536c601c3bd2780f91",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

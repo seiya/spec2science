@@ -855,6 +855,33 @@ class OracleBuildTest(_OracleFixture):
         self.assertIn(oracle.REMOTE_SITE, result.stderr)
         self.assertEqual(staged, [])
 
+    def test_an_oracle_of_another_language_than_the_target_s_is_not_built(self) -> None:
+        """The fortran target builds no oracle a node declares for another language: no oracle
+        compile, no record, and no oracle binary among Build's deliverables."""
+        text = (f"oracle_version: 1\nlanguage: {OTHER}\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: []\n")
+        repo, c, refs = self.node(oracle_text=text)
+        self.assertEqual(c._oracle_build_ids(refs), ())
+        calls: list[dict] = []
+        result = self.build(c, refs, record=calls)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        meta = self.meta(repo, refs)
+        self.assertEqual(meta["verification_status"], "pass")
+        self.assertIsNone(meta["oracle"])
+        self.assertFalse([k for k in calls if "/oracle/" in k["project_dir"]])
+        self.assertFalse((repo / refs.binary_dir() / "bin_oracle").exists())
+        # ... and the other way round: a fortran oracle on a target of the other language.
+        from tools.tests.llm_samples import sample_config_with
+        from tools.tests.test_workflow_conductor import _TargetedConductor
+        repo2, c2, refs = self.node(oracle_text=text.replace(OTHER, "fortran"))
+        other = _TargetedConductor(repo_root=repo2, orchestration_id="t",
+                                   orchestration_agent_run_id="x",
+                                   llm_config=sample_config_with("claude"), env={},
+                                   target_profile=OTHER_LANGUAGE)
+        self.assertEqual(other.target.toolchain["language"], OTHER)
+        self.assertEqual(c2._oracle_build_ids(refs), ("default",))
+        self.assertEqual(other._oracle_build_ids(refs), ())
+
     def test_a_node_without_an_oracle_records_none(self) -> None:
         repo, c, refs = self.node(oracle_text=None)
         calls: list[dict] = []

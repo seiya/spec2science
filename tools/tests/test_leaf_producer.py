@@ -746,8 +746,8 @@ class WorkshopWrapperContextTests(unittest.TestCase):
 
     def test_the_wrapper_context_carries_no_oracle_library(self) -> None:
         """Issue #680: a node that declares an oracle linking a library hands its producer's
-        wrapper the closure's libraries alone — here none — so a generated model cannot reach
-        the existing code through the oracle's library."""
+        wrapper the closure's libraries alone — here none — so no include directory or link word
+        of the oracle's library reaches the generated model's builds there."""
         from tools import oracle
         from tools.tests.test_external_library import write_declarations
         write_declarations(self.repo)
