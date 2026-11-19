@@ -1,0 +1,10 @@
+# The original of this node (docs/SPEC.md requirement 17). The adapter is adapter.f90; the library
+# is built by docs/design/pbl_tracer_measurement/Makefile's `lib` target, and the site lists it
+# (docs/RUNBOOK.md §Certifying a node against its oracle).
+oracle_version: 1
+language: fortran
+source: adapter.f90
+origin: "scale-met/scale-dev dc58155 (develop, 2026-10-31; not among the refs the remote advertises, so a fresh clone may lack it): scalelib/src/common/scale_precision.F90, scale_const.F90, scale_matrix.F90; scalelib/src/atmosphere/physics/pbl/scale_atmos_phy_bl_common.F90; with four of the stubs of docs/design/kessler_measurement/stubs/"
+builds:
+  - id: default
+    libraries: [scale_bl_oracle]

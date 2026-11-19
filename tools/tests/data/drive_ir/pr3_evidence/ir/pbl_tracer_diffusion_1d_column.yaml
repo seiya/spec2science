@@ -1,0 +1,3506 @@
+schema_version: '1.0'
+meta:
+  node_key: component/pbl_tracer_diffusion_1d_column@0.1.0
+  spec_kind: component
+  spec_id: pbl_tracer_diffusion_1d_column
+  spec_version: 0.1.0
+  source_refs:
+    controlled_spec: spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/controlled_spec.md
+    tests: spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/tests.md
+    deps: spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_cz_nonincreasing
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: cz
+          k: 9
+          value: 770.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz: (inputs.initial.columns.cz.cells) * (1 - max(0, 1 - abs(floor(c) - 8))) + max(0, 1 - abs(floor(c) - 8)) * 770.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_dens_nonpositive
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: dens
+          k: 9
+          value: 0.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: ((1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))) * (1 - max(0, 1 - abs(floor(c) - 8))) + max(0, 1 - abs(floor(c) - 8)) * 0.0
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_diffusivity_negative
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: kh
+          k: 8
+          value: -1.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh: (inputs.initial.columns.kh.cells) * (1 - max(0, 1 - abs(floor(c) - 7))) + max(0, 1 - abs(floor(c) - 7)) * -1.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_dt_nonpositive
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 0.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_fz_nonincreasing
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: fz
+          k: 9
+          value: 660.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz: (inputs.initial.columns.fz.cells) * (1 - max(0, 1 - abs(floor(c) - 8))) + max(0, 1 - abs(floor(c) - 8)) * 660.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_ke_above_ka
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 11
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: fz
+          k: 10
+          value: 1100.0
+        - var: cz
+          k: 10
+          value: 1200.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz: (inputs.initial.columns.cz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1200.0
+      fz: (inputs.initial.columns.fz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1100.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_ke_at_ka
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 10
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 9
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+        overrides:
+        - var: fz
+          k: 10
+          value: 1100.0
+        - var: cz
+          k: 10
+          value: 1200.0
+        - var: kh
+          k: 8
+          value: 15.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh: (inputs.initial.columns.kh.cells) * (1 - max(0, 1 - abs(floor(c) - 7))) + max(0, 1 - abs(floor(c) - 7)) * 15.0
+      cz: (inputs.initial.columns.cz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1200.0
+      fz: (inputs.initial.columns.fz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1100.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_kh_all_positive
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: -0.0001
+      tracer:
+        mass: 0.5
+      judge:
+        ke_pbl: 4
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 10.0
+            - 5.0
+            - 3.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 10.0
+      - 5.0
+      - 3.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_kh_gap
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 45.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 6
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 0.0
+            - 40.0
+            - 30.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 0.0
+      - 40.0
+      - 30.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_kh_zero
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 8
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+          - 0.0
+          - 0.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 7.0 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.0 + 0.0 * (floor(c)
+        - 1))
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_ks_below_two
+    inputs:
+      grid:
+        ka: 10
+        ks: 1
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_pbl_profile
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 8
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.62
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.62 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_pbl_profile_passive
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: -1.0
+      tracer:
+        mass: 0.0
+      judge:
+        ke_pbl: 8
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_range
+    inputs:
+      grid:
+        ka: 10
+        ks: 3
+        ke: 8
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 5
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.62
+          - -0.01
+        overrides:
+        - var: dens
+          k: 2
+          value: -1.0
+        - var: dens
+          k: 9
+          value: -1.0
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (((1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))) * (1 - max(0, 1 - abs(floor(c) - 1))) + max(0, 1 - abs(floor(c) - 1)) * -1.0) * (1 - max(0, 1 - abs(floor(c) - 8))) +
+        max(0, 1 - abs(floor(c) - 8)) * -1.0
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.62 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_surface_density_nonpositive
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: -1.0
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_three_cells
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 4
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 3
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_too_few_cells
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 3
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0002
+      tracer:
+        mass: 1.0
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+            cells:
+            - 0.0123
+            - 0.016
+            - 0.0125
+            - 0.0118
+            - 0.0102
+            - 0.009
+            - 0.0071
+            - 0.005
+            - 0.0042
+            - 0.0123
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc:
+      - 0.0123
+      - 0.016
+      - 0.0125
+      - 0.0118
+      - 0.0102
+      - 0.009
+      - 0.0071
+      - 0.005
+      - 0.0042
+      - 0.0123
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+  - case_id: l0_uniform_tracer
+    inputs:
+      grid:
+        ka: 10
+        ks: 2
+        ke: 9
+      time:
+        dt: 60.0
+      surface:
+        sflx_q: 0.0
+      tracer:
+        mass: 1.0
+      judge:
+        ke_pbl: 8
+      initial:
+        fill:
+          dens: 0.77
+          qtrc: 0.0123
+          kh: 7.0
+          cz: -3.0
+          fz: -6.0
+          f2h_above: 0.5
+          f2h_below: 0.5
+          rhoq_t: -999.0
+          flx: -999.0
+        columns:
+          dens:
+          - 1.15
+          - -0.04
+          qtrc:
+          - 0.01
+          - 0.0
+          kh:
+            cells:
+            - 7.0
+            - 30.0
+            - 60.0
+            - 80.0
+            - 50.0
+            - 20.0
+            - 0.0
+            - 0.0
+            - 0.0
+            - 7.0
+          cz:
+            cells:
+            - -3.0
+            - 25.0
+            - 85.0
+            - 165.0
+            - 270.0
+            - 405.0
+            - 570.0
+            - 770.0
+            - 1015.0
+            - -3.0
+          fz:
+            cells:
+            - -6.0
+            - 0.0
+            - 50.0
+            - 120.0
+            - 210.0
+            - 330.0
+            - 480.0
+            - 660.0
+            - 880.0
+            - -6.0
+          f2h_above:
+          - 0.42
+          - 0.01
+          f2h_below:
+          - 0.58
+          - -0.01
+      test_profile_id: pbl_tracer_diffusion_1d_column_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      dens: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.77 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (1.15 + -0.04 * (floor(c)
+        - 1))
+      qtrc: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.0123 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.01 + 0.0 * (floor(c)
+        - 1))
+      kh:
+      - 7.0
+      - 30.0
+      - 60.0
+      - 80.0
+      - 50.0
+      - 20.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 7.0
+      cz:
+      - -3.0
+      - 25.0
+      - 85.0
+      - 165.0
+      - 270.0
+      - 405.0
+      - 570.0
+      - 770.0
+      - 1015.0
+      - -3.0
+      fz:
+      - -6.0
+      - 0.0
+      - 50.0
+      - 120.0
+      - 210.0
+      - 330.0
+      - 480.0
+      - 660.0
+      - 880.0
+      - -6.0
+      f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
+        (floor(c) - 1))
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+        (floor(c) - 1))
+      rhoq_t: -999.0
+      flx: -999.0
+algorithm:
+  algorithm_id: pbl_tracer_implicit_diffusion_column
+  execution_mode: conditional
+  description: 'One call of the published operation on one column of ka cells (k = 1..ka, interior k = ks..ke, the others halo cells
+    that the operation does not read): the tendency of the density of one tracer by vertical turbulent diffusion over one backward-Euler
+    step, with the surface flux entering the lowest cell, and the face flux. Source: ATMOS_PHY_BL_tendency_tracer of scale_atmos_phy_bl_common
+    (scale-met/scale-dev dc58155, double precision, the path without _OPENACC, Thomas solver MATRIX_SOLVER_tridiagonal_1D_TA). Every
+    array argument has rank 1 and extent ka; fz(k) is the height of the LOWER face of cell k, kh(k) the diffusivity at the UPPER face
+    of cell k.'
+  steps:
+  - step_id: s01_guard
+    step_kind: pointwise_process
+    operation_ref: pbl_tracer_input_guard
+    inputs:
+    - ka
+    - ks
+    - ke
+    - dt
+    - dens
+    - fz
+    - cz
+    - kh
+    - f2h_above
+    - f2h_below
+    - sflx_q
+    - mass
+    outputs:
+    - guard_pass
+    description: Refuse (guard_pass = false, outputs undefined, return) when ks < 2, ke > ka, ke < ks + 2 or dt <= 0 (these first, so
+      that no out-of-range cell is indexed); or dens(k) <= 0 at some k = ks..ke; or fz(k+1) <= fz(k) or cz(k+1) <= cz(k) for some k
+      = ks..ke-1; or (f2h_above(k)*dens(k+1) + f2h_below(k)*dens(k))*kh(k) < 0 for some k = ks..ke-1; or dens(ks) + dt*mass*sflx_q/(fz(ks+1)
+      - fz(ks)) <= 0. The program is never terminated.
+  - step_id: s02_kpbl
+    step_kind: diagnostic
+    operation_ref: pbl_tracer_top_of_solved_layer
+    inputs:
+    - kh
+    - ks
+    - ke
+    outputs:
+    - kpbl
+    description: 'kpbl = ke - 1; then for k = ke-2, ke-3, ..., ks+1 in this order: if kh(k) > 0 then kpbl = k + 1, otherwise stop the
+      scan. kpbl lies in ks+1..ke-1; a column with kh > 0 at every face ks+1..ke-2 gets kpbl = ks + 2. This is the source rule as executed
+      and is required exactly.'
+  - step_id: s03_system
+    step_kind: pointwise_process
+    operation_ref: pbl_tracer_tridiagonal_coefficients
+    inputs:
+    - dens
+    - qtrc
+    - kh
+    - cz
+    - fz
+    - f2h_above
+    - f2h_below
+    - sflx_q
+    - mass
+    - dt
+    - kpbl
+    outputs:
+    - sfc
+    - rho_star
+    - rhokh
+    - a_up
+    - b_mid
+    - c_low
+    - d_rhs
+    description: 'dz(k) = fz(k+1) - fz(k) for k = ks..kpbl; dzc(k) = cz(k+1) - cz(k) for k = ks..kpbl-1; sfc = sflx_q/dz(ks); rho_star(ks)
+      = dens(ks) + dt*sfc*mass, rho_star(k) = dens(k) for k = ks+1..kpbl; rhokh(k) = (f2h_above(k)*dens(k+1) + f2h_below(k)*dens(k))*kh(k)
+      for k = ks..kpbl-1 (dens, not rho_star); d_rhs(ks) = (qtrc(ks)*dens(ks) + dt*sfc)/rho_star(ks), d_rhs(k) = qtrc(k) for k = ks+1..kpbl;
+      for k = ks..kpbl-1 with p = -dt*rhokh(k)/dzc(k): a_up(k) = p/(rho_star(k)*dz(k)), c_low(k+1) = p/(rho_star(k+1)*dz(k+1)); c_low(ks)
+      = 0, a_up(kpbl) = 0; b_mid(k) = 1 - a_up(k) - c_low(k) for k = ks..kpbl.'
+  - step_id: s04_solve
+    step_kind: iterative_solve
+    operation_ref: pbl_tracer_thomas_solve
+    inputs:
+    - a_up
+    - b_mid
+    - c_low
+    - d_rhs
+    - kpbl
+    outputs:
+    - x_new
+    description: 'Solve c_low(k)*x(k-1) + b_mid(k)*x(k) + a_up(k)*x(k+1) = d_rhs(k), k = ks..kpbl, by the Thomas algorithm: g(ks) =
+      a_up(ks)/b_mid(ks), h(ks) = d_rhs(ks)/b_mid(ks); for k = ks+1..kpbl-1, r = 1/(b_mid(k) - c_low(k)*g(k-1)), g(k) = a_up(k)*r, h(k)
+      = (d_rhs(k) - c_low(k)*h(k-1))*r; x(kpbl) = (d_rhs(kpbl) - c_low(kpbl)*h(kpbl-1))/(b_mid(kpbl) - c_low(kpbl)*g(kpbl-1)); x(k)
+      = h(k) - g(k)*x(k+1) for k = kpbl-1 down to ks. A direct, non-iterative solve.'
+  - step_id: s05_outputs
+    step_kind: diagnostic
+    operation_ref: pbl_tracer_outputs
+    inputs:
+    - x_new
+    - qtrc
+    - dens
+    - rho_star
+    - rhokh
+    - cz
+    - sfc
+    - dt
+    - kpbl
+    outputs:
+    - rhoq_t
+    - flx
+    - guard_pass
+    description: rhoq_t(ks) = (x(ks)*rho_star(ks) - qtrc(ks)*dens(ks))/dt - sfc; rhoq_t(k) = (x(k) - qtrc(k))*rho_star(k)/dt for k =
+      ks+1..kpbl; rhoq_t(k) = 0 for k = kpbl+1..ke and at every halo cell. flx(k) = -rhokh(k)*(x(k+1) - x(k))/dzc(k) for k = ks..kpbl-1;
+      flx = 0 at every other cell 1..ka. guard_pass = true. The surface flux is not added to rhoq_t and not written to flx.
+  ordering:
+  - s01_guard
+  - s02_kpbl
+  - s03_system
+  - s04_solve
+  - s05_outputs
+  control_condition:
+    dispatch: case_run calls pbl_tracer_diffusion_1d_column__tendency once per case, with grid.ka, grid.ks, grid.ke as ka, ks, ke, time.dt
+      as dt, surface.sflx_q as sflx_q and tracer.mass as mass.
+    branches:
+    - s01_guard refuses -> return with guard_pass false
+    - otherwise s02 .. s05
+  iteration_contract:
+    kind: none
+    reason: A single evaluation of one column; the tridiagonal solve is direct.
+  update_semantics:
+    target_variables:
+    - rhoq_t
+    - flx
+    - guard_pass
+    update_order: sequential
+    in_place: []
+    notes: rhoq_t and flx are intent out (0 at halo cells); guard_pass is a logical out; every other argument is intent in.
+  temporaries:
+  - name: kpbl
+    shape_expr: scalar
+  - name: sfc
+    shape_expr: scalar
+  - name: rho_star
+    shape_expr: '[ka]'
+  - name: rhokh
+    shape_expr: '[ka]'
+  - name: a_up
+    shape_expr: '[ka]'
+  - name: b_mid
+    shape_expr: '[ka]'
+  - name: c_low
+    shape_expr: '[ka]'
+  - name: d_rhs
+    shape_expr: '[ka]'
+  - name: x_new
+    shape_expr: '[ka]'
+  derived_field_rules:
+  - name: case_initial_state
+    expression: 'For every state variable X: X(k) = initial.fill.X at every k = 1..ka; then an initial.columns.X rule replaces cells
+      k = 2..9 (built with ks = 2, ke = 9 whatever grid.ks, grid.ke the case passes): [a, b] gives X(k) = a + b*(k - 2); {cells: [v1..v10]}
+      gives X(k) = v_k literally. Each initial.overrides entry {var, k, value} sets X(k) = value after every other rule.'
+    description: case_setup builds the bound state from the case inputs; rhoq_t and flx start at the sentinel -999.
+  - name: guard_pass_record
+    expression: guard_pass = 1.0 when the operation returned true, 0.0 when it returned false
+    description: The logical result recorded as a number.
+  - name: perf_counters
+    expression: steps = 1; cells_updated = ke - ks + 1 on an accepted call, 0 on a refused one
+    description: case_run's perf counters for a single-evaluation component.
+  invariants:
+  - rhoq_t and flx hold 0 at every halo cell on an accepted call; no halo cell is read.
+  - 'rhoq_t(k)*(fz(k+1) - fz(k)) = -(flx(k) - flx(k-1)) for k = ks..kpbl with flx(ks-1) read as 0, so the column integral of rhoq_t
+    is 0: the surface flux carries no net tendency.'
+  - flx is the backward-Euler flux, evaluated with the new mixing ratio.
+  - 'Cells kpbl+1..ke are never solved: rhoq_t = 0 there and flx = 0 at faces kpbl..ke, whatever kh holds.'
+  - The program is never terminated on a refusal, an invalid input is never silently completed, and no non-finite value is published.
+  - 'AD readiness: the scan for kpbl and the refusal are non-differentiable operations.'
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: ka
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: grid.ka, column extent of every array
+  - name: ks
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: grid.ks, first interior cell
+  - name: ke
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: grid.ke, last interior cell
+  - name: dt
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: time.dt, the time step
+  - name: sflx_q
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: surface.sflx_q, the surface flux of the tracer
+  - name: mass
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: tracer.mass, the mass of the tracer per unit of the tracer
+  - name: dens
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: qtrc
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: kh
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: cz
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: fz
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: f2h_above
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: f2h_below
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  outputs:
+  - name: rhoq_t
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - rhoq_t
+  - name: flx
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - flx
+  - name: guard_pass
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_pass
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: dens
+          shape_expr: '[ka]'
+        - name: qtrc
+          shape_expr: '[ka]'
+        - name: kh
+          shape_expr: '[ka]'
+        - name: cz
+          shape_expr: '[ka]'
+        - name: fz
+          shape_expr: '[ka]'
+        - name: f2h_above
+          shape_expr: '[ka]'
+        - name: f2h_below
+          shape_expr: '[ka]'
+        - name: rhoq_t
+          shape_expr: '[ka]'
+        - name: flx
+          shape_expr: '[ka]'
+        - name: guard_pass
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: c
+          axis: 0
+          count: inputs.grid.ka
+          length: inputs.grid.ka
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - dens
+    - qtrc
+    - kh
+    - cz
+    - fz
+    - f2h_above
+    - f2h_below
+    - guard_pass
+  tests:
+  - test_id: l0_conservation_pass
+    expected_outcome: pass
+    target_cases: &id001
+    - l0_pbl_profile
+    - l0_pbl_profile_passive
+    - l0_kh_all_positive
+    - l0_kh_gap
+    - l0_three_cells
+    - l0_range
+    - l0_ke_at_ka
+    quantities:
+    - conservation
+    - guard_pass
+  - test_id: l0_flux_divergence_pass
+    expected_outcome: pass
+    target_cases: *id001
+    quantities:
+    - flux_divergence
+    - guard_pass
+  - test_id: l0_implicit_flux_pass
+    expected_outcome: pass
+    target_cases: *id001
+    quantities:
+    - guard_pass
+    - implicit_flux
+  - test_id: l0_pbl_top_pass
+    expected_outcome: pass
+    target_cases: &id002
+    - l0_pbl_profile
+    - l0_pbl_profile_passive
+    - l0_kh_all_positive
+    - l0_kh_gap
+    - l0_kh_zero
+    - l0_uniform_tracer
+    - l0_three_cells
+    - l0_range
+    - l0_ke_at_ka
+    quantities:
+    - guard_pass
+    - pbl_top
+  - test_id: l0_zero_diffusivity_pass
+    expected_outcome: pass
+    target_cases: &id003
+    - l0_kh_zero
+    quantities:
+    - guard_pass
+    - zero_diffusivity
+  - test_id: l0_uniform_tracer_pass
+    expected_outcome: pass
+    target_cases: &id004
+    - l0_uniform_tracer
+    quantities:
+    - guard_pass
+    - uniform_tracer
+  - test_id: l0_three_cell_closed_form_pass
+    expected_outcome: pass
+    target_cases: &id005
+    - l0_three_cells
+    quantities:
+    - closed_form
+    - guard_pass
+  - test_id: l0_halo_zero_pass
+    expected_outcome: pass
+    target_cases: *id002
+    quantities:
+    - guard_pass
+    - halo_zero
+  - test_id: l0_ks_below_two_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_ks_below_two
+    quantities:
+    - guard_pass
+  - test_id: l0_ke_above_ka_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_ke_above_ka
+    quantities:
+    - guard_pass
+  - test_id: l0_too_few_cells_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_too_few_cells
+    quantities:
+    - guard_pass
+  - test_id: l0_dt_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_dt_nonpositive
+    quantities:
+    - guard_pass
+  - test_id: l0_dens_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_dens_nonpositive
+    quantities:
+    - guard_pass
+  - test_id: l0_fz_nonincreasing_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_fz_nonincreasing
+    quantities:
+    - guard_pass
+  - test_id: l0_cz_nonincreasing_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_cz_nonincreasing
+    quantities:
+    - guard_pass
+  - test_id: l0_diffusivity_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_diffusivity_negative
+    quantities:
+    - guard_pass
+  - test_id: l0_surface_density_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_surface_density_nonpositive
+    quantities:
+    - guard_pass
+  predicates:
+  - test_id: l0_conservation_pass
+    quantity: guard_pass
+    target_cases: *id001
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_conservation_pass
+    quantity: conservation
+    target_cases: *id001
+    per_case: true
+    bind:
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+    expr: abs(sum(pairs * final.rhoq_t * dz)) / sum(pairs * abs(final.rhoq_t) * dz)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_conservation_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_conservation_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_flux_divergence_pass
+    quantity: guard_pass
+    target_cases: *id001
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_flux_divergence_pass
+    quantity: flux_divergence
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+    expr: maxabs(pairs * (final.rhoq_t * dz + final.flx - roll(final.flx, 1))) / maxabs(interior * final.flx)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_flux_divergence_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_flux_divergence_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_implicit_flux_pass
+    quantity: guard_pass
+    target_cases: *id001
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_implicit_flux_pass
+    quantity: implicit_flux
+    target_cases: *id001
+    per_case: true
+    bind:
+      first: max(0, 1 - abs(floor(c) - (inputs.grid.ks - 1)))
+      faces: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.judge.ke_pbl - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      dzc: roll(initial.cz, -1) - initial.cz
+      s: inputs.surface.sflx_q / sum(first * dz)
+      rho_s: initial.dens + first * inputs.time.dt * s * inputs.tracer.mass
+      K: (initial.f2h_above * roll(initial.dens, -1) + initial.f2h_below * initial.dens) * initial.kh
+      x: (initial.qtrc * initial.dens + inputs.time.dt * (final.rhoq_t + first * s)) / rho_s
+    expr: maxabs(faces * (final.flx * dzc + K * (roll(x, -1) - x))) / maxabs(faces * final.flx * dzc)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_implicit_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_implicit_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_pbl_top_pass
+    quantity: guard_pass
+    target_cases: *id002
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_pbl_top_pass
+    quantity: pbl_top
+    target_cases: *id002
+    per_case: true
+    bind:
+      unsolved: min(1, max(0, floor(c) - (inputs.judge.ke_pbl - 1))) * min(1, max(0, inputs.grid.ke - floor(c)))
+    expr: maxabs(unsolved * final.rhoq_t)
+    op: eq
+    value: 0
+  - test_id: l0_pbl_top_pass
+    quantity: pbl_top
+    target_cases: *id002
+    per_case: true
+    bind:
+      zero_faces: min(1, max(0, floor(c) - (inputs.judge.ke_pbl - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+    expr: maxabs(zero_faces * final.flx)
+    op: eq
+    value: 0
+  - test_id: l0_pbl_top_pass
+    quantity: pbl_top
+    target_cases: *id002
+    case: l0_kh_all_positive
+    bind:
+      top_face: max(0, 1 - abs(floor(c) - (inputs.judge.ke_pbl - 2)))
+    expr: maxabs(top_face * final.flx)
+    op: gt
+    value: 0
+  - test_id: l0_pbl_top_pass
+    quantity: pbl_top
+    target_cases: *id002
+    case: l0_kh_gap
+    bind:
+      top_face: max(0, 1 - abs(floor(c) - (inputs.judge.ke_pbl - 2)))
+    expr: maxabs(top_face * final.flx)
+    op: gt
+    value: 0
+  - test_id: l0_pbl_top_pass
+    quantity: pbl_top
+    target_cases: *id002
+    case: l0_three_cells
+    bind:
+      top_face: max(0, 1 - abs(floor(c) - (inputs.judge.ke_pbl - 2)))
+    expr: maxabs(top_face * final.flx)
+    op: gt
+    value: 0
+  - test_id: l0_pbl_top_pass
+    quantity: pbl_top
+    target_cases: *id002
+    case: l0_range
+    bind:
+      top_face: max(0, 1 - abs(floor(c) - (inputs.judge.ke_pbl - 2)))
+    expr: maxabs(top_face * final.flx)
+    op: gt
+    value: 0
+  - test_id: l0_pbl_top_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id002
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_pbl_top_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id002
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_zero_diffusivity_pass
+    quantity: guard_pass
+    target_cases: *id003
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_zero_diffusivity_pass
+    quantity: zero_diffusivity
+    target_cases: *id003
+    per_case: true
+    expr: maxabs(final.flx)
+    op: eq
+    value: 0
+  - test_id: l0_zero_diffusivity_pass
+    quantity: zero_diffusivity
+    target_cases: *id003
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      first: max(0, 1 - abs(floor(c) - (inputs.grid.ks - 1)))
+    expr: maxabs((interior - first) * final.rhoq_t)
+    op: eq
+    value: 0
+  - test_id: l0_zero_diffusivity_pass
+    quantity: zero_diffusivity
+    target_cases: *id003
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      first: max(0, 1 - abs(floor(c) - (inputs.grid.ks - 1)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(first * final.rhoq_t) / R
+    op: le
+    value: 1.0e-13
+  - test_id: l0_zero_diffusivity_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id003
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_zero_diffusivity_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id003
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_uniform_tracer_pass
+    quantity: guard_pass
+    target_cases: *id004
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_uniform_tracer_pass
+    quantity: uniform_tracer
+    target_cases: *id004
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(interior * final.rhoq_t) / R
+    op: le
+    value: 1.0e-13
+  - test_id: l0_uniform_tracer_pass
+    quantity: uniform_tracer
+    target_cases: *id004
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx) / (R * D)
+    op: le
+    value: 1.0e-13
+  - test_id: l0_uniform_tracer_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id004
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_uniform_tracer_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id004
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_three_cell_closed_form_pass
+    quantity: guard_pass
+    target_cases: *id005
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_three_cell_closed_form_pass
+    quantity: closed_form
+    target_cases: *id005
+    per_case: true
+    bind:
+      first: max(0, 1 - abs(floor(c) - (inputs.grid.ks - 1)))
+      second: max(0, 1 - abs(floor(c) - inputs.grid.ks))
+      dz: roll(initial.fz, -1) - initial.fz
+      dzc: roll(initial.cz, -1) - initial.cz
+      s: inputs.surface.sflx_q / sum(first * dz)
+      rho_s: initial.dens + first * inputs.time.dt * s * inputs.tracer.mass
+      K: (initial.f2h_above * roll(initial.dens, -1) + initial.f2h_below * initial.dens) * initial.kh
+      M1: sum(first * rho_s * dz)
+      M2: sum(second * initial.dens * dz)
+      F: inputs.time.dt * sum(first * K) / sum(first * dzc)
+      d1: sum(first * (initial.qtrc * initial.dens + inputs.time.dt * s)) / sum(first * rho_s)
+      d2: sum(second * initial.qtrc)
+      fref: F / inputs.time.dt * (d1 - d2) / (1 + F / M1 + F / M2)
+    expr: abs(sum(first * final.flx) - fref) / abs(fref)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_three_cell_closed_form_pass
+    quantity: closed_form
+    target_cases: *id005
+    per_case: true
+    bind:
+      first: max(0, 1 - abs(floor(c) - (inputs.grid.ks - 1)))
+      second: max(0, 1 - abs(floor(c) - inputs.grid.ks))
+      dz: roll(initial.fz, -1) - initial.fz
+      dzc: roll(initial.cz, -1) - initial.cz
+      s: inputs.surface.sflx_q / sum(first * dz)
+      rho_s: initial.dens + first * inputs.time.dt * s * inputs.tracer.mass
+      K: (initial.f2h_above * roll(initial.dens, -1) + initial.f2h_below * initial.dens) * initial.kh
+      M1: sum(first * rho_s * dz)
+      M2: sum(second * initial.dens * dz)
+      F: inputs.time.dt * sum(first * K) / sum(first * dzc)
+      d1: sum(first * (initial.qtrc * initial.dens + inputs.time.dt * s)) / sum(first * rho_s)
+      d2: sum(second * initial.qtrc)
+      fref: F / inputs.time.dt * (d1 - d2) / (1 + F / M1 + F / M2)
+    expr: maxabs(first * (final.rhoq_t * dz + fref) + second * (final.rhoq_t * dz - fref)) / abs(fref)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_three_cell_closed_form_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id005
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_three_cell_closed_form_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id005
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_halo_zero_pass
+    quantity: guard_pass
+    target_cases: *id002
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_halo_zero_pass
+    quantity: halo_zero
+    target_cases: *id002
+    per_case: true
+    bind:
+      halo: 1 - (min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c))))
+    expr: maxabs(halo * final.rhoq_t)
+    op: eq
+    value: 0
+  - test_id: l0_halo_zero_pass
+    quantity: halo_zero
+    target_cases: *id002
+    per_case: true
+    bind:
+      halo: 1 - (min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c))))
+    expr: maxabs(halo * final.flx)
+    op: eq
+    value: 0
+  - test_id: l0_halo_zero_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id002
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+    expr: maxabs(final.rhoq_t - comparand.final.rhoq_t) / max(maxabs(final.rhoq_t), maxabs(comparand.final.rhoq_t), R)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_halo_zero_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id002
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(c)))
+      pairs: min(1, max(0, floor(c) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(c)))
+      dz: roll(initial.fz, -1) - initial.fz
+      R: maxabs(interior * initial.dens * initial.qtrc) / inputs.time.dt
+      D: sum(pairs * dz)
+    expr: maxabs(final.flx - comparand.final.flx) / max(maxabs(final.flx), maxabs(comparand.final.flx), R * D)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_ks_below_two_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_ks_below_two
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_ke_above_ka_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_ke_above_ka
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_too_few_cells_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_too_few_cells
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_dt_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_dt_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_dens_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_dens_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_fz_nonincreasing_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_fz_nonincreasing
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_cz_nonincreasing_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_cz_nonincreasing
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_diffusivity_negative_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_diffusivity_negative
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_surface_density_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_surface_density_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+dependency:
+  node_key: component/pbl_tracer_diffusion_1d_column@0.1.0
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: pbl_tracer_diffusion_1d_column__tendency
+    exercised_by:
+    - l0_conservation_pass
+    - l0_flux_divergence_pass
+    - l0_implicit_flux_pass
+    - l0_pbl_top_pass
+    - l0_zero_diffusivity_pass
+    - l0_uniform_tracer_pass
+    - l0_three_cell_closed_form_pass
+    - l0_halo_zero_pass
+    - l0_ks_below_two_xfail
+    - l0_ke_above_ka_xfail
+    - l0_too_few_cells_xfail
+    - l0_dt_nonpositive_xfail
+    - l0_dens_nonpositive_xfail
+    - l0_fz_nonincreasing_xfail
+    - l0_cz_nonincreasing_xfail
+    - l0_diffusivity_negative_xfail
+    - l0_surface_density_nonpositive_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: pbl_tracer_diffusion_1d_column__tendency
+    signature:
+      kind: subroutine
+      name: pbl_tracer_diffusion_1d_column__tendency
+      args:
+      - name: ka
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ks
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ke
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: dens
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: qtrc
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: sflx_q
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: kh
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: mass
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: cz
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: fz
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: f2h_above
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: f2h_below
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: dt
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: rhoq_t
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: flx
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  distribute:
+    axes: []
+  step:
+  - operation: pbl_tracer_diffusion_1d_column__tendency
+    result: guard_pass
+    arguments:
+      ka: inputs.grid.ka
+      ks: inputs.grid.ks
+      ke: inputs.grid.ke
+      dens: state.dens
+      qtrc: state.qtrc
+      sflx_q: inputs.surface.sflx_q
+      kh: state.kh
+      mass: inputs.tracer.mass
+      cz: state.cz
+      fz: state.fz
+      f2h_above: state.f2h_above
+      f2h_below: state.f2h_below
+      dt: inputs.time.dt
+      rhoq_t: state.rhoq_t
+      flx: state.flx
+      guard_pass: state.guard_pass
+    cases:
+    - l0_cz_nonincreasing
+    - l0_dens_nonpositive
+    - l0_diffusivity_negative
+    - l0_dt_nonpositive
+    - l0_fz_nonincreasing
+    - l0_ke_above_ka
+    - l0_ke_at_ka
+    - l0_kh_all_positive
+    - l0_kh_gap
+    - l0_kh_zero
+    - l0_ks_below_two
+    - l0_pbl_profile
+    - l0_pbl_profile_passive
+    - l0_range
+    - l0_surface_density_nonpositive
+    - l0_three_cells
+    - l0_too_few_cells
+    - l0_uniform_tracer

@@ -679,6 +679,14 @@ sites:
 
 Without them, on a target of the oracle's language, a run of either node that reaches `Build`, and a run past `Compile` of a node whose closure holds one of them, ends `library_unavailable` at startup; at a remote site it is refused as `oracle_at_remote_site` (§0-1, "Refused at startup — external libraries").
 
+**The PBL tracer node.** `pbl_tracer_diffusion_1d_column` declares the original SCALE procedure as its oracle, over the one library `scale_bl_oracle`. Build it as `docs/design/pbl_tracer_measurement/README.md` §Oracle library states and list it the same way, beside the two above in an existing file:
+
+```yaml
+      scale_bl_oracle:     {include: <dir>/default, lib: <dir>/default}
+```
+
+The same refusals apply without it.
+
 ## 3-1. Resuming a failed workflow (`--resume`)
 
 **A `--resume` across a `LEAF_PROMPT_CONTRACT_VERSION` bump runs** ([issue #643](https://github.com/seiya/spec2science/issues/643)): the version is in no derivation key, so the keys decide what re-derives, as on a fresh run. A bump of a reading-contract version moves its phase's key and re-derives that phase on a resume as on a fresh run. §3-0 lists each bump's cost.

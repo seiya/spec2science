@@ -1,0 +1,5 @@
+spec_id: pbl_tracer_diffusion_1d_column
+spec_kind: component
+dependencies:
+  components: []
+  profiles: []

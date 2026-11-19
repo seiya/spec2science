@@ -1,0 +1,323 @@
+R-O run component/microphysics_saturation_liquid_1d_column@0.1.0 against the re-taken oracle captures: agree, 30 records, worst 1.2279294281279968e-14
+R-O run component/microphysics_kessler_warm_rain_1d_column@0.1.1 against the re-taken oracle captures: agree, 76 records, worst 2.6875035792756173e-14
+
+### Table 1: component/microphysics_saturation_liquid_1d_column@0.1.0
+
+| case | variable | offline tol (min..max) | workflow tol | factor (min..max) | R-O value / 1e-12 |
+|---|---|---|---|---|---|
+| l0_qsat_ref | qsat | 4.0e-15..6.9e-15 | 1.0e-12 | 1.4e+02..2.5e+02 | 8.7e-07 |
+| l0_qsat_temp_ramp | qsat | 1.0e-15..2.5e-14 | 1.0e-12 | 3.9e+01..1.0e+03 | 3.5e-06 |
+| l0_qsat_dens_ramp | qsat | 9.6e-15..1.8e-14 | 1.0e-12 | 5.7e+01..1.0e+02 | 3.5e-06 |
+| l0_satadj_dry | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_dry | qv | 2.0e-15..3.0e-15 | 1.0e-12 | 3.3e+02..5.0e+02 | 0.0e+00 |
+| l0_satadj_dry | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_satadj_dry | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_dry | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_dry | rhoe_d | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_satadj_subsat | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_satadj_subsat | qv | 2.5e-15..4.5e-15 | 1.0e-12 | 2.2e+02..4.0e+02 | 0.0e+00 |
+| l0_satadj_subsat | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_satadj_subsat | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_subsat | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_subsat | rhoe_d | 1.7e-09..2.5e-09 | 2.5e-09 | 1.0e+00..1.5e+00 | 0.0e+00 |
+| l0_satadj_supersat | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_satadj_supersat | qv | 8.2e-15..2.4e-14 | 1.0e-12 | 4.2e+01..1.2e+02 | 3.5e-06 |
+| l0_satadj_supersat | qc | 1.8e-15..2.6e-15 | 1.0e-12 | 3.9e+02..5.6e+02 | 3.5e-06 |
+| l0_satadj_supersat | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_supersat | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 1.5e-04 |
+| l0_satadj_supersat | rhoe_d | 7.2e-10..3.5e-09 | 3.5e-09 | 1.0e+00..4.8e+00 | 3.0e-03 |
+| l0_satadj_branch | temp | 2.8e-10..2.8e-10 | 2.8e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_satadj_branch | qv | 9.8e-15..1.0e-14 | 1.0e-12 | 9.6e+01..1.0e+02 | 1.7e-06 |
+| l0_satadj_branch | qc | 1.0e-15..1.5e-15 | 1.0e-12 | 6.9e+02..1.0e+03 | 1.7e-06 |
+| l0_satadj_branch | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_branch | cvtot | 7.2e-10..7.3e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_branch | rhoe_d | 1.5e-10..1.1e-09 | 1.1e-09 | 1.0e+00..7.2e+00 | 5.1e-03 |
+| l0_satadj_slow | temp | 2.8e-10..5.4e-09 | 5.4e-09 | 1.0e+00..2.0e+01 | 0.0e+00 |
+| l0_satadj_slow | qv | 7.9e-15..1.0e-12 | 1.0e-12 | 1.0e+00..1.3e+02 | 2.0e-03 |
+| l0_satadj_slow | qc | 1.7e-14..4.6e-13 | 1.0e-12 | 2.2e+00..6.0e+01 | 2.0e-03 |
+| l0_satadj_slow | cptot | 3.9e-10..1.6e-09 | 1.6e-09 | 1.0e+00..4.2e+00 | 2.9e-03 |
+| l0_satadj_slow | cvtot | 2.1e-10..1.3e-09 | 1.3e-09 | 1.0e+00..6.1e+00 | 4.5e-03 |
+| l0_satadj_slow | rhoe_d | 2.7e-08..1.5e-06 | 1.5e-06 | 1.0e+00..5.6e+01 | 4.4e-03 |
+| l0_qsat_alt | qsat | 2.0e-15..3.7e-14 | 1.0e-12 | 2.7e+01..5.1e+02 | 7.8e-06 |
+| l0_satadj_alt_subsat | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_satadj_alt_subsat | qv | 2.5e-15..4.5e-15 | 1.0e-12 | 2.2e+02..4.0e+02 | 0.0e+00 |
+| l0_satadj_alt_subsat | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_satadj_alt_subsat | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_alt_subsat | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_alt_subsat | rhoe_d | 1.6e-09..2.4e-09 | 2.4e-09 | 1.0e+00..1.5e+00 | 0.0e+00 |
+| l0_satadj_alt_supersat | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_alt_supersat | qv | 1.0e-14..3.0e-14 | 1.0e-12 | 3.3e+01..9.6e+01 | 2.8e-05 |
+| l0_satadj_alt_supersat | qc | 2.6e-15..3.8e-15 | 1.0e-12 | 2.6e+02..3.9e+02 | 2.8e-05 |
+| l0_satadj_alt_supersat | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 2.0e-04 |
+| l0_satadj_alt_supersat | cvtot | 7.3e-10..7.5e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 1.5e-04 |
+| l0_satadj_alt_supersat | rhoe_d | 4.3e-09..6.7e-09 | 6.7e-09 | 1.0e+00..1.6e+00 | 1.2e-02 |
+| l0_qsat_range | qsat | 1.0e-15..1.4e-14 | 1.0e-12 | 7.0e+01..1.0e+03 | 1.7e-06 |
+| l0_qsat_one_cell | qsat | 1.0e-15..3.9e-15 | 1.0e-12 | 2.6e+02..1.0e+03 | 4.3e-07 |
+| l0_satadj_range | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_range | qv | 9.0e-15..2.4e-14 | 1.0e-12 | 4.2e+01..1.1e+02 | 3.5e-06 |
+| l0_satadj_range | qc | 1.0e-15..2.6e-15 | 1.0e-12 | 3.9e+02..1.0e+03 | 3.5e-06 |
+| l0_satadj_range | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_range | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_range | rhoe_d | 1.0e-15..3.5e-09 | 3.5e-09 | 1.0e+00..3.5e+06 | 3.0e-03 |
+| l0_satadj_one_cell | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_one_cell | qv | 9.0e-15..2.4e-14 | 1.0e-12 | 4.2e+01..1.1e+02 | 1.7e-06 |
+| l0_satadj_one_cell | qc | 1.0e-15..2.5e-15 | 1.0e-12 | 4.0e+02..1.0e+03 | 1.7e-06 |
+| l0_satadj_one_cell | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_one_cell | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_satadj_one_cell | rhoe_d | 1.0e-15..3.5e-09 | 3.5e-09 | 1.0e+00..3.5e+06 | 1.6e-03 |
+
+By variable (factor over the rows both read):
+
+| variable | offline rows | workflow reads | factor_min over rows | factor_max over rows |
+|---|---:|---:|---|---|
+| qsat | 6 | 6 | 2.7e+01..2.6e+02 | 1.0e+02..1.0e+03 |
+| temp | 9 | 9 | 1.0e+00..1.0e+00 | 1.0e+00..2.0e+01 |
+| qv | 9 | 9 | 1.0e+00..3.3e+02 | 9.6e+01..5.0e+02 |
+| qc | 9 | 9 | 2.2e+00..1.0e+03 | 6.0e+01..1.0e+03 |
+| cptot | 9 | 9 | 1.0e+00..1.1e+00 | 1.1e+00..4.2e+00 |
+| cvtot | 9 | 9 | 1.0e+00..1.1e+00 | 1.1e+00..6.1e+00 |
+| rhoe_d | 9 | 9 | 1.0e+00..1.0e+03 | 1.5e+00..3.5e+06 |
+
+read offline, not by the workflow: 0 of 60 offline rows
+read by both, the workflow looser on some cell (factor_max > 1): 60; on every cell (factor_min > 1): 40
+  largest factor_min: l0_satadj_dry/qc 1.0e+03; l0_satadj_dry/rhoe_d 1.0e+03; l0_satadj_subsat/qc 1.0e+03; l0_satadj_alt_subsat/qc 1.0e+03; l0_satadj_branch/qc 6.9e+02; l0_satadj_one_cell/qc 4.0e+02; l0_satadj_supersat/qc 3.9e+02; l0_satadj_range/qc 3.9e+02
+
+### Table 1: component/microphysics_kessler_warm_rain_1d_column@0.1.1
+
+| case | variable | offline tol (min..max) | workflow tol | factor (min..max) | R-O value / 1e-12 |
+|---|---|---|---|---|---|
+| l0_dry_column | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_dry_column | qv | 2.0e-15..3.0e-15 | 1.0e-12 | 3.3e+02..5.0e+02 | 0.0e+00 |
+| l0_dry_column | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_dry_column | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_dry_column | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_dry_column | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_dry_column | rhoe_t | 2.7e-10..3.5e-10 | 1.0e-12 | 2.9e-03..3.7e-03 | 0.0e+00 |
+| l0_dry_column | evaporate | 4.0e-04..5.1e-04 | 1.0e-12 | 1.9e-09..2.5e-09 | 0.0e+00 |
+| l0_dry_column | pcsat | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_autoconv_below | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_autoconv_below | qv | 7.0e-15..2.3e-14 | 1.0e-12 | 4.4e+01..1.4e+02 | 3.5e-06 |
+| l0_autoconv_below | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 3.5e-06 |
+| l0_autoconv_below | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_autoconv_below | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_autoconv_below | cvtot | 7.2e-10..7.4e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_autoconv_below | rhoe_t | 2.7e-10..3.5e-10 | not read | - | 1.1e+00 |
+| l0_autoconv_below | evaporate | 4.0e-04..5.1e-04 | not read | - | 7.7e+04 |
+| l0_autoconv_below | pcsat | 1.0e-15..1.0e-15 | not read | - | 3.5e-07 |
+| l0_autoconv_above | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_autoconv_above | qv | 7.0e-15..2.3e-14 | 1.0e-12 | 4.4e+01..1.4e+02 | 3.5e-06 |
+| l0_autoconv_above | qc | 2.0e-15..4.0e-15 | 1.0e-12 | 2.5e+02..5.0e+02 | 3.5e-06 |
+| l0_autoconv_above | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_autoconv_above | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_autoconv_above | cvtot | 7.3e-10..7.5e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_autoconv_above | rhoe_t | 2.7e-10..3.5e-10 | not read | - | 1.1e+00 |
+| l0_autoconv_above | evaporate | 4.0e-04..5.1e-04 | not read | - | 1.0e+05 |
+| l0_autoconv_above | pcsat | 1.0e-15..1.0e-15 | not read | - | 3.5e-07 |
+| l0_accretion | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_accretion | qv | 1.0e-14..2.4e-14 | 1.0e-12 | 4.2e+01..1.0e+02 | 1.7e-06 |
+| l0_accretion | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 1.7e-06 |
+| l0_accretion | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_accretion | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_accretion | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_accretion | rhoe_t | 5.0e-10..6.6e-10 | not read | - | 1.1e+00 |
+| l0_accretion | evaporate | 3.7e-04..4.9e-04 | not read | - | 1.7e+05 |
+| l0_accretion | pcsat | 1.0e-15..1.0e-15 | not read | - | 3.5e-07 |
+| l0_evaporation | temp | 2.8e-10..2.9e-10 | 2.9e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_evaporation | qv | 3.0e-15..4.0e-15 | 1.0e-12 | 2.5e+02..3.3e+02 | 0.0e+00 |
+| l0_evaporation | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporation | qr | 1.0e-15..2.0e-15 | 1.0e-12 | 5.0e+02..1.0e+03 | 0.0e+00 |
+| l0_evaporation | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporation | cvtot | 7.2e-10..7.3e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporation | rhoe_t | 2.5e-10..3.1e-10 | 3.0e-12 | 9.4e-03..1.2e-02 | 4.5e-04 |
+| l0_evaporation | evaporate | 3.7e-04..4.7e-04 | not read | - | 0.0e+00 |
+| l0_evaporation | pcsat | 1.0e-15..1.0e-15 | not read | - | 0.0e+00 |
+| l0_cloud_evaporates | temp | 2.8e-10..2.8e-10 | 2.8e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_cloud_evaporates | qv | 9.8e-15..1.0e-14 | 1.0e-12 | 9.6e+01..1.0e+02 | 1.7e-06 |
+| l0_cloud_evaporates | qc | 2.6e-15..3.1e-15 | 1.0e-12 | 3.2e+02..3.8e+02 | 1.7e-06 |
+| l0_cloud_evaporates | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_cloud_evaporates | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_cloud_evaporates | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_cloud_evaporates | rhoe_t | 3.1e-10..3.1e-10 | not read | - | 2.0e-03 |
+| l0_cloud_evaporates | evaporate | 4.7e-04..4.7e-04 | 4.1e-05 | 8.7e-02..8.7e-02 | 2.0e-03 |
+| l0_cloud_evaporates | pcsat | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 1.8e-07 |
+| l0_supersaturated | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 1.9e-04 |
+| l0_supersaturated | qv | 8.2e-15..2.4e-14 | 1.0e-12 | 4.2e+01..1.2e+02 | 3.1e-05 |
+| l0_supersaturated | qc | 1.8e-15..2.6e-15 | 1.0e-12 | 3.9e+02..5.6e+02 | 3.1e-05 |
+| l0_supersaturated | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_supersaturated | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_supersaturated | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 1.5e-04 |
+| l0_supersaturated | rhoe_t | 2.7e-10..3.5e-10 | 3.5e-10 | 1.0e+00..1.3e+00 | 2.7e-02 |
+| l0_supersaturated | evaporate | 4.0e-04..5.1e-04 | 1.0e-12 | 1.9e-09..2.5e-09 | 0.0e+00 |
+| l0_supersaturated | pcsat | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 3.1e-06 |
+| l0_eps_floor | temp | 1.1e-10..1.1e-10 | 2.2e-10 | 2.0e+00..2.1e+00 | 0.0e+00 |
+| l0_eps_floor | qv | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 3.9e-22 |
+| l0_eps_floor | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_eps_floor | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_eps_floor | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_eps_floor | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_eps_floor | rhoe_t | 3.1e-11..3.1e-11 | not read | - | 1.3e-17 |
+| l0_eps_floor | evaporate | 4.7e-04..4.7e-04 | not read | - | 0.0e+00 |
+| l0_eps_floor | pcsat | 1.0e-15..1.0e-15 | not read | - | 0.0e+00 |
+| l0_limiter_qr | temp | 2.9e-10..2.9e-10 | 2.9e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_limiter_qr | qv | 1.0e-15..1.5e-15 | 1.0e-12 | 6.6e+02..9.9e+02 | 0.0e+00 |
+| l0_limiter_qr | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_limiter_qr | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_limiter_qr | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_limiter_qr | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_limiter_qr | rhoe_t | 7.9e-13..8.7e-13 | not read | - | 0.0e+00 |
+| l0_limiter_qr | evaporate | 4.2e-04..4.7e-04 | not read | - | 0.0e+00 |
+| l0_limiter_qr | pcsat | 1.0e-15..1.0e-15 | not read | - | 0.0e+00 |
+| l0_limiter_qc | temp | 2.9e-10..2.9e-10 | 2.9e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_limiter_qc | qv | 2.5e-15..3.2e-15 | 1.0e-12 | 3.1e+02..4.0e+02 | 4.3e-07 |
+| l0_limiter_qc | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_limiter_qc | qr | 9.5e-15..1.4e-14 | 1.0e-12 | 7.0e+01..1.1e+02 | 1.7e-06 |
+| l0_limiter_qc | cptot | 1.0e-09..1.1e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_limiter_qc | cvtot | 7.5e-10..7.7e-10 | 7.8e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_limiter_qc | rhoe_t | 2.8e-11..3.1e-11 | not read | - | 1.7e-04 |
+| l0_limiter_qc | evaporate | 4.2e-04..4.7e-04 | not read | - | 0.0e+00 |
+| l0_limiter_qc | pcsat | 1.0e-15..1.0e-15 | not read | - | 0.0e+00 |
+| l0_limiter_qv | temp | 2.9e-10..2.9e-10 | 2.9e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_limiter_qv | qv | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 4.2e-10 |
+| l0_limiter_qv | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_limiter_qv | qr | 1.3e-14..2.2e-14 | 1.0e-12 | 4.4e+01..7.5e+01 | 0.0e+00 |
+| l0_limiter_qv | cptot | 1.0e-09..1.1e-09 | 1.1e-09 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_limiter_qv | cvtot | 7.7e-10..8.0e-10 | 8.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_limiter_qv | rhoe_t | 2.8e-11..3.1e-11 | not read | - | 1.4e-05 |
+| l0_limiter_qv | evaporate | 4.2e-04..4.7e-04 | not read | - | 0.0e+00 |
+| l0_limiter_qv | pcsat | 1.0e-15..1.0e-15 | not read | - | 0.0e+00 |
+| l0_tv_formula | vterm_c | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_tv_formula | vterm_r | 1.4e-11..2.3e-11 | 2.3e-11 | 1.0e+00..1.6e+00 | 0.0e+00 |
+| l0_tv_refstate | vterm_c | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_tv_refstate | vterm_r | 1.4e-11..2.4e-11 | 2.4e-11 | 1.0e+00..1.7e+00 | 0.0e+00 |
+| l0_tv_zerosw | vterm_c | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_tv_zerosw | vterm_r | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_rain_above_saturation | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 1.9e-04 |
+| l0_rain_above_saturation | qv | 8.2e-15..2.4e-14 | 1.0e-12 | 4.2e+01..1.2e+02 | 3.5e-06 |
+| l0_rain_above_saturation | qc | 1.8e-15..2.5e-15 | 1.0e-12 | 4.0e+02..5.7e+02 | 3.5e-06 |
+| l0_rain_above_saturation | qr | 1.0e-15..1.1e-15 | 1.0e-12 | 9.0e+02..1.0e+03 | 0.0e+00 |
+| l0_rain_above_saturation | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_rain_above_saturation | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.0e+00..1.1e+00 | 0.0e+00 |
+| l0_rain_above_saturation | rhoe_t | 2.7e-10..3.5e-10 | not read | - | 3.6e-03 |
+| l0_rain_above_saturation | evaporate | 4.0e-04..5.1e-04 | not read | - | 0.0e+00 |
+| l0_rain_above_saturation | pcsat | 1.0e-15..1.0e-15 | not read | - | 3.5e-07 |
+| l0_tv_mixed | vterm_c | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_tv_mixed | vterm_r | 1.0e-15..2.1e-11 | 2.1e-11 | 1.0e+00..2.1e+04 | 0.0e+00 |
+| l0_alt_evaporation | temp | 1.1e-10..2.9e-10 | 2.9e-10 | 1.0e+00..2.7e+00 | 0.0e+00 |
+| l0_alt_evaporation | qv | 1.0e-15..3.8e-15 | 1.0e-12 | 2.6e+02..1.0e+03 | 0.0e+00 |
+| l0_alt_evaporation | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_alt_evaporation | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_alt_evaporation | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_alt_evaporation | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_alt_evaporation | rhoe_t | 2.5e-10..3.0e-10 | not read | - | 3.1e-04 |
+| l0_alt_evaporation | evaporate | 4.1e-04..4.9e-04 | not read | - | 0.0e+00 |
+| l0_alt_evaporation | pcsat | 1.0e-15..1.0e-15 | not read | - | 0.0e+00 |
+| l0_alt_cloud | temp | 2.8e-10..2.8e-10 | 2.8e-10 | 1.0e+00..1.0e+00 | 2.0e-04 |
+| l0_alt_cloud | qv | 1.1e-14..1.1e-14 | 1.0e-12 | 8.8e+01..9.2e+01 | 4.9e-05 |
+| l0_alt_cloud | qc | 2.6e-15..3.1e-15 | 1.0e-12 | 3.3e+02..3.8e+02 | 4.9e-05 |
+| l0_alt_cloud | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_alt_cloud | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 2.0e-04 |
+| l0_alt_cloud | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 1.5e-04 |
+| l0_alt_cloud | rhoe_t | 3.0e-10..3.0e-10 | not read | - | 5.4e-02 |
+| l0_alt_cloud | evaporate | 4.9e-04..4.9e-04 | not read | - | 5.4e-02 |
+| l0_alt_cloud | pcsat | 1.0e-15..1.0e-15 | not read | - | 4.9e-06 |
+| l0_evaporate_dens | temp | 2.9e-10..2.9e-10 | 2.9e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_evaporate_dens | qv | 5.3e-15..6.8e-15 | 1.0e-12 | 1.5e+02..1.9e+02 | 0.0e+00 |
+| l0_evaporate_dens | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporate_dens | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporate_dens | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporate_dens | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporate_dens | rhoe_t | 2.0e-10..2.8e-10 | not read | - | 8.7e-05 |
+| l0_evaporate_dens | evaporate | 3.0e-04..4.2e-04 | 2.4e-05 | 5.8e-02..8.0e-02 | 3.1e-04 |
+| l0_evaporate_dens | pcsat | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 1.4e-08 |
+| l0_evaporate_range | temp | 2.9e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_evaporate_range | qv | 5.0e-15..6.5e-15 | 1.0e-12 | 1.5e+02..2.0e+02 | 0.0e+00 |
+| l0_evaporate_range | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporate_range | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporate_range | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporate_range | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporate_range | rhoe_t | 2.0e-10..2.8e-10 | not read | - | 9.2e-05 |
+| l0_evaporate_range | evaporate | 3.0e-04..4.2e-04 | 2.3e-05 | 5.4e-02..7.5e-02 | 3.3e-04 |
+| l0_evaporate_range | pcsat | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 1.4e-08 |
+| l0_evaporate_one_cell | temp | 2.9e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_evaporate_one_cell | qv | 5.0e-15..6.0e-15 | 1.0e-12 | 1.7e+02..2.0e+02 | 0.0e+00 |
+| l0_evaporate_one_cell | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporate_one_cell | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_evaporate_one_cell | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporate_one_cell | cvtot | 7.2e-10..7.2e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_evaporate_one_cell | rhoe_t | 2.0e-10..2.8e-10 | not read | - | 1.1e-04 |
+| l0_evaporate_one_cell | evaporate | 3.0e-04..4.2e-04 | 1.9e-05 | 4.4e-02..6.2e-02 | 0.0e+00 |
+| l0_evaporate_one_cell | pcsat | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_accretion_range | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_accretion_range | qv | 1.0e-14..2.4e-14 | 1.0e-12 | 4.2e+01..1.0e+02 | 1.7e-06 |
+| l0_accretion_range | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 1.7e-06 |
+| l0_accretion_range | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_accretion_range | cptot | 1.0e-15..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+06 | 0.0e+00 |
+| l0_accretion_range | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_accretion_range | rhoe_t | 5.0e-10..6.6e-10 | not read | - | 1.0e+00 |
+| l0_accretion_range | evaporate | 3.7e-04..4.9e-04 | not read | - | 1.2e+05 |
+| l0_accretion_range | pcsat | 1.0e-15..1.0e-15 | not read | - | 3.5e-07 |
+| l0_accretion_one_cell | temp | 2.8e-10..3.0e-10 | 3.0e-10 | 1.0e+00..1.0e+00 | 0.0e+00 |
+| l0_accretion_one_cell | qv | 1.0e-14..2.4e-14 | 1.0e-12 | 4.2e+01..1.0e+02 | 1.7e-06 |
+| l0_accretion_one_cell | qc | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 1.7e-06 |
+| l0_accretion_one_cell | qr | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_accretion_one_cell | cptot | 1.0e-09..1.0e-09 | 1.1e-09 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_accretion_one_cell | cvtot | 7.3e-10..7.4e-10 | 7.8e-10 | 1.1e+00..1.1e+00 | 0.0e+00 |
+| l0_accretion_one_cell | rhoe_t | 5.0e-10..6.6e-10 | not read | - | 1.0e+00 |
+| l0_accretion_one_cell | evaporate | 3.7e-04..4.9e-04 | not read | - | 1.2e+05 |
+| l0_accretion_one_cell | pcsat | 1.0e-15..1.0e-15 | not read | - | 3.5e-07 |
+| l0_tv_range | vterm_c | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_tv_range | vterm_r | 1.0e-15..2.0e-11 | 2.0e-11 | 1.0e+00..2.0e+04 | 0.0e+00 |
+| l0_tv_one_cell | vterm_c | 1.0e-15..1.0e-15 | 1.0e-12 | 1.0e+03..1.0e+03 | 0.0e+00 |
+| l0_tv_one_cell | vterm_r | 1.0e-15..1.5e-11 | 1.5e-11 | 1.0e+00..1.5e+04 | 0.0e+00 |
+
+By variable (factor over the rows both read):
+
+| variable | offline rows | workflow reads | factor_min over rows | factor_max over rows |
+|---|---:|---:|---|---|
+| temp | 19 | 19 | 1.0e+00..2.0e+00 | 1.0e+00..2.7e+00 |
+| qv | 19 | 19 | 4.2e+01..1.0e+03 | 9.2e+01..1.0e+03 |
+| qc | 19 | 19 | 2.5e+02..1.0e+03 | 3.8e+02..1.0e+03 |
+| qr | 19 | 19 | 4.4e+01..1.0e+03 | 7.5e+01..1.0e+03 |
+| cptot | 19 | 19 | 1.0e+00..1.1e+00 | 1.1e+00..1.1e+06 |
+| cvtot | 19 | 19 | 1.0e+00..1.1e+00 | 1.0e+00..1.1e+00 |
+| rhoe_t | 19 | 3 | 2.9e-03..1.0e+00 | 3.7e-03..1.3e+00 |
+| evaporate | 19 | 6 | 1.9e-09..8.7e-02 | 2.5e-09..8.7e-02 |
+| pcsat | 19 | 6 | 1.0e+03..1.0e+03 | 1.0e+03..1.0e+03 |
+| vterm_c | 6 | 6 | 1.0e+03..1.0e+03 | 1.0e+03..1.0e+03 |
+| vterm_r | 6 | 6 | 1.0e+00..1.0e+03 | 1.6e+00..2.1e+04 |
+
+read offline, not by the workflow: 42 of 183 offline rows
+  rhoe_t: 16 cases (the workflow's expression on R-O, were it named: at most 1.1e+00 of its bound): l0_autoconv_below, l0_autoconv_above, l0_accretion, l0_cloud_evaporates, l0_eps_floor, l0_limiter_qr, l0_limiter_qc, l0_limiter_qv, l0_rain_above_saturation, l0_alt_evaporation, l0_alt_cloud, l0_evaporate_dens, l0_evaporate_range, l0_evaporate_one_cell, l0_accretion_range, l0_accretion_one_cell
+  evaporate: 13 cases (the workflow's expression on R-O, were it named: at most 1.7e+05 of its bound): l0_autoconv_below, l0_autoconv_above, l0_accretion, l0_evaporation, l0_eps_floor, l0_limiter_qr, l0_limiter_qc, l0_limiter_qv, l0_rain_above_saturation, l0_alt_evaporation, l0_alt_cloud, l0_accretion_range, l0_accretion_one_cell
+  pcsat: 13 cases (the workflow's expression on R-O, were it named: at most 4.9e-06 of its bound): l0_autoconv_below, l0_autoconv_above, l0_accretion, l0_evaporation, l0_eps_floor, l0_limiter_qr, l0_limiter_qc, l0_limiter_qv, l0_rain_above_saturation, l0_alt_evaporation, l0_alt_cloud, l0_accretion_range, l0_accretion_one_cell
+read by both, the workflow looser on some cell (factor_max > 1): 133; on every cell (factor_min > 1): 108
+  largest factor_min: l0_dry_column/qc 1.0e+03; l0_dry_column/qr 1.0e+03; l0_dry_column/pcsat 1.0e+03; l0_autoconv_below/qc 1.0e+03; l0_autoconv_below/qr 1.0e+03; l0_autoconv_above/qr 1.0e+03; l0_accretion/qc 1.0e+03; l0_accretion/qr 1.0e+03
+
+### Table 2: seeded variants
+
+| variant | node | (a) oracle comparison | (b) compare.py | (c) own suite |
+|---|---|---|---|---|
+| none | saturation | agree (30 records; 0 of 60 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| none | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| threshold 1.5e-6 | saturation | agree (30 records; 0 of 60 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| threshold 1.5e-6 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| threshold 2e-6 | saturation | disagree (30 records; 5 of 60 (case, variable) beyond) | exit 1, 5 rows beyond | pass |
+| threshold 2e-6 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| threshold 3e-6 | saturation | disagree (30 records; 15 of 60 (case, variable) beyond) | exit 1, 15 rows beyond | fail; changed: l0_satadj_conservation_pass=fail, l0_satadj_saturated_state_pass=fail |
+| threshold 3e-6 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| threshold 1e-5 | saturation | disagree (30 records; 15 of 60 (case, variable) beyond) | exit 1, 15 rows beyond | fail; changed: l0_satadj_conservation_pass=fail, l0_satadj_nonconverged_xfail=fail, l0_satadj_saturated_state_pass=fail |
+| threshold 1e-5 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| limit 150 | saturation | agree (30 records; 0 of 60 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| limit 150 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| limit 1000 | saturation | agree (30 records; 0 of 60 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| limit 1000 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| virtual keeps temp at qc=0 | saturation | agree (30 records; 0 of 60 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| virtual keeps temp at qc=0 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+| clip limited result >= 0 | kessler | agree (76 records; 0 of 141 (case, variable) beyond) | exit 0, 0 rows beyond | pass |
+
+(a) threshold 2e-6 / saturation: failing (case, variable): l0_satadj_slow/cptot, l0_satadj_slow/cvtot, l0_satadj_slow/qc, l0_satadj_slow/qv, l0_satadj_slow/rhoe_d
+(b) threshold 2e-6 / saturation: beyond: l0_satadj_slow/qv 1.6e-09; l0_satadj_slow/qc 3.5e-09; l0_satadj_slow/cptot 9.7e-09; l0_satadj_slow/cvtot 2.2e-08; l0_satadj_slow/rhoe_d 3.5e-09
+(a) threshold 3e-6 / saturation: failing (case, variable): l0_satadj_alt_supersat/cptot, l0_satadj_alt_supersat/cvtot, l0_satadj_alt_supersat/qc, l0_satadj_alt_supersat/qv, l0_satadj_alt_supersat/rhoe_d, l0_satadj_branch/cptot, l0_satadj_branch/cvtot, l0_satadj_branch/qc, l0_satadj_branch/qv, l0_satadj_branch/rhoe_d, l0_satadj_slow/cptot, l0_satadj_slow/cvtot, l0_satadj_slow/qc, l0_satadj_slow/qv, l0_satadj_slow/rhoe_d
+(b) threshold 3e-6 / saturation: beyond: l0_satadj_branch/qv 1.4e-07; l0_satadj_branch/qc 1.1e-06; l0_satadj_branch/cptot 3.2e-09; l0_satadj_branch/cvtot 5.4e-09; l0_satadj_branch/rhoe_d 7.8e-06; l0_satadj_slow/qv 1.6e-09; l0_satadj_slow/qc 3.5e-09; l0_satadj_slow/cptot 9.7e-09; l0_satadj_slow/cvtot 2.2e-08; l0_satadj_slow/rhoe_d 3.5e-09; l0_satadj_alt_supersat/qv 1.0e-07; l0_satadj_alt_supersat/qc 8.4e-07; l0_satadj_alt_supersat/cptot 6.5e-09; l0_satadj_alt_supersat/cvtot 1.1e-08; l0_satadj_alt_supersat/rhoe_d 1.9e-06
+(a) threshold 1e-5 / saturation: failing (case, variable): l0_satadj_alt_supersat/cptot, l0_satadj_alt_supersat/cvtot, l0_satadj_alt_supersat/qc, l0_satadj_alt_supersat/qv, l0_satadj_alt_supersat/rhoe_d, l0_satadj_branch/cptot, l0_satadj_branch/cvtot, l0_satadj_branch/qc, l0_satadj_branch/qv, l0_satadj_branch/rhoe_d, l0_satadj_slow/cptot, l0_satadj_slow/cvtot, l0_satadj_slow/qc, l0_satadj_slow/qv, l0_satadj_slow/rhoe_d
+(b) threshold 1e-5 / saturation: beyond: l0_satadj_branch/qv 1.4e-07; l0_satadj_branch/qc 1.1e-06; l0_satadj_branch/cptot 3.2e-09; l0_satadj_branch/cvtot 5.4e-09; l0_satadj_branch/rhoe_d 7.8e-06; l0_satadj_slow/qv 1.6e-09; l0_satadj_slow/qc 3.5e-09; l0_satadj_slow/cptot 9.7e-09; l0_satadj_slow/cvtot 2.2e-08; l0_satadj_slow/rhoe_d 3.5e-09; l0_satadj_alt_supersat/qv 4.3e-07; l0_satadj_alt_supersat/qc 2.4e-06; l0_satadj_alt_supersat/cptot 2.0e-08; l0_satadj_alt_supersat/cvtot 3.4e-08; l0_satadj_alt_supersat/rhoe_d 4.2e-06
