@@ -50,10 +50,10 @@ Acceptance measurement V-b of [issue #680](https://github.com/seiya/spec2science
 
 The effective absolute tolerance of each comparison on a captured variable: offline, `max(1e-15, 1e-12*max(|q|, |q_ref|))` per interior cell, with `evaporate` and `rhoe_t` through the transforms of §Operations; in the workflow, `1e-12*max(maxabs(q), maxabs(q_ref), 1)` over the column, on the variables a cross-target judgment names in that case. The factor is the workflow's tolerance over the offline one; above 1 the workflow is looser.
 
-| node | (case, variable) rows read offline | also read in the workflow | workflow looser on some cell | on every cell | largest factor on every cell |
-|---|---:|---:|---:|---:|---:|
-| saturation `0.1.0` | 60 | 60 | 60 | 40 | `1e3` (`qc`, `rhoe_d`) |
-| Kessler `0.1.1` | 183 | 141 | 133 | 108 | `1e3` (`qc`, `qr`, `pcsat`) |
+| node | (case, variable) rows read offline | also read in the workflow | workflow looser on some cell | on every cell | largest factor on every cell of a row | largest factor on one cell |
+|---|---:|---:|---:|---:|---:|---:|
+| saturation `0.1.0` | 60 | 60 | 60 | 40 | `1e3` (`qc`, `rhoe_d`) | `3.5e6` (`rhoe_d`) |
+| Kessler `0.1.1` | 183 | 141 | 133 | 108 | `1e3` (`qv`, `qc`, `qr`, `pcsat`, `vterm_c`, `vterm_r`) | `1.1e6` (`cptot`) |
 
 The 42 Kessler rows the workflow does not read are `rhoe_t` on 16 cases, `evaporate` on 13 and `pcsat` on 13. Where a judgment names `evaporate` or `rhoe_t`, the factor is `1.9e-9` to `8.7e-2` and `2.9e-3` to `1.3`: the workflow is tighter there, because the offline transforms loosen those two on purpose, except on `rhoe_t` of `l0_supersaturated`. Evaluated on R-O against the oracle on every row, named or not, the workflow's expression reaches, against its bound `1e-12`: `evaporate` `1.7e5`, `rhoe_t` `1.1`, `pcsat` `4.9e-6`. The default normaliser applied to those two variables would therefore fail correct code by a factor of up to `1.7e5` and `1.1`.
 
