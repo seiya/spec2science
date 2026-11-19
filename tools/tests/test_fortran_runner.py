@@ -2277,6 +2277,20 @@ class HarnessPinTableTest(unittest.TestCase):
         self.assertEqual(seen, {"fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_netcdf",
                                 "cpp_gpu"})
 
+    def test_every_symbol_of_each_block_takes_the_harness_s_own_name(self) -> None:
+        """Issue #690: each block names every symbol by the placeholder, so the substitution
+        gives a harness under any name all of them. A stanza left under a sample harness's
+        name would pass the pin for that sample alone (its id substitutes to itself)."""
+        from tools.backends.language.fortran import runner as fortran_runner
+        from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
+        single = provides_for(HARNESS)
+        for provides in (single, single | {DISTRIBUTED_STATE_TOKEN}):
+            with self.subTest(provides=sorted(provides)):
+                block = fortran_runner.harness_interface_block("harness_q", provides)
+                names = set(re.findall(r"\b\w+__\w+", block))
+                self.assertTrue(names)
+                self.assertEqual({n for n in names if not n.startswith("harness_q__")}, set())
+
     def test_the_distributed_pin_holds_against_its_own_interface_and_names_what_it_used(
             self) -> None:
         from tools.backends.language.fortran import runner as fortran_runner

@@ -358,6 +358,16 @@ class HarnessPinTest(unittest.TestCase):
         self.assertEqual(yaml.safe_load(cpp_runner._HARNESS_V1_INTERFACE.replace(
             cpp_runner._PLACEHOLDER, f"{HARNESS}__")), section51)
 
+    def test_every_symbol_of_the_block_takes_the_harness_s_own_name(self) -> None:
+        """Issue #690: the block names every symbol by the placeholder; a stanza left under the
+        sample's name would pass the pin for that sample alone."""
+        block = cpp_runner._HARNESS_V1_INTERFACE.replace(cpp_runner._PLACEHOLDER, "harness_q__")
+        names = set(re.findall(r"\b\w+__\w+", block))
+        self.assertTrue(names)
+        self.assertEqual({n for n in names if not n.startswith("harness_q__")}, set())
+        ops, types = cpp_runner._pinned_stanzas("harness_q")
+        self.assertTrue(all(sym.startswith("harness_q__") for sym in [*ops, *types]))
+
     def test_a_clean_harness_passes(self) -> None:
         self._pin()
 
