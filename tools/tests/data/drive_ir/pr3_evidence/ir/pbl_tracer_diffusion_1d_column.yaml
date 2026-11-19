@@ -889,6 +889,9 @@ case:
         - var: cz
           k: 10
           value: 1200.0
+        - var: kh
+          k: 8
+          value: 15.0
       test_profile_id: pbl_tracer_diffusion_1d_column_l0
       test_profile_version: 0.1.0
     initial_state:
@@ -905,17 +908,7 @@ case:
       - 0.005
       - 0.0042
       - 0.0123
-      kh:
-      - 7.0
-      - 30.0
-      - 60.0
-      - 80.0
-      - 50.0
-      - 20.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 7.0
+      kh: (inputs.initial.columns.kh.cells) * (1 - max(0, 1 - abs(floor(c) - 7))) + max(0, 1 - abs(floor(c) - 7)) * 15.0
       cz: (inputs.initial.columns.cz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1200.0
       fz: (inputs.initial.columns.fz.cells) * (1 - max(0, 1 - abs(floor(c) - 9))) + max(0, 1 - abs(floor(c) - 9)) * 1100.0
       f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
