@@ -59,17 +59,17 @@ python3 docs/design/pbl_tracer_measurement/crosscheck.py <dir>/O0/driver <dir>/O
 ```
 
 ## Results
-gfortran 11.4, 2026-11-19, on the tree of `0dfbd393`. The commands of §Operations with `--show-values`, on the library built at `-O2` and at `-O3 -march=native -mfma`: each run judges the 8 `pass` tests, and all 8 reach their `expected_outcome`. The largest `value` over every case of each bounded judgment's record, against its bound, over both runs:
+gfortran 11.4, 2026-11-19, on the tree of `510e525e`: its `tests.md`, its hand transcription and its `verify_spec.py`. The commands of §Operations with `--show-values`, on the library built at `-O2` and at `-O3 -march=native -mfma`: each run judges the 8 `pass` tests over the 9 `pass` cases, and all 8 reach their `expected_outcome`. The largest `value` over every case of each bounded judgment's record, against its bound, over both runs:
 
 | judgment | worst value | bound | case |
 |---|---:|---:|---|
-| `conservation` | `5.6e-15` | `1e-12` | `l0_kh_all_positive` (`-mfma`) |
-| `flux_divergence` | `8.5e-15` | `1e-12` | `l0_kh_all_positive` |
-| `implicit_flux` | `1.6e-15` | `1e-12` | `l0_range` |
+| `conservation` | `3.8e-15` | `1e-12` | `l0_kh_all_positive` |
+| `flux_divergence` | `7.8e-15` | `1e-12` | `l0_ke_at_ka` |
+| `implicit_flux` | `2.1e-15` | `1e-12` | `l0_pbl_profile` |
 | `zero_diffusivity`, cell `ks` | `9.8e-17` | `1e-13` | `l0_kh_zero` (`-mfma`) |
 | `uniform_tracer`, `rhoq_t` | `1.7e-16` | `1e-13` | `l0_uniform_tracer` |
 | `uniform_tracer`, `flx` | `1.7e-17` | `1e-13` | `l0_uniform_tracer` |
 | `closed_form`, `flx` | `1.0e-15` | `1e-12` | `l0_three_cells` (`-mfma`) |
 | `closed_form`, `rhoq_t` | `1.7e-15` | `1e-12` | `l0_three_cells` |
 
-The exact judgments (`guard_pass == 1`, and `== 0` of `pbl_top`, `halo_zero` and the two exact parts of `zero_diffusivity`) hold on every case, and `maxabs(top_face*flx)` of `pbl_top` is between `2.8e-4` and `1.0e-3` on its four cases. The cross-target judgment holds vacuously in these runs, which have no comparand. `crosscheck.py` over offline drivers built at `-O0`, `-O2` and `-O3 -march=native -mfma`: `-O3 -mfma` against `-O2` and against `-O0` reaches `2.8e-16` (`l0_pbl_profile_passive`, `rhoq_t`) against the bound `1e-12`, and `-O0` and `-O2` agree to the last bit on every case. Two seeded defects of the adapter, run with `--mutate` on the `-O2` library: passing `mass = 0` (`'mass_rp = mass=>mass_rp = 0.0_RP'`) moves `l0_implicit_flux_pass` and `l0_three_cell_closed_form_pass`, and shifting `fz` by one cell (`'fz3(0:ka-1,1,1) = fz=>fz3(1:ka,1,1) = fz'`) moves those two and `l0_conservation_pass`, `l0_flux_divergence_pass`.
+The exact judgments (`guard_pass == 1`, and `== 0` of `pbl_top`, `halo_zero` and the two exact parts of `zero_diffusivity`) hold on every case, and `maxabs(top_face*flx)` of `pbl_top` is between `3.0e-4` and `1.0e-3` on its four cases. The cross-target judgment holds vacuously in these runs, which have no comparand. `crosscheck.py` over offline drivers built at `-O0`, `-O2` and `-O3 -march=native -mfma`: `-O3 -mfma` against `-O2` and against `-O0` reaches `2.8e-16` (`l0_pbl_profile_passive`, `rhoq_t`) against the bound `1e-12`, and `-O0` and `-O2` agree to the last bit on every case. Two seeded defects of the adapter, run with `--mutate` on the `-O2` library: passing `mass = 0` (`'mass_rp = mass=>mass_rp = 0.0_RP'`) moves `l0_implicit_flux_pass` and `l0_three_cell_closed_form_pass`, and shifting `fz` by one cell (`'fz3(0:ka-1,1,1) = fz=>fz3(1:ka,1,1) = fz'`) moves those two and `l0_conservation_pass`, `l0_flux_divergence_pass`.
