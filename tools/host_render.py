@@ -36,6 +36,7 @@ gates collected, which is exactly what the gate's own comment promises cannot ha
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from types import ModuleType
 from typing import Any
 
@@ -127,8 +128,14 @@ def runner_render_refusal(language: Any) -> str | None:
 
 
 def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_id: str,
-                  *, target: dict[str, Any]) -> str:
+                  *, target: dict[str, Any], harness_provides: Collection[str]) -> str:
     """The complete text of the node's runner source, rendered from the IR and the target.
+
+    `harness_provides` is the capability set of the target's harness
+    (`target_profile.harness_capabilities`, issue #690). It decides the interface block the
+    driver is written against — the process model is `distributed_state` among it — so it is
+    required on all four functions of this seam that take a harness: a caller that omitted it
+    would render the single-process form over a distributed harness.
 
     `target` is the run's target profile document (`TargetProfile.doc`, issue #284): the
     runner's performance record names the hardware class, threads per rank and devices the run
@@ -138,7 +145,8 @@ def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_
     `RenderError` for an IR the backend cannot faithfully render, and `RunnerRenderUnavailable`
     when `language` declares no renderer.
     """
-    return _module(language).render_runner(ir, spec_id, harness_spec_id, target=target)
+    return _module(language).render_runner(ir, spec_id, harness_spec_id, target=target,
+                                           harness_provides=frozenset(harness_provides))
 
 
 def assert_harness_pin(
@@ -148,17 +156,23 @@ def assert_harness_pin(
     harness_spec_id: str,
     harness_signatures: Any,
     harness_source: str,
+    *,
+    harness_provides: Collection[str],
 ) -> None:
     """Fail-closed guard run BEFORE rendering: the certified harness the consumer will link
-    against must still publish exactly the interface the backend's template was written for, in
-    both its IR ``public_api.signatures`` and its generated model source. Drift raises
-    `RenderError`, never a Generate content retry."""
+    against must still publish, under its own `<harness_spec_id>__` names, exactly the interface
+    block the backend's template is written against for the tokens of `harness_provides`, in
+    both its IR ``public_api.signatures`` and its generated model source. The block is the framework's;
+    the harness's name, version and every operation beyond the block are its Project's (issue
+    #690). Drift raises `RenderError`, never a Generate content retry."""
     _module(language).assert_harness_pin(
-        ir, spec_id, harness_spec_id, harness_signatures, harness_source)
+        ir, spec_id, harness_spec_id, harness_signatures, harness_source,
+        harness_provides=frozenset(harness_provides))
 
 
 def ir_content_violations(
-    language: Any, ir: dict[str, Any], spec_id: str, harness_spec_id: str,
+    language: Any, ir: dict[str, Any], spec_id: str, harness_spec_id: str, *,
+    harness_provides: Collection[str],
 ) -> list[str]:
     """The Compile-authored render preconditions, as violation messages (``[]`` when the IR
     renders, or when the only defect is a node-identity one — see `RenderError.identity`).
@@ -166,13 +180,31 @@ def ir_content_violations(
     The compile.static gate calls this so an IR defect routes back to compile.generate instead of
     surfacing only as a conductor-time fail_closed that kills the run.
     """
-    return _module(language).ir_content_violations(ir, spec_id, harness_spec_id)
+    return _module(language).ir_content_violations(
+        ir, spec_id, harness_spec_id, harness_provides=frozenset(harness_provides))
 
 
-def physics_harness_uses(language: Any, harness_spec_id: str) -> dict[str, frozenset[str]]:
+def physics_harness_uses(language: Any, harness_spec_id: str, *,
+                         harness_provides: Collection[str]) -> dict[str, frozenset[str]]:
     """`{module: names}` a physics source of `language` may `use` from the harness
-    `harness_spec_id` — empty unless that harness runs the program as several ranks, whose
+    `harness_spec_id` — empty unless that harness runs the program as several ranks
+    (`distributed_state` among `harness_provides`), whose
     distributed-state operations a physics source reaches the runtime through (issue #316). The
     backend that renders the runner over the harness is the one that knows which of its
     operations are the runner's own."""
-    return dict(_module(language).physics_harness_uses(harness_spec_id))
+    return dict(_module(language).physics_harness_uses(
+        harness_spec_id, harness_provides=frozenset(harness_provides)))
+
+
+def harness_block_drift(language: Any, harness_spec_id: str, section51: str, *,
+                        harness_provides: Collection[str]) -> list[str]:
+    """How a harness's controlled_spec §5.1 (`section51`, the body of its one fenced block)
+    differs from the interface block the `language` backend's driver is written against for
+    `harness_provides`, one message per symbol; ``[]`` when §5.1 publishes the block under
+    `<harness_spec_id>__` names (issue #690).
+
+    `assert_harness_pin` makes the same comparison against the CERTIFIED harness at its first
+    consumer's render. This one reads the `spec`, so a Project harness that does not publish the
+    block is seen before it is certified (`skills/spec-input-check`)."""
+    return list(_module(language).harness_block_drift(
+        harness_spec_id, section51, harness_provides=frozenset(harness_provides)))

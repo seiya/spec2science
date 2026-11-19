@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import yaml
 
+from tools.tests.target_fixtures import provides_for
 import tools.validate_pipeline_semantics as vps
 from tools import capture_store
 from tools.backends import registry as backend_registry
@@ -17210,7 +17211,8 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
             vps._validate_model_source_isolation(
                 NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp, exec_dir=tmp,
                               pipeline_dir=tmp), "fortran", src, [src / "bx_model.f90"],
-                violations, harness_spec_id=harness)
+                violations, harness_spec_id=harness,
+                harness_provides=provides_for(harness) if harness else frozenset())
             return violations
 
     def _with(self, statement: str) -> str:
@@ -19361,7 +19363,8 @@ class ComposingInitPostGenerateTests(unittest.TestCase):
         src.mkdir(parents=True)
         (src / f"{drv.CMP_SUB}_model.f90").write_text(model_text, encoding="utf-8")
         (src / f"{drv.CMP_SUB}_runner.f90").write_text(drv.f_runner.render_runner(
-            ir, drv.CMP_SUB, "harness_fortran_cpu", target=drv.CPU), encoding="utf-8")
+            ir, drv.CMP_SUB, "harness_fortran_cpu", target=drv.CPU,
+                harness_provides=provides_for("harness_fortran_cpu")), encoding="utf-8")
         rules = registry.capability_module("language", "fortran", "control_file").rules(
             standard="f2008", parallel_backend="openmp")
         (src / "Makefile").write_text(control_file.render_node(
@@ -19468,7 +19471,8 @@ class ComposingFixturePostGenerateTests(unittest.TestCase):
         src.mkdir(parents=True)
         (src / f"{drv.ROTATING}_model.f90").write_text(model_text, encoding="utf-8")
         (src / f"{drv.ROTATING}_runner.f90").write_text(drv.f_runner.render_runner(
-            ir, drv.ROTATING, "harness_fortran_cpu", target=drv.CPU), encoding="utf-8")
+            ir, drv.ROTATING, "harness_fortran_cpu", target=drv.CPU,
+                harness_provides=provides_for("harness_fortran_cpu")), encoding="utf-8")
         with tempfile.TemporaryDirectory() as graph_repo:
             closure = drv.rotating_closure(drv.rotating_closure_graph(Path(graph_repo)))
         (src / "Makefile").write_text(
@@ -22105,7 +22109,10 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU, second_target
         other = second_target(FORTRAN_CPU, "fortran_cpu_other")
 
-        def fake(language, ir, spec_id, harness_sid):
+        handed: dict[str, frozenset[str]] = {}
+
+        def fake(language, ir, spec_id, harness_sid, *, harness_provides):
+            handed[harness_sid] = harness_provides
             return ["shared finding", f"only for {harness_sid}"] \
                 if harness_sid == "harness_only_here" else ["shared finding"]
 
@@ -22114,7 +22121,10 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
             tmp = Path(t)
             install_target_profile(tmp, FORTRAN_CPU)
             from tools.tests.target_fixtures import profile_with
-            special = profile_with(other, harness={"infrastructure_id": "harness_only_here"})
+            # Another output format too, so the set each target's render is asked under is its
+            # own (issue #690), not one default.
+            special = profile_with(other, harness={"infrastructure_id": "harness_only_here"},
+                                   output={"format": "netcdf"})
             install_target_profile(tmp, special)
             ensure_spec_entry(
                 tmp, f"infrastructure/{FORTRAN_CPU.harness['infrastructure_id']}@0.7.0")
@@ -22128,6 +22138,11 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         self.assertEqual(sorted(x.split(": ", 1)[1] for x in v), sorted([
             "shared finding",
             f"only for harness_only_here [target {special.target_id}]"]))
+        from tools.target_profile import harness_capabilities
+        self.assertEqual(handed, {
+            FORTRAN_CPU.harness["infrastructure_id"]: harness_capabilities(FORTRAN_CPU),
+            "harness_only_here": harness_capabilities(special)})
+        self.assertNotEqual(*handed.values())
 
 
 

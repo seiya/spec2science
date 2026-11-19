@@ -22,6 +22,9 @@ from tools.target_profile import (
     TARGET_PROFILE_SUFFIX,
     TARGETS_DIR,
     TargetProfile,
+    harness_capabilities,
+    harness_node_key_for_target,
+    list_target_ids,
     load_target_profile,
     pipeline_ref_for,
     pipelines_dir,
@@ -36,6 +39,23 @@ FORTRAN_CPU: TargetProfile = load_target_profile(REPO_ROOT, "fortran_cpu")
 TARGET_ID: str = FORTRAN_CPU.target_id
 
 SECOND_TARGET_ID = "fortran_cpu_t2"
+
+#: The capability set each checked-in target implies for its harness, by the harness's spec_id
+#: (`target_profile.harness_capabilities`, issue #690): what a run over that harness hands the
+#: renderer seam as `harness_provides`.
+SAMPLE_HARNESS_PROVIDES: dict[str, frozenset[str]] = {
+    harness_node_key_for_target(REPO_ROOT, profile).split("/", 1)[1].split("@", 1)[0]:
+        harness_capabilities(profile)
+    for profile in (load_target_profile(REPO_ROOT, tid) for tid in list_target_ids(REPO_ROOT))
+}
+#: The set of a single-process target's harness (`fortran_cpu`'s).
+SINGLE_PROCESS_PROVIDES: frozenset[str] = harness_capabilities(FORTRAN_CPU)
+
+
+def provides_for(harness_spec_id: str) -> frozenset[str]:
+    """The `harness_provides` a run over the sample harness `harness_spec_id` hands the renderer
+    seam; a fixture harness id no checked-in target names takes the single-process set."""
+    return SAMPLE_HARNESS_PROVIDES.get(harness_spec_id, SINGLE_PROCESS_PROVIDES)
 
 
 def second_target(profile: TargetProfile = FORTRAN_CPU,

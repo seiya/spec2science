@@ -35,6 +35,7 @@ from tools.backends.language.fortran.bundle import (
     IDENTIFIER_MAX,
     SOURCE_EXTENSIONS,
 )
+from tools.target_profile import HARNESS_ID_PREFIX
 
 IDENTIFIER_PATTERN = re.compile(r"[a-z_][a-z0-9_]*")
 
@@ -2952,10 +2953,13 @@ def model_harness_isolation_violations(
     # `use :: harness_x`, and `use, non_intrinsic :: harness_x` must all be caught. The scan is
     # per STATEMENT, not per line: the regex is anchored, so a harness `use` written as the second
     # statement of a `;`-joined line (`use, intrinsic :: iso_fortran_env, only: dp => real64;
-    # use harness_fortran_cpu_model, only: ...`, legal and rc=0) would otherwise be invisible —
+    # use harness_x_model, only: ...`, legal and rc=0) would otherwise be invisible —
     # a fail-OPEN on the isolation invariant that nothing downstream catches, since the harness is
     # staged for `Generate.syntax` and the bundle contract has no isolation layer.
-    use_harness_re = re.compile(r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?harness_")
+    # A harness is recognised by the prefix every harness id begins with (`HARNESS_ID_PREFIX`,
+    # which the target profile's shape check holds every harness id to, issue #690).
+    use_harness_re = re.compile(
+        r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?" + re.escape(HARNESS_ID_PREFIX))
     for f in _leaf_sources(src_dir, model_files, spec_id):
         stmts = statements(_conditional_lines_as_code(
             f.read_text(encoding="utf-8", errors="ignore")))

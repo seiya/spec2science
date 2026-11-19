@@ -112,7 +112,7 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 10,
+      "fortran": 7,
       "fortran-suffix": 1,
       "make-control-file": 2
     },

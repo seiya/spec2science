@@ -26,7 +26,7 @@ make test                                                           # the qualit
   both counts (`quality_check.json#comparison.{reference,candidate}.ranks`).
 - The ranks form a process grid that the host, not the program, chooses: the harness reads it
   from the environment variable `SPEC2SCIENCE_PROCESS_GRID` (`p1,p2`) and arranges the ranks as
-  `(ranks, 1)` when it is unset (`harness_fortran_cpu_mpi` §3.3, issue #512). The launch shape
+  `(ranks, 1)` when it is unset (the target's harness §3.3, issue #512). The launch shape
   sets it from the profile's `execution.process_grid` (`tools/backends/parallel/mpi/
   execution.py`; `fortran_cpu_mpi` imposes `[2, 2]`), and sets nothing when the profile states
   none. The singleton `make test` re-run is handed `1,1`, so it runs on `(1, 1)` whatever the

@@ -32,6 +32,7 @@ from tools.backends.parallel.cuda import directives as cuda_directives
 from tools.backends.parallel.cuda import execution as cuda_execution
 from tools.backends.parallel.cuda import trace as cuda_trace
 from tools.tests import skip_probes
+from tools.tests.target_fixtures import provides_for
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVCC = shutil.which("nvcc")
@@ -1151,7 +1152,8 @@ class PhysicsGateTests(unittest.TestCase):
         """Issue #316: the seam question a distributed harness raises, answered for this
         language's one harness — the isolation gate asks it of every host-rendered node."""
         from tools import host_render
-        self.assertEqual(host_render.physics_harness_uses("cuda_cpp", "harness_cpp_gpu"), {})
+        self.assertEqual(host_render.physics_harness_uses("cuda_cpp", "harness_cpp_gpu",
+            harness_provides=provides_for("harness_cpp_gpu")), {})
 
     def test_isolation_refuses_the_harness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -6,7 +6,7 @@ the compile gate call. Nothing outside this package imports it by name.
 
 It takes a compiled IR plus the target/harness spec ids and returns the text of
 ``<spec_id>_runner.f90`` — the deterministic driver of the physics node (issue #589): per case it
-reads the host-written case file through the certified harness (``harness_fortran_cpu``), allocates
+reads the host-written case file through the target's certified harness, allocates
 the state, calls the operations the node's model publishes, owns the time loop on a ``loop`` node,
 and writes every capture THROUGH the harness's capture interface. Because the harness owns the
 output format (§3.2 / §5.1 of the harness controlled_spec), this renderer holds **no knowledge
@@ -26,7 +26,7 @@ filter, compute or rewrite a captured value on its way to the emitters. The text
 lint-clean (``use only:``, a bare ``implicit none`` with NO allow directive, ≤99-column lines) so
 the deterministic Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
 
-A harness that runs the program as several ranks (``harness_fortran_cpu_mpi``) takes the
+A harness that runs the program as several ranks (one providing ``distributed_state``) takes the
 DISTRIBUTED form of the same driver (issue #610, Plan B §3.3): every rank reads the whole case; the
 replication table the host renders from ``runner_ir.distribute_plan`` decides per process grid
 whether a case is distributed; on a distributed case each spatial axis of ``drive.distribute`` is
@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -211,7 +212,7 @@ def _threads(target: dict[str, Any]) -> int:
     variant's perf record writes it (a launcher target runs one thread per rank, so every
     shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
     writes the one the run's shared-memory runtime gives the program, obtained at run time
-    (`harness_fortran_cpu@0.11.0` §3.2, issue #512)."""
+    (`_SINGLE_PROCESS_WRITE_PERF`, issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -307,7 +308,8 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
                 identity=True)
 
 
-def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> list[str]:
+def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str, *,
+                          harness_provides: Collection[str]) -> list[str]:
     """The Compile-authored render preconditions of an M3c physics node's host-rendered runner,
     as a list of human-readable messages (``[]`` when the IR renders, or when the only defect is
     a node-identity one this deliberately excludes — see below).
@@ -320,9 +322,9 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     a renderer fail-close at an unrecoverable position).
 
     It is an EXACT mirror by construction: it invokes ``render_runner`` itself (a pure,
-    side-effect-free, deterministic ~ms render) with the SAME ``(ir, spec_id, harness_spec_id)``
-    the conductor's ``_write_runner`` passes, and reports whatever ``RenderError`` the render
-    raises. No hand-maintained list of preconditions to drift out of sync — every current and
+    side-effect-free, deterministic ~ms render) with the SAME ``(ir, spec_id, harness_spec_id,
+    harness_provides)`` the conductor's ``_write_runner`` passes, and reports whatever
+    ``RenderError`` the render raises. No hand-maintained list of preconditions to drift out of sync — every current and
     future content fail-close (reserved-key collision, rank>4, a control char in
     an IR name, a rendered line over the linter's column limit, …) is caught here the instant the renderer
     rejects it.
@@ -333,7 +335,8 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     the harness is the target's). Those belong to spec-input validation, NOT a compile.generate retry; they
     remain ``render_runner`` fail-closes as a backstop (see the module docstring)."""
     try:
-        render_runner(ir, spec_id, harness_spec_id, target=_DRY_RUN_TARGET)
+        render_runner(ir, spec_id, harness_spec_id, target=_DRY_RUN_TARGET,
+                      harness_provides=harness_provides)
     except RenderError as exc:
         return [] if exc.identity else [str(exc)]
     except Exception as exc:  # noqa: BLE001
@@ -349,17 +352,19 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
 
 
 def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
-                  *, target: dict[str, Any]) -> str:
+                  *, target: dict[str, Any], harness_provides: Collection[str]) -> str:
     """Render ``<spec_id>_runner.f90``, the driver, from the IR and the target. Deterministic and
     pure.
 
-    ``harness_spec_id`` is the certified plumbing module's spec_id (a key of ``_HARNESS_PINS``);
-    a harness that runs the program as several ranks takes the distributed form (module
-    docstring). ``target`` is the run's target profile document, read for the perf record's
-    hardware class, thread and device counts (``host_execution.perf_parallelism``) and, on the
-    distributed form, for the process grids the replication table lists
-    (``runner_ir.distribute_grids``). See module docstring for the render-error matrix. The
-    returned text is the complete Fortran source (trailing newline included).
+    ``harness_spec_id`` is the certified plumbing module's spec_id, whatever the Project named
+    it; ``harness_provides`` is the capability set its target implies
+    (``target_profile.harness_capabilities``), and a harness providing ``distributed_state``
+    takes the distributed form (module docstring). ``target`` is the run's target profile
+    document, read for the perf record's hardware class, thread and device counts
+    (``host_execution.perf_parallelism``) and, on the distributed form, for the process grids the
+    replication table lists (``runner_ir.distribute_grids``). See module docstring for the
+    render-error matrix. The returned text is the complete Fortran source (trailing newline
+    included).
     """
     # `spec_id`/`harness_spec_id` empty and IR-not-a-mapping are node-identity/caller defects,
     # not authored content — flag identity so the compile.static mirror excludes them.
@@ -394,7 +399,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     H = lambda sym: _hname(harness_spec_id, sym)  # noqa: E731 (local shorthand)
     # A harness that runs the program as several ranks takes the distributed form (issue #610).
     dist = (_distribution(ir, schema_vars, plan, H, target)
-            if _is_distributed_harness(harness_spec_id) else None)
+            if _is_distributed(harness_provides) else None)
     lines: list[str] = []
     a = lines.append
     _render_procedure_module(a, plan, spec_id)
@@ -1446,98 +1451,97 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
 
 # --- harness interface signature pin (fail-closed, run before rendering) ------
 #
-# The harnesses this renderer targets are `_HARNESS_PINS`' keys: harness_fortran_cpu (the R1
-# (fortran, cpu) plumbing), harness_fortran_cpu_mpi (the same plumbing under its own names,
-# plus the distributed-state operations, issue #316) and harness_fortran_cpu_netcdf (the
-# single-process plumbing under its own names without `__real_token`, issue #644). The template is written against their
-# §5.1 signatures, embedded below verbatim. `assert_harness_pin` checks that the *certified*
-# harness the consumer will build against still publishes those exact signatures — in both its
-# IR (`public_api.signatures`) and its generated model source — so a harness recert
-# that silently changed the interface fails the consumer's render (drift is caught
-# at the consumer, not miscompiled at Build).
+# The template is written against an interface BLOCK per capability token of the target's harness
+# (issue #690): `sync_single_case@1`'s block below, in the single-process form (a seven-argument
+# `__write_perf`, the thread count obtained by the harness at run time) or the distributed form
+# (the eight-argument writer, the runner passing one thread per rank), and on a target whose
+# harness provides `distributed_state@2` the distributed-state block after it. Which tokens the
+# harness provides is the target profile's fact (`target_profile.harness_capabilities`), handed in
+# as `harness_provides`. The blocks are written under the placeholder `HARNESS__` and substituted
+# with the harness's own `<spec_id>__` names at use (`harness_interface_block`): the framework
+# holds no harness name or version, and the Project's harness publishes each block under its own
+# names, with any operation beyond them. `assert_harness_pin` checks that the *certified* harness
+# the consumer will build against still publishes those exact signatures — in both its IR
+# (`public_api.signatures`) and its generated model source — so a harness whose surface differs
+# fails the consumer's render (drift is caught at the consumer, not miscompiled at Build).
+#
+# `__real_token` is in no block: no driver calls it (`_HARNESS_CORE_OPS`), and a harness that
+# stores a real as its IEEE value (the `netcdf` output format) spells no token. A harness may
+# publish it.
 
-EXPECTED_HARNESS_SPEC_ID = "harness_fortran_cpu"
+#: The placeholder the embedded blocks name the harness's symbols by.
+_PLACEHOLDER = "HARNESS__"
 
-#: The harness that drives the program as several ranks (`distributed_state@2`).
-DISTRIBUTED_HARNESS_SPEC_ID = "harness_fortran_cpu_mpi"
-
-# The shared harness interface block (the pin compares signatures, not versions). It is the
-# eight-argument `__write_perf` form the distributed harness still publishes; the single-process
-# harness's pin, `_SINGLE_PROCESS_INTERFACE` below, is derived from it by replacing that one
-# stanza (harness_fortran_cpu 0.8.0's writer takes no thread count), so an edit to the
-# `write_perf` stanza here must keep that replacement applying. If a harness recert changes §5.1,
-# the pin it is compared with and the render template must be updated together (the pin message
-# says so).
+# The `sync_single_case@1` block in the distributed form (the pin compares signatures, not
+# versions); the single-process form, `_SINGLE_PROCESS_INTERFACE` below, is derived from it by
+# replacing the `write_perf` stanza, so an edit to that stanza here must keep the replacement
+# applying. If the block changes, the render template must change with it, and every harness that
+# publishes it must be re-certified against it (the pin message says so).
 _HARNESS_V3_INTERFACE = """\
-type :: harness_fortran_cpu__h_var
+type :: HARNESS__h_var
   character(len=:), allocatable :: name
   integer :: rank
   integer :: shape(4)
   integer :: history_capacity
   logical :: restart
-end type harness_fortran_cpu__h_var
+end type HARNESS__h_var
 
-subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
+subroutine HARNESS__parse_cases(tokens, ntokens, case_ids, ncases, ok)
   character(len=*), intent(in) :: tokens(:)
   integer, intent(in) :: ntokens
   character(len=case_id_len), intent(out) :: case_ids(:)
   integer, intent(out) :: ncases
   logical, intent(out) :: ok
-end subroutine harness_fortran_cpu__parse_cases
+end subroutine HARNESS__parse_cases
 
-function harness_fortran_cpu__real_token(x) result(s)
-  real(dp), intent(in) :: x
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__real_token
-
-subroutine harness_fortran_cpu__capture_open(case_id, vars, restart_point_capacity, series_names, series_capacity)
+subroutine HARNESS__capture_open(case_id, vars, restart_point_capacity, series_names, series_capacity)
   character(len=*), intent(in) :: case_id
-  type(harness_fortran_cpu__h_var), intent(in) :: vars(:)
+  type(HARNESS__h_var), intent(in) :: vars(:)
   integer, intent(in) :: restart_point_capacity
   character(len=*), intent(in) :: series_names(:)
   integer, intent(in) :: series_capacity
-end subroutine harness_fortran_cpu__capture_open
+end subroutine HARNESS__capture_open
 
-subroutine harness_fortran_cpu__capture_real(group, name, x)
+subroutine HARNESS__capture_real(group, name, x)
   character(len=*), intent(in) :: group
   character(len=*), intent(in) :: name
   real(dp), intent(in) :: x
-end subroutine harness_fortran_cpu__capture_real
+end subroutine HARNESS__capture_real
 
-subroutine harness_fortran_cpu__capture_array_r1(group, name, a)
+subroutine HARNESS__capture_array_r1(group, name, a)
   character(len=*), intent(in) :: group
   character(len=*), intent(in) :: name
   real(dp), intent(in) :: a(:)
-end subroutine harness_fortran_cpu__capture_array_r1
+end subroutine HARNESS__capture_array_r1
 
-subroutine harness_fortran_cpu__capture_array_r2(group, name, a)
+subroutine HARNESS__capture_array_r2(group, name, a)
   character(len=*), intent(in) :: group
   character(len=*), intent(in) :: name
   real(dp), intent(in) :: a(:,:)
-end subroutine harness_fortran_cpu__capture_array_r2
+end subroutine HARNESS__capture_array_r2
 
-subroutine harness_fortran_cpu__capture_array_r3(group, name, a)
+subroutine HARNESS__capture_array_r3(group, name, a)
   character(len=*), intent(in) :: group
   character(len=*), intent(in) :: name
   real(dp), intent(in) :: a(:,:,:)
-end subroutine harness_fortran_cpu__capture_array_r3
+end subroutine HARNESS__capture_array_r3
 
-subroutine harness_fortran_cpu__capture_array_r4(group, name, a)
+subroutine HARNESS__capture_array_r4(group, name, a)
   character(len=*), intent(in) :: group
   character(len=*), intent(in) :: name
   real(dp), intent(in) :: a(:,:,:,:)
-end subroutine harness_fortran_cpu__capture_array_r4
+end subroutine HARNESS__capture_array_r4
 
-subroutine harness_fortran_cpu__capture_commit(group, step, t)
+subroutine HARNESS__capture_commit(group, step, t)
   character(len=*), intent(in) :: group
   integer, intent(in) :: step
   real(dp), intent(in) :: t
-end subroutine harness_fortran_cpu__capture_commit
+end subroutine HARNESS__capture_commit
 
-subroutine harness_fortran_cpu__capture_close()
-end subroutine harness_fortran_cpu__capture_close
+subroutine HARNESS__capture_close()
+end subroutine HARNESS__capture_close
 
-subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
+subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
   character(len=*), intent(in) :: case_id
   character(len=*), intent(in) :: target
   integer, intent(in) :: steps
@@ -1546,47 +1550,47 @@ subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated
   integer, intent(in) :: mpi_ranks
   integer, intent(in) :: threads_per_rank
   integer, intent(in) :: gpu_devices
-end subroutine harness_fortran_cpu__write_perf
+end subroutine HARNESS__write_perf
 
-subroutine harness_fortran_cpu__read_case(case_id, ok)
+subroutine HARNESS__read_case(case_id, ok)
   character(len=*), intent(in) :: case_id
   logical, intent(out) :: ok
-end subroutine harness_fortran_cpu__read_case
+end subroutine HARNESS__read_case
 
-function harness_fortran_cpu__get_real(name) result(x)
+function HARNESS__get_real(name) result(x)
   character(len=*), intent(in) :: name
   real(dp) :: x
-end function harness_fortran_cpu__get_real
+end function HARNESS__get_real
 
-function harness_fortran_cpu__get_int(name) result(i)
+function HARNESS__get_int(name) result(i)
   character(len=*), intent(in) :: name
   integer :: i
-end function harness_fortran_cpu__get_int
+end function HARNESS__get_int
 
-function harness_fortran_cpu__get_bool(name) result(b)
+function HARNESS__get_bool(name) result(b)
   character(len=*), intent(in) :: name
   logical :: b
-end function harness_fortran_cpu__get_bool
+end function HARNESS__get_bool
 
-subroutine harness_fortran_cpu__get_array_r1(name, a)
+subroutine HARNESS__get_array_r1(name, a)
   character(len=*), intent(in) :: name
   real(dp), allocatable, intent(out) :: a(:)
-end subroutine harness_fortran_cpu__get_array_r1
+end subroutine HARNESS__get_array_r1
 
-subroutine harness_fortran_cpu__get_array_r2(name, a)
+subroutine HARNESS__get_array_r2(name, a)
   character(len=*), intent(in) :: name
   real(dp), allocatable, intent(out) :: a(:,:)
-end subroutine harness_fortran_cpu__get_array_r2
+end subroutine HARNESS__get_array_r2
 
-subroutine harness_fortran_cpu__get_array_r3(name, a)
+subroutine HARNESS__get_array_r3(name, a)
   character(len=*), intent(in) :: name
   real(dp), allocatable, intent(out) :: a(:,:,:)
-end subroutine harness_fortran_cpu__get_array_r3
+end subroutine HARNESS__get_array_r3
 
-subroutine harness_fortran_cpu__get_array_r4(name, a)
+subroutine HARNESS__get_array_r4(name, a)
   character(len=*), intent(in) :: name
   real(dp), allocatable, intent(out) :: a(:,:,:,:)
-end subroutine harness_fortran_cpu__get_array_r4
+end subroutine HARNESS__get_array_r4
 """
 
 # The §5.1 module-level `parameter` declarations. They are part of the published ABI but are not
@@ -1601,58 +1605,57 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
     f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
 )
 
-# Verbatim copy of `harness_fortran_cpu_mpi@0.5.0` §5.1's distributed-state operations (§3.3),
-# as the language backend renders them. That harness's §5.1 is `_HARNESS_V3_INTERFACE` under its
-# own `<spec_id>__` names followed by this block (its §5 says so), so its pinned interface is
-# composed below rather than copied twice.
+# The `distributed_state@2` block (§3.3 of a harness that drives the program as several ranks,
+# issues #316, #512, #610), as the language backend renders it. Such a harness publishes the
+# `sync_single_case@1` block in its distributed form followed by this one.
 _DISTRIBUTED_STATE_INTERFACE = """\
-subroutine harness_fortran_cpu_mpi__init()
-end subroutine harness_fortran_cpu_mpi__init
+subroutine HARNESS__init()
+end subroutine HARNESS__init
 
-subroutine harness_fortran_cpu_mpi__finalize()
-end subroutine harness_fortran_cpu_mpi__finalize
+subroutine HARNESS__finalize()
+end subroutine HARNESS__finalize
 
-function harness_fortran_cpu_mpi__comm_rank() result(r)
+function HARNESS__comm_rank() result(r)
   integer :: r
-end function harness_fortran_cpu_mpi__comm_rank
+end function HARNESS__comm_rank
 
-function harness_fortran_cpu_mpi__comm_size() result(n)
+function HARNESS__comm_size() result(n)
   integer :: n
-end function harness_fortran_cpu_mpi__comm_size
+end function HARNESS__comm_size
 
-subroutine harness_fortran_cpu_mpi__grid_dims(p1, p2)
+subroutine HARNESS__grid_dims(p1, p2)
   integer, intent(out) :: p1
   integer, intent(out) :: p2
-end subroutine harness_fortran_cpu_mpi__grid_dims
+end subroutine HARNESS__grid_dims
 
-subroutine harness_fortran_cpu_mpi__grid_coord(c1, c2)
+subroutine HARNESS__grid_coord(c1, c2)
   integer, intent(out) :: c1
   integer, intent(out) :: c2
-end subroutine harness_fortran_cpu_mpi__grid_coord
+end subroutine HARNESS__grid_coord
 
-subroutine harness_fortran_cpu_mpi__partition(n_global, dim, glo, ghi)
+subroutine HARNESS__partition(n_global, dim, glo, ghi)
   integer, intent(in) :: n_global
   integer, intent(in) :: dim
   integer, intent(out) :: glo
   integer, intent(out) :: ghi
-end subroutine harness_fortran_cpu_mpi__partition
+end subroutine HARNESS__partition
 
-subroutine harness_fortran_cpu_mpi__exchange_halo_r1(a, dim, ng, periodic)
+subroutine HARNESS__exchange_halo_r1(a, dim, ng, periodic)
   real(dp), intent(inout) :: a(:)
   integer, intent(in) :: dim
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
-end subroutine harness_fortran_cpu_mpi__exchange_halo_r1
+end subroutine HARNESS__exchange_halo_r1
 
-subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, dim, ng, periodic)
+subroutine HARNESS__exchange_halo_r2(a, axis, dim, ng, periodic)
   real(dp), intent(inout) :: a(:,:)
   integer, intent(in) :: axis
   integer, intent(in) :: dim
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
-end subroutine harness_fortran_cpu_mpi__exchange_halo_r2
+end subroutine HARNESS__exchange_halo_r2
 
-subroutine harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
+subroutine HARNESS__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:)
   integer, intent(in) :: axis1
   integer, intent(in) :: lo1
@@ -1663,9 +1666,9 @@ subroutine harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, l
   integer, intent(in) :: hi2
   integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:)
-end subroutine harness_fortran_cpu_mpi__gather_r1
+end subroutine HARNESS__gather_r1
 
-subroutine harness_fortran_cpu_mpi__gather_r2(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
+subroutine HARNESS__gather_r2(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:)
   integer, intent(in) :: axis1
   integer, intent(in) :: lo1
@@ -1676,9 +1679,9 @@ subroutine harness_fortran_cpu_mpi__gather_r2(a, axis1, lo1, hi1, glo1, axis2, l
   integer, intent(in) :: hi2
   integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:)
-end subroutine harness_fortran_cpu_mpi__gather_r2
+end subroutine HARNESS__gather_r2
 
-subroutine harness_fortran_cpu_mpi__gather_r3(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
+subroutine HARNESS__gather_r3(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:,:)
   integer, intent(in) :: axis1
   integer, intent(in) :: lo1
@@ -1689,9 +1692,9 @@ subroutine harness_fortran_cpu_mpi__gather_r3(a, axis1, lo1, hi1, glo1, axis2, l
   integer, intent(in) :: hi2
   integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:,:)
-end subroutine harness_fortran_cpu_mpi__gather_r3
+end subroutine HARNESS__gather_r3
 
-subroutine harness_fortran_cpu_mpi__gather_r4(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
+subroutine HARNESS__gather_r4(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:,:,:)
   integer, intent(in) :: axis1
   integer, intent(in) :: lo1
@@ -1702,37 +1705,36 @@ subroutine harness_fortran_cpu_mpi__gather_r4(a, axis1, lo1, hi1, glo1, axis2, l
   integer, intent(in) :: hi2
   integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:,:,:)
-end subroutine harness_fortran_cpu_mpi__gather_r4
+end subroutine HARNESS__gather_r4
 
-function harness_fortran_cpu_mpi__reduce_sum(x) result(s)
+function HARNESS__reduce_sum(x) result(s)
   real(dp), intent(in) :: x
   real(dp) :: s
-end function harness_fortran_cpu_mpi__reduce_sum
+end function HARNESS__reduce_sum
 
-function harness_fortran_cpu_mpi__reduce_max(x) result(s)
+function HARNESS__reduce_max(x) result(s)
   real(dp), intent(in) :: x
   real(dp) :: s
-end function harness_fortran_cpu_mpi__reduce_max
+end function HARNESS__reduce_max
 
-function harness_fortran_cpu_mpi__reduce_min(x) result(s)
+function HARNESS__reduce_min(x) result(s)
   real(dp), intent(in) :: x
   real(dp) :: s
-end function harness_fortran_cpu_mpi__reduce_min
+end function HARNESS__reduce_min
 
-function harness_fortran_cpu_mpi__reduce_sum_int(i) result(s)
+function HARNESS__reduce_sum_int(i) result(s)
   integer, intent(in) :: i
   integer :: s
-end function harness_fortran_cpu_mpi__reduce_sum_int
+end function HARNESS__reduce_sum_int
 """
 
 
-# `harness_fortran_cpu@0.11.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
-# renders it: the stanza of `_HARNESS_V3_INTERFACE` without the `threads_per_rank` argument,
-# because that harness's writer obtains the thread count itself, at run time. Its §5.1 is
-# `_HARNESS_V3_INTERFACE` with this stanza in place of that one; the distributed harness keeps
-# the eight-argument writer (its runner passes the count, one thread per rank).
+# The single-process form's `__write_perf` (issue #512): the stanza of `_HARNESS_V3_INTERFACE`
+# without the `threads_per_rank` argument, because a single-process harness's writer obtains the
+# thread count itself, at run time; the distributed form keeps the eight-argument writer (its
+# runner passes the count, one thread per rank).
 _V3_WRITE_PERF_THREADS = """\
-subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
+subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
   character(len=*), intent(in) :: case_id
   character(len=*), intent(in) :: target
   integer, intent(in) :: steps
@@ -1741,10 +1743,10 @@ subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated
   integer, intent(in) :: mpi_ranks
   integer, intent(in) :: threads_per_rank
   integer, intent(in) :: gpu_devices
-end subroutine harness_fortran_cpu__write_perf
+end subroutine HARNESS__write_perf
 """
 _SINGLE_PROCESS_WRITE_PERF = """\
-subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, gpu_devices)
+subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, gpu_devices)
   character(len=*), intent(in) :: case_id
   character(len=*), intent(in) :: target
   integer, intent(in) :: steps
@@ -1752,75 +1754,39 @@ subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated
   real(dp), intent(in) :: walltime_sec
   integer, intent(in) :: mpi_ranks
   integer, intent(in) :: gpu_devices
-end subroutine harness_fortran_cpu__write_perf
+end subroutine HARNESS__write_perf
 """
 _SINGLE_PROCESS_INTERFACE = _HARNESS_V3_INTERFACE.replace(
     _V3_WRITE_PERF_THREADS, _SINGLE_PROCESS_WRITE_PERF)
-
-#: The single-process harness that writes the `netcdf` output format (issue #644 P5b): the
-#: single-process block under its own names, without `__real_token` — a format that stores a
-#: real as its IEEE value spells no token, and the driver calls none (`_HARNESS_CORE_OPS`).
-NETCDF_HARNESS_SPEC_ID = "harness_fortran_cpu_netcdf"
-_REAL_TOKEN_STANZA = """\
-function harness_fortran_cpu__real_token(x) result(s)
-  real(dp), intent(in) :: x
-  character(len=:), allocatable :: s
-end function harness_fortran_cpu__real_token
-
-"""
-_NETCDF_INTERFACE = _SINGLE_PROCESS_INTERFACE.replace(_REAL_TOKEN_STANZA, "").replace(
-    f"{EXPECTED_HARNESS_SPEC_ID}__", f"{NETCDF_HARNESS_SPEC_ID}__")
+assert _SINGLE_PROCESS_INTERFACE != _HARNESS_V3_INTERFACE, "the write_perf replacement must apply"
 
 
-@dataclass(frozen=True)
-class _HarnessPin:
-    """What the renderer expects of one harness it targets."""
 
-    #: The §5.1 block the rendered glue is written against, under the harness's names.
-    interface: str
-    #: Whether the harness drives the program as several ranks (`distributed_state@2`): the
-    #: driver then takes its distributed form (`render_runner`).
-    distributed: bool
+def _is_distributed(harness_provides: Collection[str]) -> bool:
+    """Whether the target's harness drives the program as several ranks: `distributed_state`
+    among the tokens it provides (`target_profile.harness_capabilities`)."""
+    # Imported here: `codegen_bundle` loads this backend package while it initialises.
+    from tools.codegen_bundle import capability_name
+    return any(capability_name(t) == "distributed_state" for t in harness_provides)
 
 
-#: The harnesses this renderer targets, by spec_id. Which harness provides which capability is
-#: `codegen_bundle.HARNESS_CAPABILITY_MANIFESTS`' fact; `test_fortran_runner` couples the
-#: `distributed` column to it, so the two cannot disagree about which harness is distributed.
-_HARNESS_PINS: dict[str, _HarnessPin] = {
-    EXPECTED_HARNESS_SPEC_ID: _HarnessPin(interface=_SINGLE_PROCESS_INTERFACE, distributed=False),
-    DISTRIBUTED_HARNESS_SPEC_ID: _HarnessPin(
-        interface=_HARNESS_V3_INTERFACE.replace(
-            f"{EXPECTED_HARNESS_SPEC_ID}__", f"{DISTRIBUTED_HARNESS_SPEC_ID}__")
-        + "\n" + _DISTRIBUTED_STATE_INTERFACE,
-        distributed=True),
-    NETCDF_HARNESS_SPEC_ID: _HarnessPin(interface=_NETCDF_INTERFACE, distributed=False),
-}
-assert _REAL_TOKEN_STANZA in _SINGLE_PROCESS_INTERFACE, "the netcdf pin's removal must apply"
-
-
-def _harness_pin(harness_spec_id: str) -> _HarnessPin:
-    """The pin of a harness this renderer targets; raises `RenderError` for any other."""
-    pin = _HARNESS_PINS.get((harness_spec_id or "").strip())
-    if pin is None:
-        raise RenderError(
-            f"harness_spec_id {harness_spec_id!r} is not one this renderer targets "
-            f"({', '.join(sorted(_HARNESS_PINS))})")
-    return pin
-
-
-def _is_distributed_harness(harness_spec_id: str) -> bool:
-    """Whether `harness_spec_id` runs the program as several ranks. A harness this renderer does
-    not target answers no (its pin refuses it)."""
-    pin = _HARNESS_PINS.get((harness_spec_id or "").strip())
-    return pin is not None and pin.distributed
+def harness_interface_block(harness_spec_id: str, harness_provides: Collection[str]) -> str:
+    """The interface block the rendered driver is written against, for a harness providing
+    `harness_provides`, under the harness's own `<harness_spec_id>__` names (issue #690)."""
+    text = (_HARNESS_V3_INTERFACE + "\n" + _DISTRIBUTED_STATE_INTERFACE
+            if _is_distributed(harness_provides) else _SINGLE_PROCESS_INTERFACE)
+    return text.replace(_PLACEHOLDER, f"{(harness_spec_id or '').strip()}__")
 
 
 _PIN_DRIFT_HINT = (
-    "the certified harness interface no longer matches the renderer's pinned "
-    "expectation — a harness recert changed its published surface; update the "
-    "renderer pin (_HARNESS_V3_INTERFACE / _SINGLE_PROCESS_INTERFACE / "
-    "_HARNESS_V3_PARAMETERS) AND the "
-    "render template together, then re-certify dependent nodes")
+    "the certified harness does not publish, under its own `<spec_id>__` names, the interface "
+    "block the language backend's driver is written against for the capabilities its target "
+    "implies. The harness `spec` is the Project's and the block is the framework's: when the "
+    "harness was meant to serve this target, make its controlled_spec §5.1 publish the block "
+    "(`host_render.harness_block_drift` names each differing symbol) and re-certify the "
+    "harness; when the block itself changed, change the renderer's block (_HARNESS_V3_INTERFACE "
+    "/ _SINGLE_PROCESS_INTERFACE / _DISTRIBUTED_STATE_INTERFACE / _HARNESS_V3_PARAMETERS) and the "
+    "render template together; then re-certify dependent nodes")
 
 
 def assert_harness_pin(
@@ -1829,12 +1795,15 @@ def assert_harness_pin(
     harness_spec_id: str,
     harness_signatures: Any,
     harness_source: str,
+    *,
+    harness_provides: Collection[str],
 ) -> None:
     """Fail-closed guard the conductor runs BEFORE rendering: the certified harness
     the consumer will link against must still publish exactly the signatures this
-    renderer was written for, in both its IR ``public_api.signatures`` and its
-    generated model source. Any drift raises ``RenderError`` (→ transport
-    fail_closed with the recert-drift hint), never a Generate content retry.
+    renderer was written for — the interface block for ``harness_provides``
+    (`harness_interface_block`) under its own ``<harness_spec_id>__`` names — in both its IR
+    ``public_api.signatures`` and its generated model source. Any drift raises ``RenderError``
+    (→ transport fail_closed with the recert-drift hint), never a Generate content retry.
 
     ``harness_signatures`` is the certified harness IR's ``public_api.signatures``
     (a list of ``{symbol, interface}``), which the conductor resolves STRUCTURALLY via
@@ -1852,8 +1821,9 @@ def assert_harness_pin(
         parse_interface_stanzas, source_atoms, stanza_atoms, stanza_line_set, stanza_line_list,
         surface_drift, type_layout_drift)
 
-    pin = _harness_pin(harness_spec_id)
-    exp_ops, exp_types, exp_ifaces, exp_errs = parse_interface_stanzas(pin.interface)
+    distributed = _is_distributed(harness_provides)
+    exp_ops, exp_types, exp_ifaces, exp_errs = parse_interface_stanzas(
+        harness_interface_block(harness_spec_id, harness_provides))
     if exp_errs or exp_ifaces:  # a renderer bug, not an input problem
         raise RenderError(
             f"embedded harness interface failed to parse: {exp_errs} (the pinned harness "
@@ -1872,8 +1842,8 @@ def assert_harness_pin(
                 f"width and its `real(dp)` actuals): {_PIN_DRIFT_HINT}")
 
     used_symbols = [_hname(harness_spec_id, op)
-                    for op in _used_harness_ops(ir, distributed=pin.distributed)]
-    if pin.distributed:
+                    for op in _used_harness_ops(ir, distributed=distributed)]
+    if distributed:
         # The operations a physics source may call on this harness (`physics_harness_uses`) are
         # pinned too: the certified harness must still publish them as the embedded block states.
         used_symbols += [_hname(harness_spec_id, op) for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS
@@ -1988,11 +1958,57 @@ def assert_harness_pin(
                 f"pinned interface: {_PIN_DRIFT_HINT}")
 
 
-def physics_harness_uses(harness_spec_id: str) -> dict[str, frozenset[str]]:
+def harness_block_drift(harness_spec_id: str, section51: str, *,
+                        harness_provides: Collection[str]) -> list[str]:
+    """How a harness's controlled_spec §5.1 (`section51`, the body of its fenced block) differs
+    from the interface block the driver is written against for `harness_provides`, one message
+    per symbol (``[]`` when §5.1 publishes the block under `<harness_spec_id>__` names).
+
+    The same comparison `assert_harness_pin` makes against a CERTIFIED harness, made against its
+    `spec` before any certification (issue #690): a Project harness that does not publish the
+    block otherwise surfaces at its first consumer's render, one harness certification later.
+    Operations §5.1 publishes beyond the block are the Project's and are not compared."""
+    from tools.backends.language.fortran.signatures import (
+        load_structured_signatures,
+        parse_interface_stanzas,
+        render_signatures_to_fortran,
+        source_atoms,
+        stanza_atoms,
+        stanza_line_list,
+        stanza_line_set,
+    )
+    struct, error = load_structured_signatures(section51 or "")
+    if error:
+        return [f"§5.1 does not load: {error}"]
+    rendered = render_signatures_to_fortran(struct)
+    have_ops, have_types, _i, errs = parse_interface_stanzas(rendered)
+    if errs:
+        return [f"§5.1 does not render to stanzas: {errs}"]
+    exp_ops, exp_types, _i, _e = parse_interface_stanzas(
+        harness_interface_block(harness_spec_id, harness_provides))
+    out: list[str] = []
+    atoms = source_atoms(rendered)
+    for pline in _HARNESS_V3_PARAMETERS:
+        if any(atom not in atoms for atom in stanza_atoms([pline])):
+            out.append(f"§5.1 does not declare the module parameter `{pline}`")
+    for symbol, want in [*exp_types.items(), *exp_ops.items()]:
+        is_type = symbol in exp_types
+        have = (have_types if is_type else have_ops).get(symbol)
+        if have is None:
+            out.append(f"§5.1 omits {symbol!r}")
+        elif (stanza_line_list(have) != stanza_line_list(want) if is_type
+              else stanza_line_set(have) != stanza_line_set(want)):
+            out.append(f"§5.1 declares {symbol!r} differently from the block")
+    return out
+
+
+def physics_harness_uses(harness_spec_id: str, *,
+                         harness_provides: Collection[str]) -> dict[str, frozenset[str]]:
     """`{module: names}` a physics source may `use` from the harness (`host_render.
     physics_harness_uses`): its distributed-state operations for a physics source
-    (`PHYSICS_CALLABLE_DISTRIBUTED_OPS`), on a harness that runs the program as several ranks."""
-    if not _is_distributed_harness(harness_spec_id):
+    (`PHYSICS_CALLABLE_DISTRIBUTED_OPS`), on a harness that runs the program as several ranks
+    (`distributed_state` among `harness_provides`)."""
+    if not _is_distributed(harness_provides):
         return {}
     sid = harness_spec_id.strip()
     return {f"{sid}_model": frozenset(_hname(sid, op) for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS)}

@@ -388,7 +388,7 @@ CAPABILITY_TOKEN_PATTERN = rf"^[a-z][a-z0-9_]*@[0-9]+{_END}"
 _CAPABILITY_TOKEN_RE = re.compile(CAPABILITY_TOKEN_PATTERN)
 
 CAPABILITY_VOCABULARY: frozenset[str] = frozenset({
-    "sync_single_case",        # A6 minimum: the current harness_fortran_cpu ABI
+    "sync_single_case",        # A6 minimum: the synchronous single-case block
     "async_device_resident",   # A6 reserved
     "distributed_state",       # A6: the process-parallel harness (issue #316)
     "batched_cases",           # A6 reserved
@@ -414,14 +414,13 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # (`assert_harness_pin`): the operations and the published type the host-rendered runner calls,
 # under the providing harness node's own `<spec_id>__` names, with `dp = float64` and
 # `case_id_len = 64`. The token names the block the backend pins, not one harness version:
-# `harness_fortran_cpu@0.10.0` (issue #589) extended it by `__read_case` and the typed getters,
-# and `0.11.0` (issue #644) replaced its emitters and snapshot writer by the capture operations,
-# under the same token, because no physics bundle calls an operation of the block and no
-# consumer distinguishes a generation. Its `__write_perf` takes no `threads_per_rank` argument
-# on a single-process target (issue #512); a distributed or device harness publishes the
-# eight-argument writer instead (`harness_fortran_cpu_mpi`, `harness_cpp_gpu` in the sample
-# Project). The mechanical enforcer is the language backend's `assert_harness_pin`; this
-# contract names the ABI, it does not re-check it.
+# issue #589 extended it by `__read_case` and the typed getters, and issue #644 replaced its
+# emitters and snapshot writer by the capture operations, under the same token, because no
+# physics bundle calls an operation of the block and no consumer distinguishes a generation. Its
+# `__write_perf` takes no `threads_per_rank` argument on a single-process target (issue #512); a
+# distributed or device harness publishes the eight-argument writer instead. The mechanical
+# enforcer is the language backend's `assert_harness_pin`; this contract names the ABI, it does
+# not re-check it.
 #
 # `distributed_state@2` (issue #512; `@1` was issue #316's, R4-c, over one dimension) is the
 # distributed-state block the language backend pins after the `sync_single_case@1` block: the

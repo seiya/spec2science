@@ -49,6 +49,7 @@ try:
     from tools.target_profile import (
         TargetProfile,
         TargetProfileError,
+        harness_capabilities,
         is_target_id,
         load_pipeline_target,
     )
@@ -81,6 +82,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.target_profile import (
         TargetProfile,
         TargetProfileError,
+        harness_capabilities,
         is_target_id,
         load_pipeline_target,
     )
@@ -1417,8 +1419,9 @@ def _validate_generate_outputs(
     return model_files, dep_spec_ids, _language
 
 
-def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
-    """``(target_id, language, harness_spec_id)`` of every declared target profile whose
+def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str, frozenset[str]]]:
+    """``(target_id, language, harness_spec_id, harness_provides)`` of every declared target
+    profile whose
     toolchain the host renders an M3c runner for — the targets a COMPILE-stage render
     precondition is asked against (issue #284, R4-a PR-3).
 
@@ -1436,7 +1439,7 @@ def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
         list_target_ids,
         load_target_profile,
     )
-    out: list[tuple[str, str, str]] = []
+    out: list[tuple[str, str, str, frozenset[str]]] = []
     try:
         ids = list_target_ids(repo_root)
     except TargetProfileError:
@@ -1457,7 +1460,8 @@ def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
                        ("language", tc["language"], "runner_render"))):
             continue
         out.append((target_id, tc["language"],
-                    harness_nk.partition("@")[0].partition("/")[2]))
+                    harness_nk.partition("@")[0].partition("/")[2],
+                    harness_capabilities(profile)))
     return out
 
 
@@ -1560,6 +1564,7 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
 def _validate_model_source_isolation(
     execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
     violations: list[str], *, harness_spec_id: str | None = None,
+    harness_provides: frozenset[str] = frozenset(),
 ) -> None:
     """The deterministic isolation gate over an M3c physics node's leaf-authored sources: the
     host-rendered driver is the sole caller of the harness's plumbing, so no such source `use`s
@@ -1568,9 +1573,11 @@ def _validate_model_source_isolation(
     three scans. A violation routes back to Generate.generate to re-author the source.
 
     On a harness that runs the program as several ranks (`harness_spec_id`, the target's — issue
-    #316) a physics source may `use` the harness for its distributed-state operations and nothing
-    else (`host_render.physics_harness_uses`), asked of the backend that renders the runner over
-    it."""
+    #316 — providing `distributed_state` among `harness_provides`, the set the target implies,
+    issue #690) a physics source may `use` the harness for its distributed-state operations and
+    nothing else (`host_render.physics_harness_uses`), asked of the backend that renders the
+    runner over it. With no pipeline target both are empty, and every harness `use` is
+    refused."""
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is None:
         return
@@ -1604,7 +1611,8 @@ def _validate_model_source_isolation(
             f"language {language!r}: {refusal}")
     elif harness_spec_id:
         try:
-            harness_uses = host_render.physics_harness_uses(language, harness_spec_id)
+            harness_uses = host_render.physics_harness_uses(
+                language, harness_spec_id, harness_provides=harness_provides)
         except Exception as exc:  # noqa: BLE001
             # The same containment as the seam entry above: a violation, never a raise.
             violations.append(
@@ -1708,7 +1716,9 @@ def _validate_generate_outputs_for_generation(
         _validate_model_source_isolation(
             execution, m3c_language, src_dir, model_files, violations,
             harness_spec_id=(str(pipeline_target.harness.get("infrastructure_id") or "")
-                             if pipeline_target is not None else None))
+                             if pipeline_target is not None else None),
+            harness_provides=(harness_capabilities(pipeline_target)
+                              if pipeline_target is not None else frozenset()))
 
     if dep_spec_ids:
         source_reading.validate_dependency_operations(
@@ -6453,7 +6463,7 @@ def _validate_harness_render_preconditions(
         spec_id = ms.strip() if isinstance(ms, str) and ms.strip() else "node"
     targets = _compile_render_targets(repo_root)
     per_message: dict[str, list[str]] = {}
-    for target_id, language, harness_sid in targets:
+    for target_id, language, harness_sid, harness_provides in targets:
         # REACHABLE, for the reason spelled out in `_validate_model_source_isolation`: the
         # predicate asks a DECLARATION question and the seam asks whether it can dispatch, and
         # no rule can make those identical while the registry declines to import backends at
@@ -6476,7 +6486,8 @@ def _validate_harness_render_preconditions(
                 f"this node is host-rendered, but no backend renders a runner for language "
                 f"{language!r}: {refusal}", []).append(target_id)
             continue
-        for msg in host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid):
+        for msg in host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid,
+                                                     harness_provides=harness_provides):
             per_message.setdefault(msg, []).append(target_id)
     for msg, target_ids in per_message.items():
         scope = ("" if len(target_ids) == len(targets)

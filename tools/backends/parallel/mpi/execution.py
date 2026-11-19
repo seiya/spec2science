@@ -5,7 +5,7 @@ and each rank runs one thread: a thread count other than one is refused here, wh
 launch gate asks (`target_profile._thread_count_violations`) — threads inside a rank are another
 parallel model, out of this one's scope (`LAUNCHER.md` §5). What the host does set is the process grid a profile
 imposes on the ranks (`execution.process_grid`): the target's harness reads it at start from
-`PROCESS_GRID_VARIABLE` and arranges the ranks in it (`harness_fortran_cpu_mpi` §3.3); with no
+`PROCESS_GRID_VARIABLE` and arranges the ranks in it (its controlled_spec §3.3); with no
 grid imposed the environment is empty, and the harness arranges the ranks as `(ranks, 1)`.
 """
 

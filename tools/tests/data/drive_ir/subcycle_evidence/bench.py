@@ -78,6 +78,7 @@ from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools.backends.language.fortran import runner as f_runner  # noqa: E402
 from tools.backends.language.fortran import source as f_source  # noqa: E402
+from tools.tests.target_fixtures import provides_for
 from tools.tests.test_driver_render import CPU, second_pass  # noqa: E402
 
 
@@ -171,7 +172,8 @@ def build(work: Path, objs_dir: Path, objs: list[str], ir: dict[str, Any], text:
         shutil.copy(mod, b / mod.name)
     (b / "model.f90").write_text(text)
     (b / "runner.f90").write_text(f_runner.render_runner(ir, B.SID, "harness_fortran_cpu",
-                                                         target=CPU))
+                                                         target=CPU,
+                                                             harness_provides=provides_for("harness_fortran_cpu")))
     for src, obj in (("model.f90", "model.o"), ("runner.f90", "runner.o")):
         r = subprocess.run(["gfortran", *FLAGS, "-c", src, "-o", obj], cwd=b,
                            capture_output=True, text=True)

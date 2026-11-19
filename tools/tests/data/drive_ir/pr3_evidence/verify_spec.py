@@ -48,6 +48,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(REPO))
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store  # noqa: E402
 from tools import external_library as xl  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
@@ -111,7 +112,8 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str],
     for parts in capture_store.run_dirs("json"):
         (work / "run").joinpath(*parts).mkdir(parents=True)
     sid = ir["meta"]["spec_id"]
-    (work / "runner.f90").write_text(f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU))
+    (work / "runner.f90").write_text(f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU,
+        harness_provides=provides_for("harness_fortran_cpu")))
     objs = []
     sources = [DATA / "harness_fortran_cpu_model.f90", *deps, model]
     for i, src in enumerate(sources):

@@ -409,9 +409,8 @@ implies it ([issue #690](https://github.com/seiya/spec2science/issues/690)), and
 The token spellings are module constants of `tools/codegen_bundle.py`
 (`SYNC_SINGLE_CASE_TOKEN`, `DISTRIBUTED_STATE_TOKEN`, `capture_format_token`), the generations
 the framework's drivers and templates are written against. The derived set names no harness
-version, so a harness version bump edits no framework file. (The language backends still select
-the interface block they pin by the harness's `spec_id`; issue #690 moves that selection to the
-tokens.)
+name or version, so a harness version bump, or a Project harness under another name, edits no
+framework file. The language backend selects the interface block it pins by these tokens.
 
 The launch gate does not compare the profile with the harness it names. A run under a profile
 that names a harness of the other process model, or of another output format, is refused at the
@@ -427,34 +426,30 @@ first of these it reaches (measured for
 - an output-format mismatch: the target's store reads no record of any case at
   `Validate.execute`.
 
-`sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
-version: at this writing the canonical interface block of `harness_fortran_cpu@0.11.0` §5.1
-(19 operations, 1 published type, `dp = float64`, `case_id_len = 64`), under the providing harness
-node's own `<spec_id>__` names and bound to its target language by that language's backend. The
-token names the block of whichever version the catalog holds, not one generation of it: `0.10.0`
-([issue #589](https://github.com/seiya/spec2science/issues/589)) extends the block by `__read_case` and
-the typed getters under the same token, because no physics bundle calls an operation of the block,
-the language backend's `assert_harness_pin` is the mechanical enforcer of its text, and no consumer
-distinguishes a generation; `0.11.0`
-([issue #644](https://github.com/seiya/spec2science/issues/644)) replaces its emitters and snapshot writer by the
-capture operations under the same token, for the same reason. Until `0.9.0`
-([issue #582](https://github.com/seiya/spec2science/issues/582)) the block also held the writers of two
-documents no runner writes now, and their types, which no consuming node's bundle code called.
-Its performance-record writer, which no consuming node's bundle code calls either (the
-host-rendered runner calls it, and so does the providing harness's
-own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
-shared-memory runtime gives the program itself (issue #512); `harness_fortran_cpu_mpi@0.5.0` §5.1
-begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.5.0` §5.1 likewise begins
-with the block with the eight-argument writer,
-followed by `__block_size` (the threads per block the host imposes on the program's kernels,
-issue #512, which the CUDA C++ runner calls). `harness_fortran_cpu_netcdf@0.1.0` §5.1 is the
-single-process block without `__real_token` (issue #644): a format that stores a real as its IEEE
-value spells no token, and neither the host-rendered runner nor the harness's own self-test calls one.
-The mechanical enforcer of that definition remains
-the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
-compares §5.1 against the certified
-harness IR's `public_api.signatures` and the generated harness source; this contract
-adds a name for the ABI, not a second checker of it.
+`sync_single_case@1` is defined as the synchronous single-case interface block that each language
+backend rendering a runner pins (`assert_harness_pin`, reached through `tools/host_render.py`):
+the operations and the published type the host-rendered runner calls, with `dp = float64` and
+`case_id_len = 64`, written under a placeholder and substituted with the providing harness node's
+own `<spec_id>__` names. The token names the block, not one harness version:
+[issue #589](https://github.com/seiya/spec2science/issues/589) extended it by `__read_case` and the
+typed getters, and [issue #644](https://github.com/seiya/spec2science/issues/644) replaced its
+emitters and snapshot writer by the capture operations, under the same token, because no physics
+bundle calls an operation of the block, the backend's pin is the mechanical enforcer of its text,
+and no consumer distinguishes a generation. Until
+[issue #582](https://github.com/seiya/spec2science/issues/582) the block also held the writers of
+two documents no runner writes now, and their types. Its performance-record writer, which no
+consuming node's bundle code calls (the host-rendered runner calls it, and so does the providing
+harness's own self-test), takes no `threads_per_rank` argument on a target with no launcher,
+because the harness writes the thread count the run's shared-memory runtime gives the program
+itself (issue #512); where the target's harness also provides `distributed_state@2`, and in the
+CUDA C++ backend's block, the writer takes the eight-argument form instead. The CUDA C++ block adds
+`__block_size` (the threads per block the host imposes on the program's kernels, issue #512).
+No block carries `__real_token`: no driver calls it, and a format that stores a real as its IEEE
+value spells no token; a harness may publish it. The pin compares the block against the certified
+harness IR's `public_api.signatures` and the generated harness source; this contract adds a name
+for the ABI, not a second checker of it. In the sample Project, `harness_fortran_cpu`,
+`harness_fortran_cpu_mpi`, `harness_fortran_cpu_netcdf` and `harness_cpp_gpu` publish the blocks
+their targets imply, each in its §5.1.
 
 `capture_format_<id>@1` ([issue #644](https://github.com/seiya/spec2science/issues/644)) names the
 output format the harness's capture operations write, `<id>` the target profile's
@@ -462,21 +457,46 @@ output format the harness's capture operations write, `<id>` the target profile'
 capture.
 
 `distributed_state@2` ([issue #512](https://github.com/seiya/spec2science/issues/512)) is defined as
-the distributed-state operations of `harness_fortran_cpu_mpi@0.5.0` §3.3, which that harness
-publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
+the distributed-state block a language backend pins after the `sync_single_case@1` block, which
+a harness on a launcher target publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
 process grid the host imposes and its queries, the block partition of a global index range over
 the ranks along one grid dimension, the halo exchange of an array along one grid dimension, the
 gather onto rank 0 of an array partitioned along up to two grid dimensions — which stops the
 program unless the contributed blocks tile the global array with neither overlap nor gap — and the
 global reductions. (`distributed_state@1`, [issue #316](https://github.com/seiya/spec2science/issues/316),
-was the same set over a one-dimensional arrangement of the ranks, that harness's `0.1.0` §3.3; no
-target provides it now.) `distributed_state@2` carries one rule for
+was the same set over a one-dimensional arrangement of the ranks, the sample
+`harness_fortran_cpu_mpi@0.1.0` §3.3; no target provides it now.) `distributed_state@2` carries one rule for
 every caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
 values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
 `Generate.static` pin of §5.1 enforces the operations, and so does the language backend's
 `assert_harness_pin`. What a bundle states to be driven this way is
 `target_lowering_plan.state_residency: distributed` with `distributed_state@2` among its
 `capability_requirements` (the residency coupling below).
+
+### What a harness owes
+
+A harness node is the Project's: its name, its version, its `spec`, its tests, and every operation
+it publishes beyond the blocks ([issue #690](https://github.com/seiya/spec2science/issues/690)).
+What the framework holds it to, each stated where it is canonical:
+- its id begins `harness_` (`tools/target_profile.py:HARNESS_ID_PREFIX`), the prefix the two
+  isolation gates over a physics source recognise a harness module by;
+- for each token its target implies, the block above under its own `<spec_id>__` names: the
+  language backend's `assert_harness_pin`; `tools/host_render.py:harness_block_drift` compares a
+  harness's §5.1 with it before the harness is certified;
+- the reserved snapshot keys, the case-id width and the rank-0 reading operations:
+  `tools/runner_ir.py`;
+- the capture groups and the case file: `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3, §6, and
+  `tools/capture_store.py`;
+- the layout of the format it writes: `docs/backends/output_format/<format>/CAPTURE_LAYOUT.md`;
+- what its self-test captures of the launch, the process grid and the block size:
+  `tools/validate_pipeline_semantics.py` (`_validate_harness_reported_launch`,
+  `_validate_harness_reported_grid`, `_validate_harness_reported_block`);
+- the sections of an `infrastructure spec`: `docs/CONTROLLED_SPEC.md`;
+- what the driver passes its performance-record writer: `tools/host_execution.py`;
+- on a parallel backend with a launcher or a device runtime, what it is built with and the
+  launch variables it reads: that backend's package under `tools/backends/parallel/` and its
+  documents under `docs/backends/parallel/`;
+- the halo exchanges a physics source calls on it: the parallel backend's generate rules.
 
 ### The manifest document
 

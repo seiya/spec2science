@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 import yaml
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools import runner_ir, verdict_evaluator
@@ -309,27 +310,32 @@ FORTRAN_HARNESS = {"json": "harness_fortran_cpu", "netcdf": netcdf_harness.HARNE
 def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
                 deps: tuple[str, ...] = (), case_ids: list[str] | None = None,
                 model: str | None = None, harness: str | None = None,
-                output_format: str = "json") -> Run:
+                output_format: str = "json", rename: str | None = None) -> Run:
     """Build and run ``ir``'s Fortran driver against the harness of ``output_format``
     (`FORTRAN_HARNESS`); ``harness`` is the harness model's source in place of the fixture's
     (`counting_harness`). The `netcdf` harness takes its library's compile and link words and
-    the loader overlay (`netcdf_harness`)."""
+    the loader overlay (`netcdf_harness`). ``rename``: the same harness model under another id,
+    by text substitution, with the driver rendered for that id and the capability set of the
+    sample harness's target (issue #690)."""
     ids = _prepare(tmp, ir, case_ids, output_format)
-    harness_id = FORTRAN_HARNESS[output_format]
+    sample_id = FORTRAN_HARNESS[output_format]
+    harness_id = rename or sample_id
     netcdf = output_format == "netcdf"
     objs = []
     flags = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
     # each source enters the directory just before its own compile (`_compile_cached`)
     for stem in (harness_id, *deps, model or sid):
-        if stem == harness_id and harness is not None:
-            (tmp / f"{stem}_model.f90").write_text(harness)
+        if stem == harness_id and (harness is not None or rename):
+            text = harness if harness is not None else (DATA / f"{sample_id}_model.f90").read_text()
+            (tmp / f"{stem}_model.f90").write_text(text.replace(sample_id, harness_id))
         else:
             shutil.copy(DATA / f"{stem}_model.f90", tmp)
         extra = netcdf_harness.compile_flags() if netcdf and stem == harness_id else []
         _compile_cached(["gfortran", *flags, *extra, "-c", f"{stem}_model.f90", "-o",
                          f"{stem}.o"], tmp)
         objs.append(f"{stem}.o")
-    text = f_runner.render_runner(ir, sid, harness_id, target=CPU)
+    text = f_runner.render_runner(ir, sid, harness_id, target=CPU,
+                                  harness_provides=provides_for(sample_id))
     (tmp / "runner.f90").write_text(text)
     build = subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "runner.o"], cwd=tmp,
                            capture_output=True, text=True)
@@ -396,22 +402,25 @@ def _harness_public_api() -> dict[str, Any]:
 
 
 def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
-            harness: str | None = None) -> Run:
+            harness: str | None = None, rename: str | None = None) -> Run:
     """Build and run ``ir``'s C++ driver; ``harness`` is the harness model's source in place
-    of the fixture's (`counting_harness`)."""
+    of the fixture's (`counting_harness`). ``rename``: the same harness under another id, by
+    text substitution (issue #690)."""
     ids = _prepare(tmp, ir, None)
+    hid = rename or "harness_cpp_gpu"
+    api = json.loads(json.dumps(_harness_public_api()).replace("harness_cpp_gpu", hid))
+    harness_text = (harness if harness is not None
+                    else (DATA / "harness_cpp_gpu_model.cu").read_text())
     # each stage's files enter the directory just before its compile (`_compile_cached`)
     sources = {
-        "harness_cpp_gpu_model": {
-            "harness_cpp_gpu_model.cuh": cpp_header.render(
-                "harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"),
-            "harness_cpp_gpu_model.cu": harness if harness is not None
-            else (DATA / "harness_cpp_gpu_model.cu").read_text()},
+        f"{hid}_model": {
+            f"{hid}_model.cuh": cpp_header.render(hid, api, spec_kind="infrastructure"),
+            f"{hid}_model.cu": harness_text.replace("harness_cpp_gpu", hid)},
         f"{sid}_model": {
             f"{sid}_model.cuh": cpp_header.render(sid, ir["public_api"], spec_kind="component"),
             f"{sid}_model.cu": (DATA / f"{sid}_model.cu").read_text()},
-        "runner": {"runner.cu": cpp_runner.render_runner(ir, sid, "harness_cpp_gpu",
-                                                          target=GPU)}}
+        "runner": {"runner.cu": cpp_runner.render_runner(
+            ir, sid, hid, target=GPU, harness_provides=provides_for("harness_cpp_gpu"))}}
     objs = []
     for stem, files in sources.items():
         for name, text in files.items():
@@ -1381,10 +1390,12 @@ class RestartRenderTest(unittest.TestCase):
 
     def test_a_node_without_loop_renders_no_restart_read(self) -> None:
         for ir in (call_ir(0), init_call_ir(0)):
-            text = cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU)
+            text = cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU,
+                harness_provides=provides_for("harness_cpp_gpu"))
             self.assertNotIn("restart", text)
             self.assertNotIn("step0", text)
-            text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+            text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+                harness_provides=provides_for("harness_fortran_cpu"))
             flags = [ln for ln in text.splitlines() if "%restart = " in ln]
             self.assertTrue(flags)
             self.assertEqual({ln.split("%restart = ", 1)[1] for ln in flags}, {".false."})
@@ -1394,8 +1405,10 @@ class RestartRenderTest(unittest.TestCase):
 
     def test_a_loop_node_reads_the_host_s_key(self) -> None:
         ir = loop_ir(0)
-        for text in (f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU),
-                     cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU)):
+        for text in (f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+            harness_provides=provides_for("harness_fortran_cpu")),
+                     cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU,
+                         harness_provides=provides_for("harness_cpp_gpu"))):
             self.assertIn(runner_ir.RESTART_STEP_KEY, text)
             for var in ("u", "w"):
                 self.assertIn(f"{runner_ir.RESTART_KEY_PREFIX}{var}", text)
@@ -1413,7 +1426,8 @@ class ResultResetOptimisationTest(unittest.TestCase):
             root = Path(tmp)
             ids = _prepare(root, ir, None)
             (root / "runner.f90").write_text(
-                f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU))
+                f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+                    harness_provides=provides_for("harness_fortran_cpu")))
             objs = []
             for stem in ("harness_fortran_cpu", "drv_toy"):
                 subprocess.run(["gfortran", *flags, "-c", str(DATA / f"{stem}_model.f90"), "-o",
@@ -1435,7 +1449,8 @@ class ResultResetOptimisationTest(unittest.TestCase):
                 self.assertEqual(self._ok_after_true_case(flags), 0.0)
 
     def test_the_scalars_an_out_dummy_takes_are_volatile(self) -> None:
-        text = f_runner.render_runner(call_ir(0), "drv_toy", "harness_fortran_cpu", target=CPU)
+        text = f_runner.render_runner(call_ir(0), "drv_toy", "harness_fortran_cpu", target=CPU,
+            harness_provides=provides_for("harness_fortran_cpu"))
         self.assertIn("logical, volatile :: lg_ok", text)
         self.assertIn("real(dp), volatile :: st_s", text)
 
@@ -1548,8 +1563,10 @@ class FortranProcedureNameTest(unittest.TestCase):
             with self.subTest(width=width):
                 ir = with_dummy(base, "r" * width)
                 self.assertEqual(f_runner.ir_content_violations(
-                    ir, "drv_toy", "harness_fortran_cpu"), [])
-                text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+                    ir, "drv_toy", "harness_fortran_cpu",
+                        harness_provides=provides_for("harness_fortran_cpu")), [])
+                text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+                    harness_provides=provides_for("harness_fortran_cpu"))
                 code = re.sub(r"'[^']*'|\"[^\"]*\"|!.*", "", text)
                 self.assertLessEqual(
                     max(len(w) for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code)), limit)
@@ -1577,7 +1594,8 @@ out = {"wrap": f_runner._wrap("y " * 40 + "z" * 95), "render": {}}
 for k in (17, 18, 30):
     ir = procedure_ir("abs(" * k + "u" + ")" * k)
     try:
-        text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+        text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+                                      harness_provides={"sync_single_case@1"})
         out["render"][k] = max(len(line) for line in text.splitlines())
     except RenderError as exc:
         out["render"][k] = str(exc)
@@ -1916,7 +1934,8 @@ class ProblemOverProblemEndToEndTest(unittest.TestCase):
             for stem in staged:
                 shutil.copy(DATA / f"{stem}_model.f90", out)
             (out / f"{ROTATING}_runner.f90").write_text(
-                f_runner.render_runner(ir, ROTATING, "harness_fortran_cpu", target=CPU))
+                f_runner.render_runner(ir, ROTATING, "harness_fortran_cpu", target=CPU,
+                    harness_provides=provides_for("harness_fortran_cpu")))
             (out / "Makefile").write_text(render_rotating_makefile(staged[:-1]))
             build = subprocess.run(["make", "all", "BIN=bin"], cwd=out, capture_output=True,
                                    text=True, timeout=600)
@@ -2600,7 +2619,8 @@ class RenderRefusalTest(unittest.TestCase):
         the distributed form; an axis-less node keeps the serial body under the distributed
         harness's names, with rank 0 capturing and the result reduced, and no partition."""
         text = f_runner.render_runner(loop_ir(0), "drv_toy", "harness_fortran_cpu_mpi",
-                                      target=CPU)
+                                      target=CPU,
+                                          harness_provides=provides_for("harness_fortran_cpu_mpi"))
         self.assertIn("  call harness_fortran_cpu_mpi__init()", text)
         self.assertIn("lg_ok = nok == nranks", text)
         self.assertIn("    if (rank == 0) call harness_fortran_cpu_mpi__capture_commit(group, "
@@ -2613,7 +2633,8 @@ class RenderRefusalTest(unittest.TestCase):
             self.assertEqual([c for c in calls if not c.startswith("if (rank == 0) call ")], [])
         self.assertNotIn("__partition", text)
         self.assertNotIn("nranks", f_runner.render_runner(loop_ir(0), "drv_toy",
-                                                          "harness_fortran_cpu", target=CPU))
+                                                          "harness_fortran_cpu", target=CPU,
+                                                              harness_provides=provides_for("harness_fortran_cpu")))
 
     def test_an_ir_with_no_drive_is_refused_as_content(self) -> None:
         ir = loop_ir(0)
@@ -2621,7 +2642,8 @@ class RenderRefusalTest(unittest.TestCase):
         for module, harness, target in ((f_runner, "harness_fortran_cpu", CPU),
                                         (cpp_runner, "harness_cpp_gpu", GPU)):
             with self.assertRaises(RenderError) as caught:
-                module.render_runner(ir, "drv_toy", harness, target=target)
+                module.render_runner(ir, "drv_toy", harness, target=target,
+                    harness_provides=provides_for(harness))
             self.assertFalse(caught.exception.identity)
 
     def test_the_shapes_the_renderers_have_no_spelling_for_are_refused(self) -> None:
@@ -2660,14 +2682,16 @@ class RenderRefusalTest(unittest.TestCase):
                     json.dumps(ir["public_api"]["signatures"]))
                 mutate(ir)
                 with self.assertRaises(RenderError):
-                    f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+                    f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+                        harness_provides=provides_for("harness_fortran_cpu"))
         ir = init_ir(0)
         ir["public_api"] = json.loads(json.dumps(ir["public_api"]))
         init_sig = next(s for s in ir["public_api"]["signatures"]
                         if s["symbol"] == "drv_toy__init")["signature"]
         next(a for a in init_sig["args"] if a["name"] == "u")["dims"] = ["nope"]
         with self.assertRaisesRegex(RenderError, "extent token 'nope'"):
-            f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+            f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+                harness_provides=provides_for("harness_fortran_cpu"))
 
     def test_a_host_rendered_procedure_binds_what_it_does_not_read(self) -> None:
         """The promoted unused-dummy warning would refuse a file no leaf can edit."""
@@ -2677,7 +2701,8 @@ class RenderRefusalTest(unittest.TestCase):
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         schema["variables"] = [v for v in schema["variables"]
                                if v["name"] in ("u_n", "u_np1", "ok")]
-        text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+        text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU,
+            harness_provides=provides_for("harness_fortran_cpu"))
         self.assertIn("unused_t => t", text)
         with tempfile.TemporaryDirectory() as tmp:
             run = run_fortran(Path(tmp), ir)
@@ -3150,7 +3175,7 @@ class MpiBuild:
 
     def __init__(self, tmp: Path, ir: dict[str, Any], *, flags: list[str],
                  model: str | None = None, runner: str | None = None,
-                 harness: str = MPI_HARNESS) -> None:
+                 harness: str = MPI_HARNESS, rename: str | None = None) -> None:
         from tools.backends.parallel.mpi import launcher, wrapper
         from tools.tests.test_parallel_mpi import _require_mpi_pair
         pair = Path(_require_mpi_pair())
@@ -3160,15 +3185,18 @@ class MpiBuild:
         (tmp / "ir").mkdir(parents=True)
         (tmp / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
         pe.write_case_inputs(ir, tmp / "ir")
+        # `rename`: the sample harness's model under another id, by text substitution, driven
+        # with the sample's capability set (issue #690).
         self.runner = runner if runner is not None else f_runner.render_runner(
-            ir, sid, harness, target=_mpi_target())
+            ir, sid, rename or harness, target=_mpi_target(),
+            harness_provides=provides_for(harness))
         harness_src = (MPI_DATA / f"{MPI_HARNESS}_model.f90" if harness == MPI_HARNESS
                        else DATA / "harness_fortran_cpu_model.f90")
         compiler = str(pair / wrapper.COMPILER_WRAPPER) if harness == MPI_HARNESS else "gfortran"
         # Every source is named relative to the build directory and enters it just before its
         # own compile (`_compile_cached`), so a row that builds what an earlier row of the
         # worker did reuses its objects: the defect rows' references are the unedited fixture.
-        sources = {"harness": harness_src.read_text(),
+        sources = {"harness": harness_src.read_text().replace(harness, rename or harness),
                    "model": model if model is not None
                    else (MPI_DATA / f"{sid}_model.f90").read_text(),
                    "runner": self.runner}
@@ -3452,7 +3480,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(pe.drive_violations(ir, kind=kind), [])
                 self.assertEqual(_distribute_line_violations(
                     MPI_DATA / f"{sid}.tests.md", ir, kind=kind), [])
-                f_runner.assert_harness_pin(ir, sid, MPI_HARNESS, signatures, source)
+                f_runner.assert_harness_pin(ir, sid, MPI_HARNESS, signatures, source,
+                    harness_provides=provides_for(MPI_HARNESS))
 
     def test_the_singleton_is_the_serial_driver(self) -> None:
         """On `(1, 1)` every case is replicated (B6), so the distributed binary bare writes what
@@ -3503,10 +3532,12 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         target = _mpi_target()
         target["execution"]["sweep"]["grids"] = [[2, 2], [4, 1], [1, 1], [4, 1]]
         self.assertEqual(runner_ir.distribute_grids(target), ((2, 2), (4, 1), (1, 1)))
-        text = f_runner.render_runner(recon_ir(), "fx_recon", MPI_HARNESS, target=target)
+        text = f_runner.render_runner(recon_ir(), "fx_recon", MPI_HARNESS, target=target,
+            harness_provides=provides_for(MPI_HARNESS))
         self.assertEqual(text.count("if (p1 == 4 .and. p2 == 1) grid_known = .true."), 1)
         dry = f_runner.render_runner(recon_ir(), "fx_recon", MPI_HARNESS,
-                                     target=f_runner._DRY_RUN_TARGET)
+                                     target=f_runner._DRY_RUN_TARGET,
+                                         harness_provides=provides_for(MPI_HARNESS))
         self.assertIn("if (p1 == 1 .and. p2 == 1) grid_known = .true.", dry)
         self.assertNotIn("p1 == 2", dry)
         width = max(len(line) for line in dry.splitlines())
@@ -3742,7 +3773,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         columns was refused before), build on the serial driver and pass."""
         ir = many_procedures_ir(7)
         self.assertEqual(pe.drive_violations(ir, kind="component"), [])
-        text = f_runner.render_runner(ir, "fx_lst", "harness_fortran_cpu", target=CPU)
+        text = f_runner.render_runner(ir, "fx_lst", "harness_fortran_cpu", target=CPU,
+            harness_provides=provides_for("harness_fortran_cpu"))
         self.assertLess(max(len(line) for line in text.splitlines()), 100)
         build = self._build(ir, flags="checked", harness="harness_fortran_cpu")
         run = build.run(SINGLETON, timeout=60)
@@ -3768,7 +3800,8 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                     entry["arguments"][dummy] = entry["arguments"].pop("rhs")
                 self.assertEqual(pe.drive_violations(ir, kind="component"), [])
                 lines = f_runner.render_runner(
-                    ir, "fx_lst", "harness_fortran_cpu", target=CPU).splitlines()
+                    ir, "fx_lst", "harness_fortran_cpu", target=CPU,
+                        harness_provides=provides_for("harness_fortran_cpu")).splitlines()
                 first = next(i for i, line in enumerate(lines)
                              if line.startswith("  public :: driver_"))
                 end = first
@@ -4006,7 +4039,8 @@ class CompileCacheTest(unittest.TestCase):
 
 
 def _mpi_runner_text(sid: str) -> str:
-    return f_runner.render_runner(MPI_FIXTURES[sid](), sid, MPI_HARNESS, target=_mpi_target())
+    return f_runner.render_runner(MPI_FIXTURES[sid](), sid, MPI_HARNESS, target=_mpi_target(),
+        harness_provides=provides_for(MPI_HARNESS))
 
 
 #: Plan B §5's seeded driver defects: (fixture, label, rendered text, its replacement).
@@ -4099,6 +4133,85 @@ def _add_defect_rows() -> None:
         setattr(DistributedDriverEndToEndTest, f"test_kernel_defect_{_slug(label)}",
                 lambda self, a=(sid, label, edits, cases, grids):
                 self._kernel_defect_fails_a_grid(*a))
+
+
+class RenamedHarnessEndToEndTest(unittest.TestCase):
+    """Issue #690: the framework holds no harness name. Each sample harness's hand model, copied
+    under another id by text substitution, is driven by the runner rendered for that id under
+    the capability set the sample's target implies; it builds, runs, and every capture equals the
+    run under the sample's own id. One row per hand model whose toolchain is present."""
+
+    OTHER = "harness_sample_cpu"
+
+    @staticmethod
+    def _captures(snap_dir: Path) -> dict[str, bytes]:
+        return {str(f.relative_to(snap_dir)): f.read_bytes()
+                for f in sorted(snap_dir.rglob("*")) if f.is_file()}
+
+    def test_the_single_process_json_harness_under_another_id(self) -> None:
+        ir = loop_ir(0)
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            sample = run_fortran(Path(a), copy.deepcopy(ir))
+            other = run_fortran(Path(b), copy.deepcopy(ir), rename=self.OTHER)
+            self.assertEqual(other.proc.returncode, 0, other.proc.stderr[-2000:])
+            self.assertIn(f"use {self.OTHER}_model", (Path(b) / "runner.f90").read_text())
+            self.assertNotIn(FORTRAN_HARNESS["json"], (Path(b) / "runner.f90").read_text())
+            got = self._captures(other.snapshots)
+            self.assertTrue(got)
+            self.assertEqual(got, self._captures(sample.snapshots))
+
+    def test_the_netcdf_harness_under_another_id(self) -> None:
+        ir = loop_ir(0)
+        cases = [c["case_id"] for c in ir["case"]["test_case_set"]]
+        seen = []
+        for rename in (None, "harness_sample_cpu_netcdf"):
+            with tempfile.TemporaryDirectory() as tmp:
+                run = run_fortran(Path(tmp), copy.deepcopy(ir), output_format="netcdf",
+                                  rename=rename)
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+                seen.append((every_record_or_why("netcdf", run.snapshots, cases),
+                             pe.evaluate_primary_predicates(ir, Path(tmp) / "run",
+                                                            output_format="netcdf")))
+        self.assertTrue(seen[0][0])
+        self.assertEqual(seen[1][1], seen[0][1])
+        self.assertEqual(set(seen[1][0]), set(seen[0][0]))
+        for key, doc in seen[0][0].items():
+            got = seen[1][0][key]
+            if isinstance(doc, tuple):
+                self.assertEqual(got, doc, key)
+                continue
+            self.assertEqual(set(got), set(doc), key)
+            for member, value in doc.items():
+                np.testing.assert_array_equal(np.asarray(got[member]), np.asarray(value),
+                                              err_msg=str(key))
+
+    @skip_probes.skip_unless_installed("cuda_compiler_driver")
+    def test_the_device_harness_under_another_id(self) -> None:
+        ir = loop_ir(0)
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            sample = run_cpp(Path(a), copy.deepcopy(ir))
+            other = run_cpp(Path(b), copy.deepcopy(ir), rename="harness_sample_gpu")
+            self.assertEqual(other.proc.returncode, 0, other.proc.stderr[-2000:])
+            got = self._captures(other.snapshots)
+            self.assertTrue(got)
+            self.assertEqual(got, self._captures(sample.snapshots))
+
+    def test_the_distributed_harness_under_another_id(self) -> None:
+        from tools.tests.test_parallel_mpi import _require_mpi_pair
+        _require_mpi_pair()
+        ir = MPI_FIXTURES["fx_loop"]()
+        flags = _mpi_flag_sets()["release"]
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = MpiBuild(Path(tmp) / "a", copy.deepcopy(ir), flags=flags)
+            other = MpiBuild(Path(tmp) / "b", copy.deepcopy(ir), flags=flags,
+                             rename="harness_sample_cpu_mpi")
+            self.assertIn("use harness_sample_cpu_mpi_model", other.runner)
+            for grid in (SINGLETON, (2, 2)):
+                with self.subTest(grid=grid):
+                    want, got = sample.run(grid, timeout=60), other.run(grid, timeout=60)
+                    self.assertEqual(got.rc, 0, got.stderr[-2000:])
+                    self.assertTrue(got.snapshots())
+                    self.assertEqual(got.snapshots(), want.snapshots())
 
 
 _add_defect_rows()

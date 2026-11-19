@@ -102,9 +102,11 @@ def render_tuple() -> dict[str, str]:
         # pins none are the language's `bundle_facts` since issue #289 (R4-b PR-2).
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
-        # The distributed runner's ABI comment prints the harness operations' stanzas as the
-        # §5.1 stanza splitter reads them (issue #316, R4-c PR-4), so the splitter and the
-        # logical-line reader under it shape rendered bytes too.
+        # A host-rendered procedure argument's interface is rendered into the driver module by
+        # `render_symbol_to_fortran` (`_render_procedure`), so this module and the logical-line
+        # reader under it shape rendered bytes too. The embedded harness blocks are read by the
+        # pin alone (`assert_harness_pin`, `harness_block_drift`), so no rendered byte depends on
+        # block text (issue #690).
         "tools/backends/language/fortran/signatures.py":
             _file_digest("tools/backends/language/fortran/signatures.py"),
         "tools/backends/language/fortran/lines.py":
@@ -1522,7 +1524,19 @@ PINNED_RENDER: dict[str, str] = {
     # main 8adea1c4's: that row and no other.) The digest
     # `render-22` shipped with at 8adea1c4:
     "render-22@8adea1c4": "6d0a0b63e7fe4d33bd54891b80abd16841e7af1d8d73a59b2fb1696dd8fb9df4",
-    "render-22": "422e604a67722e068a2d0f17ef53a2dd0654e9217356517327171744d87d712f",
+    # render-22 re-pinned in place by issue #690 PR-2, behaviour-preserving: the language backends
+    # write their harness interface blocks under a placeholder substituted with the harness's own
+    # `<spec_id>__` names, and select the block by the capability tokens the target implies
+    # (`harness_provides`, a new required keyword of the four `tools/host_render.py` functions
+    # that take a harness, which `Conductor._write_runner` passes) instead of by a table of sample
+    # harness ids; `__real_token` leaves the blocks. No renderer path reads a block (the pin and
+    # `harness_block_drift` do), and the driver's form still follows the process model: each of
+    # the 28 runners rendered from a certified IR equals the stored one, and the 84 renders of
+    # every catalogued node over the four targets have the digests they had at main. (Measured by
+    # diffing `render_tuple()` against main 05e839e3's: those four rows and no other.) The digest
+    # `render-22` shipped with at 05e839e3:
+    "render-22@05e839e3": "422e604a67722e068a2d0f17ef53a2dd0654e9217356517327171744d87d712f",
+    "render-22": "15c34b68e13d695b6df7cef7791d3439f87a02c4db23ee2c7abc0c879ee9494d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -2251,7 +2265,13 @@ PINNED_EXECUTE: dict[str, str] = {
     # `use`, `oracle.ORACLE_USE_VERSION` 3), so no Validate certified before compared it. The
     # digest `execute-22` shipped with at 0260f5ba:
     "execute-22@0260f5ba": "f76069607d72f9416d5b4b4f2e6aea74ae4d68559241dd90e70c084d6aae6661",
-    "execute-22": "4ae0b95b6820f77832ee6670497811d3ddba17145f01cb5037ef5db8e76c0304",
+    # execute-22 re-pinned in place by issue #690 PR-2, comment-only: the module docstrings of
+    # `tools/backends/parallel/{mpi,cuda}/execution.py` cite "its controlled_spec §3.3" for the
+    # target's harness instead of a sample harness id. (Measured by diffing `execute_tuple()`
+    # against main 05e839e3's: those two rows and no other.) The digest `execute-22` shipped with
+    # at 05e839e3:
+    "execute-22@05e839e3": "4ae0b95b6820f77832ee6670497811d3ddba17145f01cb5037ef5db8e76c0304",
+    "execute-22": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

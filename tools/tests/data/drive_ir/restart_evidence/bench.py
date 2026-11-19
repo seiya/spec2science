@@ -139,6 +139,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools import verdict_evaluator  # noqa: E402
@@ -357,7 +358,8 @@ def run_row(job: dict[str, Any]) -> dict[str, Any]:
         for mod in Path(job["cache"]).glob("*.mod"):
             shutil.copy(mod, work / mod.name)
         (work / "model.f90").write_text(job["model"])
-        runner = f_runner.render_runner(ir, job["sid"], "harness_fortran_cpu", target=CPU)
+        runner = f_runner.render_runner(ir, job["sid"], "harness_fortran_cpu", target=CPU,
+            harness_provides=provides_for("harness_fortran_cpu"))
         if job.get("runner_patches"):
             runner = apply_patches(runner, job["runner_patches"])
         (work / "runner.f90").write_text(runner)

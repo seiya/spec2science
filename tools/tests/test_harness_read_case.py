@@ -28,6 +28,7 @@ from tools import primary_evidence as pe
 from tools.backends.language.cuda_cpp import runner as cuda_runner
 from tools.backends.language.cuda_cpp import signatures as cuda_signatures
 from tools.backends.language.fortran import runner as fortran_runner
+from tools.tests.target_fixtures import SAMPLE_HARNESS_PROVIDES
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).parent / "data" / "harness_read_case"
@@ -250,14 +251,24 @@ class SpecSurfaceTests(unittest.TestCase):
             self.assertNotIn(reversal, section)
 
     def test_the_fortran_pins_carry_the_operations_under_each_harness_name(self) -> None:
-        for spec_id, pin in fortran_runner._HARNESS_PINS.items():
+        # Each block, under each Fortran sample harness's names and the tokens its target implies.
+        for spec_id, provides in SAMPLE_HARNESS_PROVIDES.items():
+            if spec_id == "harness_cpp_gpu":
+                continue
+            block = fortran_runner.harness_interface_block(spec_id, provides)
             for op in NEW_OPERATIONS:
                 with self.subTest(spec_id=spec_id, op=op):
-                    self.assertIn(f"{spec_id}__{op}(", pin.interface)
+                    self.assertIn(f"{spec_id}__{op}(", block)
 
     def test_the_cuda_pin_is_the_harness_section51(self) -> None:
-        pinned = yaml.safe_load(cuda_runner._HARNESS_V1_INTERFACE)
-        self.assertEqual(pinned, _section51("harness_cpp_gpu"))
+        # The block under the sample harness's names is its §5.1 but for `__real_token`, which no
+        # driver calls and no block carries (issue #690).
+        pinned = yaml.safe_load(cuda_runner._HARNESS_V1_INTERFACE.replace(
+            cuda_runner._PLACEHOLDER, "harness_cpp_gpu__"))
+        section51 = _section51("harness_cpp_gpu")
+        section51["procedures"] = [p for p in section51["procedures"]
+                                   if p["name"] != "harness_cpp_gpu__real_token"]
+        self.assertEqual(pinned, section51)
 
     def test_the_cuda_lowering_of_an_allocatable_out_is_an_owning_reference(self) -> None:
         procedures = {p["name"]: p for p in _section51("harness_cpp_gpu")["procedures"]}

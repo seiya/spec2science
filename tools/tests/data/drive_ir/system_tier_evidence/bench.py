@@ -70,6 +70,7 @@ REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(HERE))
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
 from tools import validate_pipeline_semantics as vps  # noqa: E402
@@ -286,7 +287,8 @@ def build(work: Path, ir: dict[str, Any], model_text: str, flags: list[str]) -> 
     for parts in capture_store.run_dirs("json"):
         (work / "run").joinpath(*parts).mkdir(parents=True)
     (work / "runner.f90").write_text(
-        f_runner.render_runner(ir, build_ir.SID, "harness_fortran_cpu", target=CPU))
+        f_runner.render_runner(ir, build_ir.SID, "harness_fortran_cpu", target=CPU,
+            harness_provides=provides_for("harness_fortran_cpu")))
     objs = []
     texts = [(HAND_HARNESS if k == "infrastructure" else certified_source(k, s)).read_text()
              for k, s in CLOSURE] + [model_text]

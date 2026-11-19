@@ -25,6 +25,7 @@ from pathlib import Path
 
 import yaml
 
+from tools.tests.target_fixtures import provides_for
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools.backends.language.cuda_cpp import header as cpp_header
@@ -54,11 +55,18 @@ RANK_SID = ft_tests.RANK_SID
 
 
 def _render(ir: dict, sid: str, target: dict = GPU_TARGET) -> str:
-    return cpp_runner.render_runner(ir, sid, HARNESS, target=target)
+    return cpp_runner.render_runner(ir, sid, HARNESS, target=target,
+        harness_provides=provides_for(HARNESS))
 
 
 def _harness_struct() -> dict:
-    struct, error = load_structured_signatures(cpp_runner._HARNESS_V1_INTERFACE)
+    """The sample harness's §5.1, which its certified IR publishes: the block the renderer pins
+    under its names, and `__real_token`, which its own source calls (issue #690)."""
+    spec = (Path(__file__).resolve().parents[2]
+            / "spec/infrastructure/infra/harness" / HARNESS / "controlled_spec.md")
+    block = re.search(r"### 5\.1.*?```yaml\n(.*?)```", spec.read_text(encoding="utf-8"),
+                      re.DOTALL)
+    struct, error = load_structured_signatures(block.group(1))
     assert error is None, error
     return struct
 
@@ -273,20 +281,24 @@ class RenderErrorDifferentialTest(unittest.TestCase):
                     mutate(ir)
                 if label in _FORTRAN_ONLY_REFUSALS:
                     _render(ir, spec_id)  # renders: no C++ reason to refuse it
-                    self.assertEqual([], cpp_runner.ir_content_violations(ir, spec_id, HARNESS))
+                    self.assertEqual([], cpp_runner.ir_content_violations(ir, spec_id, HARNESS,
+                        harness_provides=provides_for(HARNESS)))
                     continue
                 with self.assertRaises(RenderError):
                     _render(ir, spec_id)
-                violations = cpp_runner.ir_content_violations(ir, spec_id, HARNESS)
+                violations = cpp_runner.ir_content_violations(ir, spec_id, HARNESS,
+                    harness_provides=provides_for(HARNESS))
                 self.assertEqual(is_identity, violations == [], violations)
 
     def test_the_clean_fixtures_render_in_both(self) -> None:
         for ir, sid in ((_boundary_ir(), BOUNDARY_SID), (_metrics_ir(), "prob_x"),
                         (_rank34_metrics_ir(), RANK_SID), (_smoke_ir(), RANK_SID)):
             with self.subTest(sid):
-                self.assertEqual([], cpp_runner.ir_content_violations(ir, sid, HARNESS))
+                self.assertEqual([], cpp_runner.ir_content_violations(ir, sid, HARNESS,
+                    harness_provides=provides_for(HARNESS)))
                 self.assertEqual([], ft_runner.ir_content_violations(
-                    ir, sid, "harness_fortran_cpu"))
+                    ir, sid, "harness_fortran_cpu",
+                        harness_provides=provides_for("harness_fortran_cpu")))
 
     def test_the_cuda_only_refusals_are_names_c_plus_plus_cannot_declare(self) -> None:
         for name in ("int", "namespace", "class"):
@@ -294,7 +306,8 @@ class RenderErrorDifferentialTest(unittest.TestCase):
                 ir = copy.deepcopy(_boundary_ir())
                 ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
                     "variables"][3]["name"] = name
-                violations = cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS)
+                violations = cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS,
+                    harness_provides=provides_for(HARNESS))
                 self.assertTrue(violations and name in violations[0], violations)
 
     def test_a_state_named_like_a_library_or_a_retired_callback_renders_under_its_prefix(
@@ -304,13 +317,15 @@ class RenderErrorDifferentialTest(unittest.TestCase):
             with self.subTest(name):
                 ir = copy.deepcopy(_boundary_ir())
                 ft_tests._rename_state(ir, "guard_fired", name)
-                self.assertEqual([], cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS))
+                self.assertEqual([], cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS,
+                    harness_provides=provides_for(HARNESS)))
                 self.assertIn(f"st_{name}", _render(ir, BOUNDARY_SID))
 
     def test_a_non_iterable_field_is_a_violation_not_an_exception(self) -> None:
         ir = copy.deepcopy(_boundary_ir())
         ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] = 5
-        self.assertTrue(cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS))
+        self.assertTrue(cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS,
+            harness_provides=provides_for(HARNESS)))
 
     def test_a_control_character_has_no_literal(self) -> None:
         with self.assertRaises(RenderError):
@@ -327,7 +342,7 @@ class HarnessPinTest(unittest.TestCase):
         cpp_runner.assert_harness_pin(
             self.ir, RANK_SID, harness,
             _harness_signatures() if signatures is None else signatures,
-            self.source if source is None else source)
+            self.source if source is None else source, harness_provides=provides_for(harness))
 
     def test_the_pinned_interface_is_the_controlled_spec_s(self) -> None:
         spec = Path(__file__).resolve().parents[2] / (
@@ -335,14 +350,34 @@ class HarnessPinTest(unittest.TestCase):
         block = re.search(r"### 5\.1.*?```yaml\n(.*?)```", spec.read_text(encoding="utf-8"),
                           re.DOTALL)
         self.assertIsNotNone(block)
-        self.assertEqual(block.group(1), cpp_runner._HARNESS_V1_INTERFACE)
+        # The block under the sample harness's names is its §5.1 but for `__real_token`, which
+        # no driver calls and no block carries (issue #690).
+        section51 = yaml.safe_load(block.group(1))
+        section51["procedures"] = [p for p in section51["procedures"]
+                                   if p["name"] != f"{HARNESS}__real_token"]
+        self.assertEqual(yaml.safe_load(cpp_runner._HARNESS_V1_INTERFACE.replace(
+            cpp_runner._PLACEHOLDER, f"{HARNESS}__")), section51)
 
     def test_a_clean_harness_passes(self) -> None:
         self._pin()
 
-    def test_another_harness_is_refused(self) -> None:
-        with self.assertRaisesRegex(RenderError, "not the pinned"):
-            self._pin(harness="harness_other")
+    def test_a_harness_under_another_name_is_driven_by_the_block_under_its_own_names(
+            self) -> None:
+        """Issue #690: the framework holds no harness name. A harness the Project names otherwise
+        passes when its IR and source publish the block under its own names, and fails on one
+        changed signature."""
+        other = "harness_sample_gpu"
+        sigs = json.loads(json.dumps(_harness_signatures()).replace(f"{HARNESS}__", f"{other}__"))
+        source = self.source.replace(HARNESS, other)
+        self._pin(sigs, source, harness=other)
+        with self.assertRaisesRegex(RenderError, f"omits '{other}__"):
+            self._pin(harness=other)
+        sym = f"{other}__read_case"
+        changed = copy.deepcopy(sigs)
+        entry = next(e for e in changed if e["symbol"] == sym)
+        entry["signature"]["args"][0]["intent"] = "inout"
+        with self.assertRaisesRegex(RenderError, f"IR signature for '{sym}' differs"):
+            self._pin(changed, source, harness=other)
 
     def test_no_usable_signatures_is_a_missing_artifact(self) -> None:
         for sigs in ([], [{"symbol": "", "signature": {}}], "nope"):

@@ -39,7 +39,8 @@ from tools.backends.language.fortran.signatures import (
     stanza_atoms,
 )
 from tools.backends.language.fortran.runner import (
-    _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS, _SINGLE_PROCESS_INTERFACE)
+    _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS, harness_interface_block)
+from tools.tests.target_fixtures import provides_for
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -208,13 +209,16 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
     def test_round_trip_harness_controlled_spec_section51(self) -> None:
         published = _real_section51_struct()
         struct = self._assert_round_trip(render_signatures_to_fortran(published))
-        # sanity on the parsed shape (the real harness surface): the 19 operations of the
-        # `sync_single_case@1` block, its `__write_perf` without the `threads_per_rank` argument
-        # (`0.8.0` §3.2, issue #512), and the whole surface renders as the copy the
-        # host-rendered runner's pin carries.
+        # sanity on the parsed shape (the real harness surface): its 19 operations, its
+        # `__write_perf` without the `threads_per_rank` argument (`0.8.0` §3.2, issue #512), and
+        # every symbol of the block the host-rendered runner's pin holds it to renders as that
+        # block states it (issue #690: the harness may publish more, here `__real_token`).
         self.assertEqual(len(struct["procedures"]), 19)
-        self.assertEqual(normalized_stanza_index(render_signatures_to_fortran(published)),
-                         normalized_stanza_index(_SINGLE_PROCESS_INTERFACE))
+        rendered = normalized_stanza_index(render_signatures_to_fortran(published))
+        block = normalized_stanza_index(harness_interface_block(
+            "harness_fortran_cpu", provides_for("harness_fortran_cpu")))
+        self.assertEqual({sym: rendered.get(sym) for sym in block}, block)
+        self.assertEqual(set(rendered) - set(block), {"harness_fortran_cpu__real_token"})
         perf = next(p for p in published["procedures"]
                     if p["name"] == "harness_fortran_cpu__write_perf")
         self.assertEqual([a["name"] for a in perf["args"]],
@@ -389,11 +393,12 @@ class FortranStanzaParserTests(unittest.TestCase):
     def test_every_harness_pin_the_runner_renders_against_splits_clean(self) -> None:
         # The runner's embedded pins are the other host text the splitter reads
         # (`assert_harness_pin`, `_parse_stanzas`): no line of theirs may be unplaceable.
-        from tools.backends.language.fortran import runner
-        self.assertEqual(len(runner._HARNESS_PINS), 3)
-        for spec_id, pin in runner._HARNESS_PINS.items():
-            with self.subTest(spec_id=spec_id):
-                ops, types, _ifaces, errors = parse_interface_stanzas(pin.interface)
+        from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
+        single = provides_for("harness_fortran_cpu")
+        for provides in (single, single | {DISTRIBUTED_STATE_TOKEN}):
+            with self.subTest(provides=sorted(provides)):
+                ops, types, _ifaces, errors = parse_interface_stanzas(
+                    harness_interface_block("harness_x", provides))
                 self.assertEqual(errors, [])
                 self.assertTrue(ops and types)
 

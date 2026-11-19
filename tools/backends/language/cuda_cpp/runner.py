@@ -7,7 +7,7 @@ the compile gate call. Nothing outside this package imports it by name.
 
 It renders ``<spec_id>_runner.cu`` of a `component` / `problem` node from the node's IR
 (`render_runner`): the deterministic driver (issue #589). Per case it reads the host-written case
-file through the certified ``harness_cpp_gpu`` plumbing, allocates the state, calls the operations
+file through the target's certified harness, allocates the state, calls the operations
 the node's model publishes, owns the time loop on a `loop` node, and emits the standard runner
 outputs through that plumbing's capture interface, which owns the output format and every file
 name (harness controlled_spec §3 / §5.1). The runner holds no serialization or file-layout
@@ -40,6 +40,7 @@ harness IR signatures + source before rendering.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from typing import Any
 
 from tools import runner_ir
@@ -170,7 +171,8 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
                 identity=True)
 
 
-def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> list[str]:
+def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str, *,
+                          harness_provides: Collection[str]) -> list[str]:
     """The Compile-authored render preconditions of a physics node's host-rendered runner, as
     human-readable messages (``[]`` when the IR renders, or when the only defect is a node-identity
     one this deliberately excludes).
@@ -182,7 +184,8 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     a violation too, never raised: this runs inside the compile validator, where an uncaught
     exception discards every violation the sibling gates collected."""
     try:
-        render_runner(ir, spec_id, harness_spec_id, target=_DRY_RUN_TARGET)
+        render_runner(ir, spec_id, harness_spec_id, target=_DRY_RUN_TARGET,
+                      harness_provides=harness_provides)
     except RenderError as exc:
         return [] if exc.identity else [str(exc)]
     except Exception as exc:  # noqa: BLE001
@@ -191,14 +194,16 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
 
 
 def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
-                  *, target: dict[str, Any]) -> str:
+                  *, target: dict[str, Any], harness_provides: Collection[str]) -> str:
     """Render ``<spec_id>_runner.cu``, the driver, from the IR and the target. Deterministic and
     pure.
 
-    ``harness_spec_id`` is the certified plumbing node's spec_id (``harness_cpp_gpu``). ``target``
+    ``harness_spec_id`` is the certified plumbing node's spec_id, whatever the Project named it;
+    ``harness_provides`` is taken for the seam's shape (this language has one block). ``target``
     is the run's target profile document, read for the perf record's hardware class and
     parallelism only (`host_execution.perf_parallelism`). The returned text is the complete
     source (trailing newline included)."""
+    del harness_provides
     if not isinstance(ir, dict):
         raise RenderError("IR is not a mapping", identity=True)
     spec_id = (spec_id or "").strip()
@@ -787,20 +792,25 @@ def _render_capture_open(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.En
 
 # --- harness interface signature pin (fail-closed, run before rendering) -----------------------
 #
-# The only harness this renderer targets is harness_cpp_gpu. The template is written against its
-# §5.1 interface, embedded below VERBATIM in the neutral structured form the controlled spec
-# states it in (Fortran's pin embeds Fortran text because it predates the neutral loader; this one
-# is lowered with the same `signatures.render_symbol` the published-surface header is rendered
-# with). `assert_harness_pin` checks that the certified harness the consumer will link against
-# still publishes those exact declarations — in its IR `public_api.signatures` and in its
-# generated model source — so a harness recert that silently changed the interface fails the
-# consumer's render instead of miscompiling at Build.
+# The template is written against the `sync_single_case@1` interface block below (issue #690), in
+# the neutral structured form a controlled spec states §5.1 in (Fortran's pin embeds Fortran text
+# because it predates the neutral loader; this one is lowered with the same
+# `signatures.render_symbol` the published-surface header is rendered with). It names the
+# harness's symbols by the placeholder `HARNESS__`, substituted with the harness's own
+# `<spec_id>__` names at use (`_pinned_stanzas`): the framework holds no harness name or version.
+# `assert_harness_pin` checks that the certified harness the consumer will link against still
+# publishes the block — in its IR `public_api.signatures` and in its generated model source — so
+# a harness whose surface differs fails the consumer's render instead of miscompiling at Build.
+#
+# No `distributed_state` block exists for this language: a target whose parallel backend declares
+# no launcher has no such token (`target_profile.harness_capabilities`). `__real_token` is in no
+# block: neither driver calls it (`_HARNESS_CORE_OPS`). A harness may publish it.
 
-EXPECTED_HARNESS_SPEC_ID = "harness_cpp_gpu"
+#: The placeholder the embedded block names the harness's symbols by.
+_PLACEHOLDER = "HARNESS__"
 
-# Verbatim copy of spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md §5.1
-# (spec_version 0.5.0). If a harness recert changes §5.1, THIS block and the render template must
-# be updated together (the pin message says so).
+# If the block changes, the render template must change with it, and every harness that publishes
+# it must be re-certified against it (the pin message says so).
 _HARNESS_V1_INTERFACE = """\
 module_parameters:
 - name: dp
@@ -808,7 +818,7 @@ module_parameters:
 - name: case_id_len
   value: '64'
 types:
-- name: harness_cpp_gpu__h_var
+- name: HARNESS__h_var
   components:
   - name: name
     spec:
@@ -832,7 +842,7 @@ types:
       type: logical
 procedures:
 - kind: subroutine
-  name: harness_cpp_gpu__parse_cases
+  name: HARNESS__parse_cases
   args:
   - name: tokens
     rank: 1
@@ -858,22 +868,8 @@ procedures:
     intent: out
     spec:
       type: logical
-- kind: function
-  name: harness_cpp_gpu__real_token
-  args:
-  - name: x
-    intent: in
-    spec:
-      type: real
-      kind: dp
-  result:
-    name: s
-    spec:
-      type: string
-      len: deferred
-      alloc: true
 - kind: subroutine
-  name: harness_cpp_gpu__capture_open
+  name: HARNESS__capture_open
   args:
   - name: case_id
     intent: in
@@ -885,7 +881,7 @@ procedures:
     intent: in
     spec:
       type: derived
-      name: harness_cpp_gpu__h_var
+      name: HARNESS__h_var
   - name: restart_point_capacity
     intent: in
     spec:
@@ -901,7 +897,7 @@ procedures:
     spec:
       type: integer
 - kind: subroutine
-  name: harness_cpp_gpu__capture_real
+  name: HARNESS__capture_real
   args:
   - name: group
     intent: in
@@ -919,7 +915,7 @@ procedures:
       type: real
       kind: dp
 - kind: subroutine
-  name: harness_cpp_gpu__capture_array_r1
+  name: HARNESS__capture_array_r1
   args:
   - name: group
     intent: in
@@ -938,7 +934,7 @@ procedures:
       type: real
       kind: dp
 - kind: subroutine
-  name: harness_cpp_gpu__capture_array_r2
+  name: HARNESS__capture_array_r2
   args:
   - name: group
     intent: in
@@ -957,7 +953,7 @@ procedures:
       type: real
       kind: dp
 - kind: subroutine
-  name: harness_cpp_gpu__capture_array_r3
+  name: HARNESS__capture_array_r3
   args:
   - name: group
     intent: in
@@ -976,7 +972,7 @@ procedures:
       type: real
       kind: dp
 - kind: subroutine
-  name: harness_cpp_gpu__capture_array_r4
+  name: HARNESS__capture_array_r4
   args:
   - name: group
     intent: in
@@ -995,7 +991,7 @@ procedures:
       type: real
       kind: dp
 - kind: subroutine
-  name: harness_cpp_gpu__capture_commit
+  name: HARNESS__capture_commit
   args:
   - name: group
     intent: in
@@ -1012,10 +1008,10 @@ procedures:
       type: real
       kind: dp
 - kind: subroutine
-  name: harness_cpp_gpu__capture_close
+  name: HARNESS__capture_close
   args: []
 - kind: subroutine
-  name: harness_cpp_gpu__write_perf
+  name: HARNESS__write_perf
   args:
   - name: case_id
     intent: in
@@ -1053,7 +1049,7 @@ procedures:
     spec:
       type: integer
 - kind: subroutine
-  name: harness_cpp_gpu__read_case
+  name: HARNESS__read_case
   args:
   - name: case_id
     intent: in
@@ -1065,7 +1061,7 @@ procedures:
     spec:
       type: logical
 - kind: function
-  name: harness_cpp_gpu__get_real
+  name: HARNESS__get_real
   args:
   - name: name
     intent: in
@@ -1078,7 +1074,7 @@ procedures:
       type: real
       kind: dp
 - kind: function
-  name: harness_cpp_gpu__get_int
+  name: HARNESS__get_int
   args:
   - name: name
     intent: in
@@ -1090,7 +1086,7 @@ procedures:
     spec:
       type: integer
 - kind: function
-  name: harness_cpp_gpu__get_bool
+  name: HARNESS__get_bool
   args:
   - name: name
     intent: in
@@ -1102,7 +1098,7 @@ procedures:
     spec:
       type: logical
 - kind: subroutine
-  name: harness_cpp_gpu__get_array_r1
+  name: HARNESS__get_array_r1
   args:
   - name: name
     intent: in
@@ -1117,7 +1113,7 @@ procedures:
       kind: dp
       alloc: true
 - kind: subroutine
-  name: harness_cpp_gpu__get_array_r2
+  name: HARNESS__get_array_r2
   args:
   - name: name
     intent: in
@@ -1132,7 +1128,7 @@ procedures:
       kind: dp
       alloc: true
 - kind: subroutine
-  name: harness_cpp_gpu__get_array_r3
+  name: HARNESS__get_array_r3
   args:
   - name: name
     intent: in
@@ -1147,7 +1143,7 @@ procedures:
       kind: dp
       alloc: true
 - kind: subroutine
-  name: harness_cpp_gpu__get_array_r4
+  name: HARNESS__get_array_r4
   args:
   - name: name
     intent: in
@@ -1162,7 +1158,7 @@ procedures:
       kind: dp
       alloc: true
 - kind: function
-  name: harness_cpp_gpu__block_size
+  name: HARNESS__block_size
   result:
     name: n
     spec:
@@ -1170,23 +1166,37 @@ procedures:
 """
 
 _PIN_DRIFT_HINT = (
-    "the certified harness interface no longer matches the renderer's pinned expectation — a "
-    "harness recert changed its published surface; update the renderer pin "
-    "(_HARNESS_V1_INTERFACE) AND the render template together, then re-certify dependent nodes")
+    "the certified harness does not publish, under its own `<spec_id>__` names, the interface "
+    "block the language backend's driver is written against. The harness `spec` is the "
+    "Project's and the block is the framework's: when the harness was meant to serve this target, "
+    "make its controlled_spec §5.1 publish the block (`host_render.harness_block_drift` names "
+    "each differing symbol) and re-certify the harness; when the block itself changed, change the "
+    "renderer's block (_HARNESS_V1_INTERFACE) and the render template together; then re-certify "
+    "dependent nodes")
 
 
-def _pinned_stanzas() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """The embedded §5.1 block lowered to C++ and read back: `(procedure stanzas, type
-    stanzas)`, keyed by symbol. A block that does not load is a renderer bug."""
-    struct, error = cpp_signatures.load_structured_signatures(_HARNESS_V1_INTERFACE)
+def _pinned_stanzas(harness_spec_id: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """The embedded block under `<harness_spec_id>__` names, lowered to C++ and read back:
+    `(procedure stanzas, type stanzas)`, keyed by symbol. A block that does not load is a
+    renderer bug."""
+    return _stanzas_of(_HARNESS_V1_INTERFACE.replace(
+        _PLACEHOLDER, f"{(harness_spec_id or '').strip()}__"), internal=True)
+
+
+def _stanzas_of(body: str, *, internal: bool) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """A structured §5.1 body lowered to C++ and read back, as `_pinned_stanzas`. `internal`: a
+    body that does not load is a renderer bug (the embedded block) rather than an input's
+    defect."""
+    prefix = "internal: the embedded harness interface" if internal else "§5.1"
+    struct, error = cpp_signatures.load_structured_signatures(body)
     if error:
-        raise RenderError(f"internal: the embedded harness interface does not load: {error}")
+        raise RenderError(f"{prefix} does not load: {error}")
     ops: dict[str, list[str]] = {}
     types: dict[str, list[str]] = {}
     for sig in [*struct.get("types", []), *struct.get("procedures", [])]:
         o, t, _i, errs = cpp_signatures.parse_interface_stanzas(cpp_signatures.render_symbol(sig))
         if errs:
-            raise RenderError(f"internal: the embedded harness interface does not lower: {errs}")
+            raise RenderError(f"{prefix} does not lower: {errs}")
         ops.update(o)
         types.update(t)
     return ops, types
@@ -1198,9 +1208,13 @@ def assert_harness_pin(
     harness_spec_id: str,
     harness_signatures: Any,
     harness_source: str,
+    *,
+    harness_provides: Collection[str],
 ) -> None:
     """Fail-closed guard the conductor runs BEFORE rendering: the certified harness the consumer
-    will link against must still publish exactly the declarations this renderer was written for.
+    will link against must still publish exactly the declarations this renderer was written for:
+    the `sync_single_case@1` block under its own ``<harness_spec_id>__`` names.
+    ``harness_provides`` is taken for the seam's shape and not read: this language has one block.
     Any drift raises ``RenderError`` (transport fail_closed with the recert-drift hint), never a
     Generate content retry.
 
@@ -1223,11 +1237,8 @@ def assert_harness_pin(
 
     Signatures that resolve to nothing usable (None / empty / malformed) fail closed as a
     missing-artifact error, distinctly from interface drift."""
-    if (harness_spec_id or "").strip() != EXPECTED_HARNESS_SPEC_ID:
-        raise RenderError(
-            f"harness_spec_id {harness_spec_id!r} is not the pinned "
-            f"{EXPECTED_HARNESS_SPEC_ID!r}; the renderer only targets that harness")
-    exp_ops, exp_types = _pinned_stanzas()
+    del harness_provides
+    exp_ops, exp_types = _pinned_stanzas(harness_spec_id)
 
     ir_stanzas: dict[str, list[str]] = {}
     for entry in (harness_signatures if isinstance(harness_signatures, list) else []):
@@ -1287,8 +1298,45 @@ def assert_harness_pin(
                 f"pinned interface: {_PIN_DRIFT_HINT}")
 
 
-def physics_harness_uses(harness_spec_id: str) -> dict[str, frozenset[str]]:
-    """None: the one harness this renderer targets runs the program as one process and
-    publishes no operation for a physics source (`host_render.physics_harness_uses`)."""
-    del harness_spec_id
+def harness_block_drift(harness_spec_id: str, section51: str, *,
+                        harness_provides: Collection[str]) -> list[str]:
+    """How a harness's controlled_spec §5.1 (`section51`, the body of its fenced block) differs
+    from the block `assert_harness_pin` holds a certified harness to, one message per symbol
+    (``[]`` when §5.1 publishes it under `<harness_spec_id>__` names). The comparison the pin
+    makes, made against the `spec` before any certification (issue #690); operations beyond the
+    block are the Project's and are not compared. The two module parameters are compared by
+    value, as the rendered runner's `static_assert`s hold them."""
+    del harness_provides
+    try:
+        have_ops, have_types = _stanzas_of(section51 or "", internal=False)
+    except RenderError as exc:
+        return [str(exc)]
+    except cpp_signatures.SignatureParseError as exc:
+        return [f"§5.1 does not lower: {exc}"]
+    struct, _error = cpp_signatures.load_structured_signatures(section51 or "")
+    params = {mp.get("name"): str(mp.get("value")) for mp in struct.get("module_parameters", [])
+              if isinstance(mp, dict)}
+    out = [f"§5.1 does not declare the module parameter `{name} = {value}`"
+           for name, value in (("dp", "float64"), ("case_id_len", str(CASE_ID_LEN)))
+           if params.get(name) != value]
+    exp_ops, exp_types = _pinned_stanzas(harness_spec_id)
+    for symbol, want in [*exp_types.items(), *exp_ops.items()]:
+        is_type = symbol in exp_types
+        have = (have_types if is_type else have_ops).get(symbol)
+        if have is None:
+            out.append(f"§5.1 omits {symbol!r}")
+        elif (cpp_signatures.stanza_line_list(have) != cpp_signatures.stanza_line_list(want)
+              if is_type else
+              cpp_signatures.stanza_line_set(have) != cpp_signatures.stanza_line_set(want)):
+            out.append(f"§5.1 declares {symbol!r} differently from the block")
+    return out
+
+
+def physics_harness_uses(harness_spec_id: str, *,
+                         harness_provides: Collection[str]) -> dict[str, frozenset[str]]:
+    """None: a harness of this language runs the program as one process and publishes no
+    operation for a physics source (`host_render.physics_harness_uses`). Both arguments are
+    taken for the seam's shape and not read: `cuda_cpp/source.py` refuses a non-empty allowance,
+    so this answers `{}` whatever the tokens."""
+    del harness_spec_id, harness_provides
     return {}
