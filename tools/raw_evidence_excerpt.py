@@ -55,6 +55,12 @@ from tools import capture_store
 #: 6 (issue #644 P4b): each case carries `restart_points`, the number of its restart points;
 #: `history_samples` counts history records, each holding the variables due at its step; and
 #: `required_evidence` looks for `restart_points` where the driver writes them.
+#: Since issue #691 a `state_history` / `restart_points` row of `required_evidence` carries the
+#: IR's declared `required`, where versions 4 to 6 reported `false`. The constant did not move,
+#: on the issue #396 ground above: the value echoes the IR's declaration, which the judge holds
+#: in `io_contract.yaml`, rather than a fact about `raw/` (`present` and the per-case counts do
+#: not move). So version 6 names two windows, and a version-6 review made after the merge of
+#: issue #691 read the declared value.
 RAW_EXCERPT_POLICY_VERSION = 6
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
@@ -73,10 +79,6 @@ RAW_EVIDENCE_ALIASES = {
 #: capture store of the run's output format, not of a directory name.
 _EVIDENCE_GROUPS = {"state_history": capture_store.HISTORY, "step_series": capture_store.SERIES,
                     "restart_points": capture_store.RESTART_POINT}
-#: The groups a legal stride of 0 leaves empty: a run with no record of one is missing no
-#: evidence (a predicate that reads the group is what needs records, and it answers
-#: `structural`).
-_OPTIONAL_GROUP_ARTIFACTS = frozenset({"state_history", "restart_points"})
 
 #: The capture directory as the excerpt's labels spell it, and its place below `raw/`.
 _SNAPSHOTS_LABEL = "/".join(capture_store.SNAPSHOT_DIR_PARTS)
@@ -302,8 +304,7 @@ def _required_evidence_rows(raw_dir: Path, io_contract: Any, store: Any) -> list
         rows.append({
             "declared_as": spelling,
             "artifact": artifact,
-            "required": item.get("required") is not False
-            and artifact not in _OPTIONAL_GROUP_ARTIFACTS,
+            "required": item.get("required") is not False,
             "present": present,
         })
     return rows
