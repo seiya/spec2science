@@ -78,7 +78,7 @@ $$
 \mathtt{vterm\_r}(k)=-36.34\,\left(\mathtt{dens}(k)(q_r+z)\right)^{0.1364}\,\frac{\mathtt{refstate\_dens}(ks)}{\mathtt{refstate\_dens}(k)}\,(1-z).
 $$
 
-**Conservation.** Where the $\dot q_v$ limiter does not bind, step 3 conserves $q_v+q_c+q_r$ and the moist internal energy $TC_v+q_vL_{00}$, and `__saturation_adjustment` conserves $q_v+q_c$ and conserves $TC_v+q_vL_{00}$ to within its convergence threshold of `1e-6 K`. So `rhoe_t`$\,\mathtt{dt}=-\rho L_{00}(q_v^{final}-q_v^{input})$. Where the $\dot q_v$ limiter binds, total water is not conserved, as in the source.
+**Conservation.** Where the $\dot q_v$ limiter does not bind, step 3 conserves $q_v+q_c+q_r$ and the moist internal energy $TC_v+q_vL_{00}$, and `__saturation_adjustment` conserves $q_v+q_c$ and conserves $TC_v+q_vL_{00}$ to within its convergence threshold of `1e-6 K`. Where the $\dot q_v$ limiter binds, total water is not conserved, as in the source. Whether it binds or not, `rhoe_t`$\,\mathtt{dt}=-\rho L_{00}(q_v^{final}-q_v^{input})$: step 3 sets $\rho\dot e$ from the limited $\dot q_v$, which is the change of `qv` in step 3, and step 5 adds `rhoe_d`$/\mathtt{dt}$, which is $-L_{00}\rho$ times the change of `qv` in step 4.
 
 **Not defined here.** The CFL number is not defined, because the `operation`s have no transport. A column admits no spatial symmetry of the scheme: `__adjustment` is pointwise, and `__terminal_velocity` couples cells only through the reference level $ks$, so a translation with a translated reference profile gives the same result translated.
 
