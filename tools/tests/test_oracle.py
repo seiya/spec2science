@@ -1730,7 +1730,8 @@ class CorpusOracleTest(unittest.TestCase):
     (the rest of the case plan needs the IR, which `Compile` fixes). The two microphysics
     nodes, whose `tests.md` §2 holds its cases as one YAML list, are checked against it: the
     original holds its constants at compile time, so the `alt` build takes exactly the
-    `constants: alt` cases, every one a `pass` case, and links the archive built with them."""
+    `constants: alt` cases, every one a `pass` case, and names the library declared for those
+    constants (which archive a library id resolves to is the site's)."""
 
     REPO = Path(__file__).resolve().parents[2]
     _MICROPHYSICS = ("microphysics_saturation_liquid_1d_column",

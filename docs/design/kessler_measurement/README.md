@@ -39,6 +39,8 @@ make SCALE_ROOT=<tree> BUILD=<dir>/default lib    # <dir>/default/libscale_mp_or
 make SCALE_ROOT=<tree> BUILD=<dir>/alt ALT_CONSTANTS=1 lib    # <dir>/alt/libscale_mp_oracle_alt.a
 ```
 
+The in-workflow comparison reads only what each cross-target judgment names, so it shares the suites' blind spots there. Measured by a reviewer of issue #680 PR-4 at `ce4c651d`, with the certified Kessler model of the `_20261105_001` pipeline mutated to set `rhoe_t` from the unlimited vapour tendency (`dens*L00*(dqc + dqr)` in place of `dens*edot`): the node's own suite passes and the oracle comparison reads `agree` (76 records), although on `l0_limiter_qv` the mutant's interior `rhoe_t` is about 2000 times the original's. `tests.md` leaves `rhoe_t` out of the cross-target judgment wherever `qc` is limited, and no other judgment reads it on that case. Closing it is a `spec` edit of the node; the offline comparison reads it.
+
 The operator lists both under the local site's `libraries:` (`docs/RUNBOOK.md` §Certifying a node against its oracle). The in-workflow comparison reads fewer variables and a looser bound than §Operations' comparison (`docs/design/scale_migration.md` §Order row 4), so both stay.
 
 ## Calibration of `drift_ratio`
