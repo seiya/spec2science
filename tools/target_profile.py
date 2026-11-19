@@ -895,9 +895,9 @@ def harness_capabilities(profile: TargetProfile) -> frozenset[str]:
 
     No harness declares its set. The profile that names the harness already states the parallel
     backend it is driven under and the format it writes, and those are the only facts the
-    tokens carry. A harness whose surface does not publish the block a token implies fails the
-    language backend's pin (`assert_harness_pin`) at the first render over it; one that writes
-    another format fails its own `Validate.execute`, whose store finds no record."""
+    tokens carry. Where a profile names a harness of the other process model or format, the run
+    fails closed after the launch gate; `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Provided
+    capabilities and negotiation names where."""
     from tools.backends import registry as backend_registry
     from tools.codegen_bundle import (
         DISTRIBUTED_STATE_TOKEN,

@@ -408,8 +408,7 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 
 # The token generations the framework's drivers and templates are written against. A harness
 # does not declare them: the target profile that names the harness implies them
-# (`target_profile.harness_capabilities`, issue #690), so the harness node's name and version are
-# the Project's and the framework holds neither.
+# (`target_profile.harness_capabilities`, issue #690), so the set names no harness version.
 #
 # `sync_single_case@1` is the synchronous single-case block the target language's backend pins
 # (`assert_harness_pin`): the operations and the published type the host-rendered runner calls,

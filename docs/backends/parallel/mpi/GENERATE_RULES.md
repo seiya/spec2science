@@ -11,9 +11,8 @@ A program built for a target whose parallel backend is `mpi` runs as `execution.
 started by the launcher (`LAUNCHER.md`), arranged in the process grid the host imposes
 (`execution.process_grid`, then each `execution.sweep.grids` entry), and its quality check
 re-runs it as one process. The target's harness provides `distributed_state@2` because `mpi`
-declares a launcher (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Harness capability ABI); a
-harness that does not publish that block fails the language backend's pin at the first render
-over it.
+declares a launcher (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Harness capability ABI, which
+also names where a run over a single-process harness fails).
 
 The host-rendered driver (`tools/backends/language/fortran/runner.py`, its distributed form)
 distributes each case; the kernel decides none of it.
