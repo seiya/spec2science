@@ -17324,6 +17324,42 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
                             for x in v), v)
         self.assertTrue(any("file I/O" in x for x in v), v)
 
+    def test_the_caller_hands_the_gate_the_pipeline_targets_derived_set(self) -> None:
+        """Issue #690: `_validate_generate_outputs_for_generation` passes the isolation gate the
+        capability set
+        of the pipeline's target (`target_profile.harness_capabilities`), so a distributed-state
+        `use` is admitted over a launcher target's harness and refused over a single-process
+        one. Driven through the caller, under the same harness id on both targets, so only the
+        derived set differs."""
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
+        harness = "harness_fortran_cpu_mpi"
+        model = _MODEL_OK.replace(
+            "! allow(C003)\n",
+            f"! allow(C003)\n  use {harness}_model, only: {harness}__comm_rank\n")
+
+        def isolation_findings(parallel: dict) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                install_target_profile(root, profile_with(
+                    parallel=parallel, harness={"infrastructure_id": harness}))
+                pipe = root / pipe_ref("component__bx__0.1.0", "p1")
+                src = pipe / "source" / "src_1" / "src"
+                src.mkdir(parents=True)
+                (src / "bx_model.f90").write_text(model)
+                execution = NodeExecution(node_key="component/bx@0.1.0", node_dir=pipe,
+                                          exec_dir=pipe, pipeline_dir=pipe)
+                violations: list[str] = []
+                with unittest.mock.patch.object(vps, "_execution_m3c_language",
+                                                return_value="fortran"):
+                    vps._validate_generate_outputs_for_generation(root, execution, "src_1",
+                                                                  violations)
+            return [v for v in violations if "harness" in v and "bx_model.f90" in v]
+
+        self.assertEqual(isolation_findings({"backend": "mpi"}), [])
+        refused = isolation_findings({"backend": "openmp"})
+        self.assertEqual(len(refused), 1, refused)
+        self.assertIn("must not `use` the harness module", refused[0])
+
     def test_a_physics_source_may_use_the_harness_for_its_distributed_operations_only(
             self) -> None:
         # Issue #316 (R4-c PR-4), over the model and a second bundle source: the rule keeps its
