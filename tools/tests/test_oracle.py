@@ -1724,27 +1724,28 @@ class OracleEndToEndTest(OracleBuildTest):
         self.assertAlmostEqual(failures[0]["value"], 1e-6, delta=1e-9)
 
 
-
 class CorpusOracleTest(unittest.TestCase):
     """The corpus's oracle declarations (issue #680 PR-4), read without the site and without
-    building anything: each loads for its own language, and every case it names is a `pass`
-    case of its node's `tests.md` §2, named once. A case named outside the IR is found otherwise
-    only at `Validate.execute`, after a billed `Compile` and `Generate`."""
+    building anything. Every declaration loads for its own language and names each case once
+    (the rest of the case plan needs the IR, which `Compile` fixes). The two microphysics
+    nodes, whose `tests.md` §2 holds its cases as one YAML list, are checked against it: the
+    original holds its constants at compile time, so the `alt` build takes exactly the
+    `constants: alt` cases, every one a `pass` case, and links the archive built with them."""
 
     REPO = Path(__file__).resolve().parents[2]
+    _MICROPHYSICS = ("microphysics_saturation_liquid_1d_column",
+                     "microphysics_kessler_warm_rain_1d_column")
 
     @staticmethod
-    def _tests_md_cases(spec_dir: Path) -> list[dict[str, Any]]:
+    def _tests_md_cases(spec_dir: Path) -> dict[str, dict[str, Any]]:
         import re
 
         import yaml
         text = (spec_dir / "tests.md").read_text(encoding="utf-8")
         section = text.split("\n## 2.", 1)[1].split("\n## 3.", 1)[0]
-        fences = re.findall(r"```yaml\n(.*?)```", section, re.S)
-        cases = [case for fence in fences
-                 for case in (yaml.safe_load(fence) or {}).get("cases", [])]
-        assert cases, f"{spec_dir}/tests.md §2 holds no case list"
-        return cases
+        fences = re.findall(r"```yaml\n(.*?)```", section, flags=re.DOTALL)
+        return {case["case_id"]: case for fence in fences
+                for case in (yaml.safe_load(fence) or {}).get("cases", [])}
 
     def test_the_corpus_oracle_declarations_load_and_name_cases_of_their_tests_md(self) -> None:
         import yaml
@@ -1757,22 +1758,23 @@ class CorpusOracleTest(unittest.TestCase):
             loaded = oracle.load(self.REPO, spec_ref, language)
             assert loaded is not None
             declared[spec_dir.name] = loaded
-            cases = {c["case_id"]: c for c in self._tests_md_cases(spec_dir)}
             named = [case_id for build in loaded.builds for case_id in build.cases or ()]
             self.assertEqual(len(named), len(set(named)), spec_ref)
-            for case_id in named:
-                self.assertIn(case_id, cases, spec_ref)
-                self.assertEqual(cases[case_id].get("expected"), "pass", (spec_ref, case_id))
-            # The two microphysics nodes: the original holds its constants at compile time, so
-            # the `alt` build takes exactly the `constants: alt` pass cases.
-            if spec_dir.parent.parent.name == "microphysics":
-                alt = {b.build_id: b for b in loaded.builds}["alt"]
-                self.assertEqual(
-                    set(alt.cases or ()),
-                    {i for i, c in cases.items()
-                     if c.get("constants") == "alt" and c.get("expected") == "pass"}, spec_ref)
-        self.assertLessEqual({"microphysics_saturation_liquid_1d_column",
-                              "microphysics_kessler_warm_rain_1d_column"}, set(declared))
+        self.assertLessEqual(set(self._MICROPHYSICS), set(declared))
+        for spec_id in self._MICROPHYSICS:
+            loaded = declared[spec_id]
+            cases = self._tests_md_cases(self.REPO / loaded.spec_ref)
+            builds = {b.build_id: b for b in loaded.builds}
+            self.assertEqual(set(builds), {"default", "alt"}, spec_id)
+            self.assertIsNone(builds["default"].cases, spec_id)
+            alt_cases = {i for i, c in cases.items() if c.get("constants") == "alt"}
+            self.assertTrue(alt_cases, spec_id)
+            self.assertEqual(set(builds["alt"].cases or ()), alt_cases, spec_id)
+            self.assertTrue(all(cases[i].get("expected") == "pass" for i in alt_cases), spec_id)
+            self.assertEqual([d.library_id for d in builds["default"].libraries],
+                             ["scale_mp_oracle"], spec_id)
+            self.assertEqual([d.library_id for d in builds["alt"].libraries],
+                             ["scale_mp_oracle_alt"], spec_id)
 
 
 if __name__ == "__main__":
