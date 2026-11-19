@@ -194,7 +194,7 @@ Every `pass` test also requires `guard_pass == 1` on each of its cases.
   - `operation_id`: `pbl_tracer_diffusion_1d_column__tendency`
   - `expected_outcome`: `xfail`
   - `case`: `l0_diffusivity_negative`
-  - `xfail_condition`: `kh(ke - 1) < 0`
+  - `xfail_condition`: `(f2h_above(ke - 1)*dens(ke) + f2h_below(ke - 1)*dens(ke - 1))*kh(ke - 1) < 0`
   - `quantities`: `guard_pass`
   - `judgment`: on `l0_diffusivity_negative`, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
 - `test_id`: `l0_surface_density_nonpositive_xfail`
