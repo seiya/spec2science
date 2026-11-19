@@ -53,7 +53,7 @@
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
-      "fortran": 35,
+      "fortran": 33,
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
       "linter-ruff": 3
@@ -65,7 +65,7 @@
       "fortran": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "fortran": 16,
+      "fortran": 9,
       "fortran-kind": 1,
       "fortran-suffix": 2,
       "make-control-file": 5
@@ -112,7 +112,7 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 12,
+      "fortran": 10,
       "fortran-suffix": 1,
       "make-control-file": 2
     },

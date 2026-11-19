@@ -37,6 +37,8 @@ from tools.tests.private_root_fixture import (
 )
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
+from tools.tests.target_fixtures import REPO_ROOT as _TARGET_REPO_ROOT
+from tools import target_profile as _tp
 from tools.backends import registry as _backend_registry
 
 
@@ -58,7 +60,9 @@ _fortran_runner_basename = _backend_registry.capability_module(
 _NODE = "problem/shallow_water2d@0.3.0"
 _SAFE = wc.node_key_safe(_NODE)
 _SPEC_ID = "shallow_water2d"
-_HARNESS = "infrastructure/harness_fortran_cpu@0.11.0"
+#: The sample CPU target's harness, read from the catalog, so that a version bump of the sample
+#: harness edits no test (issue #690).
+_HARNESS = _tp.harness_node_key_for_target(_TARGET_REPO_ROOT, _TARGET_PROFILE)
 _HARNESS_SPEC_ID = "harness_fortran_cpu"
 _SPEC_PATH = "spec/problem/ocean/shallow_water2d"
 
@@ -546,55 +550,53 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
 class PureHarnessManifestNarrowingTests(unittest.TestCase):
     """The manifest a pure leaf is SHOWN must be the one it is JUDGED against (Codex review).
 
-    `_build_leaf_context` used to inline the FULL `HARNESS_CAPABILITY_MANIFESTS` table while
-    `_leaf_bundle_violations` negotiated only against the node's own infra dependency. With one
-    registered harness the two coincide, so the defect is latent; these tests register a SECOND
-    harness to make it live, which is the only way to reach the branch.
-    """
+    `_build_leaf_context` used to inline the FULL harness capability table while
+    `_leaf_bundle_violations` negotiated only against the node's own harness. Since issue #690
+    there is no table: both read the set the run's target implies
+    (`target_profile.harness_capabilities`), and these rows hold the two to one source on two
+    targets whose sets differ."""
 
     def setUp(self) -> None:
-        self._saved = dict(cb.HARNESS_CAPABILITY_MANIFESTS)
-        # A second harness providing what the node's own harness does not.
-        cb.HARNESS_CAPABILITY_MANIFESTS["infrastructure/harness_gpu_next@0.1.0"] = frozenset(
-            {"async_device_resident@1", "trusted_reductions@1"})
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name)
         self.refs = _write_node(self.repo, state_vars=("h",))
         self.c = _conductor(self.repo)
 
     def tearDown(self) -> None:
-        cb.HARNESS_CAPABILITY_MANIFESTS.clear()
-        cb.HARNESS_CAPABILITY_MANIFESTS.update(self._saved)
         self._tmp.cleanup()
 
-    def test_context_shows_only_the_nodes_own_harness(self) -> None:
-        shown = json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
-        self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
+    def _shown(self) -> dict:
+        return json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
 
-    def test_context_hides_another_harnesss_capabilities(self) -> None:
-        # The live consequence: leaking another harness's token would license a requirement `_leaf_bundle_violations` then rejects as `bundle_capability_unsatisfied` —
-        # a repair burn on a bundle the leaf could not know was unsatisfiable.
-        shown = json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
-        provided = {t for m in shown["manifests"] for t in m["provides"]}
-        self.assertNotIn("trusted_reductions@1", provided)
-        self.assertNotIn("async_device_resident@1", provided)
-        self.assertEqual(provided, {"sync_single_case@1", "capture_format_json@1"})
+    def test_context_shows_only_the_nodes_own_harness(self) -> None:
+        self.assertEqual([m["node_key"] for m in self._shown()["manifests"]], [_HARNESS])
+
+    def test_context_and_gate_read_the_set_the_target_implies(self) -> None:
+        # A leaf shown a token the acceptance layer does not negotiate would author a
+        # requirement `_leaf_bundle_violations` rejects as `bundle_capability_unsatisfied` — a
+        # repair burn on a bundle the leaf could not know was unsatisfiable. A launcher target
+        # moves the set, and both sides with it.
+        from tools.tests.target_fixtures import profile_with
+        for parallel, expected in (
+                (None, {"sync_single_case@1", "capture_format_json@1"}),
+                ("mpi", {"sync_single_case@1", "distributed_state@2",
+                         "capture_format_json@1"})):
+            with self.subTest(parallel=parallel):
+                if parallel is not None:
+                    self.c.target_profile = profile_with(parallel={"backend": parallel})
+                shown = {t for m in self._shown()["manifests"] for t in m["provides"]}
+                judged = self.c._leaf_bundle_violation_inputs(self.refs)["harness_provided"]
+                self.assertEqual(shown, expected)
+                self.assertEqual(set(judged), expected)
 
     def test_context_and_gate_resolve_the_same_harness(self) -> None:
         # The invariant the fix rests on: one resolution, so the two cannot drift. Since
         # issue #284 that resolution is the TARGET's harness, not an IR direct dependency.
         self.assertEqual(self.c._leaf_harness_node_key(self.refs.node_key), _HARNESS)
-        shown = json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
-        self.assertEqual([m["node_key"] for m in shown["manifests"]],
+        self.assertEqual([m["node_key"] for m in self._shown()["manifests"]],
                          [self.c._leaf_harness_node_key(self.refs.node_key)])
-
-    def test_narrowing_is_fail_closed_for_an_unresolvable_harness(self) -> None:
-        # None / unregistered => EMPTY manifests, mirroring `harness_provided_capabilities`'s
-        # fail-closed None. Never "show the whole table because we could not pick one".
-        for key in (None, "infrastructure/not_registered@9.9.9"):
-            self.assertEqual(
-                cb.harness_capability_manifest_document_for(key)["manifests"], [],
-                f"narrowing must be empty for {key!r}")
+        self.assertEqual(
+            self.c._leaf_bundle_violation_inputs(self.refs)["harness_label"], _HARNESS)
 
     def test_the_harness_is_the_targets_whatever_the_ir_lists(self) -> None:
         """Issue #284: the harness a non-infrastructure node negotiates against is the one its
@@ -617,13 +619,6 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         target's harness (which a harness of another version would otherwise read as)."""
         own = "infrastructure/harness_gpu_next@0.1.0"
         self.assertEqual(self.c._leaf_harness_node_key(own), own)
-
-    def test_full_document_still_carries_every_manifest(self) -> None:
-        # The unnarrowed document is the canonical Z6 shape; narrowing is the leaf's projection
-        # of it, not a replacement.
-        full = [m["node_key"] for m in cb.harness_capability_manifest_document()["manifests"]]
-        self.assertIn(_HARNESS, full)
-        self.assertIn("infrastructure/harness_gpu_next@0.1.0", full)
 
 
 # ======================================================================================
@@ -2928,9 +2923,17 @@ class PureHarnessShapeTests(unittest.TestCase):
                 self.c._build_leaf_harness_context(self.refs)
             self.assertIn("pure_controlled_spec_document_unsliceable", str(caught.exception))
         spec_file.write_text(_HARNESS_SPEC_TEXT, encoding="utf-8")
-        # ...and the manifest it is shown is its OWN.
+        # ...and the manifest it is shown is its OWN, with the set its target implies: on a
+        # launcher target that set holds `distributed_state@2` (issue #690), the set the
+        # acceptance layer negotiates the harness's own bundle against.
         shown = json.loads(ctx["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
+        from tools.tests.target_fixtures import profile_with
+        self.c.target_profile = profile_with(parallel={"backend": "mpi"})
+        shown = json.loads(self.c._build_leaf_harness_context(self.refs)["harness_capabilities"])
+        self.assertEqual(shown["manifests"][0]["provides"], sorted(
+            self.c._leaf_bundle_violation_inputs(self.refs)["harness_provided"]))
+        self.assertIn("distributed_state@2", shown["manifests"][0]["provides"])
 
     def test_the_lint_rule_set_reaches_the_leaf_from_the_BACKEND(self) -> None:
         """The rules §5 does not state (round 4 measured four of seven missing) reach the leaf

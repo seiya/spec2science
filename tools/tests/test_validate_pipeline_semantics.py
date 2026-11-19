@@ -20836,13 +20836,11 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                       "case each rank's state is its block", v[0])
         self.assertNotIn("distributes every case", v[0])
         self.assertNotIn("the cases its IR declares axes for", v[0])
-        # The remedy names the token the target's harness provides, as the manifest lists it:
-        # a bundle that followed an older token would be `bundle_capability_unsatisfied`.
-        from tools.codegen_bundle import capability_name, harness_provided_capabilities
-        provided = harness_provided_capabilities(
-            "infrastructure/harness_fortran_cpu_mpi@0.5.0") or frozenset()
-        token = next(t for t in provided if capability_name(t) == "distributed_state")
-        self.assertIn(f"(with {token} in capability_requirements)", v[0])
+        # The remedy names the token a launcher target provides (issue #690: the framework's
+        # constant): a bundle that followed an older token would be
+        # `bundle_capability_unsatisfied`.
+        from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
+        self.assertIn(f"(with {DISTRIBUTED_STATE_TOKEN} in capability_requirements)", v[0])
         # A plan that declines MPI is refused the same (issue #610: the driver distributes
         # whatever the plan says), on both kinds, and so is an absent plan or residency.
         for kind in ("problem", "component"):

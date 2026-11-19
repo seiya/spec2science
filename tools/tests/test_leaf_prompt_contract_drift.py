@@ -1907,17 +1907,19 @@ class TemplateGateParityTests(unittest.TestCase):
                 f"state_residency {residency!r} (cb.STATE_RESIDENCIES) is not named in "
                 "workshop_generate_generate.txt — S2 has drifted from the gate enum.")
 
-    def test_template_capability_tokens_are_all_manifest_provided(self) -> None:
-        # Every `<name>@<version>` token the prompt shows as an example must be one the
-        # harness manifests actually provide; otherwise the prompt points the leaf at a
-        # capability the gate rejects as unavailable.
+    def test_template_capability_tokens_are_the_framework_generations(self) -> None:
+        # Every `<name>@<version>` token the prompt shows as an example must be a generation
+        # the framework derives for some target (`codegen_bundle`'s token constants, issue
+        # #690); otherwise the prompt points the leaf at a capability the gate rejects as
+        # unavailable.
         template = self._generate_template_bytes()
-        provided = set().union(*cb.HARNESS_CAPABILITY_MANIFESTS.values())
+        provided = {cb.SYNC_SINGLE_CASE_TOKEN, cb.DISTRIBUTED_STATE_TOKEN}
         tokens = set(re.findall(r"[a-z][a-z0-9_]*@[0-9]+", template))
+        self.assertTrue(tokens)
         self.assertEqual(
             tokens - provided, set(),
-            "workshop_generate_generate.txt names capability tokens the harness manifests do not "
-            f"provide: {sorted(tokens - provided)} (provided: {sorted(provided)}).")
+            "workshop_generate_generate.txt names capability tokens the framework does not "
+            f"derive: {sorted(tokens - provided)} (derived: {sorted(provided)}).")
 
 
 if __name__ == "__main__":

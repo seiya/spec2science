@@ -49,7 +49,8 @@ optimization boundary.
   `spec/schema/generate/harness_capabilities.schema.json` (JSON Schema draft-07).
 - Canonical validators: `tools/codegen_bundle.py` — `validate_bundle` for the bundle
   document, `harness_capability_manifest_violations` for the harness capability manifest
-  document. The schema is the
+  document (the grammar of a document the host renders; nothing calls it at run time,
+  §The manifest document). The schema is the
   declarative copy of the field grammar a draft-07 pattern can carry; the module is the
   enforcement point and additionally holds the rules a pattern cannot express — the
   reserved build filenames, the language extension allowlist (which is also what refuses a
@@ -380,9 +381,9 @@ integer version. The version is part of the token, not a range.
 
 | capability | meaning |
 |---|---|
-| `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`, `harness_fortran_cpu_mpi`, `harness_fortran_cpu_netcdf`) |
+| `sync_single_case` | synchronous one-case-at-a-time execution; every target's harness provides it |
 | `async_device_resident` | device-resident state with asynchronous capture (reserved) |
-| `distributed_state` | state partitioned across ranks, with the harness's partition, halo exchange, gather and reductions (`harness_fortran_cpu_mpi`, [issue #316](https://github.com/seiya/spec2science/issues/316)) |
+| `distributed_state` | state partitioned across ranks, with the harness's partition, halo exchange, gather and reductions; the harness of a target whose parallel backend declares a launcher provides it ([issue #316](https://github.com/seiya/spec2science/issues/316)) |
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
 | `full_state_capture` | the harness captures full snapshots itself (reserved, `A4`/`Z6`) |
 | `trusted_reductions` | the harness computes certified reductions over state (reserved, `A4`/`Z6`) |
@@ -395,17 +396,36 @@ bundle states how it expects to be driven.
 
 ### Provided capabilities and negotiation
 
-`HARNESS_CAPABILITY_MANIFESTS` maps a harness `node_key` to the capability set it
-provides. It is tool-side data, not a field of the harness `controlled_spec.md`: adding
-it to the spec would edit a certified artifact and force recertification for no change
-in generated behavior.
+A harness does not declare its capability set. The target profile that names the harness
+implies it ([issue #690](https://github.com/seiya/spec2science/issues/690)), and
+`tools/target_profile.py:harness_capabilities` derives it:
 
-```
-"infrastructure/harness_fortran_cpu@0.11.0": {"sync_single_case@1", "capture_format_json@1"}
-"infrastructure/harness_cpp_gpu@0.5.0":      {"sync_single_case@1", "capture_format_json@1"}
-"infrastructure/harness_fortran_cpu_mpi@0.5.0": {"sync_single_case@1", "distributed_state@2", "capture_format_json@1"}
-"infrastructure/harness_fortran_cpu_netcdf@0.1.0": {"sync_single_case@1", "capture_format_netcdf@1"}
-```
+| token | provided when |
+|---|---|
+| `sync_single_case@1` | always |
+| `distributed_state@2` | the target's `parallel.backend` declares a `launcher` |
+| `capture_format_<output.format>@1` | always, for the target's `output.format` |
+
+The token spellings are module constants of `tools/codegen_bundle.py`
+(`SYNC_SINGLE_CASE_TOKEN`, `DISTRIBUTED_STATE_TOKEN`, `capture_format_token`), the generations
+the framework's drivers and templates are written against. The derived set names no harness
+version, so a harness version bump edits no framework file. (The language backends still select
+the interface block they pin by the harness's `spec_id`; issue #690 moves that selection to the
+tokens.)
+
+The launch gate does not compare the profile with the harness it names. A run under a profile
+that names a harness of the other process model, or of another output format, is refused at the
+first of these it reaches (measured for
+[issue #690](https://github.com/seiya/spec2science/issues/690)); a run that ends before
+`Validate` reaches at most the second, and certifies no `Validate` output:
+- a launcher target over a single-process harness: the harness's runs report one rank, and
+  `Validate.execute`'s quality check refuses the launcher shape (`launch_match`);
+- a target with no launcher over a distributed harness: a harness source that uses the parallel
+  backend's binding does not compile with the target's compiler without the backend's compiler
+  wrapper, so the harness's own `Generate` gate refuses it; a compiler that finds the binding by
+  default was not measured;
+- an output-format mismatch: the target's store reads no record of any case at
+  `Validate.execute`.
 
 `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
 version: at this writing the canonical interface block of `harness_fortran_cpu@0.11.0` §5.1
@@ -437,9 +457,9 @@ harness IR's `public_api.signatures` and the generated harness source; this cont
 adds a name for the ABI, not a second checker of it.
 
 `capture_format_<id>@1` ([issue #644](https://github.com/seiya/spec2science/issues/644)) names the
-output format the harness's capture operations write, `<id>` a member of the `output_format`
-axis. The launch gate holds it equal to the target profile's `output.format`. No bundle requires
-it: the target decides the format, and a bundle writes no capture.
+output format the harness's capture operations write, `<id>` the target profile's
+`output.format`. No bundle requires it: the target decides the format, and a bundle writes no
+capture.
 
 `distributed_state@2` ([issue #512](https://github.com/seiya/spec2science/issues/512)) is defined as
 the distributed-state operations of `harness_fortran_cpu_mpi@0.5.0` §3.3, which that harness
@@ -450,7 +470,7 @@ gather onto rank 0 of an array partitioned along up to two grid dimensions — w
 program unless the contributed blocks tile the global array with neither overlap nor gap — and the
 global reductions. (`distributed_state@1`, [issue #316](https://github.com/seiya/spec2science/issues/316),
 was the same set over a one-dimensional arrangement of the ranks, that harness's `0.1.0` §3.3; no
-harness in the manifest provides it now.) `distributed_state@2` carries one rule for
+target provides it now.) `distributed_state@2` carries one rule for
 every caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
 values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
 `Generate.static` pin of §5.1 enforces the operations, and so does the language backend's
@@ -460,11 +480,16 @@ values. Like `sync_single_case@1` it names operations of the harness source, so 
 
 ### The manifest document
 
-The manifest set has a document form, `spec/schema/generate/harness_capabilities.schema.json`
-(canonical validator: `tools/codegen_bundle.py:harness_capability_manifest_violations`;
-`harness_capability_manifest_document()` renders the tool-side table into it). It is the
-shape a spec-side `capabilities` section takes when the manifest moves into the harness spec
-at `Z6`:
+The capability set of one harness has a document form,
+`spec/schema/generate/harness_capabilities.schema.json`, whose grammar is
+`tools/codegen_bundle.py:harness_capability_manifest_violations`. No production code calls the
+validator: the host renders the document from the token constants, and the unit suite holds each
+checked-in target's rendered document to the grammar.
+`harness_capability_manifest_document_for(node_key, provides)` renders the set the target
+implies into it, as one entry; a harness that does not resolve fails the run closed before any
+document is rendered. That document is
+what a producing leaf is shown and what the `Generate` derivation key hashes
+(`harness.manifest`):
 
 - `harness_capability_abi_version` — the ABI generation, pinned to
   `HARNESS_CAPABILITY_ABI_VERSION` (1). It is a pin, not a floor: a later-generation manifest
@@ -478,14 +503,13 @@ at `Z6`:
 
 Negotiation is two pure functions and is fail-closed:
 
-- `harness_provided_capabilities(node_key)` returns the declared set, or `None` for a
-  harness with no manifest entry. `None` means "nothing is provided": an undeclared
-  harness satisfies no requirement.
+- `target_profile.harness_capabilities(profile)` returns the set the target implies for its
+  harness.
 - `unsatisfied_capability_requirements(required, provided)` returns the required tokens
   that are not provided, matching on the **exact `name@version` token**. Version ordering
   is not assumed to imply compatibility: a bundle requiring `sync_single_case@2` is not
   satisfied by a harness providing `sync_single_case@1`. Compatibility is declared by
-  adding a token to a manifest, never inferred. A `required` value that is not a **non-empty
+  adding a token to the set a target implies, never inferred. A `required` value that is not a **non-empty
   token collection** — `None`, a bare string, a number, a mapping (whose iteration yields
   keys), or an empty collection — is reported as unsatisfiable, never as "nothing required";
   a mapping supplied as `provided` provides nothing. The failure direction of a negotiation

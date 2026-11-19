@@ -30,9 +30,10 @@ each decision):
   `tools/tests/test_derivation_transformation_drift.py`), so a maintainer decides once —
   bump or re-pin — instead of a typo fix invalidating every certified node. A host-derived
   document that VARIES by node or by target — the harness capability manifest of the target's
-  harness, the target profile itself — is an input and is hashed as one; an edit to the
-  manifest table re-derives the Generate of every node on that harness, a profile edit every
-  Generate, Build and Validate built for that target. Compile hashes nothing target-derived
+  harness, the target profile itself — is an input and is hashed as one. The manifest is
+  derived from the profile (issue #690), so a profile edit that changes it moves it with the
+  profile hash, and a profile edit re-derives every Generate, Build and Validate built for
+  that target. Compile hashes nothing target-derived
   (issue #284, R4-a PR-3).
 
 A phase's prompt contract enters through the version tuple by its READER's half: a producer's

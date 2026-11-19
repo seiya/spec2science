@@ -21793,11 +21793,28 @@ class DerivationInputsTests(unittest.TestCase):
             refs = self._seed(repo)
             inputs = self._inputs(repo, refs, "generate")
             self.assertEqual(inputs["ir"], self._meta_output_hash(repo, refs["ir_meta"]))
-            from tools.codegen_bundle import harness_capability_manifest_document_for
+            # The manifest member is the document of the set the TARGET implies (issue #690),
+            # spelled out here so that a derivation reading anything else moves this row.
             self.assertEqual(inputs["harness"], {
                 "node_key": self._HARNESS,
-                "manifest": tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes(
-                    harness_capability_manifest_document_for(self._HARNESS)))})
+                "manifest": tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes({
+                    "harness_capability_abi_version": 1,
+                    "manifests": [{"node_key": self._HARNESS, "provides": [
+                        "capture_format_json@1", "sync_single_case@1"]}]}))})
+            # ...and on a launcher target the set it implies, `distributed_state@2` included:
+            # the document a producer on that target is shown. (The closure entries are
+            # stubbed: the seeded harness is certified for the fixture's own target only.)
+            from tools.tests.target_fixtures import profile_with
+            launcher = profile_with(parallel={"backend": "mpi"})
+            with mock.patch.object(ort, "_generate_closure_entry", return_value={}):
+                launcher_inputs = self._inputs(repo, refs, "generate", target=launcher)
+            self.assertEqual(
+                launcher_inputs["harness"]["manifest"],
+                tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes({
+                    "harness_capability_abi_version": 1,
+                    "manifests": [{"node_key": self._HARNESS, "provides": [
+                        "capture_format_json@1", "distributed_state@2",
+                        "sync_single_case@1"]}]})))
             self._publish(repo, "infrastructure", "harness_fortran_cpu", self._HARNESS,
                           self._SURFACE_B)
             self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
@@ -25610,7 +25627,17 @@ class ResolveComparandsTests(unittest.TestCase):
             prof = real_load(repo_root, tid)
             return dataclasses.replace(prof, doc={**prof.doc, "output": {"format": "theirs"}})
 
-        with mock.patch.object(ort, "load_target_profile", side_effect=load):
+        # The replaced document keeps the profile's hash, so the Generate key the fixture
+        # certified B under must keep its harness member too: the set the profile implies
+        # (issue #690) is read from the document as loaded, before the format is replaced.
+        from tools import target_profile as tp
+        real_capabilities = tp.harness_capabilities
+
+        def capabilities(profile: Any) -> frozenset[str]:
+            return real_capabilities(real_load(self.repo, profile.target_id))
+
+        with mock.patch.object(ort, "load_target_profile", side_effect=load), \
+                mock.patch.object(tp, "harness_capabilities", side_effect=capabilities):
             [comp] = self._resolve()
         self.assertEqual((comp.output_format, _TP.output_format), ("theirs", "json"))
 

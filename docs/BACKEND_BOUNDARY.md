@@ -269,7 +269,8 @@ asks the registry nothing.
     a capture file. A language backend's
     driver renderer (`runner.py`) names a capture group and a value through the harness's
     capture interface and spells no file; the writer of the format is the target's harness,
-    whose manifest row names it (`capture_format_<id>@1`) and whose spec states its layout
+    whose capability set names it (`capture_format_<id>@1`, derived from the target's
+    `output.format`) and whose spec states its layout
     (`docs/backends/output_format/<id>/CAPTURE_LAYOUT.md` is the format's own statement). What the
     host writes itself — `snapshot_schema.json`, the case files, and the harness-written
     `perf.json` — is JSON on every target and is not the store's.
