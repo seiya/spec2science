@@ -2306,6 +2306,36 @@ class HarnessPinTableTest(unittest.TestCase):
                 got = drift(struct)
                 self.assertEqual(len(got), 1, got)
                 self.assertIn("case_id_len", got[0])
+            with self.subTest(language=language, change="dp"):
+                struct = copy.deepcopy(base)
+                next(m for m in struct["module_parameters"]
+                     if m["name"] == "dp")["value"] = "float32"
+                got = drift(struct)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("dp", got[0])
+            with self.subTest(language=language, change="a type's component order"):
+                struct = copy.deepcopy(base)
+                h_var = next(t for t in struct["types"] if t["name"] == f"{sid}__h_var")
+                h_var["components"].reverse()
+                self.assertEqual(drift(struct),
+                                 [f"§5.1 declares '{sid}__h_var' differently from the block"])
+            with self.subTest(language=language, change="a type omitted"):
+                struct = copy.deepcopy(base)
+                struct["types"] = [t for t in struct["types"] if t["name"] != f"{sid}__h_var"]
+                self.assertIn(f"§5.1 omits '{sid}__h_var'", drift(struct))
+            with self.subTest(language=language, change="an entry that does not render"):
+                # Codex, round 2: the loader checks the top-level shape only.
+                struct = copy.deepcopy(base)
+                next(p for p in struct["procedures"]
+                     if p["name"] == f"{sid}__read_case")["args"] = None
+                got = drift(struct)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("args must be a list", got[0])
+            with self.subTest(language=language, change="a body that does not load"):
+                got = host_render.harness_block_drift(language, sid, "- not a mapping\n",
+                                                      harness_provides=provides)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("§5.1 does not load", got[0])
             with self.subTest(language=language, change="omitted"):
                 struct = copy.deepcopy(base)
                 struct["procedures"] = [p for p in struct["procedures"]

@@ -1969,6 +1969,7 @@ def harness_block_drift(harness_spec_id: str, section51: str, *,
     block otherwise surfaces at its first consumer's render, one harness certification later.
     Operations §5.1 publishes beyond the block are the Project's and are not compared."""
     from tools.backends.language.fortran.signatures import (
+        SignatureParseError,
         load_structured_signatures,
         parse_interface_stanzas,
         render_signatures_to_fortran,
@@ -1980,7 +1981,13 @@ def harness_block_drift(harness_spec_id: str, section51: str, *,
     struct, error = load_structured_signatures(section51 or "")
     if error:
         return [f"§5.1 does not load: {error}"]
-    rendered = render_signatures_to_fortran(struct)
+    # `load_structured_signatures` checks the top-level shape only; an entry it admits can
+    # still fail to render (a procedure whose `args` is not a list), and that is the §5.1's
+    # defect to report, as the CUDA C++ backend reports it, not a traceback.
+    try:
+        rendered = render_signatures_to_fortran(struct)
+    except SignatureParseError as exc:
+        return [f"§5.1 does not render: {exc}"]
     have_ops, have_types, _i, errs = parse_interface_stanzas(rendered)
     if errs:
         return [f"§5.1 does not render to stanzas: {errs}"]
