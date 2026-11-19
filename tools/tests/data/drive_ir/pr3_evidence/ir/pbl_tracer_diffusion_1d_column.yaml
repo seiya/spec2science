@@ -1537,7 +1537,7 @@ case:
           - 0.42
           - 0.01
           f2h_below:
-          - 0.58
+          - 0.62
           - -0.01
       test_profile_id: pbl_tracer_diffusion_1d_column_l0
       test_profile_version: 0.1.0
@@ -1590,7 +1590,7 @@ case:
       - -6.0
       f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
         (floor(c) - 1))
-      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.62 + -0.01 *
         (floor(c) - 1))
       rhoq_t: -999.0
       flx: -999.0
@@ -1813,7 +1813,7 @@ case:
           - 0.42
           - 0.01
           f2h_below:
-          - 0.58
+          - 0.62
           - -0.01
         overrides:
         - var: dens
@@ -1874,7 +1874,7 @@ case:
       - -6.0
       f2h_above: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.42 + 0.01 *
         (floor(c) - 1))
-      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.58 + -0.01 *
+      f2h_below: (1 - (min(1, floor(c)) * min(1, 9 - floor(c)))) * 0.5 + (min(1, floor(c)) * min(1, 9 - floor(c))) * (0.62 + -0.01 *
         (floor(c) - 1))
       rhoq_t: -999.0
       flx: -999.0
