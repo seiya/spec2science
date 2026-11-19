@@ -562,8 +562,9 @@ end module m_model
 class OracleBuildTest(_OracleFixture):
     """`Build` builds the oracle (`Conductor._build_oracle`): each declared build from the
     adapter in the model source's place, with the closure's libraries and its own; the certified
-    and checked builds with the closure's alone. Real `make` and `gfortran`; the post_build
-    validator subprocess alone is stubbed."""
+    and checked builds with the closure's alone. Real `make` and `gfortran`; stubbed: the
+    post_build validator subprocess, the dependency closure (none, and its staging recorded
+    rather than done) and the closure's libraries (the row's `closure`)."""
 
     def node(self, *, oracle_text: str | None, adapter: str = _ADAPTER_FOO,
              model: str = _MODEL) -> tuple[Path, Any, Any]:
@@ -781,9 +782,16 @@ class OracleBuildTest(_OracleFixture):
         # A transport fail_closed (a non-zero rc out of the deterministic body), not a content
         # failure recorded for Generate to repair.
         self.assertEqual(result.returncode, 1)
-        self.assertIn("deterministic_build_error: oracle_build_failed: oracle build 'default'",
-                      result.stderr)
+        self.assertTrue(result.stderr.startswith("deterministic_build_error: "))
+        self.assertIn("oracle_build_failed: oracle build 'default'", result.stderr)
         self.assertIn("adapter.f90", result.stderr)
+        # The run's failure summary keeps the stderr's last 400 characters: the verdict and
+        # its remedy are there, after the compiler's tail.
+        import tools.workflow_conductor as wc
+        summary = wc.Conductor._leaf_failure_summary(result)
+        self.assertIn("oracle_build_failed: oracle build 'default'", summary)
+        self.assertIn("--resume", summary)
+        self.assertGreater(len(result.stderr), 400)
         self.assertFalse((repo / refs.binary_dir() / "binary_meta.json").exists())
 
     def test_an_oracle_build_that_leaves_no_binary_is_fail_closed_whatever_an_earlier_left(
@@ -837,6 +845,26 @@ class OracleBuildTest(_OracleFixture):
         # The build did leave its binary: the exit status alone refused it.
         self.assertTrue(
             (repo / refs.binary_dir() / "bin_oracle" / "default" / "spec_x_runner").is_file())
+
+    def test_an_oracle_build_that_timed_out_says_so(self) -> None:
+        from tools.tests.test_workflow_conductor import _build_runtime
+        text = ("oracle_version: 1\nlanguage: fortran\nsource: adapter.f90\n"
+                "builds:\n  - id: default\n    libraries: [foo]\n")
+        _repo, c, refs = self.node(oracle_text=text)
+        build_runtime = _build_runtime()
+        real_compile = build_runtime.tool_compile_project
+
+        def times_out(args):
+            if "/oracle/" in args["project_dir"]:
+                return {"ok": False, "return_code": None, "stderr": "",
+                        "error": "timeout: exceeded 3600 sec"}
+            return real_compile(args)
+
+        with mock.patch.object(build_runtime, "tool_compile_project", times_out):
+            result = self.build(c, refs)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("oracle build 'default' of component/spec_x@0.1.0 did not finish "
+                      "(timeout: exceeded 3600 sec)", result.stderr)
 
     def test_an_oracle_at_a_remote_site_is_refused_before_anything_is_staged(self) -> None:
         import tools.workflow_conductor as wc

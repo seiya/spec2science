@@ -6057,8 +6057,10 @@ class Conductor:
     def _oracle(self, refs: NodeRefs) -> Any:
         """The oracle this node declares for the target's language (issue #680,
         `tools/oracle.py`), or None. A malformed declaration raises `OracleDeclarationError`:
-        the driver refused it before any phase (`oracle_declaration_invalid`), so meeting it
-        here is a transport fail_closed."""
+        the driver refused it before any phase (`oracle_declaration_invalid`), so only an
+        `oracle.yaml` edited during the run meets it here — inside the Build body a transport
+        fail_closed, and out of `run_phase`'s two deliverable lists an exception that ends the
+        conductor."""
         from tools import oracle as oracle_mod
         return oracle_mod.load(self.repo_root, refs.spec_path,
                                str(self.target.toolchain["language"]))
@@ -11402,7 +11404,8 @@ class Conductor:
             "library_dirs": list(xl.library_dirs(libraries)),
             "library_check": library_check,
             # The oracle's builds (issue #680, `_build_oracle`): null when the node declares
-            # none for the target's language, and when the build failed before them.
+            # none for the target's language, and when the build failed before them. A Build
+            # certified before this field existed (build-5 re-pinned in place) has no key.
             "oracle": oracle_record,
             "failure_category": None,
             "failure_excerpt": None,
@@ -11519,16 +11522,22 @@ class Conductor:
                 "agent_run_id": child_arid,
             })
             if not result.get("ok") or not (bin_oracle / exe).is_file():
-                outcome = (f"exited {result.get('return_code')}" if not result.get("ok")
-                           else f"left no binary at bin_oracle/{build.build_id}/{exe}")
+                if result.get("ok"):
+                    outcome = f"left no binary at bin_oracle/{build.build_id}/{exe}"
+                elif result.get("return_code") is None:
+                    outcome = f"did not finish ({result.get('error')})"
+                else:
+                    outcome = f"exited {result.get('return_code')}"
                 tail = "\n".join((result.get("stderr") or "").splitlines()[-50:])
+                # The compiler's tail first and the verdict last: the run's failure summary
+                # keeps the last 400 characters (`_leaf_failure_summary`). The adapter is
+                # compiled under the model source's name, so the tail names that file.
                 raise RuntimeError(
-                    f"oracle_build_failed: oracle build {build.build_id!r} of {refs.node_key} "
-                    f"(adapter {self._rel(adapter)}) {outcome}. The adapter or "
-                    f"{self._rel(adapter.parent / oracle_mod.DECLARATION_FILE)} is to be "
-                    f"fixed, then --resume; or, when the error is in a generated source other "
-                    f"than the model (a helper that uses the model's own names, which the "
-                    f"adapter does not publish), --rederive generate:\n{tail}")
+                    f"\n{tail}\noracle_build_failed: oracle build {build.build_id!r} of "
+                    f"{refs.node_key} {outcome} (the adapter {self._rel(adapter)} is compiled "
+                    f"as {model}). Fix the adapter or {oracle_mod.DECLARATION_FILE}, then "
+                    f"--resume; if the error is in a generated source other than the model, "
+                    f"--rederive generate")
             builds.append({
                 "id": build.build_id,
                 "binary_ref": f"binary/{refs.binary_id}/bin_oracle/{build.build_id}/{exe}",
