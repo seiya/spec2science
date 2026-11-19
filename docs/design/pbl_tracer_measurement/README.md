@@ -59,11 +59,11 @@ python3 docs/design/pbl_tracer_measurement/crosscheck.py <dir>/O0/driver <dir>/O
 ```
 
 ## Results
-gfortran 11.4, 2026-11-19, on the tree of `510e525e`: its `tests.md`, its hand transcription and its `verify_spec.py`. The commands of §Operations with `--show-values`, on the library built at `-O2` and at `-O3 -march=native -mfma`: each run judges the 8 `pass` tests over the 9 `pass` cases, and all 8 reach their `expected_outcome`. The largest `value` over every case of each bounded judgment's record, against its bound, over both runs:
+gfortran 11.4, 2026-11-19, on the tree of `e0a5ab00`: its `tests.md`, its hand transcription and its `verify_spec.py`. The commands of §Operations with `--show-values`, on the library built at `-O2` and at `-O3 -march=native -mfma`: each run judges the 8 `pass` tests over the 9 `pass` cases, and all 8 reach their `expected_outcome`. The largest `value` over every case of each bounded judgment's record, against its bound, over both runs:
 
 | judgment | worst value | bound | case |
 |---|---:|---:|---|
-| `conservation` | `3.8e-15` | `1e-12` | `l0_kh_all_positive` |
+| `conservation` | `3.9e-15` | `1e-12` | `l0_kh_all_positive` (`-mfma`) |
 | `flux_divergence` | `7.8e-15` | `1e-12` | `l0_ke_at_ka` |
 | `implicit_flux` | `2.1e-15` | `1e-12` | `l0_pbl_profile` |
 | `zero_diffusivity`, cell `ks` | `9.8e-17` | `1e-13` | `l0_kh_zero` (`-mfma`) |
