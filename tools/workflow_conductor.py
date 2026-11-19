@@ -14108,11 +14108,8 @@ class Conductor:
                   or {}).get("builds") or [] if isinstance(b, dict)}
         conts = continuation_cases(ir)
         store = capture_store.store(target.output_format)
+        # Under this launch's own agent-run id, so nothing is there before.
         root = self.repo_root / "workspace" / "tmp" / child_arid / "oracle_run"
-        # Only this comparison's captures: a capture an earlier body left under the same id
-        # would be compared as the oracle's, or refuse the merge.
-        if root.exists():
-            shutil.rmtree(root)
         merged = root / "merged"
         merged.mkdir(parents=True)
         runs: list[dict[str, Any]] = []
@@ -14177,8 +14174,8 @@ class Conductor:
             elif skipped:
                 detail = (f"{agreement.get('error')}; the oracle runs no second pass, and the "
                           f"continuation cases {skipped} have no oracle capture")
-                # A designed stop (issue #680 plan §12): the first time-marching node with an
-                # oracle decides the second pass. The remedy does not touch the spec: the
+                # A designed stop: the oracle has no second pass (issue #680 lists this stop as
+                # not verified against a node). The remedy does not touch the spec: the
                 # judgment also compares two declared targets.
                 remedy = ("an oracle cannot yet be compared on a continuation case: remove "
                           "the declaration")

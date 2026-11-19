@@ -1158,7 +1158,8 @@ def _write_captures(run_dir: Path, cases: list[str], value: float) -> None:
 class OracleExecuteTest(unittest.TestCase):
     """`Validate.execute` runs the oracle and compares it (`Conductor._compare_with_oracle`,
     issue #680 PR-3): the real `_execute_inproc` and the real predicates, with the library's
-    two run tools and the post_execute gate subprocess stubbed. The stubbed run writes each
+    two run tools and the post_execute gate subprocess stubbed, `_ir_unevaluable` answering
+    False, and `_evaluate_execute_verdict` wrapped to count its calls. The stubbed run writes each
     case's captures; an oracle run (`bin_oracle/` in its argv) writes the values the row asks
     for, per build."""
 
@@ -1255,8 +1256,12 @@ class OracleExecuteTest(unittest.TestCase):
                 mock.patch.object(wc.Conductor, "_ir_unevaluable",
                                   staticmethod(lambda *_a: False)):
             _record_build_site(repo, refs)
-            result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
+            # A fresh agent-run id per launch, as `new_agent_run_id` gives production.
+            self.launches = getattr(self, "launches", 0) + 1
+            child = f"child-{self.launches}"
+            result = c._run_deterministic_substep(refs, "validate", "execute", child, {})
         seen["conductor"] = c
+        seen["child"] = child
         return result, seen
 
     @staticmethod
@@ -1300,6 +1305,7 @@ class OracleExecuteTest(unittest.TestCase):
         _result, seen = self.execute()
         refs = self.refs()
         runs = seen["oracle_runs"]
+        child = seen["child"]
         ir_spec = str((self.repo / refs.ir_ref / "spec.ir.yaml").resolve())
         self.assertEqual(
             [r["command"] for r in runs],
@@ -1312,7 +1318,7 @@ class OracleExecuteTest(unittest.TestCase):
                                                             target.block_size))
             self.assertEqual(r["command_log_path"],
                              str(self.node_file("command_log.jsonl")))
-        merged = (self.repo / "workspace" / "tmp" / "child-1" / "oracle_run" / "merged" / "raw"
+        merged = (self.repo / "workspace" / "tmp" / child / "oracle_run" / "merged" / "raw"
                   / "state_snapshots")
         self.assertEqual(sorted(p.name for p in merged.glob("*.json")),
                          ["c_alpha.json", "c_beta.json"])
@@ -1340,7 +1346,6 @@ class OracleExecuteTest(unittest.TestCase):
     def test_two_consecutive_disagreements_through_classify_failure_never_reopen_compile(
             self) -> None:
         import tools.workflow_conductor as wc
-        self.execute(oracle_value={"default": 1.0})
         c = self.execute(oracle_value={"default": 1.0})[1]["conductor"]
         refs = self.refs()
         outcomes = [wc.SubstepOutcome("pj", "pass", [], 0),
@@ -1440,6 +1445,8 @@ class OracleExecuteTest(unittest.TestCase):
                         False),
             "no_cross": ({"ir": _exec_ir(cases, cross=False)}, oracle.UNEVALUABLE,
                          "remove the declaration", False),
+            "declaration": ({"oracle_text": alt.replace(cases[0], "not_a_case")},
+                            oracle.DECLARATION_INVALID, "Fix spec/", False),
         }
         for name, (kwargs, reason, remedy, long_) in rows.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as td:
@@ -1453,7 +1460,8 @@ class OracleExecuteTest(unittest.TestCase):
                 for needle in (reason, remedy, "--resume"):
                     self.assertIn(needle, summary)
                 # Each cause carries its own remedy and not another's.
-                for other in {"fix the adapter", "remove the declaration"} - {remedy.lower()}:
+                for other in ({"fix the adapter", "remove the declaration"} - {remedy.lower()}
+                              if reason == oracle.UNEVALUABLE else ()):
                     self.assertNotIn(other, summary.lower())
 
     def test_a_build_that_takes_no_compared_case_is_skipped_and_the_next_still_runs(
@@ -1477,6 +1485,27 @@ class OracleExecuteTest(unittest.TestCase):
         self.assertEqual([(b["id"], b["cases"], b["command_id"]) for b in builds],
                          [("first", [], None), ("default", ["c_alpha"], "O-default"),
                           ("alt", ["c_beta"], "O-alt")])
+
+    def test_a_long_continuation_refusal_keeps_its_verdict_at_the_tail(self) -> None:
+        """The unevaluable detail (here the list of 29 continuation cases) comes before the
+        verdict line, so the summary keeps the reason and the remedy."""
+        import tools.workflow_conductor as wc
+        cases = self._LONG
+        real = wc.Conductor._compare_with_oracle
+
+        def compare(self_, *a, **k):
+            with mock.patch("tools.primary_evidence.continuation_cases",
+                            lambda ir_: {c: object() for c in cases[1:]}):
+                return real(self_, *a, **k)
+
+        alt = _EXEC_ORACLE.replace("cases: [c_beta]", f"cases: [{cases[0]}]")
+        with mock.patch.object(wc.Conductor, "_compare_with_oracle", compare):
+            result, _seen = self.execute(ir=_exec_ir(cases), cases=cases, oracle_text=alt)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertGreater(len(result.stderr), 400)
+        summary = self.summary(result)
+        for needle in (oracle.UNEVALUABLE, "remove the declaration", "--resume"):
+            self.assertIn(needle, summary)
 
     def test_an_unevaluable_comparison_is_fail_closed(self) -> None:
         # The oracle's capture of c_beta is unreadable: the comparison cannot evaluate it.
@@ -1520,6 +1549,7 @@ class OracleExecuteTest(unittest.TestCase):
         # which also compares two declared targets.
         self.assertIn("remove the declaration", self.summary(result))
         self.assertNotIn("cross-target judgment", self.summary(result))
+        self.assertNotIn("fix the adapter", self.summary(result).lower())
         self.assertIn(oracle.UNEVALUABLE, self.summary(result))
 
     def test_an_oracle_on_an_ir_with_no_cross_target_predicate_is_fail_closed(self) -> None:
