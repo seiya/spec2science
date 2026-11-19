@@ -669,6 +669,7 @@ Three further outcomes are a transport `fail_closed` of `Validate.execute` (no l
 **The two microphysics nodes.** `microphysics_saturation_liquid_1d_column` and `microphysics_kessler_warm_rain_1d_column` declare the original SCALE procedures as their oracle, over the libraries `scale_mp_oracle` and `scale_mp_oracle_alt`. Build both by the measurement directory's `lib` target (`docs/design/kessler_measurement/README.md` §Oracle library) and list them in `sites.yaml` under the local site, each directory as both `include` and `lib`:
 
 ```yaml
+sites_version: 1
 sites:
   local:
     libraries:
@@ -676,7 +677,7 @@ sites:
       scale_mp_oracle_alt: {include: <dir>/alt, lib: <dir>/alt}
 ```
 
-Without them a run of either node on a target of the oracle's language — and a run of a node whose closure holds one of them — ends `library_unavailable` at startup (§0-1, "Refused at startup — external libraries").
+Without them, on a target of the oracle's language, a run of either node that reaches `Build`, and a run past `Compile` of a node whose closure holds one of them, ends `library_unavailable` at startup; at a remote site it is refused as `oracle_at_remote_site` (§0-1, "Refused at startup — external libraries").
 
 ## 3-1. Resuming a failed workflow (`--resume`)
 
