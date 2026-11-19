@@ -203,8 +203,8 @@ def harness_block_drift(language: Any, harness_spec_id: str, section51: str, *,
     `harness_provides`, one message per symbol; ``[]`` when §5.1 publishes the block under
     `<harness_spec_id>__` names (issue #690).
 
-    `assert_harness_pin` makes the same comparison against the CERTIFIED harness at its first
-    consumer's render. This one reads the `spec`, so a Project harness that does not publish the
-    block is seen before it is certified (`skills/spec-input-check`)."""
+    `assert_harness_pin` compares a CERTIFIED harness at its first consumer's render, and only
+    on the symbols that consumer's driver uses. This one reads the `spec` and compares the whole block, so a Project harness that does not
+    publish it is seen before it is certified (`skills/spec-input-check`)."""
     return list(_module(language).harness_block_drift(
         harness_spec_id, section51, harness_provides=frozenset(harness_provides)))

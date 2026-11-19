@@ -1964,9 +1964,10 @@ def harness_block_drift(harness_spec_id: str, section51: str, *,
     from the interface block the driver is written against for `harness_provides`, one message
     per symbol (``[]`` when §5.1 publishes the block under `<harness_spec_id>__` names).
 
-    The same comparison `assert_harness_pin` makes against a CERTIFIED harness, made against its
-    `spec` before any certification (issue #690): a Project harness that does not publish the
-    block otherwise surfaces at its first consumer's render, one harness certification later.
+    `assert_harness_pin` compares a CERTIFIED harness, on the symbols one consumer's driver
+    uses; this compares the `spec`, on the whole block, before any certification (issue #690): a
+    Project harness that does not publish the block otherwise surfaces at its first consumer's
+    render, one harness certification later.
     Operations §5.1 publishes beyond the block are the Project's and are not compared."""
     from tools.backends.language.fortran.signatures import (
         SignatureParseError,

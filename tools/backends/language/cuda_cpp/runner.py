@@ -1302,9 +1302,10 @@ def harness_block_drift(harness_spec_id: str, section51: str, *,
                         harness_provides: Collection[str]) -> list[str]:
     """How a harness's controlled_spec §5.1 (`section51`, the body of its fenced block) differs
     from the block `assert_harness_pin` holds a certified harness to, one message per symbol
-    (``[]`` when §5.1 publishes it under `<harness_spec_id>__` names). The comparison the pin
-    makes, made against the `spec` before any certification (issue #690); operations beyond the
-    block are the Project's and are not compared. The two module parameters are compared by
+    (``[]`` when §5.1 publishes it under `<harness_spec_id>__` names). The pin compares a
+    certified harness on the symbols one consumer's driver uses; this compares the `spec` on the
+    whole block, before any certification (issue #690); operations beyond the block are the
+    Project's and are not compared. The two module parameters are compared by
     value, as the rendered runner's `static_assert`s hold them."""
     del harness_provides
     try:
