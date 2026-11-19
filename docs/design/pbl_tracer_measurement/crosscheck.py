@@ -5,8 +5,9 @@ normaliser (tests.md §5): a measure of how far two correct builds of the origin
   python3 crosscheck.py <driver> <comparand driver>
 
 The cases are read from the one fenced YAML block of tests.md §2, so no second copy of them exists.
-The judgments of tests.md §6 are not evaluated here: README.md §Operations runs them through the
-host's predicate evaluator."""
+The judgments of tests.md §6 are not evaluated here: README.md §Operations evaluates them with
+tools/tests/data/drive_ir/pr3_evidence/verify_spec.py, which runs the adapter under the host-rendered
+driver and evaluates the captures with the host's predicate evaluator."""
 import re
 import subprocess
 import sys

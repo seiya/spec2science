@@ -7,13 +7,14 @@ evidence, a hand-written transcription of each `tests.md` and not an output of `
 
   PYTHONPATH=. python3 <this file> <ir.yaml> --model <model.f90> [--dep <dep.f90>]...
       [--library <library_id>[=<dir>]]... [--flag=<flag>]... [--compared-only] [--gate-only] [--keep <dir>]
-      [--mutate 'old=>new']...
+      [--mutate 'old=>new']... [--show-values]
 
 1. `validate_compile_ir_dir` with the repository as root: Compile.static's gates, incl. the
    quantities / expected_outcome / history lines against the real tests.md.
 2. Render the Fortran driver, compile harness + deps + model + runner with bounds checking, run
    every case, evaluate every predicate, print each test's status against expected_outcome and
-   every record that did not hold. Exit 0 only when gates are clean and every status is expected.
+   every record that did not hold, cut at 400 characters (`--show-values`: every record, whole).
+   Exit 0 only when gates are clean and every status is expected.
 
 `--mutate 'old=>new'` replaces text in the model before compiling (repeatable): the same run then
 prints which tests the defect moved; exit status is then always 0 unless the build fails.
@@ -200,7 +201,9 @@ def main() -> int:
             if only is not None and d.get("test_id") not in expected:
                 continue
             if a.show_values or not d.get("satisfied", False):
-                print("  rec", json.dumps({k: v for k, v in d.items() if k != "reads" and k != "expr"}, default=str)[:400])
+                line = json.dumps({k: v for k, v in d.items() if k != "reads" and k != "expr"}, default=str)
+                # `--show-values` prints the whole record, so its values can be read back.
+                print("  rec", line if a.show_values else line[:400])
         if a.mutate:
             return 0
         return 1 if bad or findings else 0

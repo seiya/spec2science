@@ -24,18 +24,38 @@ make SCALE_ROOT=<tree> BUILD=<dir>/default lib    # <dir>/default/libscale_bl_or
 The operator lists it under the local site's `libraries:` (`docs/RUNBOOK.md` §Certifying a node against its oracle).
 
 ## Operations
+The judgments of `tests.md` §6 are evaluated on the original by `tools/tests/data/drive_ir/pr3_evidence/verify_spec.py` over the hand transcription `pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml`, with the adapter as the model and the library of §Oracle library located in its build directory. `--compared-only` runs only the cases the oracle is compared on, which are `pass` cases, and judges only the tests whose cases are all among them: the original has no guard and does not survive a refused case. From the repository root:
+
 ```sh
-make SCALE_ROOT=<tree> BUILD=<dir>/O2
-make SCALE_ROOT=<tree> BUILD=<dir>/O3fma FFLAGS="-O3 -march=native -mfma -cpp -ffree-line-length-none"
-python3 crosscheck.py <dir>/O3fma/driver <dir>/O2/driver
 PYTHONPATH=. python3 tools/tests/data/drive_ir/pr3_evidence/verify_spec.py \
-    tools/tests/data/drive_ir/pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml --gate-only
+    tools/tests/data/drive_ir/pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml \
+    --model spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/oracle/adapter.f90 \
+    --library scale_bl_oracle=<dir>/default --compared-only [--show-values]
 ```
 
-The judgments of `tests.md` §6 were evaluated on the original by `tools/tests/data/drive_ir/pr3_evidence/verify_spec.py` over the hand transcription `pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml`, with the adapter as the model, the library's build directory added to the compile flags and resolved as a site entry naming it as `include` and `lib` (the script itself resolves a library by the compiler's own search and passes no include directory), and a guard implementing Controlled Spec §4 inserted before the call by `--mutate`, because the runner runs the `xfail` cases too and the original has no guard. That guard is a measurement device and is not in the adapter: the oracle runs only the compared cases, which are `pass` cases.
+The script compiles the adapter at `-O2`. At another level, the library is built at that level into a directory of its own and the level is appended to the adapter's flags:
+
+```sh
+make -C docs/design/pbl_tracer_measurement SCALE_ROOT=<tree> BUILD=<dir>/O3fma_lib \
+    FFLAGS="-O3 -march=native -mfma -cpp -ffree-line-length-none" lib
+PYTHONPATH=. python3 tools/tests/data/drive_ir/pr3_evidence/verify_spec.py \
+    tools/tests/data/drive_ir/pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml \
+    --model spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/oracle/adapter.f90 \
+    --library scale_bl_oracle=<dir>/O3fma_lib --flag=-O3 --flag=-march=native --flag=-mfma \
+    --compared-only [--show-values]
+```
+
+`--show-values` prints every record whole, with the value of each case it evaluated. `--mutate 'old=>new'` seeds a defect into the adapter the same way. The cross-target agreement of two builds of the original is measured by `crosscheck.py` over two offline drivers, each built into a directory of its own:
+
+```sh
+make -C docs/design/pbl_tracer_measurement SCALE_ROOT=<tree> BUILD=<dir>/O2
+make -C docs/design/pbl_tracer_measurement SCALE_ROOT=<tree> BUILD=<dir>/O3fma \
+    FFLAGS="-O3 -march=native -mfma -cpp -ffree-line-length-none"
+python3 docs/design/pbl_tracer_measurement/crosscheck.py <dir>/O3fma/driver <dir>/O2/driver
+```
 
 ## Results
-gfortran 11.4, 2026-11-19, at the branch `issue-680/pr5-acceptance-record` (`e27b6b1c` plus the node). All 17 tests reach their `expected_outcome` on the library built at `-O2` and at `-O3 -march=native -mfma`. The largest value of each bounded judgment over its cases, against its bound:
+gfortran 11.4, 2026-11-19, on the tree of `0dfbd393`. The commands of §Operations with `--show-values`, on the library built at `-O2` and at `-O3 -march=native -mfma`: each run judges the 8 `pass` tests, and all 8 reach their `expected_outcome`. The largest `value` over every case of each bounded judgment's record, against its bound, over both runs:
 
 | judgment | worst value | bound | case |
 |---|---:|---:|---|
@@ -47,6 +67,5 @@ gfortran 11.4, 2026-11-19, at the branch `issue-680/pr5-acceptance-record` (`e27
 | `uniform_tracer`, `flx` | `1.7e-17` | `1e-13` | `l0_uniform_tracer` |
 | `closed_form`, `flx` | `1.0e-15` | `1e-12` | `l0_three_cells` (`-mfma`) |
 | `closed_form`, `rhoq_t` | `1.7e-15` | `1e-12` | `l0_three_cells` |
-| `cross_target_state_agreement` | `3.1e-16` | `1e-12` | `l0_pbl_profile_passive`, `-O3 -mfma` against `-O0` |
 
-The `== 0` judgments (`pbl_top`, `halo_zero`, the two exact parts of `zero_diffusivity`) hold exactly, and `maxabs(top_face*flx)` is between `2.8e-4` and `1.0e-3` on its four cases. The `-O0` and `-O2` builds agree to the last bit on every case. Two seeded defects of the adapter were run the same way: passing `mass = 0` moves `l0_implicit_flux_pass` and `l0_three_cell_closed_form_pass`, and shifting `fz` by one cell moves those two and `l0_conservation_pass`, `l0_flux_divergence_pass`.
+The exact judgments (`guard_pass == 1`, and `== 0` of `pbl_top`, `halo_zero` and the two exact parts of `zero_diffusivity`) hold on every case, and `maxabs(top_face*flx)` of `pbl_top` is between `2.8e-4` and `1.0e-3` on its four cases. The cross-target judgment holds vacuously in these runs, which have no comparand. `crosscheck.py` over offline drivers built at `-O0`, `-O2` and `-O3 -march=native -mfma`: `-O3 -mfma` against `-O2` and against `-O0` reaches `2.8e-16` (`l0_pbl_profile_passive`, `rhoq_t`) against the bound `1e-12`, and `-O0` and `-O2` agree to the last bit on every case. Two seeded defects of the adapter, run with `--mutate` on the `-O2` library: passing `mass = 0` (`'mass_rp = mass=>mass_rp = 0.0_RP'`) moves `l0_implicit_flux_pass` and `l0_three_cell_closed_form_pass`, and shifting `fz` by one cell (`'fz3(0:ka-1,1,1) = fz=>fz3(1:ka,1,1) = fz'`) moves those two and `l0_conservation_pass`, `l0_flux_divergence_pass`.
