@@ -3105,8 +3105,13 @@ class CapabilityOwnershipTests(unittest.TestCase):
         runner = types.ModuleType("zz_second_lang.runner")
         runner.render_runner = (
             lambda ir, spec_id, harness, *, target, harness_provides: "! zz_second\n")
-        runner.ir_content_violations = (
-            lambda ir, spec_id, harness, *, harness_provides: ["zz_second says no"])
+        asked: list[frozenset[str]] = []
+
+        def objections(ir, spec_id, harness, *, harness_provides):
+            asked.append(harness_provides)
+            return ["zz_second says no"]
+
+        runner.ir_content_violations = objections
         runner.physics_harness_uses = lambda harness, *, harness_provides: uses
         other.runner = runner
         other.bundle = types.ModuleType("zz_second_lang.bundle")
@@ -3139,7 +3144,9 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 ["zz_second says no"],
                 list(host_render.ir_content_violations(
                     vps._m3c_language(ir, "make", "zz_second"), ir, "bx",
-                    "harness_fortran_cpu", harness_provides=provides_for("harness_fortran_cpu"))))
+                    "harness_fortran_cpu", harness_provides=frozenset({"zz_token@3"}))))
+            # ...forwarding the token set it was given (issue #690), a value no default spells.
+            self.assertEqual(asked, [frozenset({"zz_token@3"})])
             # (2) the isolation gate asks THIS language's renderer which harness names a physics
             # source may use, and hands them to THIS language's reader. Driven through the gate
             # body, not through the seam: hard-coding the language inside the gate is what the
