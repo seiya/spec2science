@@ -1536,7 +1536,7 @@ PINNED_RENDER: dict[str, str] = {
     # diffing `render_tuple()` against main 05e839e3's: those four rows and no other.) The digest
     # `render-22` shipped with at 05e839e3:
     "render-22@05e839e3": "422e604a67722e068a2d0f17ef53a2dd0654e9217356517327171744d87d712f",
-    "render-22": "6e3e6263bc79ad7e485bcf62e453b8cade2d96ee52ef036e2adc3a621a468189",
+    "render-22": "f629096e659a94cf4898c68bc90f8ddd9e453dfc3bfa947c9239d78ae3b5a866",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
