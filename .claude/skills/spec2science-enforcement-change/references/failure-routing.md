@@ -306,3 +306,25 @@ field, a RUNBOOK entry that tells the operator which file to open. The RUNBOOK's
 pointed at `dialogs/leaf.stdout.log`; a deterministic body's message is in
 `dialogs/deterministic.stderr.log` (`_persist_leaf_output(..., prefix="deterministic")`), so the
 PR also added an `oracle_build_failed` entry naming that file.
+
+## A remedy that weakens another check (2026-11-19, issue #680 PR-3)
+
+`Conductor._compare_with_oracle` stops as `oracle_unevaluable` when a cross-target predicate
+reads a continuation case: the oracle runs no second pass, so it has no capture there. Measured
+over `workspace/ir/*/*/spec.ir.yaml`, five problem families compare a continuation case, so this
+stop is reachable. The round-1 fix gave the stop a remedy "by cause". That remedy read: "apply no
+cross-target judgment to a test of a continuation case (the spec), or remove the declaration".
+The first half clears the refusal. It also removes the comparison between two declared targets
+in that case, which the judgment exists for and which has nothing to do with the oracle. Under
+it, a leaf's wrong variant on one target certifies. Round 2's blank-slate reviewer found it by
+asking whether any remedy weakens a defense. The fix kept only "remove the declaration".
+
+Round 3 found the same instruction in the RUNBOOK, in a different place. Triage step 2 of
+"Certifying a node against its oracle", written in the first commit for an intended difference,
+said: "the test of that case does not apply the cross-target judgment". The §3-1 entry added in
+round 2 said the opposite, "never drop a cross-target judgment". Each copy was written for a
+different cause, so a sweep for the round-2 wording did not find the first-commit copy.
+
+What found each one: a reviewer told to drive every refusal and to follow the RUNBOOK as
+written, asking of each remedy "does following it weaken a defense". Nothing in the suite can
+see this. The remedy is text, and the check it weakens is in another file (the `spec`).

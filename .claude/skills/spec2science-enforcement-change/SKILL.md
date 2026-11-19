@@ -925,6 +925,17 @@ that could not converge in principle).
   consumer's Compile and Generate move only when the dependency's published surface moves, whatever
   its output did.
   `references/failure-routing.md` §"A remedy that re-derives one phase"
+- **A remedy that makes a refusal go away by editing ANOTHER check's input weakens that check,
+  and the refused party will take it.** "Stop applying the judgment to that test" clears the
+  refusal you wrote and also deletes what the judgment checks elsewhere. Issue #680 PR-3 told the
+  operator, for an oracle that cannot be compared on a continuation case, to drop the `spec`'s
+  cross-target judgment, which also compares two declared targets. A round-1 fix wrote that
+  sentence, and round 2 found it. A RUNBOOK sentence from the first commit said the same thing,
+  and round 3 found it. **Rule: for each remedy, name every check that reads what the remedy
+  edits. If the remedy weakens one, give the remedy that removes only what the refusal is
+  about (here, the declaration). Then grep every copy of the remedy (code, RUNBOOK, phase
+  document) for the same verb, since the copies are written at different times.**
+  `references/failure-routing.md` §"A remedy that weakens another check"
 
 ### 4. Tests pin properties
 
