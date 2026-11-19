@@ -1,0 +1,52 @@
+# PBL tracer measurement: oracle library and offline driver
+
+## Status
+The build record of the `oracle` of `pbl_tracer_diffusion_1d_column` (`spec/component/pbl/diffusion/pbl_tracer_diffusion_1d_column/`), the node converted by `skills/spec-from-code` in the O7 trial of [issue #680](https://github.com/seiya/spec2science/issues/680). It belongs to no suite and no workflow phase, and nothing in `tools/` reads it.
+
+**Placement exception.** As `docs/design/kessler_measurement/` is, this directory is placed beside the node it builds for, for as long as the SCALE nodes live in this repository: `TODO.md` carries the removal condition. Direct compiler calls here are a development measurement; `AGENTS.md` §Build-runtime execution rules binds the workflow's `compile`.
+
+## Source
+`scale-met/scale-dev` at commit `dc58155` (`develop`, 2026-10-31; not among the refs the remote advertises, so a fresh clone may lack it). The tree is read only, and nothing is copied from it into this directory. The real files are `scalelib/src/common/scale_precision.F90`, `scale_const.F90`, `scale_matrix.F90` and `scalelib/src/atmosphere/physics/pbl/scale_atmos_phy_bl_common.F90`, plus `scalelib/include`. A tree holding only these paths is extracted with `git -C <clone> archive dc58155 scalelib/include scalelib/src/common scalelib/src/atmosphere/physics/pbl | tar -x -C <tree>`.
+
+## Contents
+- `Makefile`: with the target `lib`, the four real files and four stubs as the archive `libscale_bl_oracle.a` and its module files; with no target, also the node's oracle adapter and `driver.F90`. `SCALE_ROOT` is required; `BUILD` defaults to `build/`. `FC` selects the compiler, and `MODFLAG` its module-directory flag (`-J` by default; `MODFLAG="-module "` for ifort or ifx).
+- The stubs are `scale_io`, `scale_prc`, `scale_prof` and `scale_file_history` of `docs/design/kessler_measurement/stubs/`, read by path. `scale_file_history` keeps the last field written to the history output as `captured`: here the flux `ZFLX_<name>_BL`, which the adapter publishes as `flx`. `scale_prc` turns the abort into an error stop; the original procedure calls neither it nor `scale_prof`, which its modules `use`.
+- `driver.F90`: reads one case from standard input and calls the adapter, so a run of it exercises the adapter over the original.
+- `crosscheck.py`: runs the `pass` cases of the node's `tests.md` through two builds of the driver and prints the cross-target agreement of `rhoq_t` and `flx` under the suite's own normaliser. It reads the cases from the one fenced YAML block of `tests.md` §2.
+
+## Oracle library
+`oracle/oracle.yaml` of the node declares one build, linked with the external library `scale_bl_oracle` (`spec/libraries/scale_bl_oracle.yaml`). The original takes no constant from module state and needs no setup, so one library serves every case. Build it with the compiler the target builds with, since the adapter reads its module files, into a directory that holds nothing else: the driver build writes the adapter's module `pbl_tracer_diffusion_1d_column_model`, which in the library's include directory would stand beside the generated model's.
+
+```sh
+make SCALE_ROOT=<tree> BUILD=<dir>/default lib    # <dir>/default/libscale_bl_oracle.a and its module files
+```
+
+The operator lists it under the local site's `libraries:` (`docs/RUNBOOK.md` §Certifying a node against its oracle).
+
+## Operations
+```sh
+make SCALE_ROOT=<tree> BUILD=<dir>/O2
+make SCALE_ROOT=<tree> BUILD=<dir>/O3fma FFLAGS="-O3 -march=native -mfma -cpp -ffree-line-length-none"
+python3 crosscheck.py <dir>/O3fma/driver <dir>/O2/driver
+PYTHONPATH=. python3 tools/tests/data/drive_ir/pr3_evidence/verify_spec.py \
+    tools/tests/data/drive_ir/pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml --gate-only
+```
+
+The judgments of `tests.md` §6 were evaluated on the original by `tools/tests/data/drive_ir/pr3_evidence/verify_spec.py` over the hand transcription `pr3_evidence/ir/pbl_tracer_diffusion_1d_column.yaml`, with the adapter as the model, the library's build directory added to the compile flags and resolved as a site entry naming it as `include` and `lib` (the script itself resolves a library by the compiler's own search and passes no include directory), and a guard implementing Controlled Spec §4 inserted before the call by `--mutate`, because the runner runs the `xfail` cases too and the original has no guard. That guard is a measurement device and is not in the adapter: the oracle runs only the compared cases, which are `pass` cases.
+
+## Results
+gfortran 11.4, 2026-11-19, at the branch `issue-680/pr5-acceptance-record` (`e27b6b1c` plus the node). All 17 tests reach their `expected_outcome` on the library built at `-O2` and at `-O3 -march=native -mfma`. The largest value of each bounded judgment over its cases, against its bound:
+
+| judgment | worst value | bound | case |
+|---|---:|---:|---|
+| `conservation` | `5.6e-15` | `1e-12` | `l0_kh_all_positive` (`-mfma`) |
+| `flux_divergence` | `8.5e-15` | `1e-12` | `l0_kh_all_positive` |
+| `implicit_flux` | `1.6e-15` | `1e-12` | `l0_range` |
+| `zero_diffusivity`, cell `ks` | `9.8e-17` | `1e-13` | `l0_kh_zero` (`-mfma`) |
+| `uniform_tracer`, `rhoq_t` | `1.7e-16` | `1e-13` | `l0_uniform_tracer` |
+| `uniform_tracer`, `flx` | `1.7e-17` | `1e-13` | `l0_uniform_tracer` |
+| `closed_form`, `flx` | `1.0e-15` | `1e-12` | `l0_three_cells` (`-mfma`) |
+| `closed_form`, `rhoq_t` | `1.7e-15` | `1e-12` | `l0_three_cells` |
+| `cross_target_state_agreement` | `3.1e-16` | `1e-12` | `l0_pbl_profile_passive`, `-O3 -mfma` against `-O0` |
+
+The `== 0` judgments (`pbl_top`, `halo_zero`, the two exact parts of `zero_diffusivity`) hold exactly, and `maxabs(top_face*flx)` is between `2.8e-4` and `1.0e-3` on its four cases. The `-O0` and `-O2` builds agree to the last bit on every case. Two seeded defects of the adapter were run the same way: passing `mass = 0` moves `l0_implicit_flux_pass` and `l0_three_cell_closed_form_pass`, and shifting `fz` by one cell moves those two and `l0_conservation_pass`, `l0_flux_divergence_pass`.

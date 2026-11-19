@@ -1,0 +1,10 @@
+# The original SCALE PBL tracer tendency with its solver module and four stubs, which the oracle of
+# `pbl_tracer_diffusion_1d_column` links (docs/design/pbl_tracer_measurement/README.md §Oracle
+# library).
+library_version: 1
+library_id: scale_bl_oracle
+language: fortran
+modules: [scale_precision, scale_io, scale_prc, scale_prof, scale_file_history, scale_const,
+          scale_matrix, scale_atmos_phy_bl_common]
+procedures: []
+link: [scale_bl_oracle]
