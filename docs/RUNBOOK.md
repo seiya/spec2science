@@ -666,7 +666,7 @@ A disagreement ends the run: `Validate.execute` fails with `trial_meta.json#fail
 
 Three further outcomes are a transport `fail_closed` of `Validate.execute` (no leaf ran), reported as listed under "no tag" in §3-1: `oracle_run_failed`, `oracle_unevaluable` and `oracle_declaration_invalid`.
 
-**The two microphysics nodes.** `microphysics_saturation_liquid_1d_column` and `microphysics_kessler_warm_rain_1d_column` declare the original SCALE procedures as their oracle, over the libraries `scale_mp_oracle` and `scale_mp_oracle_alt`. Build both by the measurement directory's `lib` target (`docs/design/kessler_measurement/README.md` §Oracle library) and list them in `sites.yaml` under the local site, each directory as both `include` and `lib`:
+**The two microphysics nodes.** `microphysics_saturation_liquid_1d_column` and `microphysics_kessler_warm_rain_1d_column` declare the original SCALE procedures as their oracle, over the libraries `scale_mp_oracle` and `scale_mp_oracle_alt`. Build both by the measurement directory's `lib` target (`docs/design/kessler_measurement/README.md` §Oracle library) and list them in `sites.yaml` under the local site, each directory as an absolute path, as both `include` and `lib` (in an existing file, add the two entries to `sites.local.libraries`):
 
 ```yaml
 sites_version: 1
