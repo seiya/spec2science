@@ -259,11 +259,6 @@ class RemoteExecutionError(RuntimeError):
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
 
 
-class JobNotStated(RemoteExecutionError):
-    """The scheduler says it does not know the job's id, so how the job ended is no longer
-    stated: the job is not collected, and its record is removed."""
-
-
 @dataclass(frozen=True)
 class CommandSpec:
     """One command of a job, as the local path would hand it to the library.
@@ -939,8 +934,7 @@ def _local_dirs(local_tmp: Path) -> tuple[Path, Path]:
 
 
 def _left(exc: RemoteExecutionError, remote: str) -> RemoteExecutionError:
-    # The same class: `execute_or_adopt_job` reads `JobNotStated` from it.
-    return type(exc)(
+    return RemoteExecutionError(
         f"{exc}; the job directory is left at the site for inspection — remove {remote} when "
         f"done")
 
@@ -1155,7 +1149,7 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
         if condition == "ended":
             return value
         if condition == "unknown_id":
-            raise JobNotStated(
+            raise RemoteExecutionError(
                 f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
                 f"longer stated; its output is not read ({remote})")
         if condition == "no_answer":
@@ -1312,10 +1306,13 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
 
     The record is written once the submit call has returned (the handle and `request_sha256`),
     gains `end` when the host first reads the job's end from the scheduler, and is removed once
-    the job directory is copied to the host (`collect_job`), and when the scheduler no longer
-    knows the job. Until then it is kept whatever ends the call: a wait past its bound, an
-    interrupted wait, a scheduler that does not answer at adoption, a failed copy — the refusal
-    of the last two names the record.
+    the job directory is copied to the host (`collect_job`). Until then it is kept whatever ends
+    the call: a wait past its bound or on an id the scheduler no longer knows, an interrupted
+    wait, a scheduler that does not answer at adoption, a failed copy — every refusal of these
+    names the record (`_kept`). A record whose job the scheduler has forgotten is not adopted
+    (condition 3), and the job the next attempt submits replaces it. Removing it at the
+    forgetting would gain nothing and would lose an adoption when the scheduler forgot the id
+    only for a moment.
 
     A recorded job is adopted when (1) the record reads and names this site's host and
     scheduler; (2) `request_for(<that directory>)` has the recorded digest; and (3) the record
@@ -1390,9 +1387,6 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
         queue_bound, run_bound = job_bounds(request)
         try:
             end = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
-        except JobNotStated as exc:
-            _remove_job_record(record_path)
-            raise _left(exc, handle.remote_dir) from exc
         except RemoteExecutionError as exc:
             raise _kept(str(exc), record_path, handle.job_id) from exc
         _write_job_record(record_path,

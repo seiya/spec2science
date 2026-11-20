@@ -2044,10 +2044,15 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual(self.h.slurm_record()["state"], "PENDING")
         self.assertNotIn("end", json.loads(self.record.read_text()))
 
-    def test_an_id_forgotten_during_the_wait_removes_the_record(self) -> None:
-        with self.assertRaises(rx.JobNotStated):
-            self.attempt("arid-1", SHIM_SCONTROL_FORGET="1")
-        self.assertFalse(self.record.exists())
+    def test_an_id_forgotten_during_the_wait_keeps_the_record_and_is_not_adopted(self) -> None:
+        """The refusal keeps the record; the next attempt, finding the id still unknown, does
+        not adopt the job and submits its own, whose record replaces it."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    f"no longer knows job 4242.*record {self.record} is kept"):
+            self.attempt("arid-1", SHIM_SBATCH_HOLD="1", SHIM_SCONTROL_FORGET="1")
+        self.assertEqual(json.loads(self.record.read_text())["job_id"], "4242")
+        (self.h.slurm / "state.4242.json").unlink()
+        self.assert_not_adopted("no longer knows job 4242", self.h.job)
 
     def test_execute_job_writes_no_record(self) -> None:
         self.h.run(self.h.request())
