@@ -259,6 +259,12 @@ class RemoteExecutionError(RuntimeError):
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
 
 
+class ForgottenJobError(RemoteExecutionError):
+    """`wait_job`'s refusal of a job the scheduler no longer knows: a later attempt asks the
+    scheduler again at adoption and, told the same, does not adopt the job, so a refusal that
+    keeps the record must not say that it does."""
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     """One command of a job, as the local path would hand it to the library.
@@ -939,9 +945,17 @@ def _left(exc: RemoteExecutionError, remote: str) -> RemoteExecutionError:
         f"done")
 
 
-def _kept(message: str, record_path: Path, job_id: str) -> RemoteExecutionError:
+def _kept(message: str, record_path: Path, job_id: str, *,
+          forgotten: bool = False) -> RemoteExecutionError:
     """A refusal that keeps the job's `site job record`: it names the record and what a later
-    attempt does with it, and not the job directory, which that attempt collects."""
+    attempt does with it, and not the job directory, which an adopting attempt collects. For a
+    job the scheduler has `forgotten`, that attempt adopts it only if the scheduler states it
+    again; otherwise it submits a job of its own, whose record replaces this one."""
+    if forgotten:
+        return RemoteExecutionError(
+            f"{message}; the site job record {record_path} is kept, and a later attempt "
+            f"(`--resume`) does not adopt job {job_id} unless the scheduler states it again — "
+            f"it submits a job of its own, whose record replaces this one")
     return RemoteExecutionError(
         f"{message}; the site job record {record_path} is kept, and a later attempt "
         f"(`--resume`) adopts job {job_id} — removing the record abandons the job (cancel it "
@@ -1121,7 +1135,8 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
     `queue_bound_sec` before the job was seen running, or `run_bound_sec` after, the wait is
     refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it. What the
     refusal says about the job directory is its caller's: `execute_or_adopt_job` keeps the
-    record, which a later attempt adopts."""
+    record, which a later attempt adopts (one refused as `ForgottenJobError` only if the
+    scheduler states the job again)."""
     submission = _submission(handle.scheduler)
     remote = handle.remote_dir
     t0 = time.monotonic()
@@ -1149,7 +1164,7 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
         if condition == "ended":
             return value
         if condition == "unknown_id":
-            raise RemoteExecutionError(
+            raise ForgottenJobError(
                 f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
                 f"longer stated; its output is not read ({remote})")
         if condition == "no_answer":
@@ -1385,7 +1400,8 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
         try:
             end = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
         except RemoteExecutionError as exc:
-            raise _kept(str(exc), record_path, handle.job_id) from exc
+            raise _kept(str(exc), record_path, handle.job_id,
+                        forgotten=isinstance(exc, ForgottenJobError)) from exc
         _write_job_record(record_path,
                           {**record, "end": END_OTHERWISE if end is None else end})
     return collect_job(handle, request, local_tmp=local_tmp, own_exit=end,
