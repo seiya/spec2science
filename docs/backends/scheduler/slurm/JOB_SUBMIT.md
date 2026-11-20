@@ -21,10 +21,18 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
   stub's shell reads its one command whole before running it, and after `exec` the job script is
   an argument held in memory, so a command that rewrites the kept file changes nothing that runs.
 - **The options.** `sbatch` takes the LAST of a repeated option, so the order is the policy.
-  `--parsable` and `--time` come first: the time limit is the job's commands' bounds plus the
-  executor's grace (and the device probe's and toolchain probe's bounds when the request carries
-  them), rounded up to whole minutes — 96 or 97 minutes with the build-runtime library's default
-  command timeouts — and a directive may replace it. A site whose partition, QOS or association
+  `--parsable` and `--time` come first: the time limit is the sum, over the job's commands, of
+  each command's bound plus its 30 s kill grace, plus the executor's 300 s grace, plus the
+  device probe's 60 s and two of the toolchain probe's 60 s when the request carries them,
+  rounded up to whole minutes (`remote_execution._wall_clock_sec`) — and a directive may replace
+  it. With the build-runtime library's default command timeouts (1800 s to build or run the
+  quality check, 3600 s to run a program), the shapes the conductor submits come to: a `Build`
+  job 38 minutes, 68 with the checked build; a `Validate.execute` job 96 (97 with the device
+  probe) for the run and the quality check, and 3630 s more for each further program it runs —
+  the device trace's summary, each sweep shape, the checked binary — so 157 or 158 minutes with
+  one of them, 217 or 218 with two; and a restart job (the continuation cases' second pass)
+  1830 s per quality check and 3630 s per run on top of 300 s (360 s with the device probe),
+  66 or 67 minutes for one run. A site whose partition, QOS or association
   allows less states its maximum there (`"--time=30"`); a job that reaches the shorter limit ends
   `TIMEOUT` and is refused, never recorded. `scheduler_directives` come next, each split on
   whitespace into words (`"-p gpu"` is two words), and the executor's remaining options come
@@ -99,14 +107,14 @@ A site entry in `./sites.yaml` (the shape is `docs/ORCHESTRATION.md` §Execution
     workdir: /work/spec2science-jobs
     executes: [cpu]
     scheduler: slurm
-    scheduler_directives: ["--partition=compute", "--time=120"]
+    scheduler_directives: ["--partition=compute"]
     queue_timeout_sec: 7200
   cluster_gpu:
     host: login-node
     workdir: /work/spec2science-jobs
     executes: [gpu]
     scheduler: slurm
-    scheduler_directives: ["--partition=gpu", "--gres=gpu:1", "--time=120"]
+    scheduler_directives: ["--partition=gpu", "--gres=gpu:1", "--time=120"]   # the partition's maximum
     queue_timeout_sec: 7200
 ```
 
@@ -115,8 +123,9 @@ A site's `executes` is a claim about the machines its directives select. Nothing
 records `null`, and the runner's failure is recorded as the kernel's — a correct kernel fails
 Validate. So a class whose device must be requested gets a site of its own whose directives
 request it (`--gres`), and `targets:` maps each target to the site for its class. A `--time`
-directive shorter than the job's bound (96-97 minutes with the build-runtime library's defaults) makes a command
-that runs long a refusal rather than the command's own timeout.
+directive replaces the job's own limit for every job of the site (§1 gives the limits, from 38
+minutes to over 200), so state one only as the partition's maximum: below a job's own limit it
+makes a command that runs long a refusal rather than the command's own timeout.
 
 - `sbatch` and `scontrol` on the PATH of a NON-INTERACTIVE login. Where they are added by an
   interactive login's startup files only, the launch probe refuses `missing_required_site_tools`
