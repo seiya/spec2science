@@ -423,6 +423,17 @@ class PromptCompositionTests(unittest.TestCase):
         self.assertIn(mpi["target_lowering_floor"], composed)
         self.assertIn("`mpi`, `none`", composed)
 
+    def test_a_lead_that_defines_no_section_for_the_marker_raises(self) -> None:
+        # An empty lead must not compose the members alone, and a lead naming another section
+        # must not surface as a KeyError the caller misreports.
+        for sections in ({}, {"other": "x"}):
+            with self.subTest(sections=sections), \
+                    mock.patch.object(ort, "_parallel_combination_lead",
+                                      return_value=sections), \
+                    self.assertRaises(ValueError) as caught:
+                self._compose("workshop_generate_generate.txt", "mpi+openmp")
+            self.assertIn("combination lead defines no fragment", str(caught.exception))
+
     def test_a_missing_lead_file_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(ort, "_PARALLEL_COMBINATION_LEAD_DIR", Path(tmp)), \
