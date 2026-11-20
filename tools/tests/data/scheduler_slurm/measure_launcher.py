@@ -53,7 +53,8 @@ def _case(out: Path, site: es.Site, name: str, ranks: int) -> dict:
     """Run the canary of `ranks` processes at `site` as one job; its record."""
     local = out / name
     canary = remote_launch_canary(types.SimpleNamespace(parallel_backend="mpi", ranks=ranks),
-                                  _TC, local / "launch_canary")
+                                  _TC, local / "launch_canary",
+                                  log=local / "launch_canary.jsonl")
     assert canary is not None
     arid = f"{name}-{int(time.time())}"
     job = rx.job_dir(site, "measure_launcher", arid)

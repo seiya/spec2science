@@ -3834,8 +3834,9 @@ class _RemoteLaunchCanary:
     started under the launcher with the profile's `execution.ranks`, and started bare. Each of
     the three is one of the job's ordinary commands, ahead of the build, and the job runs a
     command only when every earlier one exited 0, so a canary that fails stops the job before
-    the build. Their entries go to `log`, beside the canary's local copy, not to the node's
-    `src/command_log.jsonl`: they are not the node's commands.
+    the build. Their entries go to `log`, the orchestration's `launch_canary.jsonl`, not to the
+    node's `src/command_log.jsonl` (they are not the node's commands) and not under
+    `workspace/tmp/<agent_run_id>/`, which the substep's end removes.
 
     Named breakage without it (`AGENTS.md` §Development premises): a site whose launcher,
     wrapper or allocation does not start the ranks as one run — a launcher of another
@@ -3903,10 +3904,10 @@ class _RemoteLaunchCanary:
         return None
 
 
-def remote_launch_canary(target: Any, tc: dict[str, str],
-                         local_dir: Path) -> _RemoteLaunchCanary | None:
+def remote_launch_canary(target: Any, tc: dict[str, str], local_dir: Path, *,
+                         log: Path) -> _RemoteLaunchCanary | None:
     """The launch canary of `target`'s remote `Build` job, its source written under
-    `local_dir`; None for a target whose parallel backend declares no launcher, or that runs one
+    `local_dir` and its commands' entries appended to `log`; None for a target whose parallel backend declares no launcher, or that runs one
     rank (one process is one run whichever installation starts it)."""
     from tools.host_execution import declares_launcher
 
@@ -3919,7 +3920,7 @@ def remote_launch_canary(target: Any, tc: dict[str, str],
     source.write_text(str(launcher.LAUNCH_CANARY_SOURCE), encoding="utf-8")
     return _RemoteLaunchCanary(launcher=launcher, wrapper=build_compiler(tc),
                                ranks=int(target.ranks), source=source,
-                               log=local_dir / "command_log.jsonl")
+                               log=log)
 
 
 def _local_site_record() -> dict[str, Any]:
@@ -11328,7 +11329,10 @@ class Conductor:
             jobs = default_build_jobs()
             # The launch canary (issue #337): for a launcher target of more than one rank, the
             # job's first three commands; None otherwise, and the job is as before.
-            canary = remote_launch_canary(self.target, tc, obj_dir.parent / "launch_canary")
+            canary = remote_launch_canary(
+                self.target, tc, obj_dir.parent / "launch_canary",
+                log=(self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                     / "launch_canary.jsonl"))
             if canary is not None:
                 ship[canary.ship_path] = canary.source
 

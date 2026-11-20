@@ -29,6 +29,7 @@ workspace/
 │       ├── phase_state_log.jsonl                  (the chronology of events such as set_status)
 │       ├── cross_target/<node_key_safe>.json      (the node's cross-target agreement as of this run's pass/fail decision; issue #383)
 │       ├── site_jobs/<tag>.json                   (the site job record of a batch job not yet collected; issue #696)
+│       ├── launch_canary.jsonl                    (the launch canary's command entries of each remote Build of a launcher target; issue #337)
 │       ├── replay_result.jsonl                    (a judge replay's orchestration only, `replay_<ts>_<hex>`; `tools/judge_replay.py`)
 │       │
 │       ├── launches/

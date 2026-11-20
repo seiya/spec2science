@@ -448,10 +448,13 @@ class LauncherTargetBuildAtARemoteSiteTests(unittest.TestCase):
         return n
 
     def canary_entries(self, n: _Node, arid: str = "arid-1") -> list[dict]:
-        path = n.repo / "workspace" / "tmp" / arid / "launch_canary" / "command_log.jsonl"
+        # The orchestration's log, which outlives the attempt's tmp directory; `arid` selects
+        # the attempt's entries.
+        path = n.repo / "workspace" / "orchestrations" / "orch_1" / "launch_canary.jsonl"
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines()]
+        return [e for e in (json.loads(line) for line in path.read_text().splitlines())
+                if e["agent_run_id"] == arid]
 
     def test_the_canary_leads_the_job_and_the_build_passes(self) -> None:
         n = self.n

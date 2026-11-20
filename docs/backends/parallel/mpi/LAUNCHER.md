@@ -151,7 +151,7 @@ runtime that does not start a bare program inside an allocation fails them). A c
 not build, does not complete, or reports another run fails the `Build` as the site's failure
 (`deterministic_build_error`, a transport fail_closed, not routed to `Generate`), before the
 build's result is read. Its argv and the launcher's message are in its log entries,
-`workspace/tmp/<agent_run_id>/launch_canary/command_log.jsonl`. It covers the first `Build` at
+`workspace/orchestrations/<orchestration_id>/launch_canary.jsonl`. It covers the first `Build` at
 a site: a `Validate` that passes through no `Build` there (`--rederive validate`, or a
 `Validate` whose key moved under a certified `Build`) starts the launcher with no canary
 before it.

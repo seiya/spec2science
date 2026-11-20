@@ -1896,7 +1896,7 @@ PINNED_BUILD: dict[str, str] = {
     # render the same job script and `request_sha256`.
     # The digest `build-5` shipped with at 7e2dcde0:
     "build-5@7e2dcde0": "a7196261eecea15f0a2a7617048e9c12534f38192900908cc40ac8c308a436e9",
-    "build-5": "d062cc2ce466910b1e792b585483d7ffed944a80ffe6405ee262cbef2644793c",
+    "build-5": "88528f96a7d5529943824a101004c63aeded2ba3f31c3f9b85170e4ceeec0c33",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
