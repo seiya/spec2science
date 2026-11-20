@@ -74,8 +74,10 @@ def submit_argv(*, directives: Sequence[str], job_name: str, wall_clock_sec: int
     1. `--parsable` and a time limit of `wall_clock_sec` rounded up to whole minutes, FIRST, so
        that a directive may replace the limit — a site whose partitions allow less than the
        job's full bound states its maximum there;
-    2. the operator's `scheduler_directives`, each split on whitespace into words, as a
-       `#SBATCH` line's are;
+    2. the operator's `scheduler_directives`, each split on whitespace into words. Quotes are
+       not honoured, unlike on a `#SBATCH` line (measured on Slurm 20.02.5: `#SBATCH
+       --comment="a b"` gives `Comment=a b`, while here it is the two words `--comment="a` and
+       `b"`), so a directive cannot carry a value that contains whitespace;
     3. the options a repeating directive does not override, LAST: the job's name, its two files
        and `--no-requeue`. A requeued batch job runs its script from the beginning in a
        directory holding the first pass's files and truncates its output file (this machine's

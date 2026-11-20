@@ -35,7 +35,10 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
   66 or 67 minutes for one run. A site whose partition, QOS or association
   allows less states its maximum there (`"--time=30"`); a job that reaches the shorter limit ends
   `TIMEOUT` and is refused, never recorded. `scheduler_directives` come next, each split on
-  whitespace into words (`"-p gpu"` is two words), and the executor's remaining options come
+  whitespace into words (`"-p gpu"` is two words; quotes are not honoured, unlike on a
+  `#SBATCH` line — measured, `#SBATCH --comment="a b"` gives `Comment=a b` while the directive
+  `--comment="a b"` is the two words `--comment="a` and `b"` — so a directive cannot carry a value
+  that contains whitespace), and the executor's remaining options come
   last: the job's name, its two files and `--no-requeue`. A directive that repeats one of them
   loses to it. A directive whose LAST word is an option that takes a separate value (`"--account"`
   with the value missing, or `"-J"`) swallows the next word — `--job-name=…` — as that value;
