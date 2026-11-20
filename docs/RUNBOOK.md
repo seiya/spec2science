@@ -244,7 +244,7 @@ submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](ba
   `--overlap`, `--exact`, `--immediate` and `--pty` are each `unrecognized option` to `sbatch`
   (measured with `sbatch --test-only` on Slurm 20.02.5), so a site that keeps one has every
   submission refused (`submit the job: ssh exited 1`).
-- **A job past `queue_timeout_sec` is left queued.** The run is refused as a transport failure
+- **A job not seen running within `queue_timeout_sec` is left as it is.** The run is refused as a transport failure
   and nothing cancels the job; `scancel` it by hand (its name is `spec2science-<agent_run_id>`)
   until a resumed run adopts such a job (issue #696; not built yet).
 - **The site must keep an ended job for more than 60 seconds** (`MinJobAge`): how the job ended

@@ -1098,9 +1098,21 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
     remote = handle.remote_dir
     t0 = time.monotonic()
     started: float | None = None
-    queued = False
     interval: float = POLL_FIRST_SEC
-    last = "no poll was answered"
+    answered: tuple[str, float] | None = None   # the last state a poll answered, and when
+    unanswered = 0                               # the polls after it that answered nothing
+    last = ""
+
+    def polls() -> str:
+        # Only what the polls showed: the job's state at the end of the wait is not known.
+        if answered is None:
+            return f"no poll answered its state (the last said: {last})"
+        said = f"the last answered poll read it as {answered[0]}, {answered[1]:.0f} sec into the wait"
+        if unanswered:
+            said += (f", and the {unanswered} poll(s) after it answered nothing (the last "
+                     f"said: {last})")
+        return said
+
     try:
         while True:
             time.sleep(interval)
@@ -1113,23 +1125,22 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
                 raise RemoteExecutionError(
                     f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
                     f"longer stated; its output is not read ({remote})")
+            if condition == "no_answer":
+                unanswered, last = unanswered + 1, str(value)
+            else:
+                answered, unanswered = (condition, now - t0), 0
             if condition == "running" and started is None:
                 started = now
-            queued = queued or condition == "queued"
-            if condition == "no_answer":
-                last = str(value)
             if started is None and now - t0 > queue_bound_sec:
-                seen = ("a poll answered it queued" if queued
-                        else "no poll answered its state")
                 raise RemoteExecutionError(
                     f"wait for the job: job {handle.job_id} was not seen running within "
-                    f"{queue_bound_sec} sec (queue_timeout_sec; {seen}); it is left as it is, "
-                    f"nothing cancels it (last unanswered poll: {last}) ({remote})")
+                    f"{queue_bound_sec} sec (queue_timeout_sec); {polls()}; it is left as it "
+                    f"is, nothing cancels it ({remote})")
             if started is not None and now - started > run_bound_sec:
                 raise RemoteExecutionError(
                     f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
-                    f"sec of its start; it is left running (last unanswered poll: {last}) "
-                    f"({remote})")
+                    f"sec since a poll first saw it running; {polls()}; it is left as it is, "
+                    f"nothing cancels it ({remote})")
     except RemoteExecutionError as exc:
         raise _left(exc, remote) from exc
 

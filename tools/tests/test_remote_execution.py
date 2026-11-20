@@ -1157,8 +1157,9 @@ class SchedulerTests(unittest.TestCase):
         h = self._slurm(self.h, queue_timeout_sec=1)
         with self.assertRaisesRegex(rx.RemoteExecutionError,
                                     r"job 4242 was not seen running within 1 sec "
-                                    r"\(queue_timeout_sec; a poll answered it queued\); it is "
-                                    "left as it is.*left at the site"):
+                                    r"\(queue_timeout_sec\); the last answered poll read it as "
+                                    r"queued, \d+ sec into the wait; it is left as it is.*left at "
+                                    "the site"):
             h.run(h.request(), SHIM_SBATCH_HOLD="1")
         self.assertEqual(h.slurm_record()["state"], "PENDING")
         self.assertTrue(Path(h.job).is_dir())
@@ -1364,8 +1365,8 @@ class BindingTests(unittest.TestCase):
         self.assertTrue(all(r["ok"] for r in result.results))
         self.h = SchedulerTests._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)),
                                        queue_timeout_sec=1)
-        self._refused(r"not seen running within 1 sec \(queue_timeout_sec; no poll answered its "
-                      r"state\).*last unanswered poll: .*Socket timed out",
+        self._refused(r"not seen running within 1 sec \(queue_timeout_sec\); no poll answered its "
+                      r"state \(the last said: .*Socket timed out",
                       SHIM_SCONTROL_NO_ANSWER="100000")
 
     def test_a_transport_failure_while_collecting_is_refused(self) -> None:
@@ -1514,40 +1515,53 @@ class PollingTests(unittest.TestCase):
             self.h.run(self.h.request(), SHIM_SCONTROL_FORGET="1")
         self.assertEqual([c[0] for c in self.h.calls()].count("scontrol"), 1)
 
-    def test_a_job_past_its_running_bound_is_refused_and_left_running(self) -> None:
+    def _refusal(self, answers: list[tuple[str, object]], **bounds: int) -> str:
+        """The refusal of a wait whose polls answer `answers` (the last repeated), 10 sec
+        apart on a clock that starts at 0."""
         clock = iter(float(t) for t in range(0, 1000, 10))
-        with mock.patch.object(rx, "_ask_state", return_value=("running", None)), \
+        replies = iter(answers)
+        with mock.patch.object(rx, "_ask_state",
+                               side_effect=lambda *a: next(replies, answers[-1])), \
                 mock.patch.object(rx.time, "sleep"), \
                 mock.patch.object(rx.time, "monotonic", side_effect=lambda: next(clock)):
-            with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                        "job 7 did not end within 25 sec of its start; it is left "
-                                        "running"):
-                rx.wait_job(self._handle(), queue_bound_sec=5, run_bound_sec=25)
+            with self.assertRaises(rx.RemoteExecutionError) as ctx:
+                rx.wait_job(self._handle(), **bounds)
+        text = str(ctx.exception)
+        self.assertIn("it is left as it is, nothing cancels it", text)
+        self.assertNotIn("left running", text)
+        return text
+
+    def test_a_job_past_its_running_bound_is_refused_and_left_as_it_is(self) -> None:
+        text = self._refusal([("running", None)], queue_bound_sec=5, run_bound_sec=25)
+        self.assertIn("job 7 did not end within 25 sec since a poll first saw it running; the "
+                      "last answered poll read it as running, 40 sec into the wait;", text)
+        self.assertNotIn("answered nothing", text)
+        self.assertNotIn("no poll answered", text)
+
+    def test_a_job_running_then_unanswered_is_not_said_to_be_running(self) -> None:
+        """The polls after the last answered one answered nothing: the job may have ended, so
+        the refusal states when it was last read as running, and how many polls followed."""
+        text = self._refusal([("running", None), ("no_answer", "zz down")],
+                             queue_bound_sec=5, run_bound_sec=25)
+        self.assertIn("the last answered poll read it as running, 10 sec into the wait, and the "
+                      "3 poll(s) after it answered nothing (the last said: zz down);", text)
+        self.assertNotIn("no poll answered", text)
 
     def test_a_queued_job_past_its_queue_bound_is_refused(self) -> None:
-        clock = iter(float(t) for t in range(0, 1000, 10))
-        with mock.patch.object(rx, "_ask_state", return_value=("queued", None)), \
-                mock.patch.object(rx.time, "sleep"), \
-                mock.patch.object(rx.time, "monotonic", side_effect=lambda: next(clock)):
-            with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                        "job 7 was not seen running within 25 sec "
-                                        r"\(queue_timeout_sec; a poll answered it queued\)"):
-                rx.wait_job(self._handle(), queue_bound_sec=25, run_bound_sec=5)
+        text = self._refusal([("queued", None)], queue_bound_sec=25, run_bound_sec=5)
+        self.assertIn("job 7 was not seen running within 25 sec (queue_timeout_sec); the last "
+                      "answered poll read it as queued, 30 sec into the wait;", text)
+        self.assertNotIn("answered nothing", text)
+        self.assertNotIn("no poll answered", text)
 
     def test_a_job_no_poll_answered_is_not_said_to_be_queued(self) -> None:
         """Every poll answered `no_answer`: what is known is that no poll answered and the job
         was not seen running, not that it did not start."""
-        clock = iter(float(t) for t in range(0, 1000, 10))
-        with mock.patch.object(rx, "_ask_state", return_value=("no_answer", "zz down")), \
-                mock.patch.object(rx.time, "sleep"), \
-                mock.patch.object(rx.time, "monotonic", side_effect=lambda: next(clock)):
-            with self.assertRaises(rx.RemoteExecutionError) as ctx:
-                rx.wait_job(self._handle(), queue_bound_sec=25, run_bound_sec=5)
-        text = str(ctx.exception)
-        self.assertIn("was not seen running within 25 sec (queue_timeout_sec; no poll answered "
-                      "its state)", text)
-        self.assertIn("last unanswered poll: zz down", text)
+        text = self._refusal([("no_answer", "zz down")], queue_bound_sec=25, run_bound_sec=5)
+        self.assertIn("was not seen running within 25 sec (queue_timeout_sec); no poll answered "
+                      "its state (the last said: zz down);", text)
         self.assertNotIn("queued", text)
+        self.assertNotIn("read it as", text)
 
     def test_the_state_commands_are_tried_in_order_until_one_answers(self) -> None:
         """`state_argvs` may name more than one command (a scheduler whose ended jobs are
