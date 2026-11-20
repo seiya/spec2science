@@ -396,13 +396,13 @@ class PromptCompositionTests(unittest.TestCase):
                 "parallel", "openmp", "prompt_fragments").fragments(stem)[section]
             with self.subTest(template=template_file):
                 composed = self._compose(template_file, "mpi+openmp")
-                self.assertIn("\n\n".join([lead, mpi, openmp]), composed)
+                self.assertIn(f"{lead}\n\n{mpi}\n\n{openmp}", composed)
                 self.assertIn("`mpi+openmp`", lead)
                 self.assertIn("`mpi`, `openmp`", lead)
                 self.assertNotIn("{{value}}", composed)
                 self.assertNotIn("{{members}}", composed)
                 reordered = self._compose(template_file, "openmp+mpi")
-                self.assertIn("\n\n".join([openmp, mpi]), reordered)
+                self.assertIn(f"{openmp}\n\n{mpi}", reordered)
 
     def test_a_one_member_value_composes_as_before(self) -> None:
         for template_file in ("workshop_generate_generate.txt", "workshop_generate_verify.txt"):
@@ -414,7 +414,7 @@ class PromptCompositionTests(unittest.TestCase):
                     template = (REPO_ROOT / "tools" / "prompt_templates" / template_file
                                 ).read_text(encoding="utf-8")
                     expected = ort._PARALLEL_FRAGMENT_RE.sub(
-                        lambda m: sections[m.group(1)], template)
+                        lambda m, s=sections: s[m.group(1)], template)
                     self.assertEqual(self._compose(template_file, backend), expected)
                     self.assertNotIn("This target's `parallel.backend`",
                                      self._compose(template_file, backend))
