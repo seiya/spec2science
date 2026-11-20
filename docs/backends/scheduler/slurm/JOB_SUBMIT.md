@@ -184,8 +184,11 @@ makes a command that runs long a refusal rather than the command's own timeout.
   `--time` in force, the submit command's or a directive's, which may be longer. A resumed run
   adopts it when it would submit the same job (`docs/ORCHESTRATION.md` §Execution sites); a job
   it does not adopt is left behind, and the event `site_job_not_adopted` names its id and its
-  directory. Cancel one by hand with `scancel <job_id>` (or `scancel --name=<its name>`, §2) and
-  remove its directory at the site.
+  directory. A directive changed after a queue timeout (a `--partition`, for example) changes
+  the request, so the resumed run does not adopt the queued job and it is left behind. Cancel
+  one by hand with `scancel <job_id>` (or `scancel --name=<its name>`, §2) and remove its
+  directory at the site; cancel a job whose `site job record` you remove to abandon it the
+  same way. How long an ended job stays adoptable is `MinJobAge` (§2).
 - **A suspended job's time is spent against the run bound.** `SUSPENDED` (preemption by
   suspension, an administrator's `scontrol suspend`) is read as running, so the host's run bound
   — the job's own time limit plus its grace — keeps advancing while Slurm's own limit does not.
