@@ -27,7 +27,7 @@ sites:
     executes: [cpu]                 # a claim about the machines the directives below select
     scheduler: slurm                # submitted as a batch job and polled; docs/backends/scheduler/<scheduler>/JOB_SUBMIT.md
     scheduler_directives: []        # each split into words and passed to the scheduler; its JOB_SUBMIT.md shows them
-    queue_timeout_sec: 7200         # how long a run waits for the job to start; the job is not cancelled; default 3600
+    queue_timeout_sec: 7200         # how long a run waits for the job to start; the job is not cancelled, and --resume adopts it; default 3600
     setup:                          # under a scheduler, run inside the job on the node it selects
       - . /etc/profile.d/modules.sh # a non-interactive login defines no `module` command
       - module load compiler
