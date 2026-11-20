@@ -1269,12 +1269,15 @@ def _remove_job_record(path: Path) -> None:
 
 def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | None]:
     """The record at `path` and None when its job is one this site could adopt (adoption
-    condition 1 of issue #696 §6.5: the site's id, host and scheduler), else the record (or
-    None) and why not. These are the adoption key, not integrity checks: the record is
+    condition 1 of issue #696 §6.5: the site's host and scheduler), else the record (or None)
+    and why not. These are the adoption key, not integrity checks: the record is
     host-written where no leaf writes, and one that does not read as a record is not adopted.
     The job directory is not compared with the site's `workdir`: the digest binds it (the job
     script holds it), so a job submitted under another `workdir` is still the job this attempt
-    would submit for that directory."""
+    would submit for that directory. Nor is the site's id: two sites at one host under one
+    scheduler that compose one request — the digest holds the script and the directives, the
+    only parts of a site that reach the submission — submit the same job, and the entries name
+    the current site whichever submitted it."""
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -1284,8 +1287,7 @@ def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | 
             isinstance(record.get(k), str) for k in
             ("site", "host", "scheduler", "job_id", "remote_dir", "request_sha256"))):
         return None, "the record is unreadable (not a job record's fields)"
-    for key, current in (("site", site.site_id), ("host", str(site.host)),
-                         ("scheduler", site.scheduler)):
+    for key, current in (("host", str(site.host)), ("scheduler", site.scheduler)):
         if record[key] != current:
             return record, f"it was submitted to {key} {record[key]!r}, not {current!r}"
     return record, None
@@ -1306,7 +1308,7 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
     interrupted wait, a scheduler that does not answer at adoption, a failed copy — the refusal
     of the last two names the record.
 
-    A recorded job is adopted when (1) the record reads and names this site's id, host and
+    A recorded job is adopted when (1) the record reads and names this site's host and
     scheduler; (2) `request_for(<that directory>)` has the recorded digest; and (3) the record
     holds an end answer or the scheduler answers queued, running or ended. Otherwise a job of this attempt's
     own is submitted and its record replaces the one read, the event `site_job_not_adopted`

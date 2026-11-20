@@ -1940,6 +1940,37 @@ class AdoptionTests(unittest.TestCase):
         (sbatch,) = [c for c in self.h.calls() if c[0] == "sbatch"][1:]
         self.assertIn("--partition=fixed", sbatch)
 
+    def test_a_site_of_another_id_that_submits_the_same_job_adopts_it(self) -> None:
+        """Two site entries at one host under one scheduler, one `workdir` and one set of
+        directives (JOB_SUBMIT.md §2's `cluster_cpu` / `cluster_gpu` shape with the directives
+        made equal) differ only in their id, and submit the same job: it is adopted."""
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        self.h.site = dataclasses.replace(self.h.site, site_id="box_twin")
+        self.assert_adopted(self.attempt("arid-2"))
+
+    def test_an_adopted_job_keeps_the_recorded_submission_time(self) -> None:
+        """`queue_wait_ms` of an adopted job is measured from the login's time the record holds:
+        a handle without it would record a wait of 0, a false record."""
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        record = json.loads(self.record.read_text())
+        self._edit_record(submitted_epoch=record["submitted_epoch"] - 100)
+        result = self.attempt("arid-2")
+        self.assert_adopted(result)
+        self.assertGreaterEqual(result.site_record["queue_wait_ms"], 100_000)
+
+    def test_the_digest_covers_a_shipped_files_relative_path(self) -> None:
+        """One content shipped under another name is another request: the script does not name
+        a file no command names."""
+        extra = self.h.local / "extra.dat"
+        extra.write_text("data\n")
+        one, other = (self.request_for(self.h.job, ship={"bin/runner": self.h.runner,
+                                                          name: extra})
+                      for name in ("data/a.dat", "data/b.dat"))
+        self.assertEqual(rx.render_job_script(one), rx.render_job_script(other))
+        self.assertNotEqual(rx.request_sha256(one), rx.request_sha256(other))
+
     def _edit_record(self, **fields) -> None:
         record = json.loads(self.record.read_text())
         record.update(fields)
