@@ -27,11 +27,13 @@ one node); on the machine this was written for nothing is billed.
   zeros, alone and after killing the script's shell) are never read as success. Each seeded row
   records `rewrite_landed`, whether the leftover's rewrite reached the output file (it leaves
   `job.out.rewritten` after it). On a site that tracks a job's processes by cgroup
-  (`proctrack/cgroup`) the job's end kills the leftover before the rewrite lands — this
-  machine, 2026-11-20, jobs 1690 and 1691: `false` in both, the first recorded as the command's
-  failure, the second refused as ended otherwise — so there the rows show only that the failure
-  is not read as success, and the binding itself is exercised by the suite's shim rows
-  (`BindingTests`). About 4 minutes.
+  (`proctrack/cgroup`) the job's end kills the leftover, racing its rewrite. On this machine,
+  2026-11-20, the kill came first in the runs recorded — jobs 1690 and 1691: `false` in both,
+  the first recorded as the command's failure, the second refused as ended otherwise — and in
+  one earlier run (job 1642) the leftover's truncation of the file landed and the job was
+  refused (`not one spec2science-start line`, a refusal since relaxed). So there the rows show
+  only that the failure is not read as success, and the binding itself is exercised by the
+  suite's shim rows (`BindingTests`). About 4 minutes.
 - `fixture` turns the `raw` records into the answers `tools/tests/test_scheduler_slurm.py`
   `JobStateTests` reads, with the operator's names and paths replaced (`_sanitize`).
 

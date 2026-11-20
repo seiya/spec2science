@@ -1291,8 +1291,10 @@ class SchedulerTests(unittest.TestCase):
 #: output file so that every command reads as having exited 0, then leaves `job.out.rewritten`
 #: beside it. It acts on the status line, not only on the shell's end, because a real scheduler
 #: kills what a job left running once the script ends. On Slurm 20.02 with `proctrack/cgroup`
-#: that kill comes first either way: the rewrite does not land there (`measure_slurm.py
-#: executor` records whether it did), so these shim rows are what exercises the binding. With
+#: the two race: in the runs `measure_slurm.py executor` recorded (jobs 1690, 1691) the kill came
+#: first and the rewrite did not land, and in one earlier run (job 1642) its truncation of the
+#: file landed and the job was refused (`not one spec2science-start line`). So these shim rows
+#: are what exercises the binding. With
 #: `KILL` set it also kills that shell first. Its parent is `timeout`, whose parent is the job
 #: script's shell.
 _FORGER = textwrap.dedent('''\

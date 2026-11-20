@@ -111,9 +111,10 @@ stderr). The script's `executor` runs the executor itself against that Slurm (ss
 shimmed): a script exiting 0 and one whose command failed are accepted as such, an exit of 3, a
 job past its `--time` and a cancelled one are refused, and a seeded leftover process that
 rewrites `job.out` to all zeros is never read as success — but on that cluster, which tracks a
-job's processes by cgroup (`proctrack/cgroup`), the job's end kills the leftover before its
-rewrite lands (recorded `rewrite_landed: false`, alone and after killing the script's shell),
-so what refuses a rewritten file under a failed record (§1, what is accepted) is exercised by
+job's processes by cgroup (`proctrack/cgroup`), the job's end kills the leftover, racing its
+rewrite: in the runs recorded the kill came first (`rewrite_landed: false`, alone and after
+killing the script's shell, jobs 1690 and 1691), and in one earlier run (job 1642) the
+leftover's truncation of `job.out` landed and the job was refused; so what refuses a rewritten file under a failed record (§1, what is accepted) is exercised by
 the suite's shim rows (`tools/tests/test_remote_execution.py` `BindingTests`), not on Slurm.
 
 ## 2. What the site must provide
