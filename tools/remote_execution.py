@@ -1274,7 +1274,9 @@ def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | 
     """The record at `path` and None when its job is one this site could adopt (adoption
     condition 1 of issue #696 §6.5: the site's host and scheduler), else the record (or None)
     and why not. These are the adoption key, not integrity checks: the record is
-    host-written where no leaf writes, and one that does not read as a record is not adopted.
+    host-written where no leaf writes, through a temporary name, so its fields are not
+    checked; a file that does not parse (one emptied by a crash of the machine before the
+    write reached the disk) is not adopted.
     The job directory is not compared with the site's `workdir`: the digest binds it (the job
     script holds it), so a job submitted under another `workdir` is still the job this attempt
     would submit for that directory. Nor is the site's id: two sites at one host under one
@@ -1285,11 +1287,6 @@ def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | 
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, f"the record is unreadable ({exc})"
-    # Without the keys a resume would fail on a `KeyError`; their values are the host's own.
-    if not (isinstance(record, dict) and all(
-            isinstance(record.get(k), str) for k in
-            ("site", "host", "scheduler", "job_id", "remote_dir", "request_sha256"))):
-        return None, "the record is unreadable (not a job record's fields)"
     for key, current in (("host", str(site.host)), ("scheduler", site.scheduler)):
         if record[key] != current:
             return record, f"it was submitted to {key} {record[key]!r}, not {current!r}"

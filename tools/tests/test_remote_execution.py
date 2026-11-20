@@ -2004,7 +2004,7 @@ class AdoptionTests(unittest.TestCase):
 
     def test_an_unreadable_record_is_not_adopted(self) -> None:
         self.record.parent.mkdir(parents=True)
-        for text in ("{", '{"job_id": 7}'):
+        for text in ("{", ""):
             with self.subTest(text=text):
                 self.record.write_text(text)
                 self.events.clear()
