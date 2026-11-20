@@ -190,8 +190,10 @@ makes a command that runs long a refusal rather than the command's own timeout.
   suspension, an administrator's `scontrol suspend`) is read as running, so the host's run bound
   — the job's own time limit plus its grace — keeps advancing while Slurm's own limit does not.
   At a site that preempts by suspension, a job suspended for long enough is refused at the run
-  bound and left as it is, and a rerun submits a new one. The alternative, not counting a
-  suspended interval, would wait without bound on a job that stays suspended.
+  bound and left as it is with its `site job record` kept, and `--resume` adopts it and waits
+  for it again under a run bound of its own (`docs/ORCHESTRATION.md` §Execution sites). The
+  alternative, not counting a suspended interval, would wait without bound on a job that stays
+  suspended.
 - **No requeue.** A requeued batch job runs its script again from the beginning, in a directory
   holding the first pass's files, and truncates its output file, so two passes would be recorded
   as one run. `--no-requeue` is the executor's own option, last: it stops the scheduler's own
