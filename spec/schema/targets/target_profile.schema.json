@@ -41,7 +41,7 @@
       "additionalProperties": false,
       "required": ["backend"],
       "properties": {
-        "backend": {"$ref": "#/definitions/token", "description": "The `parallel` axis value."}
+        "backend": {"$ref": "#/definitions/token", "description": "The `parallel` axis value: one model, or several joined by `+` (docs/BACKEND_BOUNDARY.md, a combinable axis)."}
       }
     },
     "execution": {

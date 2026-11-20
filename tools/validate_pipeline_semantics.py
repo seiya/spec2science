@@ -1906,12 +1906,15 @@ def _validate_parallel_presence_floor(
     language = target.toolchain["language"]
     # A model whose directive knowledge has no package of its own renders no directive (`none`
     # carries the capability in the neutral core for exactly that reason), so it has no floor.
-    if not backend_registry.provides("parallel", backend, "parallel_directives") or (
-            "parallel_directives" not in backend_registry.get("parallel", backend).backend_provides):
-        return
-    directives = backend_registry.capability_module("parallel", backend, "parallel_directives")
-    floor = directives.presence_floor(language=language, hardware_class=target.hardware_class)
-    if floor is None:
+    # A value that combines several models (issue #700) asks every member's floor in turn.
+    members = backend_registry.package_members("parallel", backend, "parallel_directives")
+    floors = []
+    for member in members:
+        directives = backend_registry.capability_module("parallel", member, "parallel_directives")
+        floor = directives.presence_floor(language=language, hardware_class=target.hardware_class)
+        if floor is not None:
+            floors.append(floor)
+    if not floors:
         return
     # A language without a source reader has already been refused on this src_dir
     # (`_validate_generate_outputs`), hence the discarded sink.
@@ -1924,41 +1927,55 @@ def _validate_parallel_presence_floor(
         return  # no bundle (the host writes it from the accepted document)
     if not isinstance(bundle, dict):
         return
-    # The launch-configuration half (issue #512, the CUDA backend's): asked of every leaf source,
-    # whatever the plan and the loop count, before anything below may return. A kernel launched
-    # from a helper the model reaches at link time is the same launch.
-    launch_violations = getattr(floor, "launch_violations", None)
-    if launch_violations is not None:
-        spec_id = _spec_id_from_node_key(execution.node_key)
-        runner_stem = f"{spec_id}_runner"
-        launch_files = [*model_files, *(
-            p for p in source_reading.leaf_sources(src_dir)
-            if p not in model_files and not (p.parent == src_dir and p.stem == runner_stem))]
-        violations.extend(launch_violations(
-            {f: f.read_text(encoding="utf-8", errors="ignore") for f in launch_files}))
-    # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: a forbidden direct use of the
-    # library does not depend on the plan) states its findings itself, and decides for itself what
-    # a declining plan exempts (issue #610: nothing, since the host-rendered driver distributes
-    # whatever the plan says).
-    node_violations = getattr(floor, "node_violations", None)
-    if node_violations is not None:
-        violations.extend(node_violations(
-            model_texts={f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files},
-            plan=bundle.get("target_lowering_plan"),
-            harness_spec_id=str(target.harness.get("infrastructure_id") or ""),
-            node_kind=execution.node_key.split("/", 1)[0]))
-        return
-    if directives.lowering_plan_declines(bundle.get("target_lowering_plan")):
-        return  # an explicit declaration G6 judges; the target's backend is the default
-
-    for model_file in model_files:
-        text = model_file.read_text(encoding="utf-8", errors="ignore")
-        if floor.directive.search(text):
+    plan = bundle.get("target_lowering_plan")
+    # The plan declines a floor only when EVERY member's `lowering_plan_declines` says so — for a
+    # one-member value, that member's answer, as before (issue #700). Leaf gain it closes: on a
+    # combination target a plan that names one member — which that member's own prompt paragraph
+    # tells the producer to write — reads as "another model" to the other member's floor, so
+    # without this rule a source with counted loops and no directive of that model passes the
+    # gate, and the node is certified on a hybrid target without a threaded region. A plan that
+    # names no member of the target (`none`, or a word of its own) still declines, as it does on
+    # a one-member target: a declaration G6 judges.
+    declined = all(
+        backend_registry.capability_module(
+            "parallel", member, "parallel_directives").lowering_plan_declines(plan)
+        for member in members)
+    model_texts = {f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files}
+    for floor in floors:
+        # The launch-configuration half (issue #512, the CUDA backend's): asked of every leaf
+        # source, whatever the plan and the loop count, before anything below may skip. A kernel
+        # launched from a helper the model reaches at link time is the same launch.
+        launch_violations = getattr(floor, "launch_violations", None)
+        if launch_violations is not None:
+            spec_id = _spec_id_from_node_key(execution.node_key)
+            runner_stem = f"{spec_id}_runner"
+            launch_files = [*model_files, *(
+                p for p in source_reading.leaf_sources(src_dir)
+                if p not in model_files and not (p.parent == src_dir and p.stem == runner_stem))]
+            violations.extend(launch_violations(
+                {f: f.read_text(encoding="utf-8", errors="ignore") for f in launch_files}))
+        # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: a forbidden direct use
+        # of the library does not depend on the plan) states its findings itself, and decides for
+        # itself what a declining plan exempts (issue #610: nothing, since the host-rendered
+        # driver distributes whatever the plan says).
+        node_violations = getattr(floor, "node_violations", None)
+        if node_violations is not None:
+            violations.extend(node_violations(
+                model_texts=model_texts,
+                plan=plan,
+                harness_spec_id=str(target.harness.get("infrastructure_id") or ""),
+                node_kind=execution.node_key.split("/", 1)[0]))
             continue
-        counted = source_reading.counted_loops(text)
-        if counted < 1:
-            continue  # nothing the floor may count (see `counted_loops`), verify G6's province
-        violations.append(floor.remedy(model_file, counted))
+        if declined:
+            continue  # an explicit declaration G6 judges; the target's backend is the default
+        for model_file in model_files:
+            text = model_texts[model_file]
+            if floor.directive.search(text):
+                continue
+            counted = source_reading.counted_loops(text)
+            if counted < 1:
+                continue  # nothing the floor may count (see `counted_loops`), verify G6's province
+            violations.append(floor.remedy(model_file, counted))
 
 
 def _read_dependency_graph_sidecar(repo_root: Path, ir_ref: str | None) -> dict[str, Any] | None:
@@ -4987,7 +5004,7 @@ def _validate_device_kernel_execution(
     if target is None:
         return  # refused by `_validate_pipeline_targets_resolve`
     backend = target.parallel_backend
-    if "device_trace" not in backend_registry.get("parallel", backend).backend_provides:
+    if not backend_registry.package_members("parallel", backend, "device_trace"):
         return
     trace = backend_registry.capability_module("parallel", backend, "device_trace")
     # A language without a source reader has already been refused on this src_dir
@@ -5051,7 +5068,9 @@ def _validate_device_kernel_execution(
             f"fix the site or the target, then `--resume` — or the model launches none of the "
             f"kernels it defines, or every launch it makes fails on its own account (an invalid "
             f"launch configuration) — then `--rederive generate`. "
-            f"docs/backends/parallel/{backend}/DEVICE_TRACE.md §5 gives the procedure for the "
+            f"docs/backends/parallel/"
+            f"{backend_registry.package_members('parallel', backend, 'device_trace')[0]}"
+            f"/DEVICE_TRACE.md §5 gives the procedure for the "
             f"local site and a remote one. A GPU implementation none of whose kernels ran is not "
             f"certified"))
         return

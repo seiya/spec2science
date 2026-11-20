@@ -1340,6 +1340,9 @@ class PureRenderTests(unittest.TestCase):
         # Issue #316 (R4-c PR-4): the MPI model's, composed the same way.
         ("tools/prompt_templates/backends/parallel/mpi/generate_generate.txt", None, None),
         ("tools/prompt_templates/backends/parallel/mpi/generate_verify.txt", None, None),
+        # Issue #700: the lead a combination's members' fragments are composed under.
+        ("tools/prompt_templates/parallel_combination/generate_generate.txt", None, None),
+        ("tools/prompt_templates/parallel_combination/generate_verify.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_verify_harness.txt",
          None, None),
         # Round 5 found the tuple short of its own docstring twice over.

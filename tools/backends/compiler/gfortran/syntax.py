@@ -54,10 +54,11 @@ def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
     shares Build's object directory. `architecture` is ACCEPTED AND NOT READ: a CPU Fortran
     front end has no device architecture to be told, and the argument exists for the adapters
     that do. `parallel_backend` is the target's `parallel.backend` value: `-fopenmp` is the OpenMP
-    backend's switch for this driver, appended when the value is exactly `openmp` — the same
-    comparison `tools/backends/language/fortran/control_file.flags` makes for Build, so the two
-    stages cannot disagree on one value (the profile loader admits lowercase tokens only, and
-    `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
+    backend's switch for this driver, appended when `openmp` is a member of the value
+    (`registry.members`: the value itself, or one part of a `+`-joined combination, issue #700)
+    — the same test `tools/backends/language/fortran/control_file.flags` makes for Build, so the
+    two stages cannot disagree on one value (the profile loader admits lowercase tokens only,
+    and `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
     come first after the mode flags; the sources stay last so the compiler reads them after the
     module-directory flags. `include_dirs` are the external libraries' module directories
     (issue #644), searched after the scratch directory.
@@ -65,6 +66,10 @@ def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
     del architecture  # accepted, not read (see the docstring)
     command = [EXECUTABLE, "-fsyntax-only", f"-std={standard}", *promotions,
                "-J", scratch_dir, "-I", scratch_dir, *(f"-I{d}" for d in include_dirs)]
-    if parallel_backend == "openmp":
+    from tools.backends import registry
+
+    # A member of the target's value, so a combination that includes OpenMP takes it too
+    # (issue #700).
+    if "openmp" in registry.members("parallel", parallel_backend):
         command.append("-fopenmp")
     return command + list(sources)

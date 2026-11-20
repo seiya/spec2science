@@ -28,8 +28,12 @@ def flags(standard: str, parallel_backend: str) -> str:
     `_write_makefile` docstring). `$(LIBINC)` is the include flags of the external libraries the
     closure declares (issue #644), which every build passes on the command line, empty when it
     declares none, so a later declaration changes no control file."""
+    from tools.backends import registry
+
     value = f"-std={standard} -O2"
-    if parallel_backend == "openmp":
+    # A member of the target's value, so a combination that includes OpenMP takes it too
+    # (issue #700).
+    if "openmp" in registry.members("parallel", parallel_backend):
         value += " -fopenmp"
     return value + " -J$(OBJDIR) -I$(OBJDIR) $(LIBINC)"
 

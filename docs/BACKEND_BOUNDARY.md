@@ -122,6 +122,15 @@ Out of scope, each for a stated reason:
   `target_lowering_plan.parallelization`, is an open-valued object). For such
   an axis the registry lists the members that have code; membership answers permissively and
   usability still refuses.
+- An axis whose value may name several members, joined by `+` in the order the operator writes
+  them, is declared `combinable` (today: `parallel`, issue #700). A combination has no record and
+  no package: `registry.members` splits it, and the registry answers each question from the
+  members — a membership question with the first member's reason, `provides` when some member
+  provides, `capability_module` with the module of the one member whose package declares the
+  capability, and a refusal when several members do. A capability several members each implement
+  is asked of each (`registry.package_members`), so a dispatch site cannot drop one member's part
+  by asking for "the" module. `registry.get` and `registry.load` raise for a combination. The
+  value stays one string wherever it is recorded or keyed.
 - A record with `module=None` and a `core_provides` entry has its job done by the neutral core
   (one with neither is the bare declaration above, which nothing implements). Every such record
   today is deliberately neutral — `linter/mixed` is a composite of other presets, and `parallel/none`,
@@ -141,6 +150,11 @@ Out of scope, each for a stated reason:
 
 A neutral document states the contract in neutral terms and references the backend document for
 the binding. A neutral document must not state the binding itself.
+
+Text that is the axis's own rather than one backend's is neutral: the lead a `combinable` axis's
+members' prompt fragments are composed under on a combination target is at
+`tools/prompt_templates/parallel_combination/<template>.txt`, names no technology, and is filled
+with the target's value and its members (`orchestration_runtime._compose_parallel_fragments`).
 
 A target profile (`spec/targets/<target_id>.yaml`, issue #284) is neutral DATA, not a backend
 location: it names one value per axis as an opaque token, and the host asks the registry about

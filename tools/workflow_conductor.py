@@ -12609,8 +12609,8 @@ class Conductor:
     def _traces_execution(self) -> bool:
         """True when the target's parallel backend runs its binary under a device trace
         (`device_trace`, issue #307), so Validate.execute delivers `kernel_trace.csv`."""
-        return "device_trace" in backend_registry.get(
-            "parallel", self.target.parallel_backend).backend_provides
+        return bool(backend_registry.package_members(
+            "parallel", self.target.parallel_backend, "device_trace"))
 
     def _builds_checked(self) -> bool:
         """True when the target's compiler declares checked flags (`checked_build.
@@ -13729,7 +13729,9 @@ class Conductor:
             # the run directory is removed with the rest of this agent run's tmp root when the
             # substep ends (`orchestration_runtime._cleanup_agent_tmp_root`), so nothing here
             # can point at the report.
-            where = (f"(see docs/backends/parallel/{target.parallel_backend}/DEVICE_TRACE.md §1 "
+            tracer = backend_registry.package_members(
+                "parallel", target.parallel_backend, "device_trace")[0]
+            where = (f"(see docs/backends/parallel/{tracer}/DEVICE_TRACE.md §1 "
                      f"for what this means and how to reproduce it, then --resume)")
             if res_trace is None or not res_trace.get("ok"):
                 detail = "did not run" if res_trace is None else (
