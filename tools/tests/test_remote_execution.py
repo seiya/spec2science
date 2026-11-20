@@ -50,6 +50,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -1532,6 +1533,25 @@ class PollingTests(unittest.TestCase):
         self.assertTrue(all(r["ok"] for r in result.results))
         self.assertTrue(Path(str(self.h.log) + ".failed").exists(), "a poll did fail")
 
+    def test_a_poll_whose_ssh_call_hangs_past_its_bound_is_asked_again(self) -> None:
+        """A poll whose ssh call does not finish within its transport bound (or cannot be
+        started) is a failed poll, asked again, not a refusal of the wait: the first state
+        call here runs a program that outlives a 1 sec bound, and the next ones run as built."""
+        real = rx._call
+        hung: list[str] = []
+
+        def once(argv, **kw):
+            if not hung and "scontrol" in argv[-1]:
+                hung.append(argv[-1])
+                return real([sys.executable, "-c", "import time; time.sleep(30)"],
+                            **{**kw, "timeout": 1})
+            return real(argv, **kw)
+
+        with mock.patch.object(rx, "_call", side_effect=once):
+            result = self.h.run(self.h.request())
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertEqual(len(hung), 1, "the first poll did hang")
+
     def test_a_poll_answered_no_answer_is_asked_again(self) -> None:
         result = self.h.run(self.h.request(), SHIM_SCONTROL_NO_ANSWER="3")
         self.assertTrue(all(r["ok"] for r in result.results))
@@ -1573,6 +1593,14 @@ class PollingTests(unittest.TestCase):
         self.assertIn("the last answered poll read it as running, 10 sec into the wait, and the "
                       "3 poll(s) after it answered nothing (the last said: zz down);", text)
         self.assertNotIn("no poll answered", text)
+
+    def test_the_unanswered_count_starts_again_after_an_answer(self) -> None:
+        """Running at 10, nothing at 20, running at 30, nothing at 40, where the run bound of
+        25 sec since 10 refuses: one poll followed the last answered one, not two."""
+        text = self._refusal([("running", None), ("no_answer", "zz one"), ("running", None),
+                              ("no_answer", "zz two")], queue_bound_sec=5, run_bound_sec=25)
+        self.assertIn("the last answered poll read it as running, 30 sec into the wait, and the "
+                      "1 poll(s) after it answered nothing (the last said: zz two);", text)
 
     def test_a_queued_job_past_its_queue_bound_is_refused(self) -> None:
         text = self._refusal([("queued", None)], queue_bound_sec=25, run_bound_sec=5)
