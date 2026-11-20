@@ -1193,7 +1193,7 @@ class SchedulerTests(unittest.TestCase):
         """Issue #696 §6.12: the start line gives `queue_wait_ms`, which no verdict reads, so a
         second, a lost or a malformed one is not a refusal: the first in its shape is read, and
         none is a wait of 0. A marker glued to more letters is still refused (it is no start
-        line and no status line), and a start line from a `none` site's job still is."""
+        line and no status line)."""
         for pattern, repl, wait in (
                 (rf"^({rx.START_MARKER}) \d+$", r"\1 1\n\1 1", None),           # a second one
                 (rf"^({rx.START_MARKER} .*)$", "", 0),                              # lost
@@ -1209,10 +1209,6 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(rx.RemoteExecutionError, "does not parse"):
             h.run(h.request(), SHIM_SBATCH_SUB=json.dumps(
                 [rf"^({rx.START_MARKER} .*)$", rf"\1\n{rx.START_MARKER}x 8"]))
-        h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
-        with self.assertRaisesRegex(rx.RemoteExecutionError, "run under no scheduler"):
-            h.run(h.request(), SHIM_SSH_SUB=json.dumps(
-                [r"^(spec2science-platform machine .*)$", rf"{rx.START_MARKER} 2\n\1"]))
 
     def test_the_launch_probe_asks_for_the_schedulers_programs(self) -> None:
         from tools.host_prerequisites import required_site_executables

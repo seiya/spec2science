@@ -701,17 +701,12 @@ def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str,
     return statuses, facts, starts
 
 
-def _started(lines: list[list[str]], batch: bool, remote: str) -> int | None:
+def _started(lines: list[list[str]]) -> int | None:
     """A batch job's start, in epoch seconds: the first of its start lines in its shape, None
     when there is none. It is read for `queue_wait_ms` alone, a record no verdict reads, so its
     count and shape are not refusals (issue #696 §6.12: the file a command can rewrite gives a
-    leaf nothing through it). A job run under no scheduler prints none, and one that arrives
-    from it is refused, as a scheduler line from such a job always was."""
-    if not batch:
-        if lines:
-            raise RemoteExecutionError(
-                f"start lines from a job run under no scheduler: {lines} ({remote})")
-        return None
+    leaf nothing through it). A `none` site's job prints none and its `queue_wait_ms` is 0
+    whatever its stdout carries, so its start lines are not read."""
     for words in lines:
         if len(words) == 2 and _INT.fullmatch(words[1]):
             return int(words[1])
@@ -1006,8 +1001,7 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
         _scp([f"{request.site.host}:{remote}"], str(collected), stage="collect the job directory",
              remote=remote)
         # 5. Read every status, and the platform, before anything is recorded.
-        status_lines, facts, starts = _job_lines(job_stdout, remote)
-        _started(starts, False, remote)
+        status_lines, facts, _starts = _job_lines(job_stdout, remote)
         statuses = _statuses(status_lines, request.commands, remote)
         return _record(request, statuses, facts, collected=collected, job_id=None,
                        queue_wait_ms=0)
@@ -1041,9 +1035,9 @@ def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
                                    f"&& exec {shlex.join(str(a) for a in argv)}",
                    stage="submit the job", timeout=TRANSPORT_GRACE_SEC, remote=remote,
                    input=render_stub(request))
-        before, sep, answer = out.partition(f"{SUBMIT_MARKER} ")
+        _, sep, answer = out.partition(f"{SUBMIT_MARKER} ")
         epoch, _, answer = answer.partition("\n")
-        if not sep or (before and not before.endswith("\n")) or not _INT.fullmatch(epoch):
+        if not sep or not _INT.fullmatch(epoch):
             raise RemoteExecutionError(f"submit the job: the login's time was not printed: "
                                        f"{out[-500:]!r} ({remote})")
         job_id = submission.job_id(answer)
@@ -1177,7 +1171,7 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
                 f"{JOB_ERR} ends: {tail[-2000:] or '(empty)'} ({remote})")
         job_out = _read_output(ctl / JOB_OUT, remote)
         status_lines, facts, starts = _job_lines(job_out, remote)
-        started = _started(starts, True, remote)
+        started = _started(starts)
         statuses = _statuses(status_lines, request.commands, remote)
         _bind(statuses, own_exit, remote)
         queue_wait_ms = 0 if started is None else max(0, started - handle.submitted_epoch) * 1000
