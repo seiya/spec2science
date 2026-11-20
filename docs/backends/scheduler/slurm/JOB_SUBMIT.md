@@ -168,25 +168,37 @@ makes a command that runs long a refusal rather than the command's own timeout.
   unanswered polls. The 300 s of the machine measured is exactly (1 + 4) × 60 s, four refused
   polls that took no time at all, so it is read as covering 3 refused at once (240 s, a 60 s
   margin), 2 that reach the connect timeout (240 s, the same margin), and none that hangs, which
-  needs 420 s for one. A longer retention buys more: once a resumed run adopts a batch job (issue #696; not built yet), a job
-  that ended while no run was waiting is adoptable for as long as the scheduler states it.
+  needs 420 s for one. A longer retention buys more: a resumed run adopts a batch job
+  (`docs/ORCHESTRATION.md` §Execution sites), and a job that ended while no run was waiting is
+  adoptable for as long as the scheduler states it.
 - `queue_timeout_sec` is how long one run waits for the job to start. Past it the run is refused
-  as a transport failure and the job is LEFT as it is: nothing cancels it. `scancel` it by hand
-  (its name is `spec2science-<agent_run_id>`, and a `Validate.execute` restart job's — the
-  continuation cases' second pass — `spec2science-<agent_run_id>.restart`) when it is not wanted.
+  as a transport failure and the job is LEFT as it is: nothing cancels it, and `--resume` adopts
+  it. To abandon it, `scancel` it by hand (its name is `spec2science-<agent_run_id>`, and a
+  `Validate.execute` restart job's — the continuation cases' second pass —
+  `spec2science-<agent_run_id>.restart`) and remove its `site job record` (§3): a cancelled job
+  whose record stays is adopted by the next `--resume`, which is refused, and only the resume
+  after it submits a job of its own.
 
 ## 3. What it does not do
 
-- **A job is not cancelled when the host stops waiting** — the queue bound, the bound on a
-  running job, an interrupted run. It runs on until it ends or reaches the `--time` in force —
-  the submit command's, or a directive's, which may be longer. Until a resumed run adopts such a
-  job (issue #696; not built yet) a later attempt submits a job of its own in a directory of its own.
+- **The host cancels no job.** A job the host stops waiting for — past the queue bound or the
+  bound on a running job, or in an interrupted run — runs on until it ends or reaches the
+  `--time` in force, the submit command's or a directive's, which may be longer. A resumed run
+  adopts it when it would submit the same job (`docs/ORCHESTRATION.md` §Execution sites); a job
+  it does not adopt is left behind, and the event `site_job_not_adopted` names its id and its
+  directory. A directive changed after a queue timeout (a `--partition`, for example) changes
+  the request, so the resumed run does not adopt the queued job and it is left behind. Cancel
+  one by hand with `scancel <job_id>` (or `scancel --name=<its name>`, §2) and remove its
+  directory at the site; cancel a job whose `site job record` you remove to abandon it the
+  same way. How long an ended job stays adoptable is `MinJobAge` (§2).
 - **A suspended job's time is spent against the run bound.** `SUSPENDED` (preemption by
   suspension, an administrator's `scontrol suspend`) is read as running, so the host's run bound
   — the job's own time limit plus its grace — keeps advancing while Slurm's own limit does not.
   At a site that preempts by suspension, a job suspended for long enough is refused at the run
-  bound and left as it is, and a rerun submits a new one. The alternative, not counting a
-  suspended interval, would wait without bound on a job that stays suspended.
+  bound and left as it is with its `site job record` kept, and `--resume` adopts it and waits
+  for it again under a run bound of its own (`docs/ORCHESTRATION.md` §Execution sites). The
+  alternative, not counting a suspended interval, would wait without bound on a job that stays
+  suspended.
 - **No requeue.** A requeued batch job runs its script again from the beginning, in a directory
   holding the first pass's files, and truncates its output file, so two passes would be recorded
   as one run. `--no-requeue` is the executor's own option, last: it stops the scheduler's own

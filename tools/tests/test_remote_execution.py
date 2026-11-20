@@ -1700,6 +1700,376 @@ class PollingTests(unittest.TestCase):
         self.assertIn("no-newline-out", err)
 
 
+def _wait_for_shim_end(h: _Harness, job_id: str = "4242") -> None:
+    """Until the `sbatch` shim's job `job_id` has a terminal record (bounded)."""
+    import time
+    deadline = time.monotonic() + 20
+    while h.slurm_record(job_id)["state"] not in ("COMPLETED", "FAILED", "CANCELLED"):
+        if time.monotonic() > deadline:
+            raise AssertionError(f"job {job_id} did not end: {h.slurm_record(job_id)}")
+        time.sleep(0.05)
+
+
+class AdoptionTests(unittest.TestCase):
+    """Issue #696 §6.5: the site job record, and a later attempt adopting the job it names. The
+    first attempt is interrupted inside its wait (`wait_job` raising `KeyboardInterrupt`, as a
+    `Ctrl-C` or the driver's `SIGTERM` converter does there); the second composes its request
+    for another job directory, as a resumed attempt under a fresh `agent_run_id` does."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
+        self.record = self.h.root / "orchestrations" / "orch_1" / "site_jobs" / "build.json"
+        self.events: list[tuple[str, dict]] = []
+        self.calls_made = 0
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def request_for(self, jdir: str, **kw) -> rx.JobRequest:
+        """The harness's request, composed for job directory `jdir`."""
+        saved = self.h.job
+        self.h.job = jdir
+        try:
+            return self.h.request(**kw)
+        finally:
+            self.h.job = saved
+
+    def attempt(self, arid: str, *, request_for=None, interrupt: bool = False,
+                **knobs: str) -> rx.JobResult:
+        """One attempt under agent run `arid`, in a local directory of its own."""
+        self.calls_made += 1
+        real_wait = rx.wait_job
+
+        def wait(*a, **k):
+            if interrupt:
+                raise KeyboardInterrupt
+            return real_wait(*a, **k)
+
+        with self.h.env(**knobs), mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+                mock.patch.object(rx, "POLL_MAX_SEC", 0.2), \
+                mock.patch.object(rx, "wait_job", side_effect=wait):
+            return rx.execute_or_adopt_job(
+                request_for or self.request_for,
+                fresh_dir=rx.job_dir(self.h.site, "orch_1", arid), record_path=self.record,
+                local_tmp=self.h.local / f"tmp{self.calls_made}",
+                emit=lambda event, **fields: self.events.append((event, fields)))
+
+    def interrupted(self, **knobs: str) -> dict:
+        """The first attempt, interrupted while it waits; its record."""
+        with self.assertRaises(KeyboardInterrupt):
+            self.attempt("arid-1", interrupt=True, **knobs)
+        return json.loads(self.record.read_text())
+
+    def sbatch_calls(self) -> int:
+        return [c[0] for c in self.h.calls()].count("sbatch")
+
+    def assert_adopted(self, result: rx.JobResult) -> None:
+        self.assertTrue(all(r["ok"] for r in result.results), result.results)
+        self.assertEqual(result.site_record["job_id"], "4242")
+        self.assertEqual(result.site_record["remote_dir"], self.h.job)
+        self.assertEqual(self.sbatch_calls(), 1)
+        self.assertFalse(self.record.exists(), "the record goes once the job is accepted")
+        self.assertEqual([e for e, _f in self.events], ["site_job_adopted"])
+        (entry,) = self.h.log_entries("run")
+        self.assertEqual(entry["site"]["remote_cwd"], f"{self.h.job}/run")
+        self.assertEqual(entry["site"]["job_id"], "4242")
+
+    def assert_not_adopted(self, reason: str, left_dir: str | None = None) -> rx.JobResult:
+        result = self.attempt("arid-2")
+        self.assertTrue(all(r["ok"] for r in result.results), result.results)
+        self.assertEqual(result.site_record["job_id"], "4243")
+        self.assertEqual(result.site_record["remote_dir"],
+                         rx.job_dir(self.h.site, "orch_1", "arid-2"))
+        self.assertEqual(self.sbatch_calls(), 2)
+        (event, fields), = [ev for ev in self.events if ev[0] == "site_job_not_adopted"]
+        self.assertIn(reason, fields["reason"])
+        self.assertEqual(fields["remote_dir"], left_dir)
+        self.assertFalse(self.record.exists())
+        return result
+
+    def test_the_record_is_written_once_the_job_is_submitted(self) -> None:
+        record = self.interrupted(SHIM_SBATCH_HOLD="1")
+        request = self.request_for(self.h.job)
+        self.assertEqual(record, {"site": "box", "host": "box", "scheduler": "slurm",
+                                  "job_id": "4242", "remote_dir": self.h.job,
+                                  "submitted_epoch": record["submitted_epoch"],
+                                  "request_sha256": rx.request_sha256(request)})
+        self.assertIsInstance(record["submitted_epoch"], int)
+
+    def test_a_queued_job_is_adopted(self) -> None:
+        self.interrupted(SHIM_SBATCH_QUEUE="1")
+        self.assertEqual(self.h.slurm_record()["state"], "PENDING")
+        self.assert_adopted(self.attempt("arid-2"))
+
+    def test_a_running_job_is_adopted(self) -> None:
+        """The job's command waits for a file the adopting attempt's first state question
+        creates, so the job is running when it is asked and ends after it."""
+        def slow(jdir: str) -> rx.JobRequest:
+            request = self.request_for(jdir)
+            run = dataclasses.replace(request.commands[0], argv=(
+                "sh", "-c", f"while [ ! -e {self.h.root}/go ]; do sleep 0.05; done"))
+            return dataclasses.replace(request, commands=(run, *request.commands[1:]))
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.attempt("arid-1", request_for=slow, interrupt=True)
+        import time
+        deadline = time.monotonic() + 20
+        while self.h.slurm_record()["state"] != "RUNNING" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        real_ask = rx._ask_state
+        asked: list[str] = []
+
+        def ask(*a):
+            answer = real_ask(*a)
+            asked.append(answer[0])
+            (self.h.root / "go").touch()
+            return answer
+
+        with mock.patch.object(rx, "_ask_state", side_effect=ask):
+            self.assert_adopted(self.attempt("arid-2", request_for=slow))
+        self.assertEqual(asked[0], "running")
+
+    def test_an_ended_job_is_adopted_and_its_end_recorded_at_the_first_reading(self) -> None:
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        real_write = rx._write_job_record
+        written: list[dict] = []
+        with mock.patch.object(rx, "_write_job_record",
+                               side_effect=lambda p, r: (written.append(r), real_write(p, r))):
+            self.assert_adopted(self.attempt("arid-2"))
+        self.assertEqual([r.get("end") for r in written], [0])
+        # Ended at adoption: asked once, never polled.
+        self.assertEqual([c[0] for c in self.h.calls()].count("scontrol"), 1)
+
+    def test_a_failed_collection_keeps_the_record_and_a_forgotten_end_is_still_collected(
+            self) -> None:
+        """A scp that fails while collecting says nothing against the job: the record is kept,
+        with the end the host read. The next attempt collects that job from the record although
+        the scheduler has since forgotten it, and asks the scheduler nothing."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "collect the job directory"):
+            self.attempt("arid-1", SHIM_SCP_FAIL="down")
+        self.assertEqual(json.loads(self.record.read_text())["end"], 0)
+        polls = [c[0] for c in self.h.calls()].count("scontrol")
+        self.assert_adopted(self.attempt("arid-2", SHIM_SCONTROL_FORGET="1"))
+        self.assertEqual([c[0] for c in self.h.calls()].count("scontrol"), polls)
+
+    def test_a_failed_removal_of_the_collected_directory_strands_no_record(self) -> None:
+        """The record goes once the job directory is copied to the host, before the site's copy
+        is removed: a removal that fails leaves no record naming a directory that may be gone,
+        and the next attempt submits a job of its own (review 1 of PR-2, finding 1)."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "remove the collected job directory"):
+            self.attempt("arid-1", SHIM_SSH_FAIL="rm -rf")
+        self.assertFalse(self.record.exists())
+        result = self.attempt("arid-2")
+        self.assertTrue(all(r["ok"] for r in result.results), result.results)
+        self.assertEqual(self.sbatch_calls(), 2)
+
+    def test_an_interrupt_while_the_entries_are_written_strands_no_record(self) -> None:
+        with mock.patch.object(rx.build_runtime, "_append_command_log",
+                               side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            self.attempt("arid-1")
+        self.assertFalse(self.record.exists())
+
+    def test_a_record_whose_directory_is_gone_is_named_in_the_refusal(self) -> None:
+        """A recorded end whose job directory was removed by hand: every resume fails to copy
+        it, and the refusal names the record whose removal abandons the job."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "collect the job directory"):
+            self.attempt("arid-1", SHIM_SCP_FAIL="down")
+        shutil.rmtree(self.h.job)
+        with self.assertRaises(rx.RemoteExecutionError) as ctx:
+            self.attempt("arid-2")
+        self.assertIn(f"the site job record {self.record} is kept", str(ctx.exception))
+        self.assertIn("removing the record abandons the job", str(ctx.exception))
+        self.assertNotIn("remove " + self.h.job, str(ctx.exception))
+        self.assertTrue(self.record.exists())
+
+    def test_a_recorded_end_otherwise_is_refused_from_the_record_and_removes_it(self) -> None:
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "collect the job directory"):
+            self.attempt("arid-1", SHIM_SCP_FAIL="down", SHIM_SBATCH_END="CANCELLED 0:15")
+        self.assertEqual(json.loads(self.record.read_text())["end"], rx.END_OTHERWISE)
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "did not run to its own exit"):
+            self.attempt("arid-2", SHIM_SCONTROL_FORGET="1")
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.sbatch_calls(), 1)
+
+    def test_a_job_refused_for_how_it_ended_removes_the_record(self) -> None:
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "did not run to its own exit"):
+            self.attempt("arid-1", SHIM_SBATCH_END="CANCELLED 0:15")
+        self.assertFalse(self.record.exists())
+
+    def test_a_request_with_another_environment_is_not_adopted(self) -> None:
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+
+        def other(jdir: str) -> rx.JobRequest:
+            request = self.request_for(jdir)
+            run = dataclasses.replace(request.commands[0], env={"ZED": "2", "KNOB": "a b"})
+            return dataclasses.replace(request, commands=(run, *request.commands[1:]))
+
+        self.assertNotEqual(rx.request_sha256(other(self.h.job)),
+                            rx.request_sha256(self.request_for(self.h.job)))
+        self.events.clear()
+        result = self.attempt("arid-2", request_for=other)
+        self.assertEqual(result.site_record["job_id"], "4243")
+        (event, fields), = self.events[:1]
+        self.assertEqual((event, fields["job_id"], fields["remote_dir"]),
+                         ("site_job_not_adopted", "4242", self.h.job))
+        self.assertIn("not the one the job was submitted for", fields["reason"])
+
+    def test_a_request_with_another_shipped_file_is_not_adopted(self) -> None:
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        changed = self.h.local / "runner2"
+        changed.write_text(_RUNNER + "# another build\n")
+        changed.chmod(0o755)
+        result = self.attempt("arid-2", request_for=lambda jdir: self.request_for(
+            jdir, ship={"bin/runner": changed}))
+        self.assertEqual(result.site_record["job_id"], "4243")
+        (event, fields), = [ev for ev in self.events if ev[0] == "site_job_not_adopted"]
+        self.assertEqual((fields["job_id"], fields["remote_dir"]), ("4242", self.h.job))
+
+    def test_a_site_with_other_directives_is_not_adopted(self) -> None:
+        """An operator who fixes a directive after a queue timeout and resumes gets a job
+        submitted with it, not the old one (review 1 of PR-2, finding 2)."""
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        self.h.site = dataclasses.replace(self.h.site,
+                                          scheduler_directives=("--partition=fixed",))
+        self.assert_not_adopted("not the one the job was submitted for", self.h.job)
+        (sbatch,) = [c for c in self.h.calls() if c[0] == "sbatch"][1:]
+        self.assertIn("--partition=fixed", sbatch)
+
+    def test_a_site_of_another_id_that_submits_the_same_job_adopts_it(self) -> None:
+        """Two site entries at one host under one scheduler, one `workdir` and one set of
+        directives (JOB_SUBMIT.md §2's `cluster_cpu` / `cluster_gpu` shape with the directives
+        made equal) differ only in their id, and submit the same job: it is adopted."""
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        self.h.site = dataclasses.replace(self.h.site, site_id="box_twin")
+        self.assert_adopted(self.attempt("arid-2"))
+
+    def test_an_adopted_job_keeps_the_recorded_submission_time(self) -> None:
+        """`queue_wait_ms` of an adopted job is measured from the login's time the record holds:
+        a handle without it would record a wait of 0, a false record."""
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        record = json.loads(self.record.read_text())
+        self._edit_record(submitted_epoch=record["submitted_epoch"] - 100)
+        result = self.attempt("arid-2")
+        self.assert_adopted(result)
+        self.assertGreaterEqual(result.site_record["queue_wait_ms"], 100_000)
+
+    def test_the_digest_covers_a_shipped_files_relative_path(self) -> None:
+        """One content shipped under another name is another request: the script does not name
+        a file no command names."""
+        extra = self.h.local / "extra.dat"
+        extra.write_text("data\n")
+        one, other = (self.request_for(self.h.job, ship={"bin/runner": self.h.runner,
+                                                          name: extra})
+                      for name in ("data/a.dat", "data/b.dat"))
+        self.assertEqual(rx.render_job_script(one), rx.render_job_script(other))
+        self.assertNotEqual(rx.request_sha256(one), rx.request_sha256(other))
+
+    def _edit_record(self, **fields) -> None:
+        record = json.loads(self.record.read_text())
+        record.update(fields)
+        self.record.write_text(json.dumps(record))
+
+    def test_a_record_of_another_host_is_not_adopted(self) -> None:
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        self._edit_record(host="other-login")
+        self.assert_not_adopted("submitted to host 'other-login'", self.h.job)
+
+    def test_a_record_of_another_scheduler_is_not_adopted(self) -> None:
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        self._edit_record(scheduler="pjm")
+        self.assert_not_adopted("submitted to scheduler 'pjm'", self.h.job)
+
+    def test_a_job_under_another_workdir_is_adopted(self) -> None:
+        """The site's `workdir` changed between the attempts and nothing else: the job the
+        record names is the one this attempt would submit for its directory, and it is adopted
+        and collected from there (review 1 of PR-2, finding 3)."""
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        self.h.site = dataclasses.replace(self.h.site, workdir=f"{self.h.root}/moved")
+        self.assert_adopted(self.attempt("arid-2"))
+
+    def test_a_record_of_another_directory_is_not_adopted(self) -> None:
+        """The digest binds the job directory: the job script holds it."""
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        self._edit_record(remote_dir="/elsewhere/orch_1/arid-1")
+        self.assert_not_adopted("not the one the job was submitted for",
+                                "/elsewhere/orch_1/arid-1")
+
+    def test_an_unreadable_record_is_not_adopted(self) -> None:
+        self.record.parent.mkdir(parents=True)
+        for text in ("{", ""):
+            with self.subTest(text=text):
+                self.record.write_text(text)
+                self.events.clear()
+                self.calls_made += 1
+                result = self.attempt(f"arid-{self.calls_made}")
+                self.assertTrue(all(r["ok"] for r in result.results))
+                (event, fields), = [e for e in self.events if e[0] == "site_job_not_adopted"]
+                self.assertIn("unreadable", fields["reason"])
+                self.assertIsNone(fields["job_id"])
+                self.assertFalse(self.record.exists())
+
+    def test_an_id_the_scheduler_no_longer_knows_is_not_adopted(self) -> None:
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        self._edit_record(job_id="9999")
+        self.assert_not_adopted("no longer knows job 9999", self.h.job)
+
+    def test_no_answer_at_adoption_ends_the_call_with_the_record_kept(self) -> None:
+        record = self.interrupted(SHIM_SBATCH_HOLD="1")
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "gave no answer about job 4242.*is kept"):
+            self.attempt("arid-2", SHIM_SCONTROL_NO_ANSWER="1")
+        self.assertEqual(json.loads(self.record.read_text()), record)
+        self.assertEqual(self.sbatch_calls(), 1)
+
+    def test_a_wait_past_its_bound_leaves_the_job_and_the_record(self) -> None:
+        """The refusal names the kept record and what `--resume` does with it, and does not
+        tell the operator to remove the job directory a later attempt would collect."""
+        self.h.site = dataclasses.replace(self.h.site, queue_timeout_sec=1)
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "was not seen running within 1") as caught:
+            self.attempt("arid-1", SHIM_SBATCH_HOLD="1")
+        said = str(caught.exception)
+        self.assertIn(f"the site job record {self.record} is kept", said)
+        self.assertIn("`--resume`", said)
+        self.assertNotIn(f"remove {self.h.job}", said)
+        self.assertEqual(json.loads(self.record.read_text())["job_id"], "4242")
+        self.assertEqual(self.h.slurm_record()["state"], "PENDING")
+        self.assertNotIn("end", json.loads(self.record.read_text()))
+
+    def test_an_id_forgotten_during_the_wait_keeps_the_record_and_is_not_adopted(self) -> None:
+        """The refusal keeps the record; the next attempt, finding the id still unknown, does
+        not adopt the job and submits its own, whose record replaces it."""
+        with self.assertRaisesRegex(
+                rx.RemoteExecutionError,
+                f"no longer knows job 4242.*record {self.record} is kept") as cm:
+            self.attempt("arid-1", SHIM_SBATCH_HOLD="1", SHIM_SCONTROL_FORGET="1")
+        said = str(cm.exception)
+        self.assertNotIn("adopts job", said)
+        self.assertIn("does not adopt job 4242", said)
+        self.assertEqual(json.loads(self.record.read_text())["job_id"], "4242")
+        (self.h.slurm / "state.4242.json").unlink()
+        self.assert_not_adopted("no longer knows job 4242", self.h.job)
+
+    def test_execute_job_writes_no_record(self) -> None:
+        self.h.run(self.h.request())
+        self.assertEqual(list(self.h.root.rglob("site_jobs")), [])
+
+    def test_a_none_site_records_nothing(self) -> None:
+        self.h.site = dataclasses.replace(self.h.site, scheduler="none")
+        result = self.attempt("arid-1")
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.events, [])
+
+
 class SiteSetupTests(unittest.TestCase):
     """A site's `setup` lines: the environment every check and command of a job runs in, set
     inside the job — under a scheduler, on the node the job runs on — and asked of the launch
@@ -1899,6 +2269,30 @@ class SiteSmokeTests(unittest.TestCase):
         self.assertIn("probe: missing=[] problems=[]", out)
         self.assertIn("OK", out)
         self.assertIn("RESULT: PASS", out)
+
+    def test_record_submits_then_a_second_call_adopts(self) -> None:
+        """`--record`: the first call is interrupted while it waits; the second, under another
+        job directory, adopts the first call's job and prints its output."""
+        self.sites.write_text(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                              f"    workdir: {self.h.workdir}\n    executes: [cpu]\n"
+                              f"    scheduler: slurm\n")
+        record = self.h.root / "smoke_job.json"
+        real_wait = rx.wait_job
+        with mock.patch.object(rx, "wait_job", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            self.smoke("--no-probe", "--record", str(record))
+        first = json.loads(record.read_text())
+        with mock.patch.object(rx, "wait_job", side_effect=real_wait), \
+                mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+                mock.patch.object(rx, "POLL_MAX_SEC", 0.2):
+            code, out, err = self.smoke("--no-probe", "--record", str(record))
+        self.assertEqual(code, 0, err)
+        self.assertIn("site_job_adopted", out)
+        self.assertIn(f'"remote_dir": "{first["remote_dir"]}"', out)
+        self.assertIn("OK", out)
+        self.assertIn("RESULT: PASS", out)
+        self.assertEqual([c[0] for c in self.h.calls()].count("sbatch"), 1)
+        self.assertFalse(record.exists())
 
     def test_a_site_the_probe_finds_lacking_runs_no_job(self) -> None:
         bare = _bare_path(self.h.root, without="timeout")

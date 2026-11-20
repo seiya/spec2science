@@ -11,11 +11,18 @@ temporary directory.
     python3 tools/site_smoke.py <site_id>
     python3 tools/site_smoke.py --target <target_id> --cmd 'echo OK; hostname; nproc'
     python3 tools/site_smoke.py <gpu_site> --gpu --ship ./a.out --cmd '"$JOB"/a.out'
+    python3 tools/site_smoke.py <batch_site> --record ./smoke_job.json --cmd 'sleep 120; echo OK'
 
 `--ship FILE` copies FILE into the job directory (mode kept); `$JOB` in `--cmd` is that
 directory at the site. `--gpu` adds the `gpu` hardware class's device probe, as a `gpu`
 target's Validate does. A file shipped with `--ship` runs at the site as it is; the workflow
 itself ships no binary it did not build there (issue #333).
+
+`--record FILE` submits a batch site's job under a site job record at FILE, as `Build` and
+`Validate.execute` do (`remote_execution.execute_or_adopt_job`, issue #696): interrupt the tool
+while the job waits and run the same command again, and the second call adopts the first call's
+job and prints its output. The record is removed once the job is collected. At a `none` site it
+records nothing.
 """
 
 from __future__ import annotations
@@ -49,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="local file copied into the job directory ($JOB); repeatable")
     ap.add_argument("--gpu", action="store_true", help="record the gpu class's device probe")
     ap.add_argument("--no-probe", action="store_true", help="skip the launch probe")
+    ap.add_argument("--record", metavar="FILE",
+                    help="submit, or adopt, the batch job under this site job record")
     ap.add_argument("--keep", action="store_true",
                     help="keep the local temporary directory (collected job dir, command log)")
     args = ap.parse_args(argv)
@@ -85,22 +94,35 @@ def main(argv: list[str] | None = None) -> int:
     orch_id, run_id = f"smoke_{stamp}", f"smoke_{uuid.uuid4().hex[:8]}"
     job_dir = rx.job_dir(site, orch_id, run_id)
     local_tmp = Path(tempfile.mkdtemp(prefix="spec2science-site-smoke-"))
-    command = rx.CommandSpec(
-        tag="smoke", tool_name="run_program", argv=("sh", "-c", args.cmd), cwd=job_dir,
-        env={"JOB": job_dir},
-        record_cwd=str(local_tmp), timeout_sec=args.timeout,
-        command_log_path=local_tmp / "command_log.jsonl", capture_limit=20000)
     platform_probe = None
     if args.gpu:
         from tools.host_execution import _platform_probe
         platform_probe = _platform_probe("gpu")
     ship = {Path(f).name: Path(f).resolve() for f in args.ship}
-    request = rx.JobRequest(site=site, job_dir=job_dir, ship=ship, commands=(command,),
-                            platform_probe=platform_probe,
-                            attribution={"orchestration_id": orch_id, "agent_run_id": run_id})
-    print(f"job: {job_dir}")
+
+    def request_for(jdir: str) -> rx.JobRequest:
+        command = rx.CommandSpec(
+            tag="smoke", tool_name="run_program", argv=("sh", "-c", args.cmd), cwd=jdir,
+            env={"JOB": jdir},
+            record_cwd=str(local_tmp), timeout_sec=args.timeout,
+            command_log_path=local_tmp / "command_log.jsonl", capture_limit=20000)
+        return rx.JobRequest(site=site, job_dir=jdir, ship=ship, commands=(command,),
+                             platform_probe=platform_probe,
+                             attribution={"orchestration_id": orch_id, "agent_run_id": run_id})
+
+    request = request_for(job_dir)
     try:
-        result = rx.execute_job(request, local_tmp=local_tmp / "job")
+        if args.record:
+            def say(event: str, **fields: object) -> None:
+                print(f"{event}: {json.dumps(fields, ensure_ascii=False)}")
+
+            print(f"job: {job_dir}, or the one {args.record} records")
+            result = rx.execute_or_adopt_job(
+                request_for, fresh_dir=job_dir, record_path=Path(args.record),
+                local_tmp=local_tmp / "job", emit=say)
+        else:
+            print(f"job: {job_dir}")
+            result = rx.execute_job(request, local_tmp=local_tmp / "job")
     except (rx.RemoteExecutionError, ValueError) as exc:
         print(f"job FAILED: {exc}", file=sys.stderr)
         print(f"local files: {local_tmp}", file=sys.stderr)

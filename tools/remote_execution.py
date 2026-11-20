@@ -122,8 +122,8 @@ the number beyond `ok`. No log entry is written until every status and every out
 been read (a missing output file is lost evidence, refused), so a refused job leaves no evidence
 behind it.
 
-`Build` and `Validate.execute` call `execute_job` for a target the operator's `sites.yaml` maps
-to a remote site (`workflow_conductor._build_inproc`, issue #333, and `_execute_inproc`), and the
+`Build` and `Validate.execute` call `execute_or_adopt_job` (`execute_job` at a `none` site) for
+a target the operator's `sites.yaml` maps to a remote site (`workflow_conductor._build_inproc`, issue #333, and `_execute_inproc`), and the
 driver calls `probe_site` before a node that will reach `Build` runs — once at launch, and again
 before each dependency member of a `--with-deps` run — so a site that cannot be reached, lacks a
 program the job needs, or cannot hold or run it is refused before that node is billed
@@ -165,11 +165,19 @@ what their answer means (`job_state`, seven answers). `execute_job` composes thr
   record is not a refusal's subject).
 
 A batch job is not cancelled when the host stops waiting: its time limit — the submit command's,
-or a longer one a directive set — bounds it.
+or a longer one a directive set — bounds it. `execute_or_adopt_job`, which `Build` and
+`Validate.execute` call, keeps a site job record of the job from its submission until it is
+collected or refused for itself (issue #696 §6.5), and a later attempt — a `--resume` runs the
+phase again under a fresh `agent_run_id` — adopts the recorded job when the request it composes
+for the recorded job directory is the one the job was submitted for, rather than submitting a
+second. `execute_job` records nothing.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
 import shlex
 import shutil
@@ -177,6 +185,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Mapping
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -248,6 +257,12 @@ LAUNCH_CODES = frozenset({126, 127})
 class RemoteExecutionError(RuntimeError):
     """The job's evidence could not be produced or collected completely. The message names the
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
+
+
+class ForgottenJobError(RemoteExecutionError):
+    """`wait_job`'s refusal of a job the scheduler no longer knows: a later attempt asks the
+    scheduler again at adoption and, told the same, does not adopt the job, so a refusal that
+    keeps the record must not say that it does."""
 
 
 @dataclass(frozen=True)
@@ -930,6 +945,23 @@ def _left(exc: RemoteExecutionError, remote: str) -> RemoteExecutionError:
         f"done")
 
 
+def _kept(message: str, record_path: Path, job_id: str, *,
+          forgotten: bool = False) -> RemoteExecutionError:
+    """A refusal that keeps the job's `site job record`: it names the record and what a later
+    attempt does with it, and not the job directory, which an adopting attempt collects. For a
+    job the scheduler has `forgotten`, that attempt adopts it only if the scheduler states it
+    again; otherwise it submits a job of its own, whose record replaces this one."""
+    if forgotten:
+        return RemoteExecutionError(
+            f"{message}; the site job record {record_path} is kept, and a later attempt "
+            f"(`--resume`) does not adopt job {job_id} unless the scheduler states it again — "
+            f"it submits a job of its own, whose record replaces this one")
+    return RemoteExecutionError(
+        f"{message}; the site job record {record_path} is kept, and a later attempt "
+        f"(`--resume`) adopts job {job_id} — removing the record abandons the job (cancel it "
+        f"by hand first if it should not run)")
+
+
 def _create_and_ship(request: JobRequest, stage_dir: Path) -> None:
     """Steps 1 and 2: the fresh job directory, then the staged files shipped into it."""
     host, remote, q = str(request.site.host), request.job_dir, shlex.quote
@@ -984,7 +1016,10 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     if _submission(request.site.scheduler) is not None:
         handle = submit_job(request, local_tmp=local_tmp)
         queue_bound, run_bound = job_bounds(request)
-        own_exit = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
+        try:
+            own_exit = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
+        except RemoteExecutionError as exc:
+            raise _left(exc, handle.remote_dir) from exc
         return collect_job(handle, request, local_tmp=local_tmp, own_exit=own_exit)
     stage_dir, collected = _local_dirs(local_tmp)
     _create_and_ship(request, stage_dir)
@@ -1098,7 +1133,10 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
     during a long wait, would lose the job. `unknown_id` is refused: the scheduler no longer
     states how the job ended, and polling it until the bound would only delay that. Past
     `queue_bound_sec` before the job was seen running, or `run_bound_sec` after, the wait is
-    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it."""
+    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it. What the
+    refusal says about the job directory is its caller's: `execute_or_adopt_job` keeps the
+    record, which a later attempt adopts (one refused as `ForgottenJobError` only if the
+    scheduler states the job again)."""
     submission = _submission(handle.scheduler)
     remote = handle.remote_dir
     t0 = time.monotonic()
@@ -1118,36 +1156,33 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
                      f"said: {last})")
         return said
 
-    try:
-        while True:
-            time.sleep(interval)
-            interval = min(interval * 2, POLL_MAX_SEC)
-            condition, value = _ask_state(handle, submission)
-            now = time.monotonic()
-            if condition == "ended":
-                return value
-            if condition == "unknown_id":
-                raise RemoteExecutionError(
-                    f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
-                    f"longer stated; its output is not read ({remote})")
-            if condition == "no_answer":
-                unanswered, last = unanswered + 1, str(value)
-            else:
-                answered, unanswered = (condition, now - t0), 0
-            if condition == "running" and started is None:
-                started = now
-            if started is None and now - t0 > queue_bound_sec:
-                raise RemoteExecutionError(
-                    f"wait for the job: job {handle.job_id} was not seen running within "
-                    f"{queue_bound_sec} sec (queue_timeout_sec); {polls()}; it is left as it "
-                    f"is, nothing cancels it ({remote})")
-            if started is not None and now - started > run_bound_sec:
-                raise RemoteExecutionError(
-                    f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
-                    f"sec since a poll first saw it running; {polls()}; it is left as it is, "
-                    f"nothing cancels it ({remote})")
-    except RemoteExecutionError as exc:
-        raise _left(exc, remote) from exc
+    while True:
+        time.sleep(interval)
+        interval = min(interval * 2, POLL_MAX_SEC)
+        condition, value = _ask_state(handle, submission)
+        now = time.monotonic()
+        if condition == "ended":
+            return value
+        if condition == "unknown_id":
+            raise ForgottenJobError(
+                f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
+                f"longer stated; its output is not read ({remote})")
+        if condition == "no_answer":
+            unanswered, last = unanswered + 1, str(value)
+        else:
+            answered, unanswered = (condition, now - t0), 0
+        if condition == "running" and started is None:
+            started = now
+        if started is None and now - t0 > queue_bound_sec:
+            raise RemoteExecutionError(
+                f"wait for the job: job {handle.job_id} was not seen running within "
+                f"{queue_bound_sec} sec (queue_timeout_sec); {polls()}; it is left as it "
+                f"is, nothing cancels it ({remote})")
+        if started is not None and now - started > run_bound_sec:
+            raise RemoteExecutionError(
+                f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
+                f"sec since a poll first saw it running; {polls()}; it is left as it is, "
+                f"nothing cancels it ({remote})")
 
 
 def _bind(statuses: list[tuple[int, int, int] | None], own_exit: int, remote: str) -> None:
@@ -1165,19 +1200,34 @@ def _bind(statuses: list[tuple[int, int, int] | None], own_exit: int, remote: st
 
 
 def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
-                own_exit: int | None) -> JobResult:
+                own_exit: int | None, record_path: Path | None = None) -> JobResult:
     """Collect `handle`'s ended job, whose scheduler said `own_exit` (`wait_job`), into
     `<local_tmp>/collected`, which must not exist, and read it: refused when `own_exit` is None
     (quoting the tail of `job.err`), and otherwise its output file is read against `own_exit`
     (`_bind`), then read, compared, removed and recorded as `execute_job` does at a `none` site.
-    The job directory is left at the site on every refusal."""
+    The job directory is left at the site on every refusal.
+
+    `record_path`, the job's `site job record` (`execute_or_adopt_job`), is removed as soon as
+    the job directory is copied to the host, before anything that can fail or be interrupted
+    after it: a record kept past that point names a job whose directory a later step (or the
+    operator) removes, and every later attempt would adopt it and fail to copy it. A failed copy
+    keeps the record and names it."""
     remote = handle.remote_dir
     collected = local_tmp / "collected"
     if collected.exists():
         raise ValueError(f"{collected} already exists; a job owns a fresh local_tmp")
+    # An adopted job was submitted by another attempt, whose staging made another local_tmp.
+    local_tmp.mkdir(parents=True, exist_ok=True)
     try:
         _scp([f"{handle.host}:{remote}"], str(collected), stage="collect the job directory",
              remote=remote)
+    except RemoteExecutionError as exc:
+        if record_path is None:
+            raise _left(exc, remote) from exc
+        raise _kept(str(exc), record_path, handle.job_id) from exc
+    if record_path is not None:
+        _remove_job_record(record_path)
+    try:
         ctl = collected / CONTROL_DIR
         if own_exit is None:
             try:
@@ -1201,6 +1251,161 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
                        queue_wait_ms=queue_wait_ms)
     except RemoteExecutionError as exc:
         raise _left(exc, remote) from exc
+
+
+#: The value of a job record's `end` for a job that ended other than by its script's own exit
+#: with 0 or 1 (`job_state`'s `("ended", None)`).
+END_OTHERWISE = "otherwise"
+_UNREAD = object()   # no end answer read yet
+
+
+def request_sha256(request: JobRequest) -> str:
+    """The digest a job record holds of the request its job was submitted for: the rendered
+    job script — the job directory, every command's argv, directory, environment and timeout,
+    the site's `setup` lines and the probes — the site's `scheduler_directives`, the one part of
+    the submit command the script does not determine, and each shipped file's relative path and
+    content hash. Two requests with one digest, at one host under one scheduler, submit the same
+    job."""
+    digest = hashlib.sha256(render_job_script(request).encode("utf-8"))
+    digest.update(("\0" + json.dumps(list(request.site.scheduler_directives))).encode("utf-8"))
+    for rel in sorted(request.ship):
+        content = hashlib.sha256(Path(request.ship[rel]).read_bytes()).hexdigest()
+        digest.update(f"\0{rel}\0{content}".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _write_job_record(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _remove_job_record(path: Path) -> None:
+    path.unlink(missing_ok=True)
+
+
+def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | None]:
+    """The record at `path` and None when its job is one this site could adopt (adoption
+    condition 1 of issue #696 §6.5: the site's host and scheduler), else the record (or None)
+    and why not. These are the adoption key, not integrity checks: the record is
+    host-written where no leaf writes, through a temporary name, so its fields are not
+    checked; a file that does not parse (one emptied by a crash of the machine before the
+    write reached the disk) is not adopted.
+    The job directory is not compared with the site's `workdir`: the digest binds it (the job
+    script holds it), so a job submitted under another `workdir` is still the job this attempt
+    would submit for that directory. Nor is the site's id: two sites at one host under one
+    scheduler that compose one request — the digest holds the script and the directives, the
+    only parts of a site that reach the submission — submit the same job, and the entries name
+    the current site whichever submitted it."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"the record is unreadable ({exc})"
+    for key, current in (("host", str(site.host)), ("scheduler", site.scheduler)):
+        if record[key] != current:
+            return record, f"it was submitted to {key} {record[key]!r}, not {current!r}"
+    return record, None
+
+
+def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir: str,
+                         record_path: Path, local_tmp: Path,
+                         emit: Callable[..., None] | None = None) -> JobResult:
+    """Run the job `request_for` composes for a job directory, adopting the batch job the
+    record at `record_path` names when a resumed attempt would submit that same job (issue
+    #696 §6.5), and otherwise submitting `request_for(fresh_dir)`. A `none` site's job runs
+    under `execute_job`, which records nothing: its job does not outlive the ssh call.
+
+    The record is written once the submit call has returned (the handle and `request_sha256`),
+    gains `end` when the host first reads the job's end from the scheduler, and is removed once
+    the job directory is copied to the host (`collect_job`). Until then it is kept whatever ends
+    the call: a wait past its bound or on an id the scheduler no longer knows, an interrupted
+    wait, a scheduler that does not answer at adoption, a failed copy — every refusal of these
+    names the record (`_kept`). A record whose job the scheduler has forgotten is not adopted
+    (condition 3), and the job the next attempt submits replaces it. Removing it at the
+    forgetting would gain nothing and would lose an adoption when the scheduler forgot the id
+    only for a moment.
+
+    A recorded job is adopted when (1) the record reads and names this site's host and
+    scheduler; (2) `request_for(<that directory>)` has the recorded digest; and (3) the record
+    holds an end answer or the scheduler answers queued, running or ended. Otherwise a job of this attempt's
+    own is submitted and its record replaces the one read, the event `site_job_not_adopted`
+    naming the job left behind; a scheduler that gives no answer at (3) ends the call
+    (`RemoteExecutionError`) with the record kept. Breakage each condition answers: (1) another
+    cluster's scheduler asked about this job's number; (2) log entries written from this
+    attempt's request for a job that ran other commands, a false record; the end answer written
+    at its first reading, a finished job run again because the scheduler forgot it between two
+    attempts to collect it.
+
+    `emit(event, **fields)` receives `site_job_adopted` and `site_job_not_adopted`."""
+    say = emit or (lambda event, **fields: None)
+    fresh = request_for(fresh_dir)
+    submission = _submission(fresh.site.scheduler)
+    if submission is None:
+        return execute_job(fresh, local_tmp=local_tmp)
+    site = fresh.site
+    request: JobRequest | None = None
+    handle: JobHandle | None = None
+    record: dict[str, Any] | None = None
+    end: Any = _UNREAD
+    if record_path.exists():
+        record, why = _recorded_job(record_path, site)
+        if why is None:
+            assert record is not None
+            request = request_for(record["remote_dir"])
+            if request_sha256(request) != record["request_sha256"]:
+                why = ("the request this attempt composes for the recorded job directory is "
+                       "not the one the job was submitted for")
+        if why is None:
+            assert record is not None
+            handle = JobHandle(site=record["site"], host=record["host"],
+                               scheduler=record["scheduler"], job_id=record["job_id"],
+                               remote_dir=record["remote_dir"],
+                               submitted_epoch=record["submitted_epoch"])
+            if "end" in record:
+                end = None if record["end"] == END_OTHERWISE else record["end"]
+            else:
+                condition, value = _ask_state(handle, submission)
+                if condition == "no_answer":
+                    raise _kept(
+                        f"adopt the recorded job: the scheduler gave no answer about job "
+                        f"{handle.job_id} ({value}) ({handle.remote_dir})", record_path,
+                        handle.job_id)
+                if condition == "unknown_id":
+                    why = (f"the scheduler no longer knows job {handle.job_id}, so how it "
+                           f"ended is no longer stated")
+                elif condition == "ended":
+                    end = value
+                    record = {**record, "end": END_OTHERWISE if value is None else value}
+                    _write_job_record(record_path, record)
+        if why is not None:
+            left = record or {}
+            say("site_job_not_adopted", record=str(record_path), reason=why,
+                job_id=left.get("job_id"), remote_dir=left.get("remote_dir"))
+            # The submit below overwrites the record; a submit that fails leaves it, and the
+            # next attempt finds it not adopted again.
+            request = handle = record = None
+    if handle is None:
+        request = fresh
+        digest = request_sha256(fresh)
+        handle = submit_job(fresh, local_tmp=local_tmp)
+        record = {**dataclasses.asdict(handle), "request_sha256": digest}
+        _write_job_record(record_path, record)
+    else:
+        say("site_job_adopted", record=str(record_path), job_id=handle.job_id,
+            remote_dir=handle.remote_dir)
+    assert request is not None and record is not None
+    if end is _UNREAD:
+        queue_bound, run_bound = job_bounds(request)
+        try:
+            end = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
+        except RemoteExecutionError as exc:
+            raise _kept(str(exc), record_path, handle.job_id,
+                        forgotten=isinstance(exc, ForgottenJobError)) from exc
+        _write_job_record(record_path,
+                          {**record, "end": END_OTHERWISE if end is None else end})
+    return collect_job(handle, request, local_tmp=local_tmp, own_exit=end,
+                       record_path=record_path)
 
 
 def _record(request: JobRequest, statuses: list[tuple[int, int, int] | None],

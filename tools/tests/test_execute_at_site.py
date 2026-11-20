@@ -33,7 +33,13 @@ from tools.host_execution import LOCAL_SITE, launch_shape, serial_execution_env
 from tools.primary_evidence import PrimaryEvidenceError
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID, profile_with
-from tools.tests.test_remote_execution import _SCP_SHIM, _SSH_SHIM
+from tools.tests.test_remote_execution import (
+    _SBATCH_SHIM,
+    _SCONTROL_SHIM,
+    _SCP_SHIM,
+    _SSH_SHIM,
+    _reap_shim_jobs,
+)
 from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
 
 #: The shipped runner: writes the evidence the execute body reads into its working directory,
@@ -1509,6 +1515,126 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertIn("continuation 'm0_cont'", line)
             self.assertIn("rc=4", line)
             self.assertIn("bounds error at step 3", out["stderr"])   # its stderr (round 3)
+
+
+
+def _at_a_batch_site(n: _Node) -> Path:
+    """`n`'s site as a `slurm` site reached through the scheduler shims; the shims' state
+    directory, which `SHIM_SLURM_DIR` names. The conductor's events are kept in `n.events`."""
+    import dataclasses
+    n.conductor.site = n.site = dataclasses.replace(n.site, scheduler="slurm")
+    n.events = []
+    n.conductor.emit = lambda event, **fields: n.events.append((event, fields))
+    for name, body in (("sbatch", _SBATCH_SHIM), ("scontrol", _SCONTROL_SHIM)):
+        path = n.shims / name
+        path.write_text(body)
+        path.chmod(0o755)
+    slurm = n.root / "slurm"
+    slurm.mkdir()
+    return slurm
+
+
+def _execute_interrupting(n: _Node, arid: str, slurm: Path, *, interrupt_wait: int | None,
+                          authors_runner: bool = False) -> dict:
+    """`_execute_inproc` under agent run `arid` at the batch site, the `interrupt_wait`-th wait
+    for a job (1-based) interrupted as a `Ctrl-C` or the driver's `SIGTERM` converter does."""
+    import tools.remote_execution as rx
+
+    real_wait = rx.wait_job
+    waits = []
+
+    def wait(*a, **k):
+        waits.append(1)
+        if len(waits) == interrupt_wait:
+            raise KeyboardInterrupt
+        return real_wait(*a, **k)
+
+    with n.env(SHIM_SLURM_DIR=str(slurm)), mock.patch.object(
+            subprocess, "run", side_effect=_real_gate_free_run(subprocess.run)), \
+            mock.patch.object(rx, "wait_job", side_effect=wait), \
+            mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+            mock.patch.object(rx, "POLL_MAX_SEC", 0.2), \
+            mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                              return_value=authors_runner):
+        return n.conductor._execute_inproc(n.refs, arid)
+
+
+class ExecuteAdoptedAtABatchSiteTests(unittest.TestCase):
+    """Issue #696 §6.6: a `Validate.execute` whose first attempt was interrupted while its batch
+    job waited is adopted by the next `_execute_inproc` under another `agent_run_id`."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def test_the_resumed_execute_adopts_the_first_attempts_job(self) -> None:
+        n = _Node(self._tmp.name)
+        slurm = _at_a_batch_site(n)
+        with self.assertRaises(KeyboardInterrupt):
+            _execute_interrupting(n, "arid-1", slurm, interrupt_wait=1)
+        record = n.repo / "workspace" / "orchestrations" / "orch_1" / "site_jobs" / \
+            "validate_execute.json"
+        first_dir = json.loads(record.read_text())["remote_dir"]
+        self.assertEqual(first_dir, f"{n.workdir}/orch_1/arid-1")
+        out = _execute_interrupting(n, "arid-2", slurm, interrupt_wait=None)
+        self.assertEqual(out["returncode"], 0, out)
+        self.assertEqual([c[0] for c in n.calls()].count("sbatch"), 1)
+        self.assertFalse(record.exists())
+        # The operator finds the adopted job by the conductor's event.
+        adopted = [f for e, f in n.events if e == "site_job_adopted"]
+        self.assertEqual([(f["job_id"], f["remote_dir"]) for f in adopted],
+                         [("4242", first_dir)])
+        meta = json.loads((n.node_dir / "trial_meta.json").read_text())
+        self.assertEqual(meta["environment"]["execution_site"]["job_id"], "4242")
+        self.assertEqual(meta["environment"]["execution_site"]["remote_dir"], first_dir)
+        runs = n.log_entries(n.node_dir / "command_log.jsonl")
+        self.assertTrue(runs)
+        for entry in [*runs, *n.log_entries(n.src / "command_log.jsonl")]:
+            self.assertEqual(entry["agent_run_id"], "arid-2")
+            self.assertEqual(entry["site"]["job_id"], "4242")
+            self.assertTrue(entry["site"]["remote_cwd"].startswith(first_dir + "/"), entry)
+        # The evidence is this attempt's local directories'.
+        self.assertTrue((n.repo / "workspace" / "tmp" / "arid-2" / "run").is_dir())
+
+    def test_the_second_pass_is_adopted_after_the_first_job_runs_again(self) -> None:
+        """The first job's record went when it was accepted, so the resumed attempt submits the
+        first job again; the second job's request, composed from the new first job's samples
+        for the recorded directory, is unchanged, and that job is adopted."""
+        n = ContinuationAtExecuteTests()._node(self._tmp.name, remote=True)
+        slurm = _at_a_batch_site(n)
+        with self.assertRaises(KeyboardInterrupt):
+            _execute_interrupting(n, "arid-1", slurm, interrupt_wait=2, authors_runner=True)
+        record = n.repo / "workspace" / "orchestrations" / "orch_1" / "site_jobs"
+        self.assertEqual(sorted(p.name for p in record.iterdir()),
+                         ["validate_execute_restart.json"])
+        restart = json.loads((record / "validate_execute_restart.json").read_text())
+        self.assertEqual(restart["remote_dir"], f"{n.workdir}/orch_1/arid-1.restart")
+        out = _execute_interrupting(n, "arid-2", slurm, interrupt_wait=None,
+                                    authors_runner=True)
+        self.assertEqual(out["returncode"], 0, out)
+        names = [next(a for a in c if a.startswith("--job-name="))
+                 for c in n.calls() if c[0] == "sbatch"]
+        self.assertEqual(names, ["--job-name=spec2science-arid-1",
+                                 "--job-name=spec2science-arid-1.restart",
+                                 "--job-name=spec2science-arid-2"])
+        self.assertEqual(sorted(p.name for p in record.iterdir()), [])
+        # The operator finds the adopted restart job by the conductor's event.
+        adopted = [f for e, f in n.events if e == "site_job_adopted"]
+        self.assertEqual([(f["job_id"], f["remote_dir"]) for f in adopted],
+                         [(restart["job_id"], restart["remote_dir"])])
+        meta = json.loads((n.node_dir / "trial_meta.json").read_text())
+        for label, entry in meta["restart_pass"].items():
+            (row,) = entry["continuations"]
+            self.assertTrue(row["ok"], (label, row))
+        conts = [e for e in n.log_entries(n.node_dir / "command_log.jsonl")
+                 if "m0_cont" in e["command"]]
+        self.assertEqual(len(conts), 4)
+        for entry in conts:
+            self.assertEqual(entry["site"]["job_id"], restart["job_id"])
+            self.assertEqual(entry["agent_run_id"], "arid-2")
 
 
 if __name__ == "__main__":
