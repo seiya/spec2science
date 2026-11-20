@@ -1841,10 +1841,12 @@ PINNED_BUILD: dict[str, str] = {
     # `Conductor._build_inproc` composes its request as a function of the job directory and
     # writes the job's output back from the directory the job ran in. The commands, the files
     # and the recorded entries of a job are those of PR-1; a `none` site's job is unchanged, and
-    # no key holds a site, a job or a record. (Measured by diffing `build_tuple()` against main
+    # no key holds a site, a job or a record; review 1's fixes (the record removed once the job
+    # directory is copied, the directives in the request digest, the deleted adoption checks)
+    # move `tools/remote_execution.py` alone. (Measured by diffing `build_tuple()` against main
     # 37db7547's: those two rows and no other.) The digest `build-5` shipped with at 37db7547:
     "build-5@37db7547": "4420f4123ad1ac6c6af17c03494d709a6717c502a138dccf8259c3d7fcc2d08f",
-    "build-5": "5c6e9fe8600e3f2e49e702d3e1fb3117c0ac63324a6bab0e0f3384deed51cf01",
+    "build-5": "113521266b34c8f318fa1eced9aa32680478dd103975975ae05cac7b74dea2c5",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2298,11 +2300,11 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-22@8694434f": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
     # execute-22 re-pinned in place by issue #696 PR-2, for the `tools/remote_execution.py` change
     # of build-5's entry, and `Conductor._execute_inproc` composing its two jobs' requests as
-    # functions of the job directory for that adoption. (Measured by diffing `execute_tuple()`
-    # against main 37db7547's: those two rows and no other.) The digest `execute-22` shipped with
-    # at 37db7547:
+    # functions of the job directory for that adoption, and review 1's fixes named at build-5.
+    # (Measured by diffing `execute_tuple()` against main 37db7547's: those two rows and no
+    # other.) The digest `execute-22` shipped with at 37db7547:
     "execute-22@37db7547": "af0e2ff111d5e18826a184d03374cd8dc2036b026cd7724fd8b01aa05c6e4969",
-    "execute-22": "b5256cf03d546d1fd53d2f9f2075adc49b3e6b8e4177dc3634270d6f3337ccd2",
+    "execute-22": "b9df7baf427f8cf6849f365edcea282fc8f87eef82d9d42ee5a161c423cb47ab",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
