@@ -8646,11 +8646,6 @@ def _compose_parallel_fragments(template: str, template_file: str, parallel: Any
     lead: dict[str, str] = {}
     if len(members) > 1:
         lead = _parallel_combination_lead(stem, backend, members)
-        missing = sorted(markers - set(lead))
-        if missing:
-            raise ValueError(
-                f"pure launch prompt {template_file}: the combination lead defines no fragment "
-                f"for {', '.join(missing)}")
     return _PARALLEL_FRAGMENT_RE.sub(
         lambda m: "\n\n".join([*([lead[m.group(1)]] if lead else []),
                                 *(sections[m.group(1)] for sections in member_sections)]),
