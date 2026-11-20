@@ -1835,7 +1835,16 @@ PINNED_BUILD: dict[str, str] = {
     # holds a site or a job. (Measured by diffing `build_tuple()` against main 8694434f's: that
     # row and no other.) The digest `build-5` shipped with at 8694434f:
     "build-5@8694434f": "db3e77ef9b85dfd8e645a2a510ea1049db47d91ac756dba54f0e5e9028fd2f39",
-    "build-5": "4420f4123ad1ac6c6af17c03494d709a6717c502a138dccf8259c3d7fcc2d08f",
+    # build-5 re-pinned in place by issue #696 PR-2: `tools/remote_execution.py` keeps a site job
+    # record of a batch job and adopts the recorded job on a later attempt when the request that
+    # attempt composes for the recorded job directory has the recorded digest, and
+    # `Conductor._build_inproc` composes its request as a function of the job directory and
+    # writes the job's output back from the directory the job ran in. The commands, the files
+    # and the recorded entries of a job are those of PR-1; a `none` site's job is unchanged, and
+    # no key holds a site, a job or a record. (Measured by diffing `build_tuple()` against main
+    # 37db7547's: those two rows and no other.) The digest `build-5` shipped with at 37db7547:
+    "build-5@37db7547": "4420f4123ad1ac6c6af17c03494d709a6717c502a138dccf8259c3d7fcc2d08f",
+    "build-5": "5c6e9fe8600e3f2e49e702d3e1fb3117c0ac63324a6bab0e0f3384deed51cf01",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2287,7 +2296,13 @@ PINNED_EXECUTE: dict[str, str] = {
     # a job are in no key. (Measured by diffing `execute_tuple()` against main 8694434f's: those
     # three rows and no other.) The digest `execute-22` shipped with at 8694434f:
     "execute-22@8694434f": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
-    "execute-22": "af0e2ff111d5e18826a184d03374cd8dc2036b026cd7724fd8b01aa05c6e4969",
+    # execute-22 re-pinned in place by issue #696 PR-2, for the `tools/remote_execution.py` change
+    # of build-5's entry, and `Conductor._execute_inproc` composing its two jobs' requests as
+    # functions of the job directory for that adoption. (Measured by diffing `execute_tuple()`
+    # against main 37db7547's: those two rows and no other.) The digest `execute-22` shipped with
+    # at 37db7547:
+    "execute-22@37db7547": "af0e2ff111d5e18826a184d03374cd8dc2036b026cd7724fd8b01aa05c6e4969",
+    "execute-22": "b5256cf03d546d1fd53d2f9f2075adc49b3e6b8e4177dc3634270d6f3337ccd2",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
