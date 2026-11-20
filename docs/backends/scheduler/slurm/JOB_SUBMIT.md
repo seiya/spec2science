@@ -60,7 +60,11 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
   signal in the record. It can make that shell exit with a status of its choice only by
   deliberately attaching to it with a debugger (ptrace, where the site allows it), which a
   `none` site's pipe channel is equally open to: a deliberate attack with no ordinary spelling,
-  outside what the executor defends.
+  outside what the executor defends. What is enforced is that a file showing no failed command
+  is accepted only under `COMPLETED 0:0`. Under `FAILED 1:0`, which command failed and which
+  ran are read from `job.out` as it stands: a leftover process can rewrite it to name another
+  command as the failed one, and commands that did not run as having exited 0. Not defended:
+  every command's failure fails the attempt, so no verdict reads one as a pass.
 
 | `JobState` | read as | measured |
 |---|---|---|
