@@ -33,6 +33,11 @@ sites:
       - module load compiler
   # A class whose device must be requested gets a site of its own — directives are per site —
   # and that site's directives request it; two sites may name the same host.
+  # A target whose parallel backend starts its binary under a launcher (an `execution.ranks`
+  # profile) gets one too, whose directives allocate its ranks and the threads of each; the
+  # option spellings are the scheduler's JOB_SUBMIT.md §2 (issue #337):
+  # cluster_ranks: {host: login-node, workdir: /work/spec2science-jobs, executes: [cpu],
+  #                 scheduler: slurm, scheduler_directives: [<ranks as tasks>, <threads per task>]}
   # cluster_gpu: {host: login-node, workdir: /work/spec2science-jobs, executes: [gpu],
   #               scheduler: slurm, scheduler_directives: [<select a machine with the device>]}
   local:                            # optional; it takes `executes` and `libraries` (no `setup`:

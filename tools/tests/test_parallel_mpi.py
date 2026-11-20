@@ -54,8 +54,9 @@ class LauncherTests(unittest.TestCase):
 
 
 class LaunchCanaryTests(unittest.TestCase):
-    """`launch_canary_problem`: one run of `LAUNCH_CANARY_RANKS` processes, and nothing else,
-    reads as one run."""
+    """`launch_canary_problem`: one run of the rank count it is asked, and nothing else, reads as
+    one run — `LAUNCH_CANARY_RANKS` at the local startup probe, the profile's ranks and 1 (the
+    bare start) in a remote `Build` job's canary (issue #337)."""
 
     def _out(self, *sizes: object, noise: str = "") -> str:
         return noise + "".join(f"spec2science-mpi-size {n}\n" for n in sizes)
@@ -63,9 +64,17 @@ class LaunchCanaryTests(unittest.TestCase):
     def test_one_run_of_the_canary_count_passes_with_runtime_noise_around_it(self) -> None:
         n = launcher.LAUNCH_CANARY_RANKS
         self.assertGreater(n, 1, "a canary of one process cannot tell one run from several")
-        self.assertIsNone(launcher.launch_canary_problem(0, self._out(*[n] * n)))
+        self.assertIsNone(launcher.launch_canary_problem(0, self._out(*[n] * n), n))
         self.assertIsNone(launcher.launch_canary_problem(
-            0, self._out(*[n] * n, noise="Authorization required, but no protocol\n")))
+            0, self._out(*[n] * n, noise="Authorization required, but no protocol\n"), n))
+
+    def test_the_count_is_the_callers(self) -> None:
+        self.assertIsNone(launcher.launch_canary_problem(0, self._out(4, 4, 4, 4), 4))
+        self.assertIsNone(launcher.launch_canary_problem(0, self._out(1), 1))
+        for out, ranks in ((self._out(2, 2), 4), (self._out(4, 4, 4, 4), 1),
+                           (self._out(1, 1, 1, 1), 4), (self._out(2), 1)):
+            with self.subTest(out=out, ranks=ranks):
+                self.assertIsNotNone(launcher.launch_canary_problem(0, out, ranks))
 
     def test_every_other_shape_is_a_problem(self) -> None:
         n = launcher.LAUNCH_CANARY_RANKS
@@ -77,7 +86,7 @@ class LaunchCanaryTests(unittest.TestCase):
                 (0, "spec2science-mpi-size 2 extra\nspec2science-mpi-size 2\n", "reported run sizes"),
                 (1, self._out(*[n] * n), "the launch exited 1")):
             with self.subTest(rc=rc, out=out):
-                problem = launcher.launch_canary_problem(rc, out)
+                problem = launcher.launch_canary_problem(rc, out, n)
                 self.assertIsNotNone(problem)
                 self.assertIn(needle, problem)
 
@@ -148,13 +157,13 @@ class RealToolchainCanaryTests(unittest.TestCase):
             prefix[0] = f"{_PAIR}/{prefix[0]}"
             run = subprocess.run([*prefix, exe], capture_output=True, text=True, check=False,
                                  timeout=120, cwd=tmp, stdin=subprocess.DEVNULL)
-            self.assertIsNone(launcher.launch_canary_problem(run.returncode, run.stdout),
-                              run.stdout + run.stderr)
+            self.assertIsNone(launcher.launch_canary_problem(
+                run.returncode, run.stdout, launcher.LAUNCH_CANARY_RANKS), run.stdout + run.stderr)
             # Started without the launcher it is one process: the quality check's premise.
             alone = subprocess.run([exe], capture_output=True, text=True, check=False,
                                    timeout=120, cwd=tmp, stdin=subprocess.DEVNULL)
-            self.assertEqual(alone.returncode, 0, alone.stderr)
-            self.assertIn("spec2science-mpi-size 1", alone.stdout)
+            self.assertIsNone(launcher.launch_canary_problem(alone.returncode, alone.stdout, 1),
+                              alone.stdout + alone.stderr)
 
 
 class WrapperTests(unittest.TestCase):

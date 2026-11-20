@@ -214,8 +214,8 @@ class DeviceTraceLaunchTests(unittest.TestCase):
 class LauncherLaunchTests(unittest.TestCase):
     """The launcher half of the launch shape (issue #316): a parallel backend that declares
     `launcher` starts the binary's ranks with the profile's `execution.ranks`, outermost in the
-    prefix; its programs join the executing machine's; a launcher target runs at `local` only;
-    more ranks than one need a launcher."""
+    prefix; its programs join the executing machine's; a launcher target runs at any site
+    that executes its class (issue #337); more ranks than one need a launcher."""
 
     MPI4 = profile_with(parallel={"backend": "mpi"},
                         execution={"threads_per_rank": 1, "ranks": 4})
@@ -286,19 +286,23 @@ class LauncherLaunchTests(unittest.TestCase):
         self.assertEqual(he.execution_executables("mpi"), tuple(launcher.EXECUTABLES))
         self.assertTrue(he.execution_executables("mpi"))
 
-    def test_a_launcher_target_runs_at_local_only(self) -> None:
-        """The backstop of the site gate (`execution_sites.site_violations`): a remote site is
-        refused whatever it executes and however many ranks the profile runs."""
+    def test_a_launcher_target_runs_at_a_remote_site(self) -> None:
+        """Issue #337: a remote site that executes the class runs a launcher target, and its
+        launch is the one the local site composes — the launcher's prefix with the profile's
+        ranks, the same environment — under the site's id. Until issue #700 PR-3 this seam
+        refused it. A site that does not execute the class is still refused."""
         for profile in (self.MPI4, profile_with(parallel={"backend": "mpi"})):
             with self.subTest(ranks=profile.ranks):
-                with self.assertRaises(he.LaunchUnavailable) as ctx:
-                    he.launch_shape(profile, self._site("cluster", "cpu"))
-                self.assertIn("runs its binary under a launcher", str(ctx.exception))
-                self.assertIn("site cluster", str(ctx.exception))
-        # The local site, named or not, runs it.
-        self.assertEqual(he.launch_shape(self.MPI4, self._site(he.LOCAL_SITE, "cpu")).site,
-                         he.LOCAL_SITE)
-        self.assertEqual(he.launch_shape(self.MPI4).site, he.LOCAL_SITE)
+                remote = he.launch_shape(profile, self._site("cluster", "cpu"))
+                local = he.launch_shape(profile)
+                self.assertEqual(remote.site, "cluster")
+                self.assertEqual((remote.argv_prefix, dict(remote.env)),
+                                 (local.argv_prefix, dict(local.env)))
+                launcher = registry.capability_module("parallel", "mpi", "launcher")
+                self.assertEqual(remote.argv_prefix, launcher.argv_prefix(profile.ranks))
+        with self.assertRaises(he.LaunchUnavailable) as ctx:
+            he.launch_shape(self.MPI4, self._site("cluster", "gpu"))
+        self.assertIn("is not executed at site cluster", str(ctx.exception))
 
     def test_an_imposed_process_grid_reaches_the_launch_environment(self) -> None:
         """Issue #512: the profile's `execution.process_grid` is handed to the backend and comes

@@ -3827,6 +3827,108 @@ def build_compiler(tc: dict[str, str]) -> str:
     return compiler_wrapper(tc["backend"]) or tc["compiler"] or default_compiler(tc["language"])
 
 
+@dataclass(frozen=True)
+class _RemoteLaunchCanary:
+    """The launch canary of a remote `Build` job (issue #337): the parallel backend's
+    `LAUNCH_CANARY_SOURCE`, shipped to the job as `ship_path`, built with the compiler wrapper,
+    started under the launcher with the profile's `execution.ranks`, and started bare. Each of
+    the three is one of the job's ordinary commands, ahead of the build, and the job runs a
+    command only when every earlier one exited 0, so a canary command that exits non-zero stops
+    the job before the build; a launch that exits 0 and reports another run (a launcher of
+    another installation) lets the job run on, and `problem` refuses it after the job, before
+    the build's result is read or recorded. Their entries go to `log`, the orchestration's
+    `launch_canary.jsonl`, not to the node's `src/command_log.jsonl` (they are not the node's
+    commands) and not under `workspace/tmp/<agent_run_id>/`, which the substep's end
+    removes.
+
+    Named breakage without it (`AGENTS.md` §Development premises): a site whose launcher,
+    wrapper or allocation does not start the ranks as one run — a launcher of another
+    installation starts independent one-process runs and exits 0, a batch allocation with too
+    few tasks makes the launcher refuse the count — fails the node's run at `Validate.execute`,
+    which routes it to a `Generate` repair the leaf cannot make, up to three per node, on every
+    node of a closure. The bare start is the other way `Validate.execute` starts the binary (the
+    serial reference and the checked row). It covers the first `Build` at a site, not a
+    `Validate` that passes through none (`docs/backends/parallel/mpi/LAUNCHER.md` §4)."""
+
+    TAGS: ClassVar[tuple[str, str, str]] = (
+        "launch_canary_build", "launch_canary_launch", "launch_canary_bare")
+
+    launcher: Any
+    wrapper: str
+    ranks: int
+    source: Path
+    log: Path
+
+    @property
+    def ship_path(self) -> str:
+        return f"launch_canary/{self.source.name}"
+
+    def commands(self, jdir: str) -> tuple[Any, ...]:
+        """The three commands, in the job directory `jdir`."""
+        from tools.host_prerequisites import BINDING_CANARY_TIMEOUT_SEC
+        from tools.remote_execution import CommandSpec
+
+        cdir = f"{jdir}/launch_canary"
+        exe = f"{cdir}/launch_canary"
+        build = (self.wrapper, *(str(a).format(scratch=cdir, source=f"{jdir}/{self.ship_path}",
+                                               exe=exe)
+                                 for a in self.launcher.LAUNCH_CANARY_BUILD_ARGV))
+        argvs = (build, (*self.launcher.argv_prefix(self.ranks), exe), (exe,))
+        return tuple(CommandSpec(
+            tag=tag, tool_name="launch_canary", argv=tuple(argv), cwd=cdir,
+            record_cwd=str(self.source.parent), env={},
+            timeout_sec=BINDING_CANARY_TIMEOUT_SEC, command_log_path=self.log,
+            capture_limit=_FULL_CAPTURE_LIMIT) for tag, argv in zip(self.TAGS, argvs))
+
+    def problem(self, by_tag: Mapping[str, dict[str, Any] | None]) -> str | None:
+        """None when the canary built, its launch reported one run of `ranks` processes and its
+        bare start one run of one process; otherwise what it showed. A command runs only when
+        every earlier one exited 0, and the first always runs, so the one that failed is read
+        before any that did not run."""
+        build_tag, launch_tag, bare_tag = self.TAGS
+        built = by_tag[build_tag]
+        if not built.get("ok"):
+            tail = (built.get("stderr") or built.get("stdout") or "").strip()[-400:]
+            return (f"{self.wrapper} did not build the launch canary "
+                    f"(rc={built.get('return_code')}: {tail})")
+        under = f"started under {self.launcher.EXECUTABLE} with {self.ranks} processes"
+        for tag, ranks, how in ((launch_tag, self.ranks, under),
+                                (bare_tag, 1, "started without the launcher")):
+            ran = by_tag[tag]
+            if ran.get("return_code") != 0:
+                tail = (ran.get("stderr") or ran.get("stdout") or "").strip()[-1500:]
+                return (f"the launch canary {how} did not complete "
+                        f"(rc={ran.get('return_code')}: {tail}); the site must start "
+                        f"{ranks} process(es) this way — at a batch site its "
+                        f"scheduler_directives allocate the ranks (docs/RUNBOOK.md §Refused "
+                        f"at startup — the execution site)")
+            found = self.launcher.launch_canary_problem(0, ran.get("stdout") or "", ranks)
+            if found is not None:
+                return (f"the launch canary {how} did not run as one run: {found}; the "
+                        f"launcher and the compiler wrapper must come from one installation "
+                        f"(docs/RUNBOOK.md §0-1)")
+        return None
+
+
+def remote_launch_canary(target: Any, tc: dict[str, str], local_dir: Path, *,
+                         log: Path) -> _RemoteLaunchCanary | None:
+    """The launch canary of `target`'s remote `Build` job, its source written under
+    `local_dir` and its commands' entries appended to `log`; None for a target that runs one
+    rank (one process is one run whichever installation starts it). A profile of more ranks
+    names a backend that declares a launcher: the launch gate refuses any other
+    (`target_profile.hardware_violations`)."""
+    backend = target.parallel_backend
+    if int(target.ranks) <= 1:
+        return None
+    launcher = backend_registry.capability_module("parallel", backend, "launcher")
+    local_dir.mkdir(parents=True, exist_ok=True)
+    source = local_dir / str(launcher.LAUNCH_CANARY_FILENAME)
+    source.write_text(str(launcher.LAUNCH_CANARY_SOURCE), encoding="utf-8")
+    return _RemoteLaunchCanary(launcher=launcher, wrapper=build_compiler(tc),
+                               ranks=int(target.ranks), source=source,
+                               log=log)
+
+
 def _local_site_record() -> dict[str, Any]:
     """The execution-site record of a command run in-process on this host: the local site, no
     host, no scheduler, no job — the shape `remote_execution.JobResult.site_record` has at a
@@ -11062,7 +11164,9 @@ class Conductor:
         as one job (`tools/remote_execution.py`), the binary is collected into this node's
         `bin/`, and the job's output names the local paths it stands for.
         `binary_meta.json#environment` records where it was built, and `Validate.execute`
-        refuses to run a binary at a site other than that one (`_execute_inproc`)."""
+        refuses to run a binary at a site other than that one (`_execute_inproc`). For a
+        launcher target of more than one rank the remote job starts with the launch canary's
+        three commands (`remote_launch_canary`, issue #337), read before the build's result."""
         from tools.build_runtime import (
             COMPILE_PROJECT_TIMEOUT_SEC,
             build_command,
@@ -11124,8 +11228,8 @@ class Conductor:
             from tools.host_execution import launch_shape
 
             # The backstop of the driver's site gate, before anything is staged or shipped: a
-            # site that does not execute the class, or a launcher target at a remote site, is
-            # refused (`LaunchUnavailable`, a `deterministic_build_error`).
+            # site that does not execute the class is refused (`LaunchUnavailable`, a
+            # `deterministic_build_error`).
             launch_shape(self.target, site)
         # DEPENDENCY BUILD (Model B, docs/design): for a node with dependencies whose control
         # file the host authors, stage each closure model source into obj_dir (the build's
@@ -11229,6 +11333,14 @@ class Conductor:
                                                and path.name in AUDIT_LOG_BASENAMES):
                         ship[f"{prefix}/{path.relative_to(root).as_posix()}"] = path
             jobs = default_build_jobs()
+            # The launch canary (issue #337): for a launcher target of more than one rank, the
+            # job's first three commands; None otherwise, and the job is as before.
+            canary = remote_launch_canary(
+                self.target, tc, obj_dir.parent / "launch_canary",
+                log=(self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                     / "launch_canary.jsonl"))
+            if canary is not None:
+                ship[canary.ship_path] = canary.source
 
             def request_for(jdir: str) -> JobRequest:
                 """The job for job directory `jdir`: a resumed attempt composes it for the
@@ -11247,9 +11359,10 @@ class Conductor:
                     timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
                     command_log_path=src_dir / "command_log.jsonl",
                     capture_limit=_FULL_CAPTURE_LIMIT),) if checked_flags else ()
+                canary_commands = canary.commands(jdir) if canary is not None else ()
                 return JobRequest(
                     site=site, job_dir=jdir, ship=ship,
-                    commands=(CommandSpec(
+                    commands=(*canary_commands, CommandSpec(
                         tag="build", tool_name="compile_project",
                         argv=tuple(build_command(build_system, None, jobs, build_args(
                             f"{jdir}/build", f"{jdir}/bin"))),
@@ -11270,8 +11383,17 @@ class Conductor:
                 request_for, fresh_dir=job_dir(site, self.orchestration_id, child_arid),
                 record_path=self._site_job_record("build"), local_tmp=obj_dir.parent / "site",
                 emit=self.emit)
-            result = job.results[0]
-            checked_result = job.results[1] if checked_flags else None
+            # The results by tag: the canary's lead the job when it carries one.
+            tags = (*(canary.TAGS if canary is not None else ()), "build",
+                    *(("build_checked",) if checked_flags else ()))
+            by_tag = dict(zip(tags, job.results))
+            if canary is not None:
+                problem = canary.problem(by_tag)
+                if problem is not None:
+                    # The site's fault, not the source's: no Generate repair can change it.
+                    raise RuntimeError(f"launch canary at site {site_id!r}: {problem}")
+            result = by_tag["build"]
+            checked_result = by_tag["build_checked"] if checked_flags else None
             # What the job's output names by its job-directory path is written back to the
             # local path it stands for — the compiler's diagnostics, which the failure's
             # `failure_excerpt` quotes to the Generate repair, among it. The directory is the

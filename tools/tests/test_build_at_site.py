@@ -343,18 +343,6 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         # Still recorded as built (and failed) at the site.
         self.assertEqual(meta["environment"]["build_site"]["site"], "box")
 
-    def test_a_launcher_target_is_refused_before_anything_is_shipped(self) -> None:
-        n = _Node(tempfile.mkdtemp(dir=self._tmp.name),
-                  target=profile_with(parallel={"backend": "mpi"}))
-        # The fixture conductor certifies a harness closure for the target first, which this
-        # profile's harness is not: the refusal under test precedes any staging.
-        n.conductor._bind_a_harness_only_closure = lambda *a: None
-        result = n.substep()
-        self.assertEqual(result.returncode, 1, result)
-        self.assertIn("deterministic_build_error", result.stderr)
-        self.assertIn("launcher", result.stderr)
-        self.assertEqual(n.calls(), [])
-
     def test_the_toolchain_probe_is_the_keys_version_argv(self) -> None:
         """The job asks the site the same question `_target_toolchain_identity` asks this host
         (`toolchain_version_argv`), so the two recorded versions are one question's answers."""
@@ -373,6 +361,268 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
             n.build()
         self.assertEqual(seen["probe"], toolchain_version_argv(n.target))
         self.assertEqual(seen["required"], (n.compiler,))
+
+
+#: The site's launcher (issue #337): `<launcher> -n <N> <program>` starts the program N times.
+#: `SHIM_LAUNCH` picks what it does: `one` (default) starts N processes of one run of N,
+#: `independent` N one-process runs (a launcher of another installation, which exits 0), and
+#: `refuse` refuses the count as a launcher with too few slots does.
+_FAKE_LAUNCHER = textwrap.dedent('''\
+    #!/bin/sh
+    echo "$*" >> "${SHIM_LOG}.launches"
+    n=$2; shift 2
+    case "${SHIM_LAUNCH:-one}" in
+      refuse) echo "There are not enough slots available in the system" >&2; exit 1 ;;
+      independent) size=1 ;;
+      *) size=$n ;;
+    esac
+    i=0
+    while [ "$i" -lt "$n" ]; do SHIM_RUN_SIZE=$size "$@" || exit $?; i=$((i+1)); done
+''')
+
+#: The site's compiler wrapper: the launch canary's build writes a program that prints the size
+#: of the run it was started in (`SHIM_RUN_SIZE`, which only the launcher sets; 1 bare). It
+#: fails, as a real compiler would, when the source it is handed is not the backend's
+#: `LAUNCH_CANARY_SOURCE` byte for byte (a copy written beside it) — so a job that ships
+#: no source, or another one, fails its canary — and when `SHIM_CANARY_BUILD=fail`; its bare
+#: start fails when `SHIM_BARE=fail`. Every other invocation is the node's fake compiler's.
+_FAKE_WRAPPER = textwrap.dedent('''\
+    #!/bin/sh
+    case " $* " in
+      *{canary}*)
+        [ "${{SHIM_CANARY_BUILD:-}}" = fail ] && {{ echo "no mpi_f08 module" >&2; exit 1; }}
+        out=
+        while [ $# -gt 0 ]; do
+          case "$1" in -o) out=$2; shift ;; *{canary}) src=$1 ;; esac; shift
+        done
+        cmp -s "$src" {expected} || {{ echo "$src: not the canary source" >&2; exit 1; }}
+        cat > "$out" <<'PROG'
+    #!/bin/sh
+    if [ -z "${{SHIM_RUN_SIZE:-}}" ] && [ "${{SHIM_BARE:-}}" = fail ]; then
+      echo "cannot start outside the launcher" >&2; exit 1
+    fi
+    echo "spec2science-mpi-size ${{SHIM_RUN_SIZE:-1}}"
+    PROG
+        chmod +x "$out"; exit 0 ;;
+    esac
+    exec "$0.node" "$@"
+''')
+
+
+class LauncherTargetBuildAtARemoteSiteTests(unittest.TestCase):
+    """Issue #337 (issue #700 PR-3): a launcher target builds at a remote site, and its job
+    starts with the launch canary's three commands — built with the wrapper, started under the
+    launcher with the profile's ranks, started bare — whose failures are the site's, raised
+    before the build's result is read (`deterministic_build_error`, transport fail_closed: no
+    Generate repair). Over the shims, with a fake launcher and wrapper at the site."""
+
+    RANKS = 4
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.n = self._node(self._tmp.name)
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def _node(self, tmp: str, ranks: int | None = None) -> _Node:
+        from tools.backends import registry
+
+        n = _Node(tmp, target=profile_with(
+            parallel={"backend": "mpi"},
+            execution={"threads_per_rank": 1, "ranks": ranks or self.RANKS}))
+        # The fixture conductor binds a certified harness closure first, which is keyed by the
+        # target and so not this variant's: the build under test stages the fixture's own
+        # object directory instead, declares no library, and finds the harness registered.
+        from tools.tests.test_workflow_conductor import _register_target_harness
+
+        n.conductor._bind_a_harness_only_closure = lambda *a: None
+        n.conductor._stage_dependency_sources = lambda *a, **k: []
+        n.conductor._closure_libraries = lambda *a: []
+        _register_target_harness(n.repo.resolve())
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        node_compiler = n.site_bin / n.compiler
+        node_compiler.rename(n.site_bin / f"{n.compiler}.node")
+        expected = n.site_bin / "expected_canary.f90"
+        expected.write_text(str(launcher.LAUNCH_CANARY_SOURCE))
+        node_compiler.write_text(_FAKE_WRAPPER.format(canary=launcher.LAUNCH_CANARY_FILENAME,
+                                                      expected=expected))
+        node_compiler.chmod(0o755)
+        fake = n.site_bin / str(launcher.EXECUTABLE)
+        fake.write_text(_FAKE_LAUNCHER)
+        fake.chmod(0o755)
+        self.launcher = launcher
+        return n
+
+    def canary_entries(self, n: _Node, arid: str = "arid-1") -> list[dict]:
+        # The orchestration's log, which outlives the attempt's tmp directory; `arid` selects
+        # the attempt's entries.
+        path = n.repo / "workspace" / "orchestrations" / "orch_1" / "launch_canary.jsonl"
+        if not path.exists():
+            return []
+        return [e for e in (json.loads(line) for line in path.read_text().splitlines())
+                if e["agent_run_id"] == arid]
+
+    def test_the_canary_leads_the_job_and_the_build_passes(self) -> None:
+        n = self.n
+        out = n.build()
+        self.assertEqual(out["returncode"], 0, out)
+        self.assertEqual(n.meta()["verification_status"], "pass", n.meta())
+        entries = self.canary_entries(n)
+        self.assertEqual([e["tool_name"] for e in entries], ["launch_canary"] * 3)
+        cdir = f"{n.job}/launch_canary"
+        exe = f"{cdir}/launch_canary"
+        build, launch, bare = (e["site"]["remote_command"] for e in entries)
+        self.assertEqual(build[0], n.compiler)
+        self.assertIn(f"{n.job}/launch_canary/{self.launcher.LAUNCH_CANARY_FILENAME}", build)
+        self.assertEqual(launch, [*self.launcher.argv_prefix(self.RANKS), exe])
+        self.assertEqual(bare, [exe])
+        self.assertTrue(all(e["ok"] for e in entries), entries)
+        # The canary ran in its own directory, and its entries are not the node's: the node's
+        # log holds the earlier entry, the build and the checked build.
+        self.assertEqual({e["site"]["remote_cwd"] for e in entries}, {cdir})
+        self.assertEqual([e.get("tool_name") for e in n.log_entries()],
+                         [None, "compile_project", "compile_project"])
+        launches = Path(f"{n.log}.launches").read_text().splitlines()
+        self.assertEqual(launches, [f"-n {self.RANKS} {exe}"])
+
+    def test_each_canary_failure_is_the_sites_and_records_no_build(self) -> None:
+        under = f"under {self.launcher.EXECUTABLE} with {self.RANKS} processes"
+        # Each needle reaches into the tail of what the site printed: the message is the
+        # failure's only durable copy of it (the log entries hold no output).
+        for knob, needle in ((("SHIM_CANARY_BUILD", "fail"),
+                              "did not build the launch canary (rc=1: no mpi_f08 module)"),
+                             (("SHIM_LAUNCH", "refuse"),
+                              f"{under} did not complete (rc=1: There are not enough slots"),
+                             (("SHIM_LAUNCH", "independent"),
+                              (f"{under} did not run as one run: {self.RANKS} process(es) were "
+                               f"started and they reported run sizes {['1'] * self.RANKS}")),
+                             (("SHIM_BARE", "fail"),
+                              ("started without the launcher did not complete "
+                               "(rc=1: cannot start outside the launcher)"))):
+            with self.subTest(knob=knob), tempfile.TemporaryDirectory() as tmp:
+                n = self._node(tmp)
+                result = n.substep(**dict([knob]))
+                self.assertEqual(result.returncode, 1, result)
+                self.assertIn("deterministic_build_error", result.stderr)
+                self.assertIn("launch canary at site 'box'", result.stderr)
+                self.assertIn(needle, result.stderr)
+                # Nothing was recorded as the node's build, so no Generate repair reads one.
+                self.assertFalse((n.repo / n.refs.binary_dir() / "binary_meta.json").exists())
+                if knob[0] != "SHIM_LAUNCH" or knob[1] != "independent":
+                    # A canary command that exited non-zero stops the job before the build.
+                    self.assertEqual(len(n.log_entries()), 1, "the build did not run")
+                _reap_shim_jobs(tmp)
+
+    def test_the_build_result_is_the_builds_not_the_canarys(self) -> None:
+        """The job's results are read by tag: behind a canary that passed, a source the site's
+        compiler refuses is the node's content failure, its excerpt names the node's own source,
+        and the record's command is the build's entry in the node's log — not the canary's
+        build, which leads the job."""
+        n = self.n
+        (n.src / "kernel.f90").write_text("! FAIL\n", encoding="utf-8")
+        out = n.build()
+        self.assertEqual(out["returncode"], 0, "a content failure, not a transport one")
+        meta = n.meta()
+        self.assertEqual(meta["verification_status"], "fail")
+        self.assertEqual(meta["failure_category"], "compile_error", meta)
+        self.assertIn(f"{n.src}/kernel.f90:3:1: Error", meta["failure_excerpt"])
+        self.assertEqual(len(self.canary_entries(n)), 3)
+        build_entry = n.log_entries()[1]
+        self.assertEqual(build_entry["tool_name"], "compile_project")
+        self.assertEqual(meta["command_id"], build_entry["command_id"])
+
+    def test_a_site_that_does_not_execute_the_class_ships_nothing(self) -> None:
+        """The build seam's backstop of the driver's site gate (`launch_shape`): refused before
+        anything is staged or shipped, a launcher target as any other."""
+        import dataclasses
+
+        n = self.n
+        n.conductor.site = n.site = dataclasses.replace(n.site, executes=("gpu",))
+        result = n.substep()
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("deterministic_build_error", result.stderr)
+        self.assertIn("is not executed at site box", result.stderr)
+        self.assertEqual(n.calls(), [])
+
+    def test_a_one_rank_launcher_target_carries_no_canary(self) -> None:
+        """One process is one run whichever installation starts it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, ranks=1)
+            out = n.build()
+            self.assertEqual(out["returncode"], 0, out)
+            self.assertEqual(self.canary_entries(n), [])
+            self.assertFalse(Path(f"{n.log}.launches").exists())
+
+    def test_a_target_without_a_launcher_composes_the_job_it_did_before(self) -> None:
+        """V-h of issue #700 PR-3: the job of a target whose backend declares no launcher carries
+        no canary command and ships no canary source, so its request — and the digest a batch
+        job in flight was recorded under — is the one composed before PR-3."""
+        import tools.remote_execution as rx
+
+        with tempfile.TemporaryDirectory() as tmp:
+            n = _Node(tmp)
+            seen = {}
+            real_execute = rx.execute_job
+
+            def spy(request, **kw):
+                seen["tags"] = tuple(c.tag for c in request.commands)
+                seen["ship"] = sorted(request.ship)
+                seen["dirs"] = request.dirs
+                return real_execute(request, **kw)
+
+            with mock.patch.object(rx, "execute_job", spy):
+                n.build()
+            self.assertEqual(seen["tags"], ("build", "build_checked"))
+            self.assertFalse([p for p in seen["ship"] if p.startswith("launch_canary")])
+            self.assertEqual(seen["dirs"], ("bin", "build", "bin_checked", "build_checked"))
+
+    def test_at_a_batch_site_the_canary_runs_in_the_job_and_a_resumed_build_adopts_it(
+            self) -> None:
+        import dataclasses
+
+        import tools.remote_execution as rx
+
+        n = self.n
+        n.conductor.site = n.site = dataclasses.replace(n.site, scheduler="slurm")
+        n.conductor.emit = lambda event, **fields: None
+        for name, body in (("sbatch", _SBATCH_SHIM), ("scontrol", _SCONTROL_SHIM)):
+            path = n.site_bin / name
+            path.write_text(body)
+            path.chmod(0o755)
+        slurm = n.root / "slurm"
+        slurm.mkdir()
+        for name in ("build", "build_checked"):
+            dest = n.repo / "workspace" / "tmp" / "arid-2" / name
+            dest.mkdir(parents=True)
+            (dest / "depy_model.f90").write_text("! staged dependency\n", encoding="utf-8")
+        real_wait = rx.wait_job
+
+        def build(arid: str, interrupt: bool) -> dict:
+            def wait(*a, **k):
+                if interrupt:
+                    raise KeyboardInterrupt
+                return real_wait(*a, **k)
+
+            with n.env(SHIM_SLURM_DIR=str(slurm)), mock.patch.object(
+                    subprocess, "run", side_effect=_real_gate_free_run(subprocess.run)), \
+                    mock.patch.object(rx, "wait_job", side_effect=wait), \
+                    mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+                    mock.patch.object(rx, "POLL_MAX_SEC", 0.2):
+                return n.conductor._build_inproc(n.refs, arid)
+
+        with self.assertRaises(KeyboardInterrupt):
+            build("arid-1", True)
+        out = build("arid-2", False)
+        self.assertEqual(out["returncode"], 0, out)
+        self.assertEqual(len([c for c in n.calls() if c[0] == "sbatch"]), 1,
+                         "the second attempt adopted the job that holds the canary")
+        entries = self.canary_entries(n, "arid-2")
+        self.assertEqual(len(entries), 3, entries)
+        self.assertEqual(entries[1]["site"]["remote_command"][:3],
+                         list(self.launcher.argv_prefix(self.RANKS)))
+        self.assertEqual(n.meta()["verification_status"], "pass")
 
 
 class BuildAdoptedAtABatchSiteTests(unittest.TestCase):

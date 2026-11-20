@@ -45,7 +45,7 @@ import yaml
 
 from tools.backends import registry
 from tools.derivation import canonical_json_bytes, sha256_hex
-from tools.host_execution import LOCAL_SITE, declares_launcher
+from tools.host_execution import LOCAL_SITE
 from tools.target_profile import NON_BUILDING_PHASES, TOKEN_PATTERN, list_target_ids
 
 SITES_VERSION = 1
@@ -453,25 +453,14 @@ def site_violations(config: SitesConfig, profile: Any, *,
     (every `until_phase` not in `NON_BUILDING_PHASES`, None included — the binary is built at
     the site that runs it, issue #333, and a site that cannot run it is no place to build it),
     the site `profile`'s target maps to must list the profile's hardware class in its
-    `executes`, and must be
-    `local` when the profile's parallel backend runs its binary under a launcher (issue #316:
-    a batch site runs the job script once and nothing sizes or checks its allocation for the
-    ranks, so a launcher inside it starts them within whatever the operator's directives
-    allocated, and a direct site is not asked whether its CPUs fit the ranks — issue #337).
-    Empty otherwise."""
+    `executes`. A launcher target may map to any site (issue #337): what a remote site is
+    asked for it is the launch canary at the head of its `Build` job
+    (`Conductor._build_inproc`). Empty otherwise."""
     if str(until_phase or "").strip().lower() in NON_BUILDING_PHASES:
         return []
     site = config.site_for(profile.target_id)
     hardware_class = profile.hardware_class
     target_id = profile.target_id
-    backend = profile.parallel_backend
-    if not site.is_local and declares_launcher(backend):
-        return [(f"parallel.backend: {backend} runs its binary under a launcher, whose ranks a "
-                 f"remote site does not place yet; target {target_id} "
-                 f"maps to site {site.site_id}, and a launcher target runs at {LOCAL_SITE} only "
-                 f"(docs/backends/parallel/"
-                 f"{registry.package_members('parallel', backend, 'launcher')[0]}"
-                 f"/LAUNCHER.md §Sites)")]
     if hardware_class in site.executes:
         return []
     if config.path is None:

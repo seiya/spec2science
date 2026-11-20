@@ -7,7 +7,7 @@
 #
 # `execution.ranks` is the number of processes the launcher starts for the Validate run, and
 # `execution.threads_per_rank` the threads each runs; the quality check re-runs the same cases as
-# one process of one thread. A launcher target runs at the local site only
+# one process of one thread. At a remote site the launcher's slots are the site's
 # (docs/backends/parallel/mpi/LAUNCHER.md §4).
 #
 # `execution.process_grid` and `execution.sweep.grids` are `fortran_cpu_mpi`'s, for the reasons

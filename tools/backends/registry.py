@@ -384,10 +384,11 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
          "machine needs for it, and the probe whose first line names the runtime it belongs to "
          "(issue #316; `tools/host_execution.py` composes the prefix, the backend spells it). A "
          "value that does not declare it runs its binary as one process, and a profile asking "
-         "for more ranks than one is refused (`target_profile.hardware_violations`). A remote "
-         "site does not place a launcher's ranks yet — a batch site runs the job as one task, "
-         "and a direct site is issue #337 — so a target whose backend declares it runs at the "
-         "local site only (`execution_sites.site_violations`)."),
+         "for more ranks than one is refused (`target_profile.hardware_violations`). A target "
+         "whose backend declares it runs at any execution site (issue #337); at a remote one, "
+         "for a profile of more than one rank, the site's `Build` job first builds the "
+         "backend's launch canary and starts it under the launcher and bare "
+         "(`Conductor._build_inproc`)."),
     ),
     "compiler_wrapper": (
         ("parallel",),

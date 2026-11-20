@@ -526,46 +526,30 @@ class SiteViolationTests(unittest.TestCase):
             self.assertEqual(es.site_violations(local_only, _profile("t_cpu", "cpu"),
                                                 until_phase=until), [])
 
-    def test_a_launcher_target_runs_at_local_only(self) -> None:
-        """Issue #316: a remote site does not place a launcher's ranks (a batch site runs the job
-        as one task; a direct site is issue #337), so a target whose backend declares `launcher`
-        is refused at a remote site — direct or
-        batch, and although the site executes its class — for a run that reaches Build (issue
-        #333: the binary would be built at that site, and the build seam refuses a launcher
-        target there as the execute seam does). A run that stops at Generate is not asked, and
-        the local site runs it."""
+    def test_a_launcher_target_runs_at_a_remote_site(self) -> None:
+        """Issue #337: a target whose backend declares `launcher` is admitted at a remote site,
+        direct or batch, at every end — what such a site is asked is the launch canary at the
+        head of its `Build` job (`Conductor._build_inproc`). Issue #316 refused it there until
+        issue #700 PR-3. A site that does not execute the class is refused as for any target,
+        with the class's wording."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = _Repo(tmp)
             direct = repo.load(_BASE + "targets:\n  t_cpu: box\n")
             batch = repo.load(_BASE.replace("scheduler: none", "scheduler: slurm")
                               + "targets:\n  t_cpu: box\n")
-            unmapped = repo.load(_BASE)
-        mpi = _profile("t_cpu", "cpu", parallel_backend="mpi")
-        for name, cfg in (("direct", direct), ("batch", batch)):
-            for until in ("Build", "Validate", None):
-                with self.subTest(site=name, until_phase=until):
-                    self.assertEqual(es.site_violations(cfg, mpi, until_phase=until), [(
-                        "parallel.backend: mpi runs its binary under a launcher, whose ranks a "
-                        "remote site does not place yet; target t_cpu maps to "
-                        "site box, and a launcher target runs at local only "
-                        "(docs/backends/parallel/mpi/LAUNCHER.md §Sites)")])
-            with self.subTest(site=name, until_phase="Generate"):
-                self.assertEqual(es.site_violations(cfg, mpi, until_phase="Generate"), [])
-        self.assertEqual(es.site_violations(unmapped, mpi, until_phase="Validate"), [])
-        # A combination is refused the same way, and its remedy names the document of the member
-        # that owns the launcher, which exists (issue #700), not one named after the whole value.
-        for value in ("mpi+openmp", "openmp+mpi"):
-            with self.subTest(value=value):
-                found = es.site_violations(direct, _profile("t_cpu", "cpu",
-                                                            parallel_backend=value),
-                                           until_phase="Validate")
+            gpu_only = repo.load(_BASE.replace("executes: [cpu]", "executes: [gpu]")
+                                 + "targets:\n  t_cpu: box\n")
+        for value in ("mpi", "mpi+openmp", "openmp+mpi"):
+            profile = _profile("t_cpu", "cpu", parallel_backend=value)
+            for name, cfg in (("direct", direct), ("batch", batch)):
+                for until in ("Build", "Validate", None, "Generate"):
+                    with self.subTest(value=value, site=name, until_phase=until):
+                        self.assertEqual(es.site_violations(cfg, profile, until_phase=until),
+                                         [])
+            with self.subTest(value=value, site="gpu_only"):
+                found = es.site_violations(gpu_only, profile, until_phase="Validate")
                 self.assertEqual(len(found), 1, found)
-                self.assertIn("(docs/backends/parallel/mpi/LAUNCHER.md §Sites)", found[0])
-                self.assertTrue((Path(es.__file__).resolve().parents[1]
-                                 / "docs/backends/parallel/mpi/LAUNCHER.md").is_file())
-        # The same site runs a target without a launcher.
-        self.assertEqual(es.site_violations(direct, _profile("t_cpu", "cpu"),
-                                            until_phase="Validate"), [])
+                self.assertIn("hardware.class: cpu is not executed", found[0])
 
     def test_an_explicit_local_mapping_and_an_overridden_local_are_named(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -694,6 +694,18 @@ class ParallelToolchainTests(unittest.TestCase):
         self.assertEqual(Path(build[-1]).name, self.launcher.LAUNCH_CANARY_FILENAME)
         self.assertEqual(build[2], "-o")
 
+    def test_the_local_canary_runs_its_own_count_whatever_the_profiles(self) -> None:
+        """The local startup probe starts `LAUNCH_CANARY_RANKS` processes for a profile of any
+        rank count above one, and reads them against that count (issue #700 PR-3 gave
+        `launch_canary_problem` the count it checks): a four-rank profile passes on an
+        installation that starts the canary's two as one run."""
+        ranks = self.launcher.LAUNCH_CANARY_RANKS
+        self.assertNotEqual(ranks, 4)
+        self._wrapper()
+        self._launcher("inst", ranks)
+        with self._path("inst"):
+            self.assertEqual(hp.parallel_toolchain_problems(self._MPI, launches=True, ranks=4), [])
+
     def test_a_wrapper_that_does_not_compile_the_canary_is_refused_with_its_output(self) -> None:
         self._program("inst", self.wrapper.COMPILER_WRAPPER,
                       'echo "Fatal Error: Reading module mpi_f08.mod: Unexpected EOF" >&2; exit 1')

@@ -711,6 +711,66 @@ _FAKE_TRACER = textwrap.dedent('''\
 ''')
 
 
+class ExecuteLauncherTargetAtARemoteSiteTests(unittest.TestCase):
+    """Issue #337 (issue #700 PR-3): a launcher target's `Validate.execute` at a remote site
+    composes its job as the local path composes its launches — the run and each sweep shape
+    under the launcher with the shape's environment, the serial reference and the checked row
+    bare under `serial_execution_env` — for a `none` and a batch site alike. The request is the
+    subject: it is captured and the job is not run."""
+
+    class _Captured(Exception):
+        pass
+
+    def _request(self, scheduler: str):
+        import dataclasses
+
+        import tools.remote_execution as rx
+
+        target = profile_with(parallel={"backend": "mpi"},
+                              execution={"threads_per_rank": 1, "ranks": 4,
+                                         "process_grid": [2, 2],
+                                         "sweep": {"grids": [[4, 1]]}})
+        with tempfile.TemporaryDirectory() as tmp:
+            n = _Node(tmp, target=target)
+            n.conductor.site = n.site = dataclasses.replace(n.site, scheduler=scheduler)
+            n.built_at(n.site.site_id)
+            seen = {}
+
+            def capture(request_for, **kw):
+                seen["request"] = request_for(kw["fresh_dir"])
+                raise self._Captured
+
+            with mock.patch.object(rx, "execute_or_adopt_job", side_effect=capture), \
+                    self.assertRaises(self._Captured):
+                n.execute()
+            return target, seen["request"]
+
+    def test_the_runs_are_launched_and_the_references_are_bare(self) -> None:
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        for scheduler in ("none", "slurm"):
+            with self.subTest(scheduler=scheduler):
+                target, request = self._request(scheduler)
+                by_tag = {c.tag: c for c in request.commands}
+                local = launch_shape(target)
+                run = by_tag["run"]
+                self.assertEqual(run.argv[:len(local.argv_prefix)],
+                                 launcher.argv_prefix(4))
+                for k, v in local.env.items():
+                    self.assertEqual(run.env.get(k), v, k)
+                self.assertEqual(run.env.get("SPEC2SCIENCE_PROCESS_GRID"), "2,2")
+                sweeps = [c for t, c in by_tag.items() if t.startswith("sweep")]
+                self.assertEqual(len(sweeps), 1, list(by_tag))
+                self.assertEqual(sweeps[0].argv[:3], launcher.argv_prefix(4))
+                self.assertEqual(sweeps[0].env.get("SPEC2SCIENCE_PROCESS_GRID"), "4,1")
+                serial = serial_execution_env(target.parallel_backend)
+                self.assertIn("qc", by_tag)
+                self.assertIn("checked", by_tag)
+                for tag in ("qc", "checked"):
+                    self.assertNotEqual(by_tag[tag].argv[0], launcher.EXECUTABLE, tag)
+                    for k, v in serial.items():
+                        self.assertEqual(by_tag[tag].env.get(k), v, (tag, k))
+
+
 class ExecuteTracedAtARemoteSiteTests(unittest.TestCase):
     """The device trace in the remote job (issue #307): the binary runs under the trace's prefix,
     the summary is the job's second command, in the run directory, and its file comes home with

@@ -11264,22 +11264,31 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self.assertEqual(events[-1]["required"], ["timeout", "make", *programs])
         self.assertEqual(calls, [])
 
-    def test_a_launcher_target_at_a_remote_site_is_told_to_run_at_local(self) -> None:
-        """Issue #316: the refusal's remedy is the one an operator acts on, so it must name the
-        site that CAN run a launcher target — `local` — not only "a site that executes the
-        class", which this remote site does. Asked before any probe reaches the site."""
+    def test_a_launcher_target_at_a_remote_site_is_asked_for_its_launcher(self) -> None:
+        """Issue #337: a launcher target mapped to a remote `none` site is not refused at
+        launch (issue #316 refused it until issue #700 PR-3); the site's probe asks its login
+        for the compiler wrapper and the launcher, so a site that lacks them is refused before
+        anything is billed, naming them. No CPU count is asked of the site: the launch canary
+        at the head of its `Build` job asks the launcher (`Conductor._build_inproc`)."""
+        from tools.backends import registry
         from tools.tests.target_fixtures import profile_with
         with _real_target_resolution():
             fixture = run_workflow.resolve_run_target(self.repo_root, "t_a")
-        mpi = profile_with(fixture, parallel={"backend": "mpi"})
+        mpi = profile_with(fixture, parallel={"backend": "mpi"},
+                           execution={"threads_per_rank": 1, "ranks": 4})
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
         self._remote()
-        with self._env():
+        bare = Path(self._tmp.name) / "bare"
+        bare.mkdir()
+        for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
+            (bare / tool).symlink_to(shutil.which(tool))
+        with self._env(SHIM_SSH_PATH=str(bare)):
             refused = run_workflow._sites_rejection(self.repo_root, mpi, "validate")
-        self.assertEqual(refused["reason"], "target_profile_invalid")
-        self.assertIn("runs its binary under a launcher", refused["detail"])
-        self.assertIn("`local` for a target whose parallel backend runs a launcher",
-                      refused["detail"])
-        self.assertEqual(self._probes(), [])
+        self.assertEqual(refused["reason"], "missing_required_site_tools", refused)
+        self.assertEqual(refused["missing"],
+                         [str(wrapper.COMPILER_WRAPPER), *launcher.EXECUTABLES])
+        self.assertEqual(len(self._probes()), 1, "one ssh call asked the site")
 
     def test_the_local_site_refuses_more_ranks_than_this_process_may_run_on(self) -> None:
         """Issue #316: one rank per CPU this process may be scheduled on. The count is read from
