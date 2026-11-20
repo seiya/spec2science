@@ -1419,19 +1419,61 @@ class StubTests(unittest.TestCase):
         self.assertEqual(shlex.split(second), ["exec", "sh", "-c", rx.render_job_script(request)])
         self.assertTrue(second.endswith("'\n"))
 
+    def _rewrite_while_running(self, h: _Harness) -> rx.JobResult:
+        """Run a job whose first command rewrites the file the scheduler kept, from the offset
+        at which the shell reading that file stands (an ancestor's descriptor of it, read from
+        `/proc/<pid>/fdinfo`; offset 0 when no process holds one), with text of the same length
+        that prints a clean status for the second command and exits 0. The kept file is run by
+        bash, which reads a script file a command at a time (dash, this machine's `/bin/sh`,
+        read a small one whole and would observe nothing)."""
+        kept = h.slurm / "job4242" / "slurm_script"
+        rewriter = h.local / "rewriter"
+        rewriter.write_text(textwrap.dedent(f'''\
+            #!/usr/bin/env python3
+            import os
+            kept = {str(kept)!r}
+            # The output files the skipped command would have written, so that their absence
+            # is not what refuses the job.
+            for name in ("qc.stdout", "qc.stderr"):
+                open(os.path.join("..", "ctl", name), "w").close()
+            pos, pid = 0, os.getppid()
+            while pid > 1 and not pos:
+                fds = f"/proc/{{pid}}/fd"
+                for fd in os.listdir(fds):
+                    try:
+                        if os.readlink(f"{{fds}}/{{fd}}") == kept:
+                            info = open(f"/proc/{{pid}}/fdinfo/{{fd}}").read()
+                            pos = int(info.split("pos:")[1].split()[0])
+                    except OSError:
+                        pass
+                pid = int(open(f"/proc/{{pid}}/stat").read().rsplit(")", 1)[1].split()[1])
+            size = os.path.getsize(kept)
+            new = 'echo "{rx.STATUS_MARKER} qc 0 1 1"; exit 0\\n'
+            with open(kept, "r+") as f:
+                f.seek(pos)
+                f.write(new.ljust(size - pos)[:size - pos])
+        '''))
+        rewriter.chmod(0o755)
+        run = h.command("run", (f"{h.job}/bin/runner",))
+        qc = h.command("qc", ("sh", "-c", "exit 1"), cwd="src", tool="run_quality_checks")
+        bash_site = _bare_path(h.root, without="", sh="bash")
+        result = h.run(h.request(run, qc, ship={"bin/runner": rewriter}),
+                       SHIM_SSH_PATH=f"{h.shims}{os.pathsep}{bash_site}")
+        self.assertIn(f"{rx.STATUS_MARKER} qc 0 1 1", kept.read_text(), "the file was rewritten")
+        return result
+
     def test_rewriting_the_submitted_file_while_the_job_runs_changes_nothing_that_runs(
             self) -> None:
-        """The first command rewrites the kept file so that, read again, it would print a clean
-        status for the second command and exit 0; the second command still runs and its failure
-        is its result."""
-        rewriter = _script(self.h.local / "rewriter", (
-            f"printf '#!/bin/sh\\necho \"{rx.STATUS_MARKER} qc 0 1 1\"\\nexit 0\\n' "
-            f"> {self.h.slurm}/job4242/slurm_script\n"))
-        run = self.h.command("run", (f"{self.h.job}/bin/runner",))
-        qc = self.h.command("qc", ("sh", "-c", "exit 1"), cwd="src", tool="run_quality_checks")
-        result = self.h.run(self.h.request(run, qc, ship={"bin/runner": rewriter}))
-        self.assertIn("exit 0", (self.h.slurm / "job4242" / "slurm_script").read_text())
+        """Under the stub the second command still runs and its failure is its result. The same
+        rewrite of an unstubbed script (`render_job_script` submitted as the file) skips the
+        second command and records it as having exited 0: the row observes the stub."""
+        self.assertIsNotNone(shutil.which("bash"), "this row needs bash to run the kept file")
+        result = self._rewrite_while_running(self.h)
         self.assertEqual((result.results[1]["ok"], result.results[1]["return_code"]), (False, 1))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(rx, "render_stub", rx.render_job_script):
+            forged = self._rewrite_while_running(SchedulerTests._slurm(_Harness(tmp)))
+        self.assertEqual((forged.results[1]["ok"], forged.results[1]["return_code"]), (True, 0))
 
 
 class PollingTests(unittest.TestCase):

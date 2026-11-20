@@ -40,8 +40,12 @@ Every way the evidence could be incomplete or not this job's is a refusal
   memory; a batch scheduler runs a script FILE, so what the host submits is a two-line stub
   whose second line is `exec sh -c '<the job script>'` — the shell reads that one command whole
   before it runs anything, and after `exec` the job script is an argument of the new shell, held
-  in its memory as at a `none` site (`render_stub`; measured on Slurm 20.02, issue #696 M-S3: the
-  shell then holds no descriptor of the file, and rewriting it changed nothing that ran);
+  in its memory as at a `none` site (`render_stub`). Measured on Slurm 20.02 (issue #696 M-S3):
+  Slurm keeps the script as a file the job's user owns and can write (a rewrite from inside an
+  unstubbed job exited 0), and under the stub the shell holds no descriptor of it. That
+  machine's `/bin/sh` is dash, which read the small unstubbed script whole, so the rewrite did
+  not change what ran there either; under bash an offset-preserving rewrite of an unstubbed
+  script does, and under the stub it does not (`StubTests`, over the shims);
 - a command's exit status and times travel as one status line per command that ran
   (`STATUS_MARKER`), on one of TWO CHANNELS. At a `none` site the channel is the job script's
   own stdout, never a file: the command itself — leaf-authored code, for the runner — can write

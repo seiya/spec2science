@@ -70,8 +70,11 @@ table's measured rows; a script whose shell a command killed is never `COMPLETED
 not the command rewrote `job.out` first; an id ended more than `MinJobAge` (300 s there) ago is
 answered exactly as one never issued — exit status 1, nothing on stdout,
 `slurm_load_jobs error: Invalid job id specified` on stderr; the kept script is mode 0700 and the
-job's user rewrote it, and under the stub the shell held no descriptor of it and the rewrite
-changed nothing that ran; `job.out` and `job.err` were whole at the first terminal state (there
+job's user rewrote it from inside an unstubbed job (`rewrote rc=0`), and under the stub the shell
+held no descriptor of it; `/bin/sh` there is dash, which read the small unstubbed script whole, so
+that rewrite did not change what ran either — under bash an offset-preserving rewrite of an
+unstubbed script does, and of the stub's file does not (`tools/tests/test_remote_execution.py`
+`StubTests`, over shims, not on Slurm); `job.out` and `job.err` were whole at the first terminal state (there
 the job writes where the host reads, so this shows nothing about a site where they differ);
 under `--no-requeue` a plain `scontrol requeue` of the job's own id is refused (`Requested
 operation is presently disabled`), also with `--requeue` before it, and without the option the
