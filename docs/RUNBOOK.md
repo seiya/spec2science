@@ -253,9 +253,11 @@ submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](ba
   ([JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md) §3).
 - **The site must keep an ended job for several minutes** (`MinJobAge`): how the job ended is
   read from `scontrol`, and a job forgotten before a poll reads it is refused. The first poll
-  comes within 60 s of the end and each unanswered poll adds another 60 s, or up to 360 s
-  for one that hangs to the transport bound: 300 s covers 4 unanswered polls that fail at
-  once, 420 s one that hangs ([JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md) §2).
+  comes within 60 s of the end and each unanswered poll adds another 60 s plus the time it
+  took to fail — up to 30 s to connect, up to 300 s for one that hangs to the transport bound:
+  300 s covers 3 unanswered polls refused at once or 2 that time out connecting, each with a
+  60 s margin, and none that hangs, which needs 420 s
+  ([JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md) §2).
 - **No `%` in the site's `workdir`**: `sbatch` expands `%` in the job's output file names, which
   are under it.
 
