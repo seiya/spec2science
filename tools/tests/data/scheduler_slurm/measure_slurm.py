@@ -24,7 +24,14 @@ one node); on the machine this was written for nothing is billed.
   programs on its `PATH`). A script that exits 0 and one whose command exits non-zero are
   accepted as such; an exit of 3, a job past its time limit and a cancelled job are refused; and
   the two seeded rows of `BindingTests` (a leftover process rewrites the output file to all
-  zeros, alone and after killing the script's shell) are never read as success. About 4 minutes.
+  zeros, alone and after killing the script's shell) are never read as success. Each seeded row
+  records `rewrite_landed`, whether the leftover's rewrite reached the output file (it leaves
+  `job.out.rewritten` after it). On a site that tracks a job's processes by cgroup
+  (`proctrack/cgroup`) the job's end kills the leftover before the rewrite lands — this
+  machine, 2026-11-20, jobs 1690 and 1691: `false` in both, the first recorded as the command's
+  failure, the second refused as ended otherwise — so there the rows show only that the failure
+  is not read as success, and the binding itself is exercised by the suite's shim rows
+  (`BindingTests`). About 4 minutes.
 - `fixture` turns the `raw` records into the answers `tools/tests/test_scheduler_slurm.py`
   `JobStateTests` reads, with the operator's names and paths replaced (`_sanitize`).
 
@@ -300,8 +307,9 @@ def executor(rec: Recorder) -> None:
             threading.Thread(target=during, args=(f"spec2science-{arid}", stop),
                              daemon=True).start()
         t0 = time.time()
+        local_tmp = Path(tempfile.mkdtemp(dir=local))
         try:
-            result = rx.execute_job(request, local_tmp=Path(tempfile.mkdtemp(dir=local)))
+            result = rx.execute_job(request, local_tmp=local_tmp)
             outcome = {"outcome": "accepted", "job_id": result.site_record["job_id"],
                        "queue_wait_ms": result.site_record["queue_wait_ms"],
                        "results": [None if r is None else
@@ -312,6 +320,14 @@ def executor(rec: Recorder) -> None:
         stop.set()
         jid = handles[0].job_id if handles else None
         state = _run(["scontrol", "show", "job", "-o", jid]) if jid else None
+        if ship and ship.get("bin/runner") == forger:
+            # Whether the seeded rewrite landed: the forger leaves `job.out.rewritten` after it,
+            # in the job directory (left on a refusal) or the copy collected from it. A leftover
+            # killed first, as the job's end kills it under proctrack/cgroup, leaves none.
+            time.sleep(2)
+            mark = Path(rx.CONTROL_DIR) / "job.out.rewritten"
+            outcome["rewrite_landed"] = ((Path(job) / mark).exists()
+                                         or (local_tmp / "collected" / mark).exists())
         rec.log(case=name, what="execute_job", seconds=round(time.time() - t0, 1),
                 submitted_id=jid, scontrol=state, **outcome)
 

@@ -102,7 +102,14 @@ update JobId=$SLURM_JOB_ID Requeue=1`, which the job's user may do) and then req
 twice and ended `COMPLETED 0:0` with `Restarts=1`, its `job.out` holding the second pass alone;
 and a `setup` line printed to stdout without a final newline glues onto the first
 marked line of `job.out`, to stderr it stays in `job.err` (the executor sends `setup` output to
-stderr).
+stderr). The script's `executor` runs the executor itself against that Slurm (ssh and scp
+shimmed): a script exiting 0 and one whose command failed are accepted as such, an exit of 3, a
+job past its `--time` and a cancelled one are refused, and a seeded leftover process that
+rewrites `job.out` to all zeros is never read as success — but on that cluster, which tracks a
+job's processes by cgroup (`proctrack/cgroup`), the job's end kills the leftover before its
+rewrite lands (recorded `rewrite_landed: false`, alone and after killing the script's shell),
+so what refuses a rewritten file under a failed record (§1, what is accepted) is exercised by
+the suite's shim rows (`tools/tests/test_remote_execution.py` `BindingTests`), not on Slurm.
 
 ## 2. What the site must provide
 

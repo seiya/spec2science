@@ -1282,11 +1282,13 @@ class SchedulerTests(unittest.TestCase):
 
 #: A shipped runner that fails (exits 3) and leaves a process behind it that waits for the job
 #: script's own status line for it (or for the script's shell to end) and then rewrites the job's
-#: output file so that every command reads as having exited 0. It acts on the status line, not
-#: only on the shell's end, because a real scheduler kills what a job left running once the
-#: script ends (measured on Slurm 20.02 with `proctrack/cgroup`: a process that waited for the
-#: shell's end never wrote). With `KILL` set it also kills that shell first. Its parent is
-#: `timeout`, whose parent is the job script's shell.
+#: output file so that every command reads as having exited 0, then leaves `job.out.rewritten`
+#: beside it. It acts on the status line, not only on the shell's end, because a real scheduler
+#: kills what a job left running once the script ends. On Slurm 20.02 with `proctrack/cgroup`
+#: that kill comes first either way: the rewrite does not land there (`measure_slurm.py
+#: executor` records whether it did), so these shim rows are what exercises the binding. With
+#: `KILL` set it also kills that shell first. Its parent is `timeout`, whose parent is the job
+#: script's shell.
 _FORGER = textwrap.dedent('''\
     #!/usr/bin/env python3
     import os, re, signal, sys, time
@@ -1311,6 +1313,7 @@ _FORGER = textwrap.dedent('''\
             # Replaced whole, so that a kill mid-write cannot leave a truncated file.
             open(out + ".new", "w").write(text)
             os.replace(out + ".new", out)
+            open(out + ".rewritten", "w").close()   # that the rewrite landed, for a reader
         os._exit(0)
     os.wait()
     if os.environ.get("KILL"):
@@ -1396,6 +1399,8 @@ class BindingTests(unittest.TestCase):
         out = (Path(self.h.job) / rx.CONTROL_DIR / "job.out").read_text()
         self.assertIn(f"{rx.STATUS_MARKER} run 0 ", out, "the seeded rewrite happened")
         self.assertIn(f"{rx.STATUS_MARKER} qc 0 ", out)
+        self.assertTrue((Path(self.h.job) / rx.CONTROL_DIR / "job.out.rewritten").exists(),
+                        "the forger marks the rewrite it made")
 
     def test_the_same_process_that_also_kills_the_scripts_shell_is_refused(self) -> None:
         """Seeded: the same runner also kills the job script's shell, so that no status line of
