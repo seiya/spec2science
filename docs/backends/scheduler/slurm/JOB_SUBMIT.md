@@ -69,8 +69,9 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
 | `REQUEUED`, `REQUEUE_FED`, `REQUEUE_HOLD`, `RESV_DEL_HOLD`, `SPECIAL_EXIT` | queued | no, from `man squeue` |
 | `RUNNING` | running | yes |
 | `COMPLETING` | running: the job's files may still be written | yes (before `CANCELLED` and `TIMEOUT`) |
+| `STOPPED` | running: its time limit advances while it is stopped | yes (the job's own `scancel --signal=STOP $SLURM_JOB_ID`: stopped at 5 s, `TIMEOUT 0:15` at 75 s with `RunTime=00:01:10`, job 1693) |
 | `SIGNALING`, `STAGE_OUT`, `RESIZING` | running | no, from `man squeue` |
-| `SUSPENDED`, `STOPPED` | suspended: the job has started (it ends the queue bound) and a suspended job's time limit does not advance (for `STOPPED` the manual does not say; not counting it only lengthens the wait), so the interval up to each poll that answers it is not counted against the run bound; a job suspended indefinitely is waited for indefinitely | no, from `man squeue` (no preemption on the cluster measured) |
+| `SUSPENDED` | running: held to the same run bound (§3) | no, from `man squeue` (no preemption on the cluster measured; the job's own `scontrol suspend` of its id is refused, `Access/permission denied`) |
 | `COMPLETED` with `0:0` | ended, the script's own exit 0 | yes |
 | `FAILED` with `1:0` | ended, the script's own exit 1 | yes |
 | `FAILED` with `3:0`, `0:9`, `0:15` | ended otherwise | yes (exit 3; a command KILLed, TERMed the script's shell) |
@@ -171,6 +172,12 @@ makes a command that runs long a refusal rather than the command's own timeout.
   running job, an interrupted run. It runs on until it ends or reaches the `--time` in force —
   the submit command's, or a directive's, which may be longer. Until a resumed run adopts such a
   job (issue #696; not built yet) a later attempt submits a job of its own in a directory of its own.
+- **A suspended job's time is spent against the run bound.** `SUSPENDED` (preemption by
+  suspension, an administrator's `scontrol suspend`) is read as running, so the host's run bound
+  — the job's own time limit plus its grace — keeps advancing while Slurm's own limit does not.
+  At a site that preempts by suspension, a job suspended for long enough is refused at the run
+  bound and left as it is, and a rerun submits a new one. The alternative, not counting a
+  suspended interval, would wait without bound on a job that stays suspended.
 - **No requeue.** A requeued batch job runs its script again from the beginning, in a directory
   holding the first pass's files, and truncates its output file, so two passes would be recorded
   as one run. `--no-requeue` is the executor's own option, last: it stops the scheduler's own

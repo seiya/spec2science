@@ -247,6 +247,10 @@ submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](ba
 - **A job not seen running within `queue_timeout_sec` is left as it is.** The run is refused as a transport failure
   and nothing cancels the job; `scancel` it by hand (its name is `spec2science-<agent_run_id>`)
   until a resumed run adopts such a job (issue #696; not built yet).
+- **A suspended job's time counts against the run bound.** At a site that preempts by
+  suspension, a job suspended for long enough is refused at the run bound (its time limit plus
+  the transport's grace) and left as it is; a rerun submits a new one
+  ([JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md) §3).
 - **The site must keep an ended job for several minutes** (`MinJobAge`): how the job ended is
   read from `scontrol`, and a job forgotten before a poll reads it is refused. The first poll
   comes within 60 s of the end and each unanswered poll adds another 60 s, or up to 360 s

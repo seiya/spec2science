@@ -1552,9 +1552,8 @@ class PollingTests(unittest.TestCase):
 
     def test_a_job_past_its_running_bound_is_refused_and_left_as_it_is(self) -> None:
         text = self._refusal([("running", None)], queue_bound_sec=5, run_bound_sec=25)
-        self.assertIn("job 7 did not end within 25 sec since a poll first saw it running or "
-                      "suspended; the last answered poll read it as running, 40 sec into the "
-                      "wait;", text)
+        self.assertIn("job 7 did not end within 25 sec since a poll first saw it running; the "
+                      "last answered poll read it as running, 40 sec into the wait;", text)
         self.assertNotIn("answered nothing", text)
         self.assertNotIn("no poll answered", text)
 
@@ -1566,26 +1565,6 @@ class PollingTests(unittest.TestCase):
         self.assertIn("the last answered poll read it as running, 10 sec into the wait, and the "
                       "3 poll(s) after it answered nothing (the last said: zz down);", text)
         self.assertNotIn("no poll answered", text)
-
-    def test_time_read_as_suspended_is_not_spent_against_the_run_bound(self) -> None:
-        """Slurm's time limit does not advance while a job is suspended (`man squeue`, not
-        measured: no preemption here). Polls 10 sec apart: running at 10, suspended at 20 to
-        60 (50 sec not counted), running after: 90 - 10 - 50 = 30 is the first count past
-        the run bound of 25 sec, where 80 - 10 - 50 = 20 is not."""
-        text = self._refusal([("running", None)] + [("suspended", None)] * 5
-                             + [("running", None)], queue_bound_sec=5, run_bound_sec=25)
-        self.assertIn("did not end within 25 sec since a poll first saw it running or "
-                      "suspended, not counting 50 sec read as suspended; the last answered poll "
-                      "read it as running, 90 sec into the wait;", text)
-
-    def test_a_job_first_seen_suspended_has_started(self) -> None:
-        """A suspended job ran: it ends the queue bound, and nothing before the first poll
-        that saw it is counted as suspended."""
-        answers = iter([("suspended", None)] * 3 + [("ended", 0)])
-        with mock.patch.object(rx, "_ask_state", side_effect=lambda *a: next(answers)), \
-                mock.patch.object(rx.time, "sleep"):
-            self.assertEqual(rx.wait_job(self._handle(), queue_bound_sec=0,
-                                         run_bound_sec=10_000), 0)
 
     def test_a_queued_job_past_its_queue_bound_is_refused(self) -> None:
         text = self._refusal([("queued", None)], queue_bound_sec=25, run_bound_sec=5)

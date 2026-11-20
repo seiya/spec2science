@@ -43,16 +43,17 @@ REMOTE_EXECUTABLES: tuple[str, ...] = ("sbatch", "scontrol")
 QUEUED_STATES = frozenset({"PENDING", "CONFIGURING", "REQUEUED", "REQUEUE_FED", "REQUEUE_HOLD",
                            "RESV_DEL_HOLD", "SPECIAL_EXIT"})
 #: A job the scheduler is still tearing down (`COMPLETING`) has not ended: its files may still
-#: be written (issue #696 review 1, M3).
-RUNNING_STATES = frozenset({"RUNNING", "COMPLETING", "SIGNALING", "STAGE_OUT", "RESIZING"})
-#: A job whose execution the scheduler has suspended (`SUSPENDED`: preemption by suspension, or
-#: an administrator's `scontrol suspend`) or stopped with SIGSTOP (`STOPPED`), both from
-#: `man squeue`: it has started, and a suspended job's time limit does not advance. Breakage
-#: were they counted as running: at a site that preempts by suspension the host's wall-clock run
-#: bound is spent while the job's own limit is not, and a healthy job is refused. Whether a
-#: STOPPED job's limit advances the manual does not say; not counting it only lengthens the
-#: host's wait, which the job's own limit still ends.
-SUSPENDED_STATES = frozenset({"STOPPED", "SUSPENDED"})
+#: be written (issue #696 review 1, M3). A job the scheduler has suspended (`SUSPENDED`:
+#: preemption by suspension, or an administrator's `scontrol suspend`) or stopped with SIGSTOP
+#: (`STOPPED`) has started and is running here: its wait is held to the same run bound. For
+#: `STOPPED` that is measured — a job's own `scancel --signal=STOP $SLURM_JOB_ID` stops it and its
+#: time limit still advances (job 1693: stopped at 5 sec, `TIMEOUT 0:15` at 75 sec with
+#: `RunTime=00:01:10`). `SUSPENDED` is from `man squeue`; a job suspended for longer than the
+#: run bound allows is refused at that bound and left as it is (JOB_SUBMIT.md §3). Counting a
+#: suspended interval out of the bound was built and deleted: a job that stays suspended was
+#: then waited for without bound.
+RUNNING_STATES = frozenset({"RUNNING", "COMPLETING", "SIGNALING", "STAGE_OUT", "STOPPED",
+                            "SUSPENDED", "RESIZING"})
 ENDED_STATES = frozenset({"COMPLETED", "FAILED", "BOOT_FAIL", "CANCELLED", "DEADLINE",
                           "NODE_FAIL", "OUT_OF_MEMORY", "PREEMPTED", "REVOKED", "TIMEOUT"})
 
@@ -122,8 +123,8 @@ def _field(stdout: str, key: str) -> str | None:
 
 
 def job_state(returncode: int, stdout: str, stderr: str) -> tuple[str, int | str | None]:
-    """What one state command's answer means, as one of eight answers: `("queued", None)`,
-    `("running", None)`, `("suspended", None)`, `("ended", 0)` and `("ended", 1)` only for the records `OWN_EXITS`
+    """What one state command's answer means, as one of seven answers: `("queued", None)`,
+    `("running", None)`, `("ended", 0)` and `("ended", 1)` only for the records `OWN_EXITS`
     lists of a job whose script ran once (`Restarts=0`), `("ended", None)` for every other
     terminal record, `("unknown_id", None)` when
     `scontrol` says it does not know the id, and `("no_answer", <text>)` for anything else — a
@@ -140,8 +141,6 @@ def job_state(returncode: int, stdout: str, stderr: str) -> tuple[str, int | str
         return ("queued", None)
     if state in RUNNING_STATES:
         return ("running", None)
-    if state in SUSPENDED_STATES:
-        return ("suspended", None)
     if state in ENDED_STATES:
         # A job ran its script more than once when `Restarts` is not 0: its own command can turn
         # its requeue flag back on and requeue itself under `--no-requeue` (`scontrol update
