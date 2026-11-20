@@ -246,9 +246,11 @@ submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](ba
   submission refused (`submit the job: ssh exited 255 (...)`: `sbatch` exits 255 on an option
   it does not know, measured directly and through ssh).
 - **A job not seen running within `queue_timeout_sec` is left as it is.** The run is refused as a transport failure
-  and nothing cancels the job; `--resume` adopts it (§3-1). `scancel` it by hand when it is not
-  wanted (its name is `spec2science-<agent_run_id>`, or `spec2science-<agent_run_id>.restart`
-  for a `Validate.execute` restart job).
+  and nothing cancels the job; `--resume` adopts it (§3-1). To abandon it, `scancel` it by hand
+  (its name is `spec2science-<agent_run_id>`, or `spec2science-<agent_run_id>.restart` for a
+  `Validate.execute` restart job) and remove its `site job record` (§3-1): a cancelled job whose
+  record stays is adopted by the next `--resume`, which is refused, and only the resume after it
+  submits a job of its own.
 - **A suspended job's time counts against the run bound.** At a site that preempts by
   suspension, a job suspended for long enough is refused at the run bound (its time limit plus
   the transport's grace) and left as it is with its `site job record` kept; `--resume` adopts it
