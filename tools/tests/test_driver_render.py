@@ -3175,7 +3175,8 @@ class MpiBuild:
 
     def __init__(self, tmp: Path, ir: dict[str, Any], *, flags: list[str],
                  model: str | None = None, runner: str | None = None,
-                 harness: str = MPI_HARNESS, rename: str | None = None) -> None:
+                 harness: str = MPI_HARNESS, rename: str | None = None,
+                 harness_text: str | None = None) -> None:
         from tools.backends.parallel.mpi import launcher, wrapper
         from tools.tests.test_parallel_mpi import _require_mpi_pair
         pair = Path(_require_mpi_pair())
@@ -3196,7 +3197,9 @@ class MpiBuild:
         # Every source is named relative to the build directory and enters it just before its
         # own compile (`_compile_cached`), so a row that builds what an earlier row of the
         # worker did reuses its objects: the defect rows' references are the unedited fixture.
-        sources = {"harness": harness_src.read_text().replace(harness, rename or harness),
+        # `harness_text`: a variant of the sample harness's model, seeded with a defect.
+        sources = {"harness": (harness_text if harness_text is not None
+                               else harness_src.read_text()).replace(harness, rename or harness),
                    "model": model if model is not None
                    else (MPI_DATA / f"{sid}_model.f90").read_text(),
                    "runner": self.runner}
@@ -3209,13 +3212,14 @@ class MpiBuild:
                        capture_output=True)
 
     def run(self, grid: tuple[int, int], *, cases: list[str] | None = None,
-            timeout: float = 120) -> MpiRun:
+            timeout: float = 120, launch_env: dict[str, str] | None = None) -> MpiRun:
         """Run under ``grid``: the singleton bare, as the quality check runs it, and a grid of
         several ranks under the launcher with `--oversubscribe` and the grid variable. A run past
         ``timeout`` has its process group killed: the launcher, not the ranks, which the launcher
         puts in groups of their own. A real MPI rank then ends by itself within seconds, on
         losing its launcher (measured 2026-11-11: the `ny8r` hang's four ranks under init right
-        after the row passed, gone ten seconds later)."""
+        after the row passed, gone ten seconds later). ``launch_env`` is added to the run's environment
+        after the grid's, as a shape's launch environment is (`host_execution.launch_shape`)."""
         import signal
         from tools.backends.parallel.mpi import execution
         d = self.tmp / f"run_{grid[0]}x{grid[1]}"
@@ -3235,6 +3239,7 @@ class MpiBuild:
         if grid != SINGLETON:
             env.update(execution.environment(1, process_grid=grid))
             argv = [self.launcher, "--oversubscribe", "-n", str(grid[0] * grid[1]), *argv]
+        env.update(launch_env or {})
         ids = cases if cases is not None else [c["case_id"] for c in
                                                self.ir["case"]["test_case_set"]]
         # A seeded kernel defect HANGS on purpose (a rank alone in a collective), in a session
@@ -3369,6 +3374,85 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(perf["parallelism"]["mpi_ranks"], grid[0] * grid[1])
                 self.assertEqual(perf["parallelism"]["process_grid"], list(grid))
                 self.assertEqual(perf["cells_updated"], serial_cells)
+
+    def test_a_hybrid_run_reports_each_shape_s_thread_count(self) -> None:
+        """Issue #700 (V-d, V-g): on `fortran_cpu_mpi_openmp` the sample harness's
+        seven-argument writer records the thread count the shared-memory runtime gives rank 0,
+        so a model with threaded loops under the rendered distributed driver, built with the
+        host's flags for the combination (the compiler's thread switch among them), reports
+        each shape's count — the certified one, the thread sweep's and a grid's — and passes
+        the quality check's thread tie against the bare one-thread reference. Built without the
+        switch it reports 1, and a harness whose writer records a constant reports that
+        constant: each fails `thread_match` on the shapes whose count differs."""
+        import shutil as _shutil
+
+        from tools import target_profile as tp
+        from tools import workflow_conductor as wc
+        from tools.backends.language.fortran import control_file
+        from tools.host_execution import launch_shape, serial_execution_env
+        profile = tp.load_target_profile(ROOT, "fortran_cpu_mpi_openmp")
+        self.assertTrue(profile.thread_count_observable)
+        shapes = [s for s in profile.execution_shapes
+                  if s.label in ("certified", "threads_3", "grid_3x1")]
+        self.assertEqual([(s.threads_per_rank, s.ranks) for s in shapes],
+                         [(2, 4), (2, 3), (3, 4)])
+        hybrid = control_file.flags("f2008", profile.parallel_backend).split(" -J")[0].split()
+        self.assertIn("-fopenmp", hybrid)
+        self.assertEqual([f for f in hybrid if f != "-fopenmp"], _mpi_flag_sets()["release"])
+        queried = "!$  nthreads = omp_get_max_threads()"
+        harness = (MPI_DATA / f"{MPI_HARNESS}_model.f90").read_text()
+        self.assertEqual(harness.count(queried), 1)
+        model = (MPI_DATA / "fx_recon_model.f90").read_text()
+        loop = "    do j = 1, ny"
+        self.assertEqual(model.count(loop + "\n"), 1)
+        threaded = model.replace("    end do\n    do j = 1, ny + 1\n",
+                                 "    end do\n    !$omp end parallel do\n"
+                                 "    !$omp parallel do private(i)\n    do j = 1, ny + 1\n")
+        threaded = threaded.replace(loop + "\n", "    !$omp parallel do private(i)\n"
+                                    + loop + "\n", 1)
+        threaded = threaded.replace("  end subroutine fx_recon__apply",
+                                    "    !$omp end parallel do\n  end subroutine fx_recon__apply")
+        self.assertEqual(threaded.count("!$omp parallel do"), 2)
+        ir = MPI_FIXTURES["fx_recon"]()
+        root = Path(self._tmp.name)
+        for name, flags, text, observed in (
+                ("queried", hybrid, None, lambda s: s.threads_per_rank),
+                ("no thread switch", _mpi_flag_sets()["release"], None, lambda s: 1),
+                ("constant", hybrid, harness.replace(queried, "    nthreads = 2"),
+                 lambda s: 2)):
+            with self.subTest(name):
+                self._n += 1
+                build = MpiBuild(root / f"b{self._n}", ir, flags=flags, model=threaded,
+                                 harness_text=text)
+                single = build.run(SINGLETON,
+                                   launch_env=serial_execution_env(profile.parallel_backend))
+                self.assertEqual(single.rc, 0, single.stderr[-2000:])
+                self.assertEqual(single.perf()["parallelism"]["threads_per_rank"],
+                                 2 if name == "constant" else 1)
+                reference = root / f"ref{self._n}"
+                _shutil.copytree(single.dir, reference)
+                runs = []
+                for shape in shapes:
+                    run = build.run(shape.process_grid, timeout=60,
+                                    launch_env=launch_shape(profile, shape=shape).env)
+                    self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                    self.assertEqual(run.perf()["parallelism"]["threads_per_rank"],
+                                     observed(shape), shape.label)
+                    kept = root / f"r{self._n}_{shape.label}"
+                    _shutil.copytree(run.dir, kept)
+                    runs.append({"shape": shape, "dir": kept, "ok": True,
+                                 "command_id": shape.label})
+                node = root / f"node{self._n}"
+                node.mkdir()
+                status = wc.Conductor._author_quality_check(
+                    node, "Q", "make_test", ir=ir, reference_dir=reference, shape_runs=runs,
+                    launcher=True, output_format="json", reference_ok=True,
+                    threads_checked=profile.thread_count_observable)
+                doc = json.loads((node / "quality_check.json").read_text())
+                self.assertEqual(
+                    [(r["label"], r["launch_match"], r["thread_match"]) for r in doc["shapes"]],
+                    [(s.label, True, observed(s) == s.threads_per_rank) for s in shapes])
+                self.assertEqual(status, "pass" if name == "queried" else "fail")
 
     def test_a_continuation_equals_its_base_on_every_grid(self) -> None:
         """Issue #632, the distributed form: a continuation case of model (2) (`init` writes the

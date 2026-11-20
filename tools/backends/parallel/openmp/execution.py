@@ -9,6 +9,11 @@ depending on a hardware class the server had no business interpreting.
 
 from __future__ import annotations
 
+#: A run of this model executes threads inside each process: the host hands it the profile's
+#: thread count, and every member of a combination that does not declare this is handed one
+#: (`host_execution._execution_env`, issue #700).
+RUNS_THREADS = True
+
 
 def environment(threads_per_rank: int) -> dict[str, str]:
     """The variables the OpenMP runtime reads for a run of `threads_per_rank` threads.

@@ -105,12 +105,21 @@ class LaunchShapeTests(unittest.TestCase):
                 self.assertIn("'execution_env'", str(ctx.exception))
 
     def test_a_package_declaration_is_reached_through_capability_module(self) -> None:
-        """The env comes from `capability_module`, not from a same-named import."""
-        fake = types.SimpleNamespace(environment=lambda threads: {"ZZ_THREADS": str(threads)})
-        with mock.patch.object(registry, "capability_module", return_value=fake) as cap:
-            env = he.launch_shape(FORTRAN_CPU).env
-        cap.assert_called_once_with("parallel", FORTRAN_CPU.parallel_backend, "execution_env")
-        self.assertEqual(env, {"ZZ_THREADS": str(FORTRAN_CPU.threads_per_rank)})
+        """The env comes from `capability_module`, not from a same-named import. The thread
+        count reaches a module that declares `RUNS_THREADS`, and one that does not is handed
+        one (issue #700)."""
+        self.assertGreater(FORTRAN_CPU.threads_per_rank, 1)
+        for runs, expected in ((True, FORTRAN_CPU.threads_per_rank), (None, 1)):
+            with self.subTest(runs_threads=runs):
+                fake = types.SimpleNamespace(
+                    environment=lambda threads: {"ZZ_THREADS": str(threads)})
+                if runs:
+                    fake.RUNS_THREADS = True
+                with mock.patch.object(registry, "capability_module", return_value=fake) as cap:
+                    env = he.launch_shape(FORTRAN_CPU).env
+                cap.assert_called_once_with("parallel", FORTRAN_CPU.parallel_backend,
+                                            "execution_env")
+                self.assertEqual(env, {"ZZ_THREADS": str(expected)})
 
     def test_a_core_declaration_is_the_empty_environment_and_loads_nothing(self) -> None:
         record = registry.get("parallel", "none")
@@ -497,21 +506,35 @@ class ExecutionShapeLaunchTests(unittest.TestCase):
             with self.subTest(block=bad), self.assertRaises(ValueError):
                 module.environment(1, block_size=bad)
 
-    def test_a_shape_the_backend_refuses_is_unavailable(self) -> None:
-        from tools.target_profile import ExecutionShape
+    def test_a_thread_count_on_a_backend_with_no_threaded_member_is_the_gate_s(self) -> None:
+        """Issue #700: `mpi` and `cuda` declare no `RUNS_THREADS`, so neither refuses a count
+        itself any longer (the host hands them one) and `launch_shape` refuses no count: the
+        launch gate refuses a count above one on such a value, once. A malformed value the
+        package's environment does refuse is still unavailable (here a grid of zero ranks)."""
+        from tools.target_profile import ExecutionShape, _thread_count_violations
         for backend in ("mpi", "cuda"):
             with self.subTest(backend=backend):
                 module = registry.capability_module("parallel", backend, "execution_env")
-                with self.assertRaises(ValueError):
-                    module.environment(2)
+                self.assertFalse(he.runs_threads(module))
+                self.assertEqual(module.environment(2), {})
                 self.assertEqual(module.environment(1), {})
+                with self.assertRaises(ValueError):
+                    module.environment(0)
                 profile = profile_with(parallel={"backend": backend},
                                        hardware={"class": "cpu"} if backend == "mpi" else
-                                       {"class": "gpu", "architecture": "sm_90"})
+                                       {"class": "gpu", "architecture": "sm_90"},
+                                       execution={"threads_per_rank": 2})
                 site = None
                 if backend == "cuda":
                     from tools.execution_sites import Site
                     site = Site("gpu_box", ("gpu",), host="box", workdir="/w")
-                with self.assertRaises(he.LaunchUnavailable) as ctx:
-                    he.launch_shape(profile, site, ExecutionShape("threads_2", 2, 1, None))
-                self.assertIn("execution shape threads_2", str(ctx.exception))
+                shape = he.launch_shape(profile, site, ExecutionShape("threads_2", 2, 1, None))
+                self.assertEqual(shape.env, {})
+                found = _thread_count_violations(profile)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(f"no member of parallel backend {backend} runs threads", found[0])
+        mpi = profile_with(parallel={"backend": "mpi"}, hardware={"class": "cpu"},
+                           execution={"threads_per_rank": 1, "ranks": 2})
+        with self.assertRaises(he.LaunchUnavailable) as ctx:
+            he.launch_shape(mpi, None, ExecutionShape("grid_0x2", 1, 2, (0, 2)))
+        self.assertIn("execution shape grid_0x2", str(ctx.exception))

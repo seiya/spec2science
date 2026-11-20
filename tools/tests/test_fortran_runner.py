@@ -32,7 +32,6 @@ from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
-    _SINGLE_PROCESS_INTERFACE,
     _used_harness_ops,
     assert_harness_pin,
     harness_interface_block,
@@ -483,8 +482,8 @@ _HARNESS_STUB = textwrap.dedent("""\
     """)
 
 # The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.11.0` §3.2: it obtains the thread count
-# itself) and the eight-argument one the distributed harness publishes and `harness_fortran_cpu`
-# published up to `0.7.0` (its caller passes the count). `_EIGHT_ARG_HARNESS_STUB` is the stub
+# itself) and the eight-argument one `harness_fortran_cpu` published up to `0.7.0` and
+# `harness_fortran_cpu_mpi` up to `0.5.0` (its caller passes the count). `_EIGHT_ARG_HARNESS_STUB` is the stub
 # with the second in place of the first.
 _STUB_WRITE_PERF_HEAD = textwrap.dedent("""\
       subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, &
@@ -1239,7 +1238,7 @@ class HarnessPinTest(unittest.TestCase):
         with_proto = _HARNESS_V3_INTERFACE + (
             "\nabstract interface\n  subroutine ghost(x)\n    real, intent(in) :: x\n"
             "  end subroutine ghost\nend interface\n")
-        with mock.patch.object(fortran_runner, "_SINGLE_PROCESS_INTERFACE",
+        with mock.patch.object(fortran_runner, "_HARNESS_V3_INTERFACE",
                                with_proto.replace(f"{HARNESS}__", fortran_runner._PLACEHOLDER)), \
                 self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src,
@@ -1252,13 +1251,9 @@ class HarnessPinTest(unittest.TestCase):
         `harness_fortran_cpu@0.11.0` §3.2, whose writer obtains the thread count itself, so a
         certified harness whose writer still takes `threads_per_rank` — a `0.7.0` one — is
         refused before Build, in its IR signatures and in its model source alike, naming the
-        writer. The pinned interface is the distributed harness's block but for that argument."""
+        writer. Since issue #700 the block takes no thread count on any Fortran harness."""
         sym = "harness_fortran_cpu__write_perf"
-        self.assertNotIn("threads_per_rank", _SINGLE_PROCESS_INTERFACE)
-        self.assertEqual(
-            _SINGLE_PROCESS_INTERFACE,
-            _HARNESS_V3_INTERFACE.replace(", threads_per_rank, gpu_devices)", ", gpu_devices)")
-            .replace("  integer, intent(in) :: threads_per_rank\n", ""))
+        self.assertNotIn("threads_per_rank", _HARNESS_V3_INTERFACE)
         old_sigs = copy.deepcopy(self.sigs)
         perf = next(e for e in old_sigs if e["symbol"] == sym)
         args = perf["signature"]["args"]
@@ -2248,8 +2243,11 @@ class HarnessPinTableTest(unittest.TestCase):
         stanza of that backend's block for the target's derived tokens equals the stanza of the
         same symbol in the §5.1 of the harness the target names — the comparison
         `host_render.harness_block_drift` makes, which `skills/spec-input-check` names. The
-        witness: the same §5.1 under the OTHER process model's tokens drifts, so the comparison
-        is not empty by construction."""
+        witness: a single-process harness's §5.1 under the distributed tokens drifts (it
+        publishes no distributed-state operation), so the comparison is not empty by
+        construction. A distributed harness's §5.1 under the single-process tokens does not:
+        since issue #700 the two forms share one `sync_single_case@1` block, the seven-argument
+        writer included, and the distributed block only adds to it."""
         from tools import host_render, target_profile as tp
         from tools.backends import registry
         from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
@@ -2270,12 +2268,16 @@ class HarnessPinTableTest(unittest.TestCase):
                 self.assertEqual(host_render.harness_block_drift(
                     language, sid, body, harness_provides=provides), [])
                 if language == "fortran":
-                    self.assertTrue(host_render.harness_block_drift(
+                    flipped = host_render.harness_block_drift(
                         language, sid, body,
-                        harness_provides=provides ^ {DISTRIBUTED_STATE_TOKEN}))
+                        harness_provides=provides ^ {DISTRIBUTED_STATE_TOKEN})
+                    if DISTRIBUTED_STATE_TOKEN in provides:
+                        self.assertEqual(flipped, [])
+                    else:
+                        self.assertTrue(flipped)
             seen.add(target_id)
-        self.assertEqual(seen, {"fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_netcdf",
-                                "cpp_gpu"})
+        self.assertEqual(seen, {"fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_mpi_openmp",
+                                "fortran_cpu_netcdf", "cpp_gpu"})
 
     def test_the_drift_comparison_names_each_kind_of_difference(self) -> None:
         """`host_render.harness_block_drift` on each language's sample harness §5.1, mutated
@@ -2393,6 +2395,26 @@ class HarnessPinTableTest(unittest.TestCase):
                     assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, bad, source,
                         harness_provides=provides_for(DIST_HARNESS))
                 self.assertIn(f"omits '{DIST_HARNESS}{dropped}'", str(cm.exception))
+        # Issue #700: the distributed form pins the seven-argument writer too, so a certified
+        # `0.5.0` harness, whose writer takes the thread count, is refused before Build, in its
+        # IR signatures and in its model source alike, naming the writer.
+        sym = f"{DIST_HARNESS}__write_perf"
+        self.assertNotIn("threads_per_rank", iface)
+        old_sigs = copy.deepcopy(sigs)
+        args = next(e for e in old_sigs if e["symbol"] == sym)["signature"]["args"]
+        args.insert(len(args) - 1, {**copy.deepcopy(args[-1]), "name": "threads_per_rank"})
+        old_src = source.replace("mpi_ranks, gpu_devices)",
+                                 "mpi_ranks, threads_per_rank, gpu_devices)").replace(
+            "  integer, intent(in) :: gpu_devices\nend subroutine " + sym,
+            "  integer, intent(in) :: threads_per_rank\n  integer, intent(in) :: gpu_devices\n"
+            "end subroutine " + sym)
+        self.assertIn("intent(in) :: threads_per_rank", old_src)
+        for label, bad_sigs, bad_src in (("ir", old_sigs, source), ("source", sigs, old_src)):
+            with self.subTest(eight_argument_writer=label):
+                with self.assertRaises(RenderError) as cm:
+                    assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, bad_sigs,
+                        bad_src, harness_provides=provides_for(DIST_HARNESS))
+                self.assertIn(sym, str(cm.exception))
         # The single-process pin asks none of them.
         single = [e for e in sigs if "__init" not in e["symbol"]]
         self.assertIsNone(fortran_runner.physics_harness_uses("harness_fortran_cpu",

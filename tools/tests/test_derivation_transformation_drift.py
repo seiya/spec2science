@@ -1544,7 +1544,17 @@ PINNED_RENDER: dict[str, str] = {
     # (Measured by diffing `render_tuple()` against main 8d4419a9's: those two rows and no other.)
     # The digest `render-22` shipped with at 8d4419a9:
     "render-22@8d4419a9": "f629096e659a94cf4898c68bc90f8ddd9e453dfc3bfa947c9239d78ae3b5a866",
-    "render-22": "dbb6ee61f0b95899ed5206b6db3dc15bb8f7f764a8ee5cf6fcf95d71b44fe511",
+    # render-22 re-pinned in place by issue #700 PR-2, behaviour-preserving for every target that
+    # holds a certified render: the Fortran distributed form's perf writer takes no thread count
+    # (`fortran/runner.py`: one writer stanza; `_threads` and the driver's argument deleted),
+    # which only a consumer of a `distributed_state` harness renders, and none holds a certified
+    # Generate; `tools/host_execution.py` hands the thread count to the member that declares
+    # `RUNS_THREADS` and one to every other, the same environment for every one-member value.
+    # (Measured by diffing `render_tuple()` against main ee52b1d8's: those two rows and no other;
+    # the 28 certified host-rendered runners render byte-identically.)
+    # The digest `render-22` shipped with at ee52b1d8:
+    "render-22@ee52b1d8": "dbb6ee61f0b95899ed5206b6db3dc15bb8f7f764a8ee5cf6fcf95d71b44fe511",
+    "render-22": "738169315b6c7d8ec4886ee5d42454e5660839003c6b01ae6f8082bd84a37a4f",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1861,7 +1871,12 @@ PINNED_BUILD: dict[str, str] = {
     # and no other.)
     # The digest `build-5` shipped with at 8d4419a9:
     "build-5@8d4419a9": "e1bd38039325fdc8a8ee100929fea53a2331c32592df1c7adceae17c138b7d1d",
-    "build-5": "64e1690c2ec8a7e675af2e916e3d66309e6f988078d29aeded4c575efb2c88d9",
+    # build-5 re-pinned in place by issue #700 PR-2, for the `tools/host_execution.py` change of
+    # render-22's ee52b1d8 entry. (Measured by diffing `build_tuple()` against main ee52b1d8's:
+    # that row and no other.)
+    # The digest `build-5` shipped with at ee52b1d8:
+    "build-5@ee52b1d8": "64e1690c2ec8a7e675af2e916e3d66309e6f988078d29aeded4c575efb2c88d9",
+    "build-5": "a7196261eecea15f0a2a7617048e9c12534f38192900908cc40ac8c308a436e9",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2327,7 +2342,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # those two rows and no other.)
     # The digest `execute-22` shipped with at 8d4419a9:
     "execute-22@8d4419a9": "8de9817fbc6f6bc320814895c97c4398c0c5388ae48325e6832884304f3550f9",
-    "execute-22": "b5417e951b1b2f9cc31de010faafe132fcd3afddbb3eedd44dd1c6af65d1a6bb",
+    # execute-22 re-pinned in place by issue #700 PR-2: the `mpi` and `cuda` launch environments
+    # lose their refusal of a thread count above one (the launch gate refuses such a count before
+    # anything runs), `openmp` declares `RUNS_THREADS`, and `tools/host_execution.py` routes the
+    # count by it; every checked-in profile's launch shapes and serial environment are unchanged.
+    # `TargetProfile.thread_count_observable` moves by its docstring alone. (Measured by diffing
+    # `execute_tuple()` against main ee52b1d8's: those five rows and no other.)
+    # The digest `execute-22` shipped with at ee52b1d8:
+    "execute-22@ee52b1d8": "b5417e951b1b2f9cc31de010faafe132fcd3afddbb3eedd44dd1c6af65d1a6bb",
+    "execute-22": "6d8a0ad19dc63a7a64217e8af1b2b85dcb1cc4b040e50dfbfed7aa7fefcc2d95",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

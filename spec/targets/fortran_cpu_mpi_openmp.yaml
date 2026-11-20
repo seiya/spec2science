@@ -1,0 +1,45 @@
+# Target profile (issue #700, item 6 Part 3). Operator-authored data: one value per target axis,
+# and the harness a node built for this target runs over. Loader and gate: tools/target_profile.py.
+# Schema (declarative copy): spec/schema/targets/target_profile.schema.json.
+#
+# `parallel.backend` combines two models (issue #700): the ranks the launcher starts, and threads
+# inside each rank. The members are written in the order the leaf's paragraphs are composed.
+#
+# `execution.ranks` is the number of processes the launcher starts for the Validate run, and
+# `execution.threads_per_rank` the threads each runs; the quality check re-runs the same cases as
+# one process of one thread. A launcher target runs at the local site only
+# (docs/backends/parallel/mpi/LAUNCHER.md §4).
+#
+# `execution.process_grid` and `execution.sweep.grids` are `fortran_cpu_mpi`'s, for the reasons
+# that profile states: (2, 2) exercises both grid dimensions, and a kernel whose state depends on
+# the decomposition disagrees with the serial reference under one of the sweep's grids (a
+# remainder cell under 3 ranks among them). Each grid runs with the certified thread count.
+#
+# `execution.sweep.threads_per_rank` runs the certified ranks and grid at another thread count:
+# a source whose state depends on how the loop iterations are split over the threads disagrees
+# with the serial reference there. At most 12 CPUs in a shape (4 ranks of 3 threads).
+#
+# The harness is the one `fortran_cpu_mpi` names, from the version whose perf writer obtains the
+# thread count from the shared-memory runtime itself (`0.6.0`); the host's control file adds the
+# compiler's thread switch to every node of this target.
+target_profile_version: 1
+target_id: fortran_cpu_mpi_openmp
+hardware:
+  class: cpu
+  architecture: x86_64
+toolchain:
+  language: fortran
+  standard: f2008
+  build_system: make
+parallel:
+  backend: mpi+openmp
+execution:
+  threads_per_rank: 2
+  ranks: 4
+  process_grid: [2, 2]
+  sweep:
+    grids: [[4, 1], [1, 4], [3, 1], [1, 3], [2, 1], [1, 2]]
+    threads_per_rank: [3]
+harness:
+  infrastructure_id: harness_fortran_cpu_mpi
+  version_constraint: ">=0.6.0 <1.0.0"

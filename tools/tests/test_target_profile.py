@@ -76,7 +76,8 @@ _HARNESS_X = "infrastructure/harness_x@0.7.0"
 class CheckedInProfileTests(unittest.TestCase):
     def test_the_checked_in_profile_loads_gates_clean_and_names_the_catalog_harness(self) -> None:
         self.assertEqual(tp.list_target_ids(REPO_ROOT),
-                         ["cpp_gpu", "fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_netcdf"])
+                         ["cpp_gpu", "fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_mpi_openmp",
+                          "fortran_cpu_netcdf"])
         profile = tp.resolve_run_target(REPO_ROOT, "fortran_cpu")
         self.assertEqual(profile.target_id, "fortran_cpu")
         self.assertRegex(profile.sha256, r"^sha256:[0-9a-f]{64}$")
@@ -603,6 +604,9 @@ class OutputFormatTests(unittest.TestCase):
             "fortran_cpu": {"sync_single_case@1", "capture_format_json@1"},
             "fortran_cpu_mpi": {"sync_single_case@1", "distributed_state@2",
                                 "capture_format_json@1"},
+            # Issue #700: the same set as `fortran_cpu_mpi`, so one harness node serves both.
+            "fortran_cpu_mpi_openmp": {"sync_single_case@1", "distributed_state@2",
+                                       "capture_format_json@1"},
             "fortran_cpu_netcdf": {"sync_single_case@1", "capture_format_netcdf@1"},
         }
         self.assertEqual(set(tp.list_target_ids(REPO_ROOT)), set(expected))
@@ -682,10 +686,11 @@ class LaunchGateTests(unittest.TestCase):
 
     def test_a_thread_count_the_backend_refuses_is_refused(self) -> None:
         """Issue #512: every thread count a rank runs — the certified one and each of the
-        sweep's — must be one the parallel backend's launch environment admits. OpenMP runs any
-        count; MPI and CUDA run one thread per rank and refuse more; a backend whose launch
-        environment is the neutral core's empty one (`none`) runs one thread whatever it is
-        told. One thread is admitted everywhere, and the refusal names the member."""
+        sweep's — needs a member of the parallel backend that runs threads inside a process
+        (`RUNS_THREADS`, issue #700). OpenMP runs any count; MPI and CUDA declare none and run
+        one thread per rank; a backend whose launch environment is the neutral core's empty one
+        (`none`) runs one thread whatever it is told. One thread is admitted everywhere, and the
+        refusal names the backend."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             self.assertEqual(tp.hardware_violations(self._profile(

@@ -444,10 +444,12 @@ and no consumer distinguishes a generation. Until
 [issue #582](https://github.com/seiya/spec2science/issues/582) the block also held the writers of
 two documents no runner writes now, and their types. Its performance-record writer, which no
 consuming node's bundle code calls (the host-rendered runner calls it, and so does the providing
-harness's own self-test), takes no `threads_per_rank` argument on a target with no launcher,
-because the harness writes the thread count the run's shared-memory runtime gives the program
-itself (issue #512); where the target's harness also provides `distributed_state@2`, and in the
-CUDA C++ backend's block, the writer takes the eight-argument form instead. The CUDA C++ block adds
+harness's own self-test), takes no `threads_per_rank` argument, because the harness writes the
+thread count the run's shared-memory runtime gives the program itself: issue #512 for a target
+with no launcher, and [issue #700](https://github.com/seiya/spec2science/issues/700) where the
+target's harness also provides `distributed_state@2`, whose ranks a target may run threads in
+(the count is rank 0's). In the CUDA C++ backend's block the writer takes the eight-argument form
+instead. The CUDA C++ block adds
 `__block_size` (the threads per block the host imposes on the program's kernels, issue #512).
 No block carries `__real_token`: no driver calls it, and a format that stores a real as its IEEE
 value spells no token; a harness may publish it. The pin compares the block against the certified

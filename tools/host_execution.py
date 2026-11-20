@@ -127,11 +127,12 @@ def _execution_env(parallel_backend: str, threads_per_rank: int,
     environment, merged in member order: each member whose PACKAGE declares `execution_env` is
     asked (`registry.package_members`). The process grid goes to the member that declares the
     launcher whose ranks it arranges, the block size to the member whose module declares the
-    sizes it admits (`BLOCK_SIZES`), and the thread count to every member — so a member that runs
-    one thread per process refuses a count above one on a combination as it does alone. For a
-    one-member value the call is the one it was, with one difference: a grid or a block size its
-    member does not take is no longer passed on (it used to raise `TypeError`); the gates
-    (`launch_shape`, the profile's launch gate) refuse such a value before it gets here.
+    sizes it admits (`BLOCK_SIZES`), and the thread count to the member whose module declares
+    that it runs threads inside a process (`RUNS_THREADS`); every other member is handed one.
+    A count above one on a value with no such member is the launch gate's refusal
+    (`target_profile._thread_count_violations`). A grid or a block size a member does not take
+    is not passed on; the gates (`launch_shape`, the profile's launch gate) refuse such a value
+    before it gets here.
     """
     reason = registry.missing_capability_reason("parallel", parallel_backend, "execution_env")
     if reason is not None:
@@ -144,9 +145,15 @@ def _execution_env(parallel_backend: str, threads_per_rank: int,
             imposed["process_grid"] = process_grid
         if block_size is not None and getattr(module, "BLOCK_SIZES", None) is not None:
             imposed["block_size"] = block_size
-        env.update({str(k): str(v)
-                    for k, v in module.environment(threads_per_rank, **imposed).items()})
+        threads = threads_per_rank if runs_threads(module) else 1
+        env.update({str(k): str(v) for k, v in module.environment(threads, **imposed).items()})
     return env
+
+
+def runs_threads(module: Any) -> bool:
+    """Whether the `execution_env` module of a parallel model declares that the model runs
+    threads inside a process (`RUNS_THREADS`, `registry.CAPABILITIES["execution_env"]`)."""
+    return getattr(module, "RUNS_THREADS", False) is True
 
 
 def _platform_probe(hardware_class: str) -> tuple[str, ...] | None:
@@ -263,11 +270,10 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
     declare `execution_env` (with the registry's own wording for the first and the third), a
     launcher backend at a site other than `local`, more ranks than one — or a process
     grid — for a backend with no launcher, a block size for a backend that imposes none
-    (`imposes_block_size`), and a shape the backend's PACKAGE launch
-    environment refuses (a thread count its model does not run). A backend whose launch
-    environment is the neutral core's empty one refuses no count here; the launch gate
-    refuses a count above one for it (`target_profile._thread_count_violations`), before
-    anything runs.
+    (`imposes_block_size`), and a shape whose count, grid or block size the backend's PACKAGE
+    launch environment refuses as malformed. A thread count above one on a backend none of whose
+    members runs threads is not refused here: the launch gate refuses it
+    (`target_profile._thread_count_violations`, issue #700), before anything runs.
     """
     reason = registry.missing_capability_reason(
         "hardware", profile.hardware_class, "execution")
@@ -321,8 +327,9 @@ def perf_parallelism(target: dict[str, Any]) -> tuple[int, int, int]:
     """`(mpi_ranks, threads_per_rank, gpu_devices)` a run of `target` (a target profile DOCUMENT,
     `TargetProfile.doc`) states in its performance record — what a host-rendered runner passes the
     harness's `write_perf`, except for a count the harness observes at run time instead: the
-    thread count where the harness's writer obtains it itself (issue #512: the single-process CPU
-    harness's `write_perf` takes none, since Validate runs one binary at several counts), and the
+    thread count where the harness's writer obtains it itself (issue #512, and issue #700 for a
+    distributed one: a writer that takes none, since Validate runs one binary at several counts),
+    and the
     rank count under a launcher (below). The rank count is the profile's
     `execution.ranks` (1 when it states none, issue #316): a CONFIGURED value, which a runner of a launcher target must not pass —
     the post-execute gate compares the recorded count with this same value, so it has to be the

@@ -58,6 +58,13 @@ distributes each case; the kernel decides none of it.
   the case's count, carried by a `derived` entry) and leaves the other sides to the exchange.
 - A bundle declares `target_lowering_plan.state_residency: distributed` and
   `distributed_state@2` among its `capability_requirements` on both kinds.
+- **The harness is called from serial code** (issue #700). On a target whose value combines
+  `mpi` with a model that runs threads inside each rank (`mpi+openmp`), each harness operation a
+  source calls — an exchange, a reduction — is called outside every threaded region, by the
+  thread that initialized the runtime: the harness asks the runtime for that level and no more
+  (its controlled_spec §3.3). The producer fragment states it; no gate checks it, because a
+  source gains nothing toward its verdict by breaking it, and the sweep's comparison with the
+  serial reference judges a run that does.
 
 The shape comparison (`_shape_verdict`) holds each grid's verdict and captures to the singleton's
 over the cases a cross-target predicate targets; `_shape_state_agreement` answers

@@ -4,7 +4,7 @@ module harness_fortran_cpu_mpi_model
   use, intrinsic :: iso_fortran_env, only: real64, error_unit
   use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite
   use, intrinsic :: iso_c_binding, only: c_int, c_char, c_null_char, c_ptr, c_loc
-  use mpi_f08, only: MPI_Init, MPI_Finalize, MPI_Comm_size, MPI_Comm_rank, MPI_Sendrecv, &
+  use mpi_f08, only: MPI_Init_thread, MPI_THREAD_FUNNELED, MPI_Finalize, MPI_Comm_size, MPI_Comm_rank, MPI_Sendrecv, &
     MPI_Allreduce, MPI_Allgather, MPI_Gatherv, MPI_COMM_WORLD, MPI_DOUBLE_PRECISION, &
     MPI_INTEGER, MPI_SUM, MPI_MAX, MPI_MIN, MPI_PROC_NULL, MPI_STATUS_IGNORE
   implicit none
@@ -528,20 +528,22 @@ contains
   end subroutine harness_fortran_cpu_mpi__write_diagnostics
 
   subroutine harness_fortran_cpu_mpi__write_perf(case_id, target, steps, cells_updated, &
-      walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
+      walltime_sec, mpi_ranks, gpu_devices)
+!$  use omp_lib, only: omp_get_max_threads
     character(len=*), intent(in) :: case_id
     character(len=*), intent(in) :: target
     integer, intent(in) :: steps
     integer, intent(in) :: cells_updated
     real(dp), intent(in) :: walltime_sec
     integer, intent(in) :: mpi_ranks
-    integer, intent(in) :: threads_per_rank
     integer, intent(in) :: gpu_devices
     real(dp) :: throughput
-    integer :: u, degree
+    integer :: u, degree, nthreads
 
+    nthreads = 1
+!$  nthreads = omp_get_max_threads()
     throughput = real(cells_updated, dp) / walltime_sec
-    degree = mpi_ranks * threads_per_rank * max(gpu_devices, 1)
+    degree = mpi_ranks * nthreads * max(gpu_devices, 1)
     open(newunit=u, file='perf.json', status='replace', action='write', form='formatted')
     write(u, '(a)') '{'
     write(u, '(a)') '  "case_id": "' // case_id // '",'
@@ -555,7 +557,7 @@ contains
       harness_fortran_cpu_mpi__real_token(throughput) // ','
     write(u, '(a)') '  "parallelism": {"mpi_ranks": ' // &
       int_token(mpi_ranks) // ', "threads_per_rank": ' // &
-      int_token(threads_per_rank) // ', "gpu_devices": ' // &
+      int_token(nthreads) // ', "gpu_devices": ' // &
       int_token(gpu_devices) // ', "parallel_degree_total": ' // &
       int_token(degree) // ', "process_grid": [' // &
       int_token(grid_p1) // ', ' // &
@@ -568,9 +570,11 @@ contains
   ! ---------------------------------------------------------------- process grid
   subroutine harness_fortran_cpu_mpi__init()
     character(len=:), allocatable :: env
-    integer :: elen, est
+    integer :: elen, est, provided
 
-    call MPI_Init()
+    ! The level under which only this thread calls the library; a lower grant does not stop
+    ! the run (controlled_spec §3.3).
+    call MPI_Init_thread(MPI_THREAD_FUNNELED, provided)
     call MPI_Comm_size(MPI_COMM_WORLD, grid_size)
     call MPI_Comm_rank(MPI_COMM_WORLD, grid_rank)
     call get_environment_variable('SPEC2SCIENCE_PROCESS_GRID', length=elen, status=est)
