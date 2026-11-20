@@ -1041,12 +1041,7 @@ def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
                    input=render_stub(request))
         _, sep, answer = out.partition(f"{SUBMIT_MARKER} ")
         epoch, _, answer = answer.partition("\n")
-        if not sep:
-            # The id is read from what follows the marker line. `&& exec` runs the submit
-            # command only after the marker printed, but a job may exist all the same.
-            raise RemoteExecutionError(f"submit the job: the submit call printed no "
-                                       f"{SUBMIT_MARKER} line: {out[-500:]!r}; a job may have "
-                                       f"been submitted ({remote})")
+        # With no marker line `answer` is empty and the id refusal below answers it.
         job_id = submission.job_id(answer)
         # The id becomes an argument of every state command. Breakage without this: a line
         # the submit command printed besides the id — a warning — read as the id makes every
