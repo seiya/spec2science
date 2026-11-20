@@ -247,7 +247,8 @@ submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](ba
   it does not know, measured directly and through ssh).
 - **A job not seen running within `queue_timeout_sec` is left as it is.** The run is refused as a transport failure
   and nothing cancels the job; `scancel` it by hand (its name is `spec2science-<agent_run_id>`,
-  or `spec2science-<agent_run_id>.restart` for a `Validate.execute` restart job) until a resumed run adopts such a job (issue #696; not built yet).
+  or `spec2science-<agent_run_id>.restart` for a `Validate.execute` restart job) until a resumed
+  run adopts such a job (issue #696; not built yet).
 - **A suspended job's time counts against the run bound.** At a site that preempts by
   suspension, a job suspended for long enough is refused at the run bound (its time limit plus
   the transport's grace) and left as it is; a rerun submits a new one

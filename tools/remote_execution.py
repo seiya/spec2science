@@ -47,41 +47,41 @@ Every way the evidence could be incomplete or not this job's is a refusal
   not change what ran there either; under bash an offset-preserving rewrite of an unstubbed
   script does, and under the stub it does not (`StubTests`, over the shims);
 - a command's exit status and times travel as one status line per command that ran
-  (`STATUS_MARKER`), on one of TWO CHANNELS. At a `none` site the channel is the job script's
-  own stdout, never a file: the command itself — leaf-authored code, for the runner — can write
-  anything under the job directory, including a file planted before the script writes its own,
-  but its stdout and stderr go to files and its stdin is `/dev/null`, so it holds no descriptor
-  of the script's stdout. At a batch scheduler's site the channel is the job's output file
+  (`STATUS_MARKER`), on one of TWO CHANNELS. At a `none` site the channel is the job script's own
+  stdout, never a file: the command itself — leaf-authored code, for the runner — can write
+  anything under the job directory, including a file planted before the script writes its own, but
+  its stdout and stderr go to files and its stdin is `/dev/null`, so it holds no descriptor of the
+  script's stdout. At a batch scheduler's site the channel is the job's output file
   (`<job_dir>/ctl/job.out`, the script's stdout; its stderr is `job.err`), which a command CAN
-  rewrite, and the file is read only against the scheduler's own record of how the script
-  ended: the script exits 0 when every command exited 0 and 1 when one ran and exited non-zero,
-  and the host accepts "every command exited 0" only when the backend reads that record as "ran
-  to its own exit, and that exit was 0" — by an allowlist of the record's fields, never by one
-  integer, since a script whose shell a command killed has exit part 0 — and a file that shows
-  a failed command as that failure under an own exit of 0 or 1 (`collect_job`). A command can kill the shell that
-  started it, and the record then says so; it can make that shell exit with a status of its
-  choice only by deliberately attaching to it with a debugger (ptrace, where the site allows
-  it, then `_exit(0)`), which the pipe channel of a `none` site is equally open to — a
-  deliberate attack with no ordinary spelling, outside the defended set. So a file that shows
-  no failed command is accepted only under the scheduler's record of the script's own exit 0
-  (issue #696 §6.3's P1). Under an own exit of 1, which command failed, and which ran, are read
-  from the file as it stands — a process a command left running can rewrite it to name another
-  command as the failed one, and commands that did not run as having exited 0 — as are the
-  times and the platform facts (not defended: every command's failure fails the attempt, so no
-  verdict reads one as a pass). The rest of this bullet is the `none` channel's. A command's missing status line
-  is a lost status and is refused, never read as 0; a second line for one command, a line for a
-  command that should not have run (a command runs only when every earlier one exited 0), and
-  a line that does not parse are refused too. A process that reaches the script's stdout
-  anyway — through `/proc/<pid>/fd/1`, which the same user can open — and opens it for WRITING
-  can add lines but cannot remove the script's own: an added line is a second one, and text
-  written without a newline glues onto the script's next line, which then carries a marker
-  somewhere other than at its start and is refused. NOT closed: opened for READING, the same
-  path hands out the pipe's read end (measured on Linux), so a process a command left running
-  could consume a later command's status line before the host reads it and print one of its
-  own. It would have to know this module's line grammar, which no leaf is shown. The platform
-  facts travel the same way (`PLATFORM_MARKER`), printed once each before the first command
-  starts, and so does the toolchain version when the request carries a probe (`TOOLCHAIN_KEY`:
-  exactly one line then, none otherwise);
+  rewrite, and the file is read only against the scheduler's own record of how the script ended:
+  the script exits 0 when every command exited 0 and 1 when one ran and exited non-zero, and the
+  host accepts "every command exited 0" only when the backend reads that record as "ran to its own
+  exit, and that exit was 0" — by an allowlist of the record's fields, never by one integer, since
+  a script whose shell a command killed has exit part 0 — and a file that shows a failed command
+  as that failure under an own exit of 0 or 1 (`collect_job`). A command can kill the shell that
+  started it, and the record then says so; it can make that shell exit with a status of its choice
+  only by deliberately attaching to it with a debugger (ptrace, where the site allows it, then
+  `_exit(0)`), which the pipe channel of a `none` site is equally open to — a deliberate attack
+  with no ordinary spelling, outside the defended set. So a file that shows no failed command is
+  accepted only under the scheduler's record of the script's own exit 0 (issue #696 §6.3's P1).
+  Under an own exit of 1, which command failed, and which ran, are read from the file as it stands
+  — a process a command left running can rewrite it to name another command as the failed one, and
+  commands that did not run as having exited 0 — as are the times and the platform facts (not
+  defended: every command's failure fails the attempt, so no verdict reads one as a pass). The
+  rest of this bullet is the `none` channel's. A command's missing status line is a lost status
+  and is refused, never read as 0; a second line for one command, a line for a command that should
+  not have run (a command runs only when every earlier one exited 0), and a line that does not
+  parse are refused too. A process that reaches the script's stdout anyway — through
+  `/proc/<pid>/fd/1`, which the same user can open — and opens it for WRITING can add lines but
+  cannot remove the script's own: an added line is a second one, and text written without a
+  newline glues onto the script's next line, which then carries a marker somewhere other than at
+  its start and is refused. NOT closed: opened for READING, the same path hands out the pipe's
+  read end (measured on Linux), so a process a command left running could consume a later
+  command's status line before the host reads it and print one of its own. It would have to know
+  this module's line grammar, which no leaf is shown. The platform facts travel the same way
+  (`PLATFORM_MARKER`), printed once each before the first command starts, and so does the
+  toolchain version when the request carries a probe (`TOOLCHAIN_KEY`: exactly one line then, none
+  otherwise);
 - a shipped file that does not come back byte-identical to its local source is refused: the
   entries name each shipped file by its local source, so one a command rewrote before a later
   command ran it (the quality check's control file) would be recorded as unchanged;
@@ -344,7 +344,8 @@ class JobResult:
 class JobHandle:
     """A job a batch scheduler accepted: the site's id, host and scheduler, the id the submit
     command printed, the job directory, and the login's epoch seconds just before the submission
-    (`submit_job`; None when the login's `date` printed no integer). It is what `wait_job` asks about and `collect_job` collects."""
+    (`submit_job`; None when the login's `date` printed no integer). It is what `wait_job`
+    asks about and `collect_job` collects."""
 
     site: str
     host: str

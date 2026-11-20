@@ -114,8 +114,9 @@ rewrites `job.out` to all zeros is never read as success — but on that cluster
 job's processes by cgroup (`proctrack/cgroup`), the job's end kills the leftover, racing its
 rewrite: in the runs recorded the kill came first (`rewrite_landed: false`, alone and after
 killing the script's shell, jobs 1690 and 1691), and in one earlier run (job 1642) the
-leftover's truncation of `job.out` landed and the job was refused; so what refuses a rewritten file under a failed record (§1, what is accepted) is exercised by
-the suite's shim rows (`tools/tests/test_remote_execution.py` `BindingTests`), not on Slurm.
+leftover's truncation of `job.out` landed and the job was refused; so what refuses a rewritten
+file under a failed record (§1, what is accepted) is exercised by the suite's shim rows
+(`tools/tests/test_remote_execution.py` `BindingTests`), not on Slurm.
 
 ## 2. What the site must provide
 
