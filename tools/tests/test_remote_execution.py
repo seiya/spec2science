@@ -237,22 +237,40 @@ def _reap_shim_jobs(root: str) -> None:
     """Stop the background "jobs" the `sbatch` shim started under `root` before the tree is
     removed. A row that is refused before its job ends (an unknown id, a bound) otherwise leaves
     the job writing `ctl/` while `TemporaryDirectory.cleanup` removes it, which failed one row in
-    `tearDown` under `-n 24` ("Directory not empty: 'ctl'"). Each job is its own session, so its
-    group is killed, and the kill is waited for (bounded) because it lands asynchronously."""
+    `tearDown` under `-n 24` ("Directory not empty: 'ctl'"). Each job starts a session of its
+    own; every process of that session is killed — by session and not by process group, because
+    the job's commands run under `timeout`, which puts itself in a group of its own (round 4,
+    measured) — and the kill is waited for (bounded), because it lands asynchronously."""
     import signal
     import time
+
+    def members(sid: int) -> list[int]:
+        found = []
+        for stat_path in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                fields = stat_path.read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            # After the command name: state, ppid, pgrp, session.
+            if int(fields[3]) == sid:
+                found.append(int(stat_path.parent.name))
+        return found
+
     for pid_file in Path(root).rglob("pid.*"):
         try:
-            pid = int(pid_file.read_text())
-            os.killpg(pid, signal.SIGKILL)
-        except (ValueError, ProcessLookupError, PermissionError):
+            sid = int(pid_file.read_text())
+        except ValueError:
             continue
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            try:
-                os.killpg(pid, 0)
-            except ProcessLookupError:
+            alive = members(sid)
+            if not alive:
                 break
+            for pid in alive:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             time.sleep(0.01)
 
 
