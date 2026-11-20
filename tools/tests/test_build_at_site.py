@@ -381,16 +381,21 @@ _FAKE_LAUNCHER = textwrap.dedent('''\
 ''')
 
 #: The site's compiler wrapper: the launch canary's build writes a program that prints the size
-#: of the run it was started in (`SHIM_RUN_SIZE`, which only the launcher sets; 1 bare), and
-#: fails when `SHIM_CANARY_BUILD=fail`; its bare start fails when `SHIM_BARE=fail`. Every other
-#: invocation is the node's fake compiler's.
+#: of the run it was started in (`SHIM_RUN_SIZE`, which only the launcher sets; 1 bare). It
+#: fails, as a real compiler would, when the source it is handed is not the backend's
+#: `LAUNCH_CANARY_SOURCE` byte for byte (a copy written beside it) — so a job that ships
+#: no source, or another one, fails its canary — and when `SHIM_CANARY_BUILD=fail`; its bare
+#: start fails when `SHIM_BARE=fail`. Every other invocation is the node's fake compiler's.
 _FAKE_WRAPPER = textwrap.dedent('''\
     #!/bin/sh
     case " $* " in
       *{canary}*)
         [ "${{SHIM_CANARY_BUILD:-}}" = fail ] && {{ echo "no mpi_f08 module" >&2; exit 1; }}
         out=
-        while [ $# -gt 0 ]; do [ "$1" = -o ] && {{ out=$2; shift; }}; shift; done
+        while [ $# -gt 0 ]; do
+          case "$1" in -o) out=$2; shift ;; *{canary}) src=$1 ;; esac; shift
+        done
+        cmp -s "$src" {expected} || {{ echo "$src: not the canary source" >&2; exit 1; }}
         cat > "$out" <<'PROG'
     #!/bin/sh
     if [ -z "${{SHIM_RUN_SIZE:-}}" ] && [ "${{SHIM_BARE:-}}" = fail ]; then
@@ -439,7 +444,10 @@ class LauncherTargetBuildAtARemoteSiteTests(unittest.TestCase):
         launcher = registry.capability_module("parallel", "mpi", "launcher")
         node_compiler = n.site_bin / n.compiler
         node_compiler.rename(n.site_bin / f"{n.compiler}.node")
-        node_compiler.write_text(_FAKE_WRAPPER.format(canary=launcher.LAUNCH_CANARY_FILENAME))
+        expected = n.site_bin / "expected_canary.f90"
+        expected.write_text(str(launcher.LAUNCH_CANARY_SOURCE))
+        node_compiler.write_text(_FAKE_WRAPPER.format(canary=launcher.LAUNCH_CANARY_FILENAME,
+                                                      expected=expected))
         node_compiler.chmod(0o755)
         fake = n.site_bin / str(launcher.EXECUTABLE)
         fake.write_text(_FAKE_LAUNCHER)
@@ -499,6 +507,37 @@ class LauncherTargetBuildAtARemoteSiteTests(unittest.TestCase):
                     # A canary command that exited non-zero stops the job before the build.
                     self.assertEqual(len(n.log_entries()), 1, "the build did not run")
                 _reap_shim_jobs(tmp)
+
+    def test_the_build_result_is_the_builds_not_the_canarys(self) -> None:
+        """The job's results are read by tag: behind a canary that passed, a source the site's
+        compiler refuses is the node's content failure, its excerpt names the node's own source,
+        and the record's command is the build's entry in the node's log — not the canary's
+        build, which leads the job."""
+        n = self.n
+        (n.src / "kernel.f90").write_text("! FAIL\n", encoding="utf-8")
+        out = n.build()
+        self.assertEqual(out["returncode"], 0, "a content failure, not a transport one")
+        meta = n.meta()
+        self.assertEqual(meta["verification_status"], "fail")
+        self.assertEqual(meta["failure_category"], "compile_error", meta)
+        self.assertIn(f"{n.src}/kernel.f90:3:1: Error", meta["failure_excerpt"])
+        self.assertEqual(len(self.canary_entries(n)), 3)
+        build_entry = n.log_entries()[1]
+        self.assertEqual(build_entry["tool_name"], "compile_project")
+        self.assertEqual(meta["command_id"], build_entry["command_id"])
+
+    def test_a_site_that_does_not_execute_the_class_ships_nothing(self) -> None:
+        """The build seam's backstop of the driver's site gate (`launch_shape`): refused before
+        anything is staged or shipped, a launcher target as any other."""
+        import dataclasses
+
+        n = self.n
+        n.conductor.site = n.site = dataclasses.replace(n.site, executes=("gpu",))
+        result = n.substep()
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("deterministic_build_error", result.stderr)
+        self.assertIn("is not executed at site box", result.stderr)
+        self.assertEqual(n.calls(), [])
 
     def test_a_one_rank_launcher_target_carries_no_canary(self) -> None:
         """One process is one run whichever installation starts it."""
