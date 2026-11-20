@@ -366,7 +366,8 @@ explicitly declines that model (the backend's `lowering_plan_declines` reads the
 several models (issue #700) the plan's `model` names the target's whole value, every member's
 floor is asked, and a plan declines a floor only when every member's `lowering_plan_declines`
 says so: a plan that names one member declines no other member's floor, and `"none"` with the
-reason stated is the declaration that no model's work is done in the node.
+reason stated declines each member's floor that a plan may decline. A floor a member states as a
+whole-node judgment independent of the plan is asked whatever the plan names.
 
 **Coupling invariant.** `state_residency` other than `host` requires the corresponding
 **residency capability** in `capability_requirements`: `device` requires an

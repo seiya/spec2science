@@ -1210,7 +1210,7 @@ PINNED: dict[str, str] = {
     # so the composed prompt of every existing target is byte-identical.
     # The digest `leaf-104` shipped with at 8d4419a9:
     "leaf-104@8d4419a9": "8b1117cc2cf26eab407115d10fb81b87f9845f41ac4e363343de2bb45e6d1e3f",
-    "leaf-104": "6f3de8e4e14e50a28699c3e0d0d583a9ba3eff266391e03f3b946e37d9395b89",
+    "leaf-104": "8d9bf9b31d092b7b5c92b6ec9a182874979fc477937b3cde9ed3ddaf14ebc24c",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1306,7 +1306,7 @@ PINNED_READER: dict[str, str] = {
     # every target that holds a certified Generate is byte-identical.
     # The digest `generate-verify-13` shipped with at 8d4419a9:
     "generate-verify-13@8d4419a9": "642a136dcaba042b1dfae6b2e526759861f878a18d95afab9b8ca9397240ae1d",
-    "generate-verify-13": "cb030ec6187bd082320b6f3966517f22da26bcf2796616d094200fd189c28c2d",
+    "generate-verify-13": "7939b92747a6690c99a2b3c4ce95ca1de7f513f8f3c5668c926903a9f936899d",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
