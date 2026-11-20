@@ -322,7 +322,8 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
                 f"{_head(launched.stderr or launched.stdout or '')}")
             return [(f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
                     f"{ranks} ranks is started the same way at Validate.execute")]
-        problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "")
+        problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "",
+                                                canary_ranks)
         if problem is not None:
             return [(f"parallel/{parallel}: {started} did not run as one run: {problem}. The "
                     f"launcher and the compiler wrapper must come from one {parallel} "

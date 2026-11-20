@@ -31,10 +31,10 @@ A parallel backend that declares `launcher` (issue #316) starts the binary's ran
 `argv_prefix(ranks)`, with the profile's `execution.ranks`, is the OUTER part of
 `LaunchShape.argv_prefix` (a device trace's prefix, when a backend declares both, goes between
 it and the binary), and its `RUNTIME_PROBE` is `LaunchShape.runtime_probe`, whose first line is
-recorded as `platform.parallel_runtime`. A remote site does not place a launcher's ranks yet (a
-batch site runs the job as one task; a direct site is issue #337), so such a target runs at the
-local site only: the launch gate refuses another site (`execution_sites.site_violations`) and
-`launch_shape` refuses it as the backstop.
+recorded as `platform.parallel_runtime` at the local site. Such a target runs at any site
+(issue #337): at a remote one the launcher starts the ranks inside the job, within the
+allocation the operator's `scheduler_directives` give at a batch site, and the launch canary at
+the head of the site's `Build` job (`Conductor._build_inproc`) asks the site whether it does.
 """
 
 from __future__ import annotations
@@ -267,8 +267,8 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
 
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
     a site whose `executes` does not list the class, a parallel backend whose record does not
-    declare `execution_env` (with the registry's own wording for the first and the third), a
-    launcher backend at a site other than `local`, more ranks than one — or a process
+    declare `execution_env` (with the registry's own wording for the first and the third),
+    more ranks than one — or a process
     grid — for a backend with no launcher, a block size for a backend that imposes none
     (`imposes_block_size`), and a shape whose count, grid or block size the backend's PACKAGE
     launch environment refuses as malformed. A thread count above one on a backend none of whose
@@ -291,10 +291,6 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
             f"hardware.class: {profile.hardware_class} is not executed at site {site_id}, "
             f"which executes {', '.join(executes)}")
     backend = profile.parallel_backend
-    if declares_launcher(backend) and site_id != LOCAL_SITE:
-        raise LaunchUnavailable(
-            f"parallel.backend: {backend} runs its binary under a launcher, whose ranks a remote "
-            f"site does not place yet; site {site_id} is not {LOCAL_SITE}")
     shape = profile.certified_shape if shape is None else shape
     if shape.ranks != 1 and not declares_launcher(backend):
         raise LaunchUnavailable(
@@ -372,8 +368,9 @@ def local_platform_record(probe: tuple[str, ...] | None = None, *,
     first line `probe` prints when it exits 0 (`gpu`). A launch with a `runtime_probe` (a
     launcher's, issue #316) adds `parallel_runtime`, its first line the same way. Each fact that
     cannot be read is `None` — a record, never a refusal. The remote executor builds the same
-    shape from the site's own answers (`tools/remote_execution.py`); a launcher target never runs
-    there."""
+    shape from the site's own answers (`tools/remote_execution.py`), with no runtime probe: a
+    launcher target's record at a remote site holds no `parallel_runtime` (issue #700 O15:
+    nothing reads it)."""
     cpu_model: str | None = None
     try:
         for line in Path("/proc/cpuinfo").read_text(encoding="utf-8",

@@ -110,8 +110,9 @@ make test                                                           # the qualit
   MPI 4.1.2 built for gfortran passes it. The binding canary is asked first; the launch canary
   is written in the same binding.
 - `mpirun` is asked only of a run that executes the binary: the local site's launch probe
-  (`missing_required_site_tools`, `host_execution.execution_executables`).
-- The CPUs this process may run on (its affinity mask) are at least `execution.ranks`
+  (`missing_required_site_tools`, `host_execution.execution_executables`). A remote site is
+  asked for both programs too (§4).
+- At the local site, the CPUs this process may run on (its affinity mask) are at least `execution.ranks`
   (`site_unfit_for_ranks`). The mask counts logical CPUs. A launcher may count its slots
   differently (Open MPI's default is one slot per physical core), so on a host with more than
   one hardware thread per core a count that passes this check can still be refused by the
@@ -120,23 +121,53 @@ make test                                                           # the qualit
 
 ## 4. Sites
 
-A target whose parallel backend declares `launcher` runs at the `local` site only. A run that
-reaches `Build` for such a target mapped to a remote site is refused at launch
-(`target_profile_invalid`, from `execution_sites.site_violations`), and `host_execution.
-launch_shape` refuses it as the backstop. The reason:
+A target whose parallel backend declares `launcher` runs at any site that executes its class
+(issue #337; issue #316 had held it to `local` until issue #700 PR-3). The binary is built at
+the site that runs it, with the site's wrapper (issue #333).
 
-- A batch site runs the job script once, as a batch job (`docs/backends/scheduler/slurm/
-  JOB_SUBMIT.md`), and nothing sizes or checks its allocation for the ranks: the executor asks
-  for no task count, and a launcher inside the script would start its ranks within whatever the
-  operator's directives allocated.
-- A site with no scheduler would run the launcher in the job script as this host does, and is
-  not yet asked what the local site is: whether its CPUs fit the ranks (`site_unfit_for_ranks`
-  reads this process's affinity mask), and which runtime it has. Issue #337 is that work.
+**What a remote site must provide.**
 
-Issue #316 gave a second reason, and issue #333 removed it. `Build` used to run on this host,
-and the binary, linked against this host's runtime installation, was shipped to the site. Since
-issue #333 the binary is built at the site that runs it (with the site's wrapper), and runs only
-there.
+- `mpif90` and `mpirun` of ONE installation, on the PATH the site's `setup` lines give the job,
+  whose `mpi_f08` binding is built for the target's compiler (§3: the same requirements as the
+  host's). The wrapper must run the language's default compiler: the wrapper runs one compiler,
+  and a second compiler of a language is not built (item 6 Part 2, held in `TODO.md`). A `none`
+  site's login is asked for both programs at launch (`missing_required_site_tools`); a batch
+  site's job asks for them where it runs.
+- Slots for `execution.ranks` processes. At a `none` site the launcher counts the machine's own
+  cores. At a batch site it counts the allocation's tasks, which the site's
+  `scheduler_directives` state (`docs/backends/scheduler/slurm/JOB_SUBMIT.md` §2: with no task
+  option `mpirun -n 4` is refused inside a Slurm job). The threads of a rank are the CPUs per
+  task the directives give it. No CPU count is asked of a remote site: the launcher is what
+  decides whether the ranks fit.
+- The job directory visible at one path from every node the launcher starts a rank on.
+
+**The launch canary in the `Build` job.** For a profile of more than one rank every `Build` job
+at a remote site starts with three commands, ahead of the build (`workflow_conductor.
+remote_launch_canary`): `LAUNCH_CANARY_SOURCE` built with `mpif90`
+(`LAUNCH_CANARY_BUILD_ARGV`); the program started under `mpirun -n <execution.ranks>`, which
+must report one run of that many processes; and the program started bare, which must report
+one run of one — how `Validate.execute` starts the serial reference and the checked row (a
+runtime that does not start a bare program inside an allocation fails them). A canary that does
+not build, does not complete, or reports another run fails the `Build` as the site's failure
+(`deterministic_build_error`, a transport fail_closed, not routed to `Generate`), before the
+build's result is read. Its argv and the launcher's message are in its log entries,
+`workspace/tmp/<agent_run_id>/launch_canary/command_log.jsonl`. It covers the first `Build` at
+a site: a `Validate` that passes through no `Build` there (`--rederive validate`, or a
+`Validate` whose key moved under a certified `Build`) starts the launcher with no canary
+before it.
+
+**What is not asked or recorded at a remote site.** The runtime's identity: `mpirun
+--version` is recorded as `platform.parallel_runtime` at `local` only (issue #700 O15: no gate,
+key or verdict reads it). The site's compiler version is recorded in `binary_meta.json`, not
+keyed (`docs/ORCHESTRATION.md` §Execution sites).
+
+**Verified on one node.** Open MPI 4.1.2 at a `none` site reached over ssh, and under Slurm
+20.02.5 with no task plugin, on one node. Over several nodes the launcher places the ranks over
+the allocation, and nothing more is built; what is not measured is whether the two variables
+the host sets in the launcher's environment — `SPEC2SCIENCE_PROCESS_GRID` and the thread
+variables — reach a rank on another node. Every rank's `__init` reads the grid from its own
+environment, and only rank 0's grid and team size reach `perf.json`, so `launch_match` and
+`thread_match` hold on rank 0's word.
 
 ## 5. Out of scope
 

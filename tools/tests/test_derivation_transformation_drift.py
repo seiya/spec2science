@@ -1554,7 +1554,16 @@ PINNED_RENDER: dict[str, str] = {
     # the 28 certified host-rendered runners render byte-identically.)
     # The digest `render-22` shipped with at ee52b1d8:
     "render-22@ee52b1d8": "dbb6ee61f0b95899ed5206b6db3dc15bb8f7f764a8ee5cf6fcf95d71b44fe511",
-    "render-22": "738169315b6c7d8ec4886ee5d42454e5660839003c6b01ae6f8082bd84a37a4f",
+    # render-22 re-pinned in place by issue #700 PR-3 (issue #337): `tools/host_execution.py` no
+    # longer refuses a launcher target at a remote site in `launch_shape` and its docstrings say
+    # so; every launch the seam composed before is composed the same. (Measured by diffing
+    # `render_tuple()` against main 7e2dcde0's: that row and no other.) V-a: every (target, node,
+    # step) selection of the operator's tree is byte-identical before and after (500 rows); V-h:
+    # the Build and Validate.execute requests of a target without a launcher at a remote site,
+    # none and slurm, render the same job script and `request_sha256`.
+    # The digest `render-22` shipped with at 7e2dcde0:
+    "render-22@7e2dcde0": "738169315b6c7d8ec4886ee5d42454e5660839003c6b01ae6f8082bd84a37a4f",
+    "render-22": "ad0e14e92bb2093b4a01966b97842ee838f60849bc595452eae71a6558af8952",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1876,7 +1885,18 @@ PINNED_BUILD: dict[str, str] = {
     # that row and no other.)
     # The digest `build-5` shipped with at ee52b1d8:
     "build-5@ee52b1d8": "64e1690c2ec8a7e675af2e916e3d66309e6f988078d29aeded4c575efb2c88d9",
-    "build-5": "a7196261eecea15f0a2a7617048e9c12534f38192900908cc40ac8c308a436e9",
+    # build-5 re-pinned in place by issue #700 PR-3 (issue #337), for the
+    # `tools/host_execution.py` change of render-22's 7e2dcde0 entry and
+    # `Conductor._build_inproc`, whose remote job starts with the launch canary's three commands
+    # for a launcher target of more than one rank — a target that ran nowhere but `local` before —
+    # and is otherwise the job it was. (Measured by diffing `build_tuple()` against main
+    # 7e2dcde0's: those two rows and no other.) V-a: every (target, node, step) selection of the
+    # operator's tree is byte-identical before and after (500 rows); V-h: the Build and
+    # Validate.execute requests of a target without a launcher at a remote site, none and slurm,
+    # render the same job script and `request_sha256`.
+    # The digest `build-5` shipped with at 7e2dcde0:
+    "build-5@7e2dcde0": "a7196261eecea15f0a2a7617048e9c12534f38192900908cc40ac8c308a436e9",
+    "build-5": "d062cc2ce466910b1e792b585483d7ffed944a80ffe6405ee262cbef2644793c",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2350,7 +2370,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # `execute_tuple()` against main ee52b1d8's: those five rows and no other.)
     # The digest `execute-22` shipped with at ee52b1d8:
     "execute-22@ee52b1d8": "b5417e951b1b2f9cc31de010faafe132fcd3afddbb3eedd44dd1c6af65d1a6bb",
-    "execute-22": "6d8a0ad19dc63a7a64217e8af1b2b85dcb1cc4b040e50dfbfed7aa7fefcc2d95",
+    # execute-22 re-pinned in place by issue #700 PR-3 (issue #337), for the
+    # `tools/host_execution.py` change of render-22's 7e2dcde0 entry and the `mpi` launcher
+    # module, whose `launch_canary_problem` takes the rank count it checks (the local startup
+    # probe passes `LAUNCH_CANARY_RANKS`, as it checked before). (Measured by diffing
+    # `execute_tuple()` against main 7e2dcde0's: those two rows and no other.) V-a: every (target,
+    # node, step) selection of the operator's tree is byte-identical before and after (500 rows);
+    # V-h: the Build and Validate.execute requests of a target without a launcher at a remote
+    # site, none and slurm, render the same job script and `request_sha256`.
+    # The digest `execute-22` shipped with at 7e2dcde0:
+    "execute-22@7e2dcde0": "6d8a0ad19dc63a7a64217e8af1b2b85dcb1cc4b040e50dfbfed7aa7fefcc2d95",
+    "execute-22": "793f6ca942ce6ad989b2f2cd5875e1e9c48e8e3ba3cdb7bb589ecb5cd4bbce17",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

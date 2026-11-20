@@ -148,6 +148,37 @@ directive replaces the job's own limit for every job of the site (§1 gives the 
 minutes to over 200), so state one only as the partition's maximum: below a job's own limit it
 makes a command that runs long a refusal rather than the command's own timeout.
 
+**A launcher target's allocation** (issue #337). A target whose parallel backend starts its
+binary under a launcher (`docs/backends/parallel/mpi/LAUNCHER.md`) runs that launcher inside
+the batch script, and the launcher starts its ranks within the allocation the directives give.
+So the site's directives state the task count and the CPUs per task, as they state a partition
+or a device:
+
+```yaml
+  cluster_mpi:
+    host: login-node
+    workdir: /work/spec2science-jobs
+    executes: [cpu]
+    scheduler: slurm
+    scheduler_directives: ["--partition=compute", "--ntasks=4", "--cpus-per-task=3"]
+```
+
+`--ntasks` is the profile's `execution.ranks`, and `--cpus-per-task` its
+`execution.threads_per_rank` (the largest of its thread sweep). Measured on Slurm 20.02.5 with
+Open MPI 4.1.2 on one node (issue #700, 2026-11-20): with no task option the job holds one CPU
+and `mpirun -n 4` is refused, exit 1, "not enough slots"; with `--ntasks=4` four ranks run, and
+with `--ntasks=4 --cpus-per-task=4` the job's record holds 16 CPUs; `--ntasks=1
+--cpus-per-task=16` is refused as with no option. A program started without the launcher inside
+the job runs as one process, which is how the quality check's serial reference and the checked
+row start. The directives size every job of the site, the `Build` job included, and the `Build`
+job of a launcher target of more than one rank starts with the backend's launch canary, started
+under the launcher with `execution.ranks` and bare (`docs/ORCHESTRATION.md` §Execution sites):
+a site whose directives give too few tasks fails that `Build` as the site's failure, before any
+`Generate` repair. A site serves the shapes its directives allocate, so targets of different
+shapes take site entries of their own (two entries may name one host). The scheduler backend
+does not derive the options from the profile (issue #700 O7); that is reopened when one site
+must serve launcher targets of different shapes.
+
 - `sbatch` and `scontrol` on the PATH of a NON-INTERACTIVE login. Where they are added by an
   interactive login's startup files only, the launch probe refuses `missing_required_site_tools`
   naming them. They run on the login, outside the job, so a `setup` line does not reach them.
@@ -219,9 +250,8 @@ makes a command that runs long a refusal rather than the command's own timeout.
   is `OUT_OF_MEMORY`, or `FAILED` with a signal, and is refused as a host-side failure rather than
   recorded as the runner's runtime error. The cluster measured runs no task plugin that enforces
   memory.
-- **One task.** The batch script runs once, on the first node of the allocation, and the
-  executor asks for no task count. The `parallel` axis' `launcher` capability exists since issue
-  #316, and a target whose parallel backend declares it runs at the `local` site only
-  (`docs/backends/parallel/mpi/LAUNCHER.md` §4): nothing sizes or checks the allocation for the
-  ranks. Placing a launcher at a batch site is outside issue #316. A `Build` job (issue #333) is
-  the same one task: the build system's own parallelism runs inside it.
+- **No task layout of its own.** The batch script runs once, on the first node of the
+  allocation, and the executor asks for no task count: a launcher inside the script starts its
+  ranks over the allocation the operator's directives give (§2). Verified on one node; a run over
+  several nodes is not measured (`docs/backends/parallel/mpi/LAUNCHER.md` §4). A `Build` job
+  (issue #333) runs in the same allocation: the build system's own parallelism runs inside it.

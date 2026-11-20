@@ -3,8 +3,8 @@
 # Schema (declarative copy): spec/schema/targets/target_profile.schema.json.
 #
 # `execution.ranks` is the number of processes the parallel backend's launcher starts for the
-# Validate run; the quality check re-runs the same cases as one process. A launcher target runs at
-# the local site only (docs/backends/parallel/mpi/LAUNCHER.md §4).
+# Validate run; the quality check re-runs the same cases as one process. At a remote site the
+# launcher's slots are the site's (docs/backends/parallel/mpi/LAUNCHER.md §4).
 #
 # `execution.process_grid` is the grid the Validate run's ranks are arranged in (issue #512): the
 # harness reads it from the launch environment; (2, 2) exercises both grid dimensions, the

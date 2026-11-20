@@ -59,17 +59,19 @@ LAUNCH_CANARY_BUILD_ARGV: tuple[str, ...] = ("-J", "{scratch}", "-o", "{exe}", "
 _SIZE_LINE = "spec2science-mpi-size "
 
 
-def launch_canary_problem(returncode: int, stdout: str) -> str | None:
-    """None when the launch canary's output shows ONE run of `LAUNCH_CANARY_RANKS` processes;
-    otherwise what it shows. Other output lines (a runtime's own messages) are ignored."""
+def launch_canary_problem(returncode: int, stdout: str, ranks: int) -> str | None:
+    """None when the launch canary's output shows ONE run of `ranks` processes; otherwise what
+    it shows. Other output lines (a runtime's own messages) are ignored. The local startup probe
+    asks `LAUNCH_CANARY_RANKS`; a remote site's `Build` job asks the profile's `execution.ranks`
+    under the launcher, and 1 for the canary started bare (issue #337)."""
     if returncode != 0:
         return f"the launch exited {returncode}"
     sizes = [line[len(_SIZE_LINE):].strip() for line in stdout.splitlines()
              if line.startswith(_SIZE_LINE)]
-    expected = [str(LAUNCH_CANARY_RANKS)] * LAUNCH_CANARY_RANKS
+    expected = [str(ranks)] * ranks
     if sizes == expected:
         return None
-    return (f"{LAUNCH_CANARY_RANKS} processes were started and they reported run sizes "
+    return (f"{ranks} process(es) were started and they reported run sizes "
             f"{sizes or 'none'}, where one run reports {expected}")
 
 
