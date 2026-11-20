@@ -172,7 +172,8 @@ makes a command that runs long a refusal rather than the command's own timeout.
   that ended while no run was waiting is adoptable for as long as the scheduler states it.
 - `queue_timeout_sec` is how long one run waits for the job to start. Past it the run is refused
   as a transport failure and the job is LEFT as it is: nothing cancels it. `scancel` it by hand
-  (its name is `spec2science-<agent_run_id>`) when it is not wanted.
+  (its name is `spec2science-<agent_run_id>`, and a `Validate.execute` restart job's — the
+  continuation cases' second pass — `spec2science-<agent_run_id>.restart`) when it is not wanted.
 
 ## 3. What it does not do
 
