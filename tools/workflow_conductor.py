@@ -11046,6 +11046,13 @@ class Conductor:
             seed_texts=tuple(sorted((seed_texts or {}).items())),
         )
 
+    def _site_job_record(self, tag: str) -> Path:
+        """The host-written record of this orchestration's batch job `tag` (`build`,
+        `validate_execute`, `validate_execute_restart`): one orchestration runs one node for one
+        target, so a tag names one job (`remote_execution.execute_or_adopt_job`, issue #696)."""
+        return (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                / "site_jobs" / f"{tag}.json")
+
     def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Build: compile_project + binary_meta + post_build gate.
 
@@ -11209,12 +11216,11 @@ class Conductor:
             from tools.remote_execution import (
                 CommandSpec,
                 JobRequest,
-                execute_job,
+                execute_or_adopt_job,
                 job_dir,
             )
 
             site_id = site.site_id
-            jdir = job_dir(site, self.orchestration_id, child_arid)
             ship: dict[str, Path] = {}
             for root, prefix in ((src_dir, "src"), (obj_dir, "build"),
                                  *(((obj_checked, "build_checked"),) if checked_flags else ())):
@@ -11222,43 +11228,55 @@ class Conductor:
                     if path.is_file() and not (prefix == "src"
                                                and path.name in AUDIT_LOG_BASENAMES):
                         ship[f"{prefix}/{path.relative_to(root).as_posix()}"] = path
-            remote_args = build_args(f"{jdir}/build", f"{jdir}/bin")
             jobs = default_build_jobs()
-            # The checked build is the job's second command: the job runs it once the build
-            # exited 0. The local path also waits for the binary; here a build that exited 0
-            # and left none still fails the attempt below.
-            checked_commands = (CommandSpec(
-                tag="build_checked", tool_name="compile_project",
-                argv=tuple(build_command(build_system, None, jobs, checked_args(
-                    f"{jdir}/build_checked", f"{jdir}/bin_checked"))),
-                record_argv=tuple(build_command(build_system, None, jobs, checked_args(
-                    str(obj_checked), str(bin_checked)))),
-                cwd=f"{jdir}/src", record_cwd=str(src_dir), env={},
-                timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
-                command_log_path=src_dir / "command_log.jsonl",
-                capture_limit=_FULL_CAPTURE_LIMIT),) if checked_flags else ()
-            job = execute_job(JobRequest(
-                site=site, job_dir=jdir, ship=ship,
-                commands=(CommandSpec(
-                    tag="build", tool_name="compile_project",
-                    argv=tuple(build_command(build_system, None, jobs, remote_args)),
-                    record_argv=tuple(build_command(
-                        build_system, None, jobs, build_args(str(obj_dir), str(bin_dir)))),
+
+            def request_for(jdir: str) -> JobRequest:
+                """The job for job directory `jdir`: a resumed attempt composes it for the
+                directory a recorded job ran in, and adopts that job when it is the same
+                (`execute_or_adopt_job`, issue #696)."""
+                # The checked build is the job's second command: the job runs it once the build
+                # exited 0. The local path also waits for the binary; here a build that exited 0
+                # and left none still fails the attempt below.
+                checked_commands = (CommandSpec(
+                    tag="build_checked", tool_name="compile_project",
+                    argv=tuple(build_command(build_system, None, jobs, checked_args(
+                        f"{jdir}/build_checked", f"{jdir}/bin_checked"))),
+                    record_argv=tuple(build_command(build_system, None, jobs, checked_args(
+                        str(obj_checked), str(bin_checked)))),
                     cwd=f"{jdir}/src", record_cwd=str(src_dir), env={},
                     timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
                     command_log_path=src_dir / "command_log.jsonl",
-                    capture_limit=_FULL_CAPTURE_LIMIT), *checked_commands),
-                dirs=("bin", "build", *(("bin_checked", "build_checked") if checked_flags
-                                        else ())),
-                attribution=attribution,
-                required_programs=(build_compiler(tc),),
-                toolchain_probe=toolchain_version_argv(self.target),
-            ), local_tmp=obj_dir.parent / "site")
+                    capture_limit=_FULL_CAPTURE_LIMIT),) if checked_flags else ()
+                return JobRequest(
+                    site=site, job_dir=jdir, ship=ship,
+                    commands=(CommandSpec(
+                        tag="build", tool_name="compile_project",
+                        argv=tuple(build_command(build_system, None, jobs, build_args(
+                            f"{jdir}/build", f"{jdir}/bin"))),
+                        record_argv=tuple(build_command(
+                            build_system, None, jobs, build_args(str(obj_dir), str(bin_dir)))),
+                        cwd=f"{jdir}/src", record_cwd=str(src_dir), env={},
+                        timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
+                        command_log_path=src_dir / "command_log.jsonl",
+                        capture_limit=_FULL_CAPTURE_LIMIT), *checked_commands),
+                    dirs=("bin", "build", *(("bin_checked", "build_checked") if checked_flags
+                                            else ())),
+                    attribution=attribution,
+                    required_programs=(build_compiler(tc),),
+                    toolchain_probe=toolchain_version_argv(self.target),
+                )
+
+            job = execute_or_adopt_job(
+                request_for, fresh_dir=job_dir(site, self.orchestration_id, child_arid),
+                record_path=self._site_job_record("build"), local_tmp=obj_dir.parent / "site",
+                emit=self.emit)
             result = job.results[0]
             checked_result = job.results[1] if checked_flags else None
             # What the job's output names by its job-directory path is written back to the
             # local path it stands for — the compiler's diagnostics, which the failure's
-            # `failure_excerpt` quotes to the Generate repair, among it.
+            # `failure_excerpt` quotes to the Generate repair, among it. The directory is the
+            # one the job RAN in: an adopted job ran in the first attempt's (issue #696 §6.7).
+            jdir = job.site_record["remote_dir"]
             local_of = sorted(((f"{jdir}/src", str(src_dir)), (f"{jdir}/bin", str(bin_dir)),
                                (f"{jdir}/build", str(obj_dir)),
                                (f"{jdir}/bin_checked", str(bin_checked)),
@@ -13467,70 +13485,80 @@ class Conductor:
             from tools.remote_execution import (
                 CommandSpec,
                 JobRequest,
-                execute_job,
+                execute_or_adopt_job,
                 job_dir,
             )
 
-            jdir = job_dir(site, self.orchestration_id, child_arid)
             control_file = str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
-            run_argv, qc_env, sweep_argvs, checked_argv = commands(
-                f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml", f"{jdir}/bin", f"{jdir}/qc_run",
-                f"{jdir}/build", f"{jdir}/bin_checked/{exe}")
-            # The checked binary runs as the job's last command (issue #589 PR-0), shipped beside
-            # the certified one.
-            checked_commands = () if checked is None else (
-                CommandSpec(tag="checked", tool_name="run_program", argv=tuple(checked_argv),
-                            cwd=f"{jdir}/sweep/{checked.label}",
-                            record_cwd=str(sweep_tmp / checked.label), env=dict(checked_env),
-                            timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
-                            capture_limit=_FULL_CAPTURE_LIMIT),)
-            # The device trace's summary runs between the two, in the run's directory (issue
-            # #307); the job runs a command only after every earlier one exited 0.
-            trace_commands = () if launch.trace is None else (
-                CommandSpec(tag="trace", tool_name="run_program",
-                            argv=tuple(launch.trace.summary_argv),
-                            cwd=f"{jdir}/run", record_cwd=str(run_tmp), env={},
-                            timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
-                            capture_limit=_FULL_CAPTURE_LIMIT),)
-            result = execute_job(JobRequest(
-                site=site, job_dir=jdir,
-                ship={f"bin/{exe}": binary, "ir/spec.ir.yaml": ir_spec,
-                      **{f"ir/{CASE_INPUTS_DIRNAME}/{path.name}": path for path in case_files},
-                      f"src/{control_file}": src_dir / control_file,
-                      **({f"bin_checked/{exe}": checked_binary} if checked is not None else {})},
-                commands=(
-                    CommandSpec(tag="run", tool_name="run_program", argv=tuple(run_argv),
-                                cwd=f"{jdir}/run", record_cwd=str(run_tmp),
-                                env=dict(launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
-                                command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
-                    *trace_commands,
-                    CommandSpec(tag="qc", tool_name="run_quality_checks",
-                                argv=tuple(quality_check_command(execute.QUALITY_CHECK_PRESET)),
-                                cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
-                                timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
-                                command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
-                    # Each sweep shape after the quality check (issue #512). The job runs a
-                    # command only after every earlier one exited 0, as the local path runs the
-                    # shapes, so a shape after a failed one does not run; its row names the one
-                    # that failed.
-                    *(CommandSpec(tag=f"sweep_{shape.label}", tool_name="run_program",
-                                  argv=tuple(argv), cwd=f"{jdir}/sweep/{shape.label}",
-                                  record_cwd=str(sweep_tmp / shape.label),
-                                  env=dict(shape_launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
-                                  command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT)
-                      for (shape, shape_launch), argv in zip(sweep, sweep_argvs)),
-                    *checked_commands,
-                ),
-                dirs=(*("/".join(("run", *raw_dir)) for raw_dir in run_raw_dirs),
-                      "qc_run", "build",
-                      *("/".join(("sweep", shape.label, *raw_dir))
-                        for shape, _l in sweep for raw_dir in run_raw_dirs),
-                      *(("/".join(("sweep", checked.label, *raw_dir))
-                         for raw_dir in run_raw_dirs) if checked is not None else ())),
-                platform_probe=launch.platform_probe,
-                attribution=attribution,
-                machine=built_machine,
-            ), local_tmp=run_tmp.parent / "site")
+            ship = {f"bin/{exe}": binary, "ir/spec.ir.yaml": ir_spec,
+                    **{f"ir/{CASE_INPUTS_DIRNAME}/{path.name}": path for path in case_files},
+                    f"src/{control_file}": src_dir / control_file,
+                    **({f"bin_checked/{exe}": checked_binary} if checked is not None else {})}
+
+            def request_for(jdir: str) -> JobRequest:
+                """The first job for job directory `jdir`: a resumed attempt composes it for the
+                directory a recorded job ran in, and adopts that job when it is the same
+                (`execute_or_adopt_job`, issue #696)."""
+                run_argv, qc_env, sweep_argvs, checked_argv = commands(
+                    f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml", f"{jdir}/bin",
+                    f"{jdir}/qc_run", f"{jdir}/build", f"{jdir}/bin_checked/{exe}")
+                # The checked binary runs as the job's last command (issue #589 PR-0), shipped
+                # beside the certified one.
+                checked_commands = () if checked is None else (
+                    CommandSpec(tag="checked", tool_name="run_program", argv=tuple(checked_argv),
+                                cwd=f"{jdir}/sweep/{checked.label}",
+                                record_cwd=str(sweep_tmp / checked.label), env=dict(checked_env),
+                                timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
+                                capture_limit=_FULL_CAPTURE_LIMIT),)
+                # The device trace's summary runs between the two, in the run's directory (issue
+                # #307); the job runs a command only after every earlier one exited 0.
+                trace_commands = () if launch.trace is None else (
+                    CommandSpec(tag="trace", tool_name="run_program",
+                                argv=tuple(launch.trace.summary_argv),
+                                cwd=f"{jdir}/run", record_cwd=str(run_tmp), env={},
+                                timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
+                                capture_limit=_FULL_CAPTURE_LIMIT),)
+                return JobRequest(
+                    site=site, job_dir=jdir, ship=ship,
+                    commands=(
+                        CommandSpec(tag="run", tool_name="run_program", argv=tuple(run_argv),
+                                    cwd=f"{jdir}/run", record_cwd=str(run_tmp),
+                                    env=dict(launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
+                                    command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
+                        *trace_commands,
+                        CommandSpec(tag="qc", tool_name="run_quality_checks",
+                                    argv=tuple(quality_check_command(execute.QUALITY_CHECK_PRESET)),
+                                    cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
+                                    timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
+                                    command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
+                        # Each sweep shape after the quality check (issue #512). The job runs a
+                        # command only after every earlier one exited 0, as the local path runs the
+                        # shapes, so a shape after a failed one does not run; its row names the one
+                        # that failed.
+                        *(CommandSpec(tag=f"sweep_{shape.label}", tool_name="run_program",
+                                      argv=tuple(argv), cwd=f"{jdir}/sweep/{shape.label}",
+                                      record_cwd=str(sweep_tmp / shape.label),
+                                      env=dict(shape_launch.env),
+                                      timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
+                                      command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT)
+                          for (shape, shape_launch), argv in zip(sweep, sweep_argvs)),
+                        *checked_commands,
+                    ),
+                    dirs=(*("/".join(("run", *raw_dir)) for raw_dir in run_raw_dirs),
+                          "qc_run", "build",
+                          *("/".join(("sweep", shape.label, *raw_dir))
+                            for shape, _l in sweep for raw_dir in run_raw_dirs),
+                          *(("/".join(("sweep", checked.label, *raw_dir))
+                             for raw_dir in run_raw_dirs) if checked is not None else ())),
+                    platform_probe=launch.platform_probe,
+                    attribution=attribution,
+                    machine=built_machine,
+                )
+
+            result = execute_or_adopt_job(
+                request_for, fresh_dir=job_dir(site, self.orchestration_id, child_arid),
+                record_path=self._site_job_record("validate_execute"),
+                local_tmp=run_tmp.parent / "site", emit=self.emit)
             # The collected job directory holds each command's working directory; they become
             # the local run and quality-check directories every later step reads.
             for name, dest in (("run", run_tmp), ("qc_run", qc_tmp),
@@ -13560,7 +13588,6 @@ class Conductor:
             # runs on the machine the first job ran on, or the run fails.
             labels = restart_labels(res_sweep, res_checked)
             if labels:
-                jdir2 = job_dir(site, self.orchestration_id, f"{child_arid}.restart")
 
                 def remote_rel(label: str) -> str:
                     return label if label in ("run", "qc_run") else f"sweep/{label}"
@@ -13568,7 +13595,6 @@ class Conductor:
                 ship2: dict[str, Path] = {
                     f"bin/{exe}": binary, f"src/{control_file}": src_dir / control_file,
                     **({f"bin_checked/{exe}": checked_binary} if checked is not None else {})}
-                specs2: list[CommandSpec] = []
                 order2: list[tuple[str, Any]] = []
                 for label in labels:
                     files = prepare_restart(label)
@@ -13577,6 +13603,14 @@ class Conductor:
                         "spec.ir.yaml"
                     for cf in files:
                         ship2[f"{rel}/{CASE_INPUTS_DIRNAME}/{cf.path.name}"] = cf.path
+                        order2.append((label, cf))
+
+                def request_for2(jdir2: str) -> JobRequest:
+                    """The second job for job directory `jdir2`, composed as the first one is
+                    (`request_for`) once the continuation files are written."""
+                    specs2: list[CommandSpec] = []
+                    for label, cf in order2:
+                        rel = f"{remote_rel(label)}/{RESTART_DIRNAME}"
                         argv, env = restart_commands(
                             f"{jdir2}/bin/{exe}", f"{jdir2}/bin", f"{jdir2}/build",
                             f"{jdir2}/bin_checked/{exe}",
@@ -13597,9 +13631,7 @@ class Conductor:
                                 record_cwd=str(shape_dirs[label] / RESTART_DIRNAME), env=env,
                                 timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
                                 capture_limit=_FULL_CAPTURE_LIMIT))
-                        order2.append((label, cf))
-                if specs2:
-                    result2 = execute_job(JobRequest(
+                    return JobRequest(
                         site=site, job_dir=jdir2, ship=ship2, commands=tuple(specs2),
                         dirs=("build", *(f"{remote_rel(label)}/{RESTART_DIRNAME}/"
                                          + "/".join(raw_dir)
@@ -13607,7 +13639,14 @@ class Conductor:
                         platform_probe=launch.platform_probe,
                         attribution=attribution,
                         machine=built_machine,
-                    ), local_tmp=run_tmp.parent / "site_restart")
+                    )
+
+                if order2:
+                    result2 = execute_or_adopt_job(
+                        request_for2,
+                        fresh_dir=job_dir(site, self.orchestration_id, f"{child_arid}.restart"),
+                        record_path=self._site_job_record("validate_execute_restart"),
+                        local_tmp=run_tmp.parent / "site_restart", emit=self.emit)
                     # The machine's architecture, CPU model and device — what the binary's
                     # arithmetic can depend on. The host name is left out: a batch site puts
                     # two jobs on two nodes of one kind as a matter of course.

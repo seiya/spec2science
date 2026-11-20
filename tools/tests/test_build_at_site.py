@@ -35,7 +35,13 @@ from tools.orchestration_runtime import (
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID, profile_with
 from tools.tests.test_execute_at_site import _real_gate_free_run
-from tools.tests.test_remote_execution import _SCP_SHIM, _SSH_SHIM
+from tools.tests.test_remote_execution import (
+    _SBATCH_SHIM,
+    _SCONTROL_SHIM,
+    _SCP_SHIM,
+    _SSH_SHIM,
+    _reap_shim_jobs,
+)
 from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
 
 #: The version the site's fake compiler answers: no real compiler prints it.
@@ -367,6 +373,99 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
             n.build()
         self.assertEqual(seen["probe"], toolchain_version_argv(n.target))
         self.assertEqual(seen["required"], (n.compiler,))
+
+
+class BuildAdoptedAtABatchSiteTests(unittest.TestCase):
+    """Issue #696 §6.6 and §6.7: a build whose first attempt was interrupted while its batch job
+    waited is adopted by the next `_build_inproc` under another `agent_run_id`, and everything
+    after the job reads the directory the job RAN in."""
+
+    def setUp(self) -> None:
+        import dataclasses
+        self._tmp = tempfile.TemporaryDirectory()
+        self.n = n = _Node(self._tmp.name)
+        n.conductor.site = n.site = dataclasses.replace(n.site, scheduler="slurm")
+        # The scheduler's programs, where the site's login finds them.
+        for name, body in (("sbatch", _SBATCH_SHIM), ("scontrol", _SCONTROL_SHIM)):
+            path = n.site_bin / name
+            path.write_text(body)
+            path.chmod(0o755)
+        self.slurm = n.root / "slurm"
+        self.slurm.mkdir()
+        # The second attempt's object directories, as staging leaves them for it.
+        for name in ("build", "build_checked"):
+            dest = n.repo / "workspace" / "tmp" / "arid-2" / name
+            dest.mkdir(parents=True)
+            (dest / "depy_model.f90").write_text("! staged dependency\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def build(self, arid: str, *, interrupt: bool = False) -> dict:
+        import tools.remote_execution as rx
+
+        real_wait = rx.wait_job
+
+        def wait(*a, **k):
+            if interrupt:
+                raise KeyboardInterrupt
+            return real_wait(*a, **k)
+
+        with self.n.env(SHIM_SLURM_DIR=str(self.slurm)), mock.patch.object(
+                subprocess, "run", side_effect=_real_gate_free_run(subprocess.run)), \
+                mock.patch.object(rx, "wait_job", side_effect=wait), \
+                mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+                mock.patch.object(rx, "POLL_MAX_SEC", 0.2):
+            return self.n.conductor._build_inproc(self.n.refs, arid)
+
+    def record(self) -> Path:
+        return (self.n.repo / "workspace" / "orchestrations" / "orch_1" / "site_jobs"
+                / "build.json")
+
+    def resumed(self) -> dict:
+        with self.assertRaises(KeyboardInterrupt):
+            self.build("arid-1", interrupt=True)
+        self.assertEqual(json.loads(self.record().read_text())["remote_dir"], self.n.job)
+        return self.build("arid-2")
+
+    def test_the_resumed_build_adopts_the_first_attempts_job(self) -> None:
+        n = self.n
+        out = self.resumed()
+        self.assertEqual(out["returncode"], 0, out)
+        sbatch = [c for c in n.calls() if c[0] == "sbatch"]
+        self.assertEqual(len(sbatch), 1, "one job, submitted by the first attempt")
+        meta = n.meta()
+        self.assertEqual(meta["verification_status"], "pass", meta)
+        self.assertEqual(meta["environment"]["build_site"]["job_id"], "4242")
+        self.assertEqual(meta["environment"]["build_site"]["remote_dir"], n.job)
+        self.assertEqual(subprocess.run([str(n.exe)], capture_output=True, text=True,
+                                        check=True).stdout, "built at the site\n")
+        _earlier, entry, _checked = n.log_entries()
+        # Recorded under the attempt that collected it; the site's directory is the first's.
+        self.assertEqual(entry["agent_run_id"], "arid-2")
+        self.assertEqual(entry["site"]["remote_cwd"], f"{n.job}/src")
+        self.assertEqual(entry["site"]["job_id"], "4242")
+        # The record names the second attempt's own object directory locally: the argv the
+        # local library would have run for this attempt.
+        self.assertIn(f"OBJDIR={n.repo}/workspace/tmp/arid-2/build", entry["command"])
+        self.assertFalse(self.record().exists())
+
+    def test_an_adopted_build_that_fails_names_the_nodes_own_source(self) -> None:
+        n = self.n
+        (n.src / "kernel.f90").write_text("! FAIL\n", encoding="utf-8")
+        out = self.resumed()
+        self.assertEqual(out["returncode"], 0, "a content failure, not a transport one")
+        self.assertEqual(len([c for c in n.calls() if c[0] == "sbatch"]), 1)
+        meta = n.meta()
+        self.assertEqual(meta["verification_status"], "fail")
+        self.assertEqual(meta["environment"]["build_site"]["remote_dir"], n.job)
+        # The first attempt's job directory is what the diagnostics name at the site; the
+        # excerpt the Generate repair receives names the node's own `src/` instead.
+        self.assertIn(f"{n.src}/kernel.f90", meta["failure_excerpt"])
+        self.assertNotIn(str(n.workdir), meta["failure_excerpt"])
+        for log in ("compile.stdout.log", "compile.stderr.log"):
+            self.assertNotIn(str(n.workdir), (n.repo / n.refs.binary_dir() / log).read_text())
 
 
 class ToolchainVersionArgvTests(unittest.TestCase):
