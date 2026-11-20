@@ -259,12 +259,6 @@ class RemoteExecutionError(RuntimeError):
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
 
 
-class TransportError(RemoteExecutionError):
-    """A transport call (ssh or scp) exited non-zero, did not finish within its bound, or could
-    not be started. It says nothing against the job: `execute_or_adopt_job` keeps the job's
-    record when collection fails this way, so the next attempt collects the same job."""
-
-
 class JobNotStated(RemoteExecutionError):
     """The scheduler says it does not know the job's id, so how the job ended is no longer
     stated: the job is not collected, and its record is removed."""
@@ -665,18 +659,18 @@ def _call(argv: list[str], *, stage: str, timeout: int, remote: str,
         return subprocess.run(argv, text=True, capture_output=True, timeout=timeout,
                               check=False, **stdin)
     except subprocess.TimeoutExpired:
-        raise TransportError(
+        raise RemoteExecutionError(
             f"{stage}: {argv[0]} did not finish within {timeout} sec; the job may still be "
             f"running ({remote})") from None
     except OSError as exc:
-        raise TransportError(f"{stage}: {argv[0]} could not be started: {exc}") from exc
+        raise RemoteExecutionError(f"{stage}: {argv[0]} could not be started: {exc}") from exc
 
 
 def _transport(argv: list[str], *, stage: str, timeout: int, remote: str,
                input: str | None = None) -> str:
     proc = _call(argv, stage=stage, timeout=timeout, remote=remote, input=input)
     if proc.returncode != 0:
-        raise TransportError(
+        raise RemoteExecutionError(
             f"{stage}: {argv[0]} exited {proc.returncode} ({remote}): "
             f"{(proc.stderr or proc.stdout).strip()[-2000:]}")
     return proc.stdout
@@ -945,8 +939,7 @@ def _local_dirs(local_tmp: Path) -> tuple[Path, Path]:
 
 
 def _left(exc: RemoteExecutionError, remote: str) -> RemoteExecutionError:
-    # The same class: whether the refusal says anything against the job is read from it
-    # (`execute_or_adopt_job`).
+    # The same class: `execute_or_adopt_job` reads `JobNotStated` from it.
     return type(exc)(
         f"{exc}; the job directory is left at the site for inspection — remove {remote} when "
         f"done")
@@ -1187,12 +1180,18 @@ def _bind(statuses: list[tuple[int, int, int] | None], own_exit: int, remote: st
 
 
 def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
-                own_exit: int | None) -> JobResult:
+                own_exit: int | None, record_path: Path | None = None) -> JobResult:
     """Collect `handle`'s ended job, whose scheduler said `own_exit` (`wait_job`), into
     `<local_tmp>/collected`, which must not exist, and read it: refused when `own_exit` is None
     (quoting the tail of `job.err`), and otherwise its output file is read against `own_exit`
     (`_bind`), then read, compared, removed and recorded as `execute_job` does at a `none` site.
-    The job directory is left at the site on every refusal."""
+    The job directory is left at the site on every refusal.
+
+    `record_path`, the job's `site job record` (`execute_or_adopt_job`), is removed as soon as
+    the job directory is copied to the host, before anything that can fail or be interrupted
+    after it: a record kept past that point names a job whose directory a later step (or the
+    operator) removes, and every later attempt would adopt it and fail to copy it. A failed copy
+    keeps the record and names it."""
     remote = handle.remote_dir
     collected = local_tmp / "collected"
     if collected.exists():
@@ -1202,6 +1201,15 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
     try:
         _scp([f"{handle.host}:{remote}"], str(collected), stage="collect the job directory",
              remote=remote)
+    except RemoteExecutionError as exc:
+        if record_path is None:
+            raise _left(exc, remote) from exc
+        raise RemoteExecutionError(
+            f"{exc}; the site job record {record_path} is kept, and a later attempt collects "
+            f"job {handle.job_id} again — removing the record abandons the job") from exc
+    if record_path is not None:
+        _remove_job_record(record_path)
+    try:
         ctl = collected / CONTROL_DIR
         if own_exit is None:
             try:
@@ -1297,10 +1305,11 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
     under `execute_job`, which records nothing: its job does not outlive the ssh call.
 
     The record is written once the submit call has returned (the handle and `request_sha256`),
-    gains `end` when the host first reads the job's end from the scheduler, and is removed when
-    the job is accepted and when it is refused for its content or for how it ended. It is kept
-    when the refusal says nothing against the job: a wait past its bound, an interrupted wait, a
-    scheduler that does not answer at adoption, a transport failure while collecting.
+    gains `end` when the host first reads the job's end from the scheduler, and is removed once
+    the job directory is copied to the host (`collect_job`), and when the scheduler no longer
+    knows the job. Until then it is kept whatever ends the call: a wait past its bound, an
+    interrupted wait, a scheduler that does not answer at adoption, a failed copy — the refusal
+    of the last two names the record.
 
     A recorded job is adopted when (1) the record reads and names this site's id, host and
     scheduler and a job directory under its `workdir`; (2) `request_for(<that directory>)` has
@@ -1388,15 +1397,8 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
             raise
         _write_job_record(record_path,
                           {**record, "end": END_OTHERWISE if end is None else end})
-    try:
-        result = collect_job(handle, request, local_tmp=local_tmp, own_exit=end)
-    except TransportError:
-        raise
-    except RemoteExecutionError:
-        _remove_job_record(record_path)
-        raise
-    _remove_job_record(record_path)
-    return result
+    return collect_job(handle, request, local_tmp=local_tmp, own_exit=end,
+                       record_path=record_path)
 
 
 def _record(request: JobRequest, statuses: list[tuple[int, int, int] | None],

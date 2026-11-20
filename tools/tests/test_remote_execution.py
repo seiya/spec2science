@@ -1848,15 +1848,47 @@ class AdoptionTests(unittest.TestCase):
         """A scp that fails while collecting says nothing against the job: the record is kept,
         with the end the host read. The next attempt collects that job from the record although
         the scheduler has since forgotten it, and asks the scheduler nothing."""
-        with self.assertRaisesRegex(rx.TransportError, "collect the job directory"):
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "collect the job directory"):
             self.attempt("arid-1", SHIM_SCP_FAIL="down")
         self.assertEqual(json.loads(self.record.read_text())["end"], 0)
         polls = [c[0] for c in self.h.calls()].count("scontrol")
         self.assert_adopted(self.attempt("arid-2", SHIM_SCONTROL_FORGET="1"))
         self.assertEqual([c[0] for c in self.h.calls()].count("scontrol"), polls)
 
+    def test_a_failed_removal_of_the_collected_directory_strands_no_record(self) -> None:
+        """The record goes once the job directory is copied to the host, before the site's copy
+        is removed: a removal that fails leaves no record naming a directory that may be gone,
+        and the next attempt submits a job of its own (review 1 of PR-2, finding 1)."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "remove the collected job directory"):
+            self.attempt("arid-1", SHIM_SSH_FAIL="rm -rf")
+        self.assertFalse(self.record.exists())
+        result = self.attempt("arid-2")
+        self.assertTrue(all(r["ok"] for r in result.results), result.results)
+        self.assertEqual(self.sbatch_calls(), 2)
+
+    def test_an_interrupt_while_the_entries_are_written_strands_no_record(self) -> None:
+        with mock.patch.object(rx.build_runtime, "_append_command_log",
+                               side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            self.attempt("arid-1")
+        self.assertFalse(self.record.exists())
+
+    def test_a_record_whose_directory_is_gone_is_named_in_the_refusal(self) -> None:
+        """A recorded end whose job directory was removed by hand: every resume fails to copy
+        it, and the refusal names the record whose removal abandons the job."""
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "collect the job directory"):
+            self.attempt("arid-1", SHIM_SCP_FAIL="down")
+        shutil.rmtree(self.h.job)
+        with self.assertRaises(rx.RemoteExecutionError) as ctx:
+            self.attempt("arid-2")
+        self.assertIn(f"the site job record {self.record} is kept", str(ctx.exception))
+        self.assertIn("removing the record abandons the job", str(ctx.exception))
+        self.assertNotIn("remove " + self.h.job, str(ctx.exception))
+        self.assertTrue(self.record.exists())
+
     def test_a_recorded_end_otherwise_is_refused_from_the_record_and_removes_it(self) -> None:
-        with self.assertRaisesRegex(rx.TransportError, "collect the job directory"):
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "collect the job directory"):
             self.attempt("arid-1", SHIM_SCP_FAIL="down", SHIM_SBATCH_END="CANCELLED 0:15")
         self.assertEqual(json.loads(self.record.read_text())["end"], rx.END_OTHERWISE)
         with self.assertRaisesRegex(rx.RemoteExecutionError, "did not run to its own exit"):
