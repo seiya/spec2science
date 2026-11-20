@@ -2173,6 +2173,30 @@ class SiteSmokeTests(unittest.TestCase):
         self.assertIn("OK", out)
         self.assertIn("RESULT: PASS", out)
 
+    def test_record_submits_then_a_second_call_adopts(self) -> None:
+        """`--record`: the first call is interrupted while it waits; the second, under another
+        job directory, adopts the first call's job and prints its output."""
+        self.sites.write_text(f"sites_version: 1\nsites:\n  box:\n    host: box\n"
+                              f"    workdir: {self.h.workdir}\n    executes: [cpu]\n"
+                              f"    scheduler: slurm\n")
+        record = self.h.root / "smoke_job.json"
+        real_wait = rx.wait_job
+        with mock.patch.object(rx, "wait_job", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            self.smoke("--no-probe", "--record", str(record))
+        first = json.loads(record.read_text())
+        with mock.patch.object(rx, "wait_job", side_effect=real_wait), \
+                mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+                mock.patch.object(rx, "POLL_MAX_SEC", 0.2):
+            code, out, err = self.smoke("--no-probe", "--record", str(record))
+        self.assertEqual(code, 0, err)
+        self.assertIn("site_job_adopted", out)
+        self.assertIn(f'"remote_dir": "{first["remote_dir"]}"', out)
+        self.assertIn("OK", out)
+        self.assertIn("RESULT: PASS", out)
+        self.assertEqual([c[0] for c in self.h.calls()].count("sbatch"), 1)
+        self.assertFalse(record.exists())
+
     def test_a_site_the_probe_finds_lacking_runs_no_job(self) -> None:
         bare = _bare_path(self.h.root, without="timeout")
         code, out, _err = self.smoke(SHIM_SSH_PATH=str(bare))
