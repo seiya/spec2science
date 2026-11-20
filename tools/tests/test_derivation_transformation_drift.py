@@ -1826,7 +1826,16 @@ PINNED_BUILD: dict[str, str] = {
     # `Conductor._oracle`'s docstring names the launch. No build command or record changes. The
     # digest `build-5` shipped with at 0260f5ba:
     "build-5@0260f5ba": "53d9be6b017c828721618b968fe08084e156597569e9a0bbfae561203ff1dd92",
-    "build-5": "db3e77ef9b85dfd8e645a2a510ea1049db47d91ac756dba54f0e5e9028fd2f39",
+    # build-5 re-pinned in place by issue #696 PR-1: `tools/remote_execution.py` (a build-tuple
+    # member as a whole file) submits a batch scheduler's job with the backend's submit command,
+    # polls it and collects it, and reads the statuses in the job's output file against the
+    # scheduler's record of how the script ended. A `none` site's job — and `local`, which does
+    # not reach the executor — runs the same script, read the same way, and records the same
+    # entries; a node built at a batch site binds the same inputs before and after, and no key
+    # holds a site or a job. (Measured by diffing `build_tuple()` against main 8694434f's: that
+    # row and no other.) The digest `build-5` shipped with at 8694434f:
+    "build-5@8694434f": "db3e77ef9b85dfd8e645a2a510ea1049db47d91ac756dba54f0e5e9028fd2f39",
+    "build-5": "4420f4123ad1ac6c6af17c03494d709a6717c502a138dccf8259c3d7fcc2d08f",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2271,7 +2280,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # against main 05e839e3's: those two rows and no other.) The digest `execute-22` shipped with
     # at 05e839e3:
     "execute-22@05e839e3": "4ae0b95b6820f77832ee6670497811d3ddba17145f01cb5037ef5db8e76c0304",
-    "execute-22": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
+    # execute-22 re-pinned in place by issue #696 PR-1, for the `tools/remote_execution.py` change
+    # of build-5's entry, and the `slurm` package's `job_submit` module and docstring
+    # (`launch_declarations`): the job is submitted with `sbatch` and polled with `scontrol`
+    # instead of run under `srun`. A `none` site's job runs and is read as before, and a site and
+    # a job are in no key. (Measured by diffing `execute_tuple()` against main 8694434f's: those
+    # three rows and no other.) The digest `execute-22` shipped with at 8694434f:
+    "execute-22@8694434f": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
+    "execute-22": "af0e2ff111d5e18826a184d03374cd8dc2036b026cd7724fd8b01aa05c6e4969",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

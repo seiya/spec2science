@@ -341,11 +341,11 @@ def required_site_executables(selection: dict[str, str], *, scheduler: str,
     """The programs a remote execution site's non-interactive LOGIN must resolve for the jobs of
     the resolved selection (issue #293): what the job script itself needs beyond the POSIX
     utilities (`remote_execution.REMOTE_EXECUTABLES`), the build system, which builds the binary
-    there and whose test target the quality check runs, and what the site's `scheduler` runs the
-    job under (`remote_execution.scheduler_executables`); and, only for a site that runs the job
-    on the login it reaches (`execution_sites.DIRECT_SCHEDULER`), the build compiler (the
-    selection's `build_compiler`, issue #333: the Build phase runs at the site) and — for a run
-    that reaches `Validate` (`reaches_validate`) — what the binary runs under
+    there and whose test target the quality check runs, and the programs the site's `scheduler`
+    submits a job with and asks about it with (`remote_execution.scheduler_executables`); and, only
+    for a site that runs the job on the login it reaches (`execution_sites.DIRECT_SCHEDULER`), the
+    build compiler (the selection's `build_compiler`, issue #333: the Build phase runs at the site)
+    and — for a run that reaches `Validate` (`reaches_validate`) — what the binary runs under
     (`execution_executables`, issue #307). Read out of the tables that run them, like
     `required_host_executables`.
 

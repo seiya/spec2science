@@ -193,7 +193,7 @@ the run stops at; a run with no member left to run that stops before `Build` con
 | `target_profile_invalid` | the site the target maps to does not list its hardware class in `executes`, or the target's parallel backend runs its binary under a `launcher` and the site is not `local` (issue #316: a remote site does not place a launcher's ranks yet — issue #337; `docs/backends/parallel/mpi/LAUNCHER.md` §4) |
 | `missing_required_host_tools` | this host lacks `ssh` or `scp`, the transport (`remote_execution.TRANSPORT_EXECUTABLES`) |
 | `site_unreachable` | one non-interactive ssh call to the site, asking what the job needs, did not come back, or came back without the line that ends the probe |
-| `missing_required_site_tools` | the site's non-interactive login, after the site's `setup` lines, cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, and, at a site whose `scheduler` is `none` only, the build compiler (the program the build control file names; issue #333) and — for a run that reaches `Validate` — what the target's parallel backend runs the binary under (the device trace's program, in the `cpp_gpu` tool table above); and the program the site's `scheduler` runs a job under, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's program is often put on `PATH` by an interactive login's startup files only, and is asked before the `setup` lines, which run inside the job it submits; any other program can be put on `PATH` by them. At a site with a batch scheduler the build and the binary run on another node, so neither the build compiler nor what the binary runs under is asked of the login (issue #307 PR-4: the `cpp_gpu` site's login node has no trace program, its compute nodes do); the job script asks for each where it runs, and a missing one fails the job (`job script: <program> is missing or not executable`, a transport `fail_closed`, retried by `--resume`). At the local site (`"site": "local"`) it is the parallel backend's programs alone, looked up on this host's `PATH` (`host_prerequisites.execution_executables`) |
+| `missing_required_site_tools` | the site's non-interactive login, after the site's `setup` lines, cannot resolve a program the job runs there: `timeout` (coreutils), the target's build system, and, at a site whose `scheduler` is `none` only, the build compiler (the program the build control file names; issue #333) and — for a run that reaches `Validate` — what the target's parallel backend runs the binary under (the device trace's program, in the `cpp_gpu` tool table above); and the programs the site's `scheduler` submits a job with and asks about it with, read from the tables that run them (`host_prerequisites.required_site_executables`). A scheduler's programs are often put on `PATH` by an interactive login's startup files only, and are asked before the `setup` lines, which run inside the job it submits; any other program can be put on `PATH` by them. At a site with a batch scheduler the build and the binary run on another node, so neither the build compiler nor what the binary runs under is asked of the login (issue #307 PR-4: the `cpp_gpu` site's login node has no trace program, its compute nodes do); the job script asks for each where it runs, and a missing one fails the job (`job script: <program> is missing or not executable`, a transport `fail_closed`, retried by `--resume`). At the local site (`"site": "local"`) it is the parallel backend's programs alone, looked up on this host's `PATH` (`host_prerequisites.execution_executables`) |
 | `site_unfit_for_ranks` | the local site only: the target's `execution.ranks` is more than the CPUs this process may run on (its affinity mask, not the machine's CPU count). The event carries both numbers. Lower the profile's `execution.ranks`, or run where the process may use more CPUs (issue #316) |
 | `site_unusable` | the site's `workdir` cannot be made or written, a program beneath it cannot be executed (a noexec mount), its `timeout` does not take `-k` (busybox builds refuse it), a line of its `setup` exits non-zero or ends the shell (asked of a site whose `scheduler` is `none` only, whose jobs run on the login the probe reaches; run the lines by hand in `ssh <host> sh`. A batch site's job refuses a failing line on the node it runs on, `job script: setup[<i>] exited non-zero`), or its login prints to stdout (scp fails on that) |
 
@@ -234,6 +234,34 @@ removal included — and prints the probe's answers, the job id, the platform re
 command's output. `--ship FILE` sends a local file into the job directory (`$JOB` in `--cmd`),
 where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writes nothing under
 `workspace/`.
+
+**A `slurm` site written before batch submission (issue #696).** A job at a `slurm` site is a
+batch job since issue #696: its `scheduler_directives` go to `sbatch`, not `srun`, and the host
+submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md)
+§1, §2). An existing site entry may need these changes:
+
+- **Remove `srun`-only options from `scheduler_directives`.** `--mpi=`, `--cpu-bind=`,
+  `--overlap`, `--exact`, `--immediate` and `--pty` are each `unrecognized option` to `sbatch`
+  (measured with `sbatch --test-only` on Slurm 20.02.5), so a site that keeps one has every
+  submission refused (`submit the job: ssh exited 255 (...)`: `sbatch` exits 255 on an option
+  it does not know, measured directly and through ssh).
+- **A job not seen running within `queue_timeout_sec` is left as it is.** The run is refused as a transport failure
+  and nothing cancels the job; `scancel` it by hand (its name is `spec2science-<agent_run_id>`,
+  or `spec2science-<agent_run_id>.restart` for a `Validate.execute` restart job) until a resumed
+  run adopts such a job (issue #696; not built yet).
+- **A suspended job's time counts against the run bound.** At a site that preempts by
+  suspension, a job suspended for long enough is refused at the run bound (its time limit plus
+  the transport's grace) and left as it is; a rerun submits a new one
+  ([JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md) §3).
+- **The site must keep an ended job for several minutes** (`MinJobAge`): how the job ended is
+  read from `scontrol`, and a job forgotten before a poll reads it is refused. The first poll
+  comes within 60 s of the end and each unanswered poll adds another 60 s plus the time it
+  took to fail — up to 30 s to connect, up to 300 s for one that hangs to the transport bound:
+  300 s covers 3 unanswered polls refused at once or 2 that time out connecting, each with a
+  60 s margin, and none that hangs, which needs 420 s
+  ([JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md) §2).
+- **No `%` in the site's `workdir`**: `sbatch` expands `%` in the job's output file names, which
+  are under it.
 
 ### Refused at startup — external libraries
 

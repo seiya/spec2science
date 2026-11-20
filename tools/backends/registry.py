@@ -181,8 +181,9 @@ AXES: dict[str, Axis] = {
         name="scheduler",
         source="execution site sites.<site_id>.scheduler (./sites.yaml, machine-local)",
         description=(
-            "The batch scheduler a remote execution site runs a job through: the command a "
-            "job script runs under, and how the job names itself."
+            "The batch scheduler a remote execution site runs a job through: the command that "
+            "submits a job script, the commands that state the job's condition, and what their "
+            "answers mean."
         ),
     ),
     "output_format": Axis(
@@ -387,11 +388,13 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "job_submit": (
         ("scheduler",),
-        "The host knows how a job script is run as one job at a site running this scheduler: "
-        "the argv prefix it runs under in the foreground of the site's ssh call, the programs "
-        "that needs at the site, and the variable the job reads its id from (issue #293: "
-        "`tools/remote_execution.py` runs the job and reads its evidence, the scheduler spells "
-        "the prefix).",
+        "The host knows how a job script is run as one batch job at a site running this "
+        "scheduler: the command that submits it and the job id that command prints, the "
+        "commands that state the job's condition and what each answer means — by an allowlist "
+        "of the scheduler's record for a script that ran to its own exit with 0 or 1 — and the "
+        "programs these need at the site (issues #293, #696: `tools/remote_execution.py` "
+        "submits, polls and collects the job and reads its evidence, the scheduler spells the "
+        "commands and reads their answers).",
     ),
     "capture_store": (
         ("output_format",),
@@ -643,13 +646,13 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         ),
         # A site that submits nothing: the job script runs in the foreground over the site's
         # transport (`sites.yaml`, `scheduler: none`; issue #293). It is core because running a
-        # script is not a scheduler's knowledge: `tools/remote_execution.py` runs it, under no
-        # prefix, and the job has no id.
+        # script is not a scheduler's knowledge: `tools/remote_execution.py` runs it as the ssh
+        # call's command, and the job has no id.
         Backend("scheduler", "none", None, core_provides=frozenset({"job_submit"})),
-        # Slurm (issue #293 PR-4): the job script runs as one job under the prefix the package
-        # spells, in the foreground of the same ssh call, so its statuses travel on the same
-        # channel. The
-        # executor asks `capability_module` for the prefix (`remote_execution._submission`).
+        # Slurm (issues #293, #696): the job script is submitted as a batch job with the command
+        # the package spells, polled with its state command, and collected when the package
+        # reads the scheduler's answer as ended. The executor asks `capability_module` for the
+        # module (`remote_execution._submission`).
         Backend(
             "scheduler", "slurm", "tools.backends.scheduler.slurm",
             backend_provides=frozenset({"job_submit"}),

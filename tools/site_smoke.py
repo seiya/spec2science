@@ -2,8 +2,9 @@
 """Smoke-test an execution site from `./sites.yaml` without running the workflow (issue #293).
 
 Runs one trivial command at the site through the same executor `Build` and `Validate.execute` use
-(`tools/remote_execution.py`): the launch probe, then one job — ssh, the site's scheduler prefix
-(`srun` for `slurm`), the job script, collection by scp, and removal of the remote job directory.
+(`tools/remote_execution.py`): the launch probe, then one job — the job script run over ssh, or
+submitted to the site's batch scheduler and polled until it ends, collection by scp, and removal
+of the remote job directory.
 Nothing under `workspace/` is touched; the command log and the collected job directory go to a
 temporary directory.
 

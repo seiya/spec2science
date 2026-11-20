@@ -101,9 +101,10 @@ reaches `Build` for such a target mapped to a remote site is refused at launch
 (`target_profile_invalid`, from `execution_sites.site_violations`), and `host_execution.
 launch_shape` refuses it as the backstop. The reason:
 
-- A batch site runs the whole job script as one task (`docs/backends/scheduler/slurm/
-  JOB_SUBMIT.md`). Running `N` tasks would run the script `N` times, and a launcher inside it
-  would start ranks within one task's allocation.
+- A batch site runs the job script once, as a batch job (`docs/backends/scheduler/slurm/
+  JOB_SUBMIT.md`), and nothing sizes or checks its allocation for the ranks: the executor asks
+  for no task count, and a launcher inside the script would start its ranks within whatever the
+  operator's directives allocated.
 - A site with no scheduler would run the launcher in the job script as this host does, and is
   not yet asked what the local site is: whether its CPUs fit the ranks (`site_unfit_for_ranks`
   reads this process's affinity mask), and which runtime it has. Issue #337 is that work.

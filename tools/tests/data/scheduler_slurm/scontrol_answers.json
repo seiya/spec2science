@@ -1,0 +1,131 @@
+{
+ "measured_on": "Slurm 20.02.5, one node, 2026-11-20 (issue #696, M-S2, M-S5): `scontrol show job -o <id>`, verbatim but for _sanitize",
+ "answers": [
+  {
+   "case": "held (after_submit)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1611 JobName=ms-held UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901759 Nice=0 Account=(null) QOS=(null) JobState=PENDING Reason=BeginTime Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:39:12 EligibleTime=2026-11-20T09:39:52 AccrueTime=Unknown StartTime=2026-11-20T09:39:52 EndTime=2026-11-20T09:41:52 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:39:12 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=(null) NumNodes=1 NumCPUs=1 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/held/job.err StdIn=/dev/null StdOut=/work/ms/held/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "running (running)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1612 JobName=ms-running UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901758 Nice=0 Account=(null) QOS=(null) JobState=RUNNING Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:01 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:07 EligibleTime=2026-11-20T09:40:07 AccrueTime=2026-11-20T09:40:07 StartTime=2026-11-20T09:40:09 EndTime=2026-11-20T09:42:09 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:09 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/running/job.err StdIn=/dev/null StdOut=/work/ms/running/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "exit0 (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1613 JobName=ms-exit0 UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901757 Nice=0 Account=(null) QOS=(null) JobState=COMPLETED Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:18 EligibleTime=2026-11-20T09:40:18 AccrueTime=2026-11-20T09:40:18 StartTime=2026-11-20T09:40:19 EndTime=2026-11-20T09:40:19 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:19 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/exit0/job.err StdIn=/dev/null StdOut=/work/ms/exit0/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "exit1 (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1614 JobName=ms-exit1 UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901756 Nice=0 Account=(null) QOS=(null) JobState=FAILED Reason=NonZeroExitCode Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=1:0 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:20 EligibleTime=2026-11-20T09:40:20 AccrueTime=2026-11-20T09:40:20 StartTime=2026-11-20T09:40:22 EndTime=2026-11-20T09:40:22 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:22 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/exit1/job.err StdIn=/dev/null StdOut=/work/ms/exit1/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "exit3 (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1615 JobName=ms-exit3 UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901755 Nice=0 Account=(null) QOS=(null) JobState=FAILED Reason=NonZeroExitCode Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=3:0 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:23 EligibleTime=2026-11-20T09:40:23 AccrueTime=2026-11-20T09:40:23 StartTime=2026-11-20T09:40:25 EndTime=2026-11-20T09:40:25 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:25 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/exit3/job.err StdIn=/dev/null StdOut=/work/ms/exit3/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "kill_shell_KILL (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1616 JobName=ms-kill_shell_KILL UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901754 Nice=0 Account=(null) QOS=(null) JobState=FAILED Reason=JobLaunchFailure Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:9 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:25 EligibleTime=2026-11-20T09:40:25 AccrueTime=2026-11-20T09:40:25 StartTime=2026-11-20T09:40:28 EndTime=2026-11-20T09:40:28 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:28 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/kill_shell_KILL/job.err StdIn=/dev/null StdOut=/work/ms/kill_shell_KILL/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "kill_shell_TERM (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1617 JobName=ms-kill_shell_TERM UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901753 Nice=0 Account=(null) QOS=(null) JobState=FAILED Reason=JobLaunchFailure Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:15 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:28 EligibleTime=2026-11-20T09:40:28 AccrueTime=2026-11-20T09:40:28 StartTime=2026-11-20T09:40:31 EndTime=2026-11-20T09:40:31 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:31 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/kill_shell_TERM/job.err StdIn=/dev/null StdOut=/work/ms/kill_shell_TERM/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "kill_shell_after_rewrite (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1618 JobName=ms-kill_shell_after_rewrite UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901752 Nice=0 Account=(null) QOS=(null) JobState=FAILED Reason=JobLaunchFailure Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:9 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:32 EligibleTime=2026-11-20T09:40:32 AccrueTime=2026-11-20T09:40:32 StartTime=2026-11-20T09:40:34 EndTime=2026-11-20T09:40:34 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:34 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/kill_shell_after_rewrite/job.err StdIn=/dev/null StdOut=/work/ms/kill_shell_after_rewrite/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "cancelled (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1619 JobName=ms-cancelled UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901751 Nice=0 Account=(null) QOS=(null) JobState=COMPLETING Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:01 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:35 EligibleTime=2026-11-20T09:40:35 AccrueTime=2026-11-20T09:40:35 StartTime=2026-11-20T09:40:37 EndTime=2026-11-20T09:40:38 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:37 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/cancelled/job.err StdIn=/dev/null StdOut=/work/ms/cancelled/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "cancelled (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1619 JobName=ms-cancelled UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901751 Nice=0 Account=(null) QOS=(null) JobState=COMPLETING Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:15 RunTime=00:00:01 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:35 EligibleTime=2026-11-20T09:40:35 AccrueTime=2026-11-20T09:40:35 StartTime=2026-11-20T09:40:37 EndTime=2026-11-20T09:40:38 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:37 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/cancelled/job.err StdIn=/dev/null StdOut=/work/ms/cancelled/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "cancelled (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1619 JobName=ms-cancelled UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901751 Nice=0 Account=(null) QOS=(null) JobState=CANCELLED Reason=None Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:15 RunTime=00:00:01 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:35 EligibleTime=2026-11-20T09:40:35 AccrueTime=2026-11-20T09:40:35 StartTime=2026-11-20T09:40:37 EndTime=2026-11-20T09:40:38 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:37 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/cancelled/job.err StdIn=/dev/null StdOut=/work/ms/cancelled/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "timelimit (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1620 JobName=ms-timelimit UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901750 Nice=0 Account=(null) QOS=(null) JobState=COMPLETING Reason=TimeLimit Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:01:11 TimeLimit=00:01:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:40 EligibleTime=2026-11-20T09:40:40 AccrueTime=2026-11-20T09:40:40 StartTime=2026-11-20T09:40:40 EndTime=2026-11-20T09:41:51 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:40 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/timelimit/job.err StdIn=/dev/null StdOut=/work/ms/timelimit/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "timelimit (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1620 JobName=ms-timelimit UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901750 Nice=0 Account=(null) QOS=(null) JobState=COMPLETING Reason=TimeLimit Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:15 RunTime=00:01:11 TimeLimit=00:01:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:40 EligibleTime=2026-11-20T09:40:40 AccrueTime=2026-11-20T09:40:40 StartTime=2026-11-20T09:40:40 EndTime=2026-11-20T09:41:51 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:40 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=1 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/timelimit/job.err StdIn=/dev/null StdOut=/work/ms/timelimit/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "timelimit (poll)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1620 JobName=ms-timelimit UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901750 Nice=0 Account=(null) QOS=(null) JobState=TIMEOUT Reason=TimeLimit Dependency=(null) Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:15 RunTime=00:01:11 TimeLimit=00:01:00 TimeMin=N/A SubmitTime=2026-11-20T09:40:40 EligibleTime=2026-11-20T09:40:40 AccrueTime=2026-11-20T09:40:40 StartTime=2026-11-20T09:40:40 EndTime=2026-11-20T09:41:51 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T09:40:40 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/timelimit/job.err StdIn=/dev/null StdOut=/work/ms/timelimit/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  },
+  {
+   "case": "never_issued (never_issued)",
+   "source": "measured",
+   "returncode": 1,
+   "stdout": "",
+   "stderr": "slurm_load_jobs error: Invalid job id specified\n"
+  },
+  {
+   "case": "exit0 (after_330s)",
+   "source": "measured",
+   "returncode": 1,
+   "stdout": "",
+   "stderr": "slurm_load_jobs error: Invalid job id specified\n"
+  },
+  {
+   "case": "kill_shell_KILL (after_330s)",
+   "source": "measured",
+   "returncode": 1,
+   "stdout": "",
+   "stderr": "slurm_load_jobs error: Invalid job id specified\n"
+  },
+  {
+   "case": "requeue_self_update (after_requeue_attempt)",
+   "source": "measured",
+   "returncode": 0,
+   "stdout": "JobId=1660 JobName=ms-requeue_self_update UserId=user(1000) GroupId=group(1000) MCS_label=N/A Priority=4294901710 Nice=0 Account=(null) QOS=(null) JobState=COMPLETED Reason=None Dependency=(null) Requeue=1 Restarts=1 BatchFlag=1 Reboot=0 ExitCode=0:0 RunTime=00:00:00 TimeLimit=00:02:00 TimeMin=N/A SubmitTime=2026-11-20T10:57:20 EligibleTime=2026-11-20T10:59:21 AccrueTime=2026-11-20T10:59:21 StartTime=2026-11-20T10:59:48 EndTime=2026-11-20T10:59:48 Deadline=N/A SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-11-20T10:59:48 Partition=defq AllocNode:Sid=login:1000 ReqNodeList=(null) ExcNodeList=(null) NodeList=localhost BatchHost=localhost NumNodes=1 NumCPUs=1 NumTasks=0 CPUs/Task=1 ReqB:S:C:T=0:0:*:* TRES=cpu=1,node=1,billing=1 Socks/Node=* NtasksPerN:B:S:C=0:0:*:* CoreSpec=* MinCPUsNode=1 MinMemoryNode=0 MinTmpDiskNode=0 Features=(null) DelayBoot=00:00:00 OverSubscribe=OK Contiguous=0 Licenses=(null) Network=(null) Command=(null) WorkDir=/work StdErr=/work/ms/requeue_self_update/job.err StdIn=/dev/null StdOut=/work/ms/requeue_self_update/job.out Power= MailUser=(null) MailType=NONE\n",
+   "stderr": ""
+  }
+ ]
+}

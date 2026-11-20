@@ -19,9 +19,10 @@ The loader follows `tools/llm_config.py`: a closed document shape, a repeated ke
 every refusal NAMED (`SitesConfigError.rule`, one of `SITES_CONFIG_RULES`), because this is a
 file an operator writes by hand. Values that reach a remote shell — `host`, `workdir` — are
 refused at load when they carry a character a shell acts on (`_SHELL_ACTIVE_CHARS`). A
-`scheduler_directives` word reaches the remote shell only as one `shlex.quote`d argv word of the
-prefix the scheduler's backend spells (`remote_execution._run_job`), so it is refused only for a
-character that is not printable ASCII: a real directive's `|`, `[` or `'` is the scheduler's
+`scheduler_directives` entry reaches the remote shell only as words of the submit command: the
+scheduler's backend splits it on whitespace (`submit_argv`), and `remote_execution.submit_job`
+quotes each word with `shlex.join`, so it is refused only for a character that is not printable
+ASCII: a real directive's `|`, `[` or `'` is the scheduler's
 syntax, and refusing it refused a legitimate site (issue #293 PR-4, round 2). A `setup` line is
 shell text by design — it sets the environment the site's commands run in (an `export`, a
 module load) — so it is refused only for what is not printable ASCII, which includes a line
@@ -54,7 +55,8 @@ DEFAULT_SITES_PATH = "sites.yaml"
 #: `Validate.execute` launches in-process on this host (`tools/backends/registry.py`'s `hardware`
 #: records say which class that is). A host that can run another class lists it under `local:`.
 LOCAL_DEFAULT_EXECUTES: tuple[str, ...] = ("cpu",)
-#: The scheduler a site uses when it submits nothing: the job script runs in the foreground.
+#: The scheduler a site uses when it submits nothing: the job script runs in the foreground of
+#: the ssh call; every other scheduler submits it as a batch job (`remote_execution`).
 DIRECT_SCHEDULER = "none"
 
 #: Every refusal this loader can raise. `docs/ORCHESTRATION.md` §Execution sites lists them and
@@ -453,9 +455,10 @@ def site_violations(config: SitesConfig, profile: Any, *,
     the site `profile`'s target maps to must list the profile's hardware class in its
     `executes`, and must be
     `local` when the profile's parallel backend runs its binary under a launcher (issue #316:
-    a batch site runs the whole job as one task, so a launcher inside it starts its ranks within
-    one task's allocation, and a direct site is not asked whether its CPUs fit the ranks — issue
-    #337). Empty otherwise."""
+    a batch site runs the job script once and nothing sizes or checks its allocation for the
+    ranks, so a launcher inside it starts them within whatever the operator's directives
+    allocated, and a direct site is not asked whether its CPUs fit the ranks — issue #337).
+    Empty otherwise."""
     if str(until_phase or "").strip().lower() in NON_BUILDING_PHASES:
         return []
     site = config.site_for(profile.target_id)

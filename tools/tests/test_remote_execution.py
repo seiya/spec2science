@@ -20,12 +20,24 @@ marker) (to plant or lose a file),
 that many seconds first. A job script killed mid-run makes the shim exit non-zero (137 for a
 SIGKILL), where a real ssh exits 255: the rows match the stage, not the number.
 
-A `slurm` site's job runs under `srun`, which is a shim too: it logs its argv, skips its options,
-and runs the rest with `SLURM_JOB_ID=4242` added to the environment, relaying the task's stdout
-and exit status as a real one does (measured on Slurm 20.02). Its knobs: `SHIM_SRUN_QUEUE` waits
-that many seconds first (a queued job), `SHIM_SRUN_DENY` exits 1 with srun's words for an
-allocation `--immediate` gave up on, `SHIM_SRUN_KILLED` runs the task and then exits 143 as a job
-the scheduler killed does, and `SHIM_SRUN_NO_ID` leaves the job id unset.
+A `slurm` site's job is submitted with `sbatch` and polled with `scontrol`, both shims too. The
+`sbatch` shim logs its argv, reads the script on its stdin, keeps it as a file under
+`$SHIM_SLURM_DIR` (as Slurm keeps it in its spool), prints the job id (4242, then 4243, ...)
+and returns at once; a detached process runs the kept file with `sh`, `SLURM_JOB_ID` in its
+environment, its stdout and stderr in the files `--output` and `--error` name, and records the
+job's `JobState` and its `ExitCode` as TWO parts, `exit:signal`, as Slurm's record does (measured
+on Slurm 20.02: a script whose shell was killed ends `FAILED 0:9`, not one integer), passing
+through `COMPLETING` for half a second first. The `scontrol` shim answers `show job -o <id>`
+from that record in Slurm's shape, and an id it has no record of as Slurm answers one it does
+not know. Their knobs: `SHIM_SBATCH_QUEUE` keeps the job `PENDING` that many seconds first,
+`SHIM_SBATCH_HOLD` keeps it `PENDING` for good, `SHIM_SBATCH_END` (`"<JobState> <ExitCode>"`)
+replaces the record the script's own end would give (a job the scheduler killed or cancelled),
+`SHIM_SBATCH_SUB` is a JSON `[pattern, replacement]` applied with `re.sub` to the job's output
+file after its script ended and before its record does, `SHIM_SBATCH_PRINT` replaces what
+`sbatch` prints (`{id}` is the id), `SHIM_SBATCH_FAIL` makes it refuse the submission, `SHIM_SCONTROL_NO_ANSWER` makes the first that many
+`scontrol` calls fail as an unreachable controller does, and `SHIM_SCONTROL_FORGET` makes it
+answer every id as one it does not know. `SHIM_SSH_FAIL_ONCE` makes the first ssh call whose
+command carries that substring exit 255.
 """
 
 from __future__ import annotations
@@ -38,6 +50,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -70,6 +83,11 @@ if "spec2science-status" in command:
     time.sleep(float(os.environ.get("SHIM_SSH_DELAY") or 0))
 fail = os.environ.get("SHIM_SSH_FAIL")
 if fail and fail in command:
+    sys.stderr.write("shim: connection closed by remote host\n")
+    sys.exit(255)
+once = os.environ.get("SHIM_SSH_FAIL_ONCE")
+if once and once in command and not os.path.exists(os.environ["SHIM_LOG"] + ".failed"):
+    open(os.environ["SHIM_LOG"] + ".failed", "w").close()
     sys.stderr.write("shim: connection closed by remote host\n")
     sys.exit(255)
 env = dict(os.environ)
@@ -118,25 +136,88 @@ if not recursive and any(os.path.isdir(p) for p in paths[:-1]):
 sys.exit(subprocess.run(["cp", *(["-r"] if recursive else []), *paths]).returncode)
 '''
 
-_SRUN_SHIM = r'''#!/usr/bin/env python3
-import json, os, subprocess, sys, time
+_SBATCH_SHIM = r'''#!/usr/bin/env python3
+import json, os, re, subprocess, sys, time
+D = os.environ["SHIM_SLURM_DIR"]
+
+
+def record(jid, state, code, name=None):
+    path = os.path.join(D, f"state.{jid}.json")
+    old = json.load(open(path)) if os.path.exists(path) else {}
+    old.update(state=state, code=code, **({"name": name} if name else {}))
+    with open(path + ".tmp", "w") as f:
+        json.dump(old, f)
+    os.replace(path + ".tmp", path)
+
+
+if sys.argv[1:2] == ["--shim-run"]:
+    jid, script, out, err = sys.argv[2:6]
+    time.sleep(float(os.environ.get("SHIM_SBATCH_QUEUE") or 0))
+    if os.environ.get("SHIM_SBATCH_HOLD"):
+        sys.exit(0)
+    record(jid, "RUNNING", "0:0")
+    env = dict(os.environ, SLURM_JOB_ID=jid)
+    with open(out, "w") as o, open(err, "w") as e:
+        rc = subprocess.run(["sh", script], stdin=subprocess.DEVNULL, stdout=o, stderr=e,
+                            env=env).returncode
+    code = f"0:{-rc}" if rc < 0 else f"{rc}:0"
+    state = "COMPLETED" if rc == 0 else "FAILED"
+    if os.environ.get("SHIM_SBATCH_END"):
+        state, code = os.environ["SHIM_SBATCH_END"].split()
+    if os.environ.get("SHIM_SBATCH_SUB"):
+        pattern, repl = json.loads(os.environ["SHIM_SBATCH_SUB"])
+        text = open(out).read()
+        open(out, "w").write(re.sub(pattern, repl, text, flags=re.M))
+    record(jid, "COMPLETING", code)
+    time.sleep(0.5)
+    record(jid, state, code)
+    sys.exit(0)
+
 with open(os.environ["SHIM_LOG"], "a") as f:
-    f.write(json.dumps(["srun", *sys.argv[1:]]) + "\n")
-args = sys.argv[1:]
-while args and args[0].startswith("-"):
-    args = args[2:] if args[0] in ("-p", "-t", "-J", "-N", "-n") else args[1:]
-if os.environ.get("SHIM_SRUN_DENY"):
-    sys.stderr.write("srun: error: Unable to allocate resources: Requested nodes are busy\n")
+    f.write(json.dumps(["sbatch", *sys.argv[1:]]) + "\n")
+if os.environ.get("SHIM_SBATCH_FAIL"):
+    sys.stderr.write("sbatch: error: Batch job submission failed: Invalid account\n")
     sys.exit(1)
-time.sleep(float(os.environ.get("SHIM_SRUN_QUEUE") or 0))
-env = dict(os.environ)
-if not os.environ.get("SHIM_SRUN_NO_ID"):
-    env["SLURM_JOB_ID"] = "4242"
-rc = subprocess.run(args, env=env).returncode
-if os.environ.get("SHIM_SRUN_KILLED"):
-    sys.stderr.write("slurmstepd: error: *** JOB 4242 CANCELLED DUE TO TIME LIMIT ***\n")
-    sys.exit(143)
-sys.exit(rc)
+opts = dict(a.split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+script = sys.stdin.read()
+counter = os.path.join(D, "next_id")
+jid = str(int(open(counter).read()) if os.path.exists(counter) else 4242)
+open(counter, "w").write(str(int(jid) + 1))
+spool = os.path.join(D, f"job{jid}")
+os.makedirs(spool)
+kept = os.path.join(spool, "slurm_script")
+with open(kept, "w") as f:
+    f.write(script)
+os.chmod(kept, 0o700)
+record(jid, "PENDING", "0:0", name=opts.get("--job-name", "sbatch"))
+run = subprocess.Popen([sys.executable, __file__, "--shim-run", jid, kept, opts["--output"],
+                        opts["--error"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, start_new_session=True)
+open(os.path.join(D, f"pid.{jid}"), "w").write(str(run.pid))
+sys.stdout.write(os.environ.get("SHIM_SBATCH_PRINT", "{id}\n").replace("{id}", jid))
+'''
+
+_SCONTROL_SHIM = r'''#!/usr/bin/env python3
+import json, os, sys
+D = os.environ["SHIM_SLURM_DIR"]
+with open(os.environ["SHIM_LOG"], "a") as f:
+    f.write(json.dumps(["scontrol", *sys.argv[1:]]) + "\n")
+assert sys.argv[1:4] == ["show", "job", "-o"], sys.argv
+counter = os.path.join(D, "scontrol_calls")
+calls = int(open(counter).read()) if os.path.exists(counter) else 0
+open(counter, "w").write(str(calls + 1))
+if calls < int(os.environ.get("SHIM_SCONTROL_NO_ANSWER") or 0):
+    sys.stderr.write("slurm_load_jobs error: Socket timed out on send/recv operation\n")
+    sys.exit(1)
+jid = sys.argv[4]
+path = os.path.join(D, f"state.{jid}.json")
+if os.environ.get("SHIM_SCONTROL_FORGET") or not os.path.exists(path):
+    sys.stderr.write("slurm_load_jobs error: Invalid job id specified\n")
+    sys.exit(1)
+rec = json.load(open(path))
+print(f"JobId={jid} JobName={rec['name']} UserId=user(1000) GroupId=group(1000) "
+      f"JobState={rec['state']} Reason=None Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 "
+      f"ExitCode={rec['code']} RunTime=00:00:01 TimeLimit=00:05:00")
 '''
 
 #: A shipped runner: records its argv and cwd, writes an output file, prints to both streams, and
@@ -152,6 +233,47 @@ _RUNNER = textwrap.dedent('''\
 ''')
 
 
+def _reap_shim_jobs(root: str) -> None:
+    """Stop the background "jobs" the `sbatch` shim started under `root` before the tree is
+    removed. A row that is refused before its job ends (an unknown id, a bound) otherwise leaves
+    the job writing `ctl/` while `TemporaryDirectory.cleanup` removes it, which failed one row in
+    `tearDown` under `-n 24` ("Directory not empty: 'ctl'"). Each job starts a session of its
+    own; every process of that session is killed — by session and not by process group, because
+    the job's commands run under `timeout`, which puts itself in a group of its own (round 4,
+    measured) — and the kill is waited for (bounded), because it lands asynchronously."""
+    import signal
+    import time
+
+    def members(sid: int) -> list[int]:
+        found = []
+        for stat_path in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                fields = stat_path.read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            # After the command name: state, ppid, pgrp, session.
+            if int(fields[3]) == sid:
+                found.append(int(stat_path.parent.name))
+        return found
+
+    for pid_file in Path(root).rglob("pid.*"):
+        try:
+            sid = int(pid_file.read_text())
+        except ValueError:
+            continue
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            alive = members(sid)
+            if not alive:
+                break
+            for pid in alive:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            time.sleep(0.01)
+
+
 class _Harness:
     """A temporary tree with the shims on `PATH`, a remote `workdir`, and a runner to ship."""
 
@@ -159,7 +281,8 @@ class _Harness:
         self.root = Path(tmp)
         self.shims = self.root / "shims"
         self.shims.mkdir()
-        for name, body in (("ssh", _SSH_SHIM), ("scp", _SCP_SHIM), ("srun", _SRUN_SHIM)):
+        for name, body in (("ssh", _SSH_SHIM), ("scp", _SCP_SHIM), ("sbatch", _SBATCH_SHIM),
+                           ("scontrol", _SCONTROL_SHIM)):
             p = self.shims / name
             p.write_text(body)
             p.chmod(p.stat().st_mode | stat.S_IXUSR)
@@ -172,13 +295,15 @@ class _Harness:
         self.runner.chmod(0o755)
         self.log = self.root / "shim.log"
         self.log.touch()
+        self.slurm = self.root / "slurm"
+        self.slurm.mkdir()
         self.site = es.Site(site_id="box", executes=("cpu",), host="box",
                             workdir=str(self.workdir), scheduler="none")
         self.job = rx.job_dir(self.site, "orch_1", "arid-1")
 
     def env(self, **knobs: str) -> mock._patch:
         env = {"PATH": f"{self.shims}{os.pathsep}{os.environ['PATH']}",
-               "SHIM_LOG": str(self.log)}
+               "SHIM_LOG": str(self.log), "SHIM_SLURM_DIR": str(self.slurm)}
         env.update(knobs)
         return mock.patch.dict(os.environ, env)
 
@@ -205,8 +330,14 @@ class _Harness:
         return rx.JobRequest(site=self.site, job_dir=self.job, commands=commands, **kw)
 
     def run(self, request: rx.JobRequest, **knobs: str) -> rx.JobResult:
-        with self.env(**knobs):
+        # A batch job is polled; the shims' jobs take a fraction of a second, so the schedule
+        # is shortened here (`PollingTests` pins the real one). A `none` site does not poll.
+        with self.env(**knobs), mock.patch.object(rx, "POLL_FIRST_SEC", 0.05), \
+                mock.patch.object(rx, "POLL_MAX_SEC", 0.2):
             return rx.execute_job(request, local_tmp=self.local / "tmp")
+
+    def slurm_record(self, job_id: str = "4242") -> dict:
+        return json.loads((self.slurm / f"state.{job_id}.json").read_text())
 
     def log_entries(self, tag: str) -> list[dict]:
         p = self.local / "logs" / f"{tag}.jsonl"
@@ -251,6 +382,7 @@ class EndToEndTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def test_two_commands_run_in_order_and_each_is_logged_where_the_caller_said(self) -> None:
@@ -518,6 +650,7 @@ class RefusalTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _refused(self, pattern: str, request: rx.JobRequest | None = None,
@@ -832,6 +965,7 @@ class RequestValidationTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _invalid(self, pattern: str, request: rx.JobRequest) -> None:
@@ -938,14 +1072,20 @@ class RequestValidationTests(unittest.TestCase):
             rx.job_dir(es.Site(site_id="local", executes=("cpu",)), "o", "a")
 
 
+def _slurm_programs() -> tuple[str, ...]:
+    from tools.backends import registry
+    return tuple(registry.capability_module("scheduler", "slurm", "job_submit").REMOTE_EXECUTABLES)
+
+
 class SchedulerTests(unittest.TestCase):
-    """A `slurm` site: the same job, run under the backend's `srun` prefix."""
+    """A `slurm` site: the same job, submitted with the backend's command, polled, collected."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.h = self._slurm(_Harness(self._tmp.name))
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     @staticmethod
@@ -955,21 +1095,25 @@ class SchedulerTests(unittest.TestCase):
         h.site = dataclasses.replace(h.site, scheduler="slurm", **kw)
         return h
 
-    def _refused(self, pattern: str, **knobs: str) -> None:
-        with self.assertRaisesRegex(rx.RemoteExecutionError, pattern):
-            self.h.run(self.h.request(), **knobs)
+    def _refused(self, pattern: str, request: rx.JobRequest | None = None,
+                 **knobs: str) -> rx.RemoteExecutionError:
+        with self.assertRaisesRegex(rx.RemoteExecutionError, pattern) as ctx:
+            self.h.run(request or self.h.request(), **knobs)
         self.assertEqual(self.h.log_entries("run"), [])
         self.assertEqual(self.h.log_entries("qc"), [])
+        return ctx.exception
 
-    def test_the_compute_nodes_programs_are_asked_under_the_prefix(self) -> None:
+    def test_the_compute_nodes_programs_are_asked_in_the_job(self) -> None:
         """The launch probe asks the login; under a scheduler the job script's own check is what
-        asks the node the build runs on for its compiler (issue #333), so it must survive the
-        prefix and be refused there, before any command."""
-        with self.assertRaisesRegex(rx.RemoteExecutionError, "ssh exited 4.*zz-no-compiler"):
-            self.h.run(self.h.request(required_programs=("zz-no-compiler",)))
-        self.assertEqual(self.h.log_entries("run"), [])
+        asks the node the build runs on for its compiler (issue #333), so it must run in the job
+        and be refused there, before any command: the script exits 4, which the scheduler's
+        record states, and the refusal quotes the script's stderr."""
+        self._refused("(?s)did not run to its own exit.*job.err ends: job script: zz-no-compiler "
+                      "is missing", self.h.request(required_programs=("zz-no-compiler",)))
+        self.assertEqual(self.h.slurm_record()["code"], "4:0")
+        self.assertFalse((Path(self.h.job) / rx.CONTROL_DIR / "run.stdout").exists())
 
-    def test_the_job_runs_under_srun_and_records_its_id(self) -> None:
+    def test_the_job_is_submitted_once_and_its_id_recorded(self) -> None:
         result = self.h.run(self.h.request())
         self.assertTrue(all(r["ok"] for r in result.results))
         self.assertEqual(result.site_record["scheduler"], "slurm")
@@ -978,110 +1122,175 @@ class SchedulerTests(unittest.TestCase):
             (entry,) = self.h.log_entries(tag)
             self.assertEqual(entry["site"]["job_id"], "4242")
             self.assertEqual(entry["site"]["scheduler"], "slurm")
-        # One srun call, inside the job's ssh call: the time limit, the directives split into
-        # words (the last `--time` wins), and the options no directive may change.
-        (srun,) = [c for c in self.h.calls() if c[0] == "srun"]
+        # One sbatch call, inside the submit's ssh call: the time limit first, the directives
+        # split into words (the last `--time` wins), and the options no directive may change —
+        # the name, the two files and the option that forbids a second run — last.
+        (sbatch,) = [c for c in self.h.calls() if c[0] == "sbatch"]
         wall = sum(c.timeout_sec + rx.KILL_AFTER_SEC for c in self.h.request().commands) \
             + rx.TRANSPORT_GRACE_SEC
-        self.assertEqual(srun[1:9], [f"--time={-(-wall // 60)}", "--partition=debug", "-p",
-                                     "other", "--time=1", "--ntasks=1",
-                                     "--job-name=spec2science-arid-1", "--immediate=77"])
-        self.assertEqual(srun[9:11], ["sh", "-c"])
-        self.assertIn(rx.STATUS_MARKER, srun[11])
-        self.assertEqual([c[0] for c in self.h.calls()], ["ssh", "scp", "ssh", "srun", "scp", "ssh"])
+        ctl = f"{self.h.job}/{rx.CONTROL_DIR}"
+        self.assertEqual(sbatch[1:], ["--parsable", f"--time={-(-wall // 60)}",
+                                      "--partition=debug", "-p", "other", "--time=1",
+                                      "--job-name=spec2science-arid-1", f"--output={ctl}/job.out",
+                                      f"--error={ctl}/job.err", "--no-requeue"])
+        kinds = [c[0] for c in self.h.calls()]
+        self.assertEqual(kinds[:4], ["ssh", "scp", "ssh", "sbatch"])
+        self.assertEqual(kinds[-2:], ["scp", "ssh"])
+        # Every call between the submission and the collection is a poll.
+        self.assertTrue(set(kinds[4:-2]) <= {"ssh", "scontrol"} and "scontrol" in kinds[4:-2])
         self.assertFalse(Path(self.h.job).exists())
 
     def test_a_directive_reaches_the_scheduler_as_written(self) -> None:
         """The loader admits a directive's shell-active characters (a scheduler's own syntax),
-        because each word reaches the site's shell quoted: srun receives it byte for byte, and
+        because each word reaches the site's shell quoted: sbatch receives it byte for byte, and
         nothing in it runs."""
         planted = self.h.root / "ran"
         directives = ("--constraint=a|b", "--nodelist=n[01-02]",
                       f"--comment=$(touch${{IFS}}{planted})", f"--x=';touch${{IFS}}{planted};'&")
         h = self._slurm(self.h, scheduler_directives=directives)
         h.run(h.request())
-        (srun,) = [c for c in h.calls() if c[0] == "srun"]
-        self.assertEqual(tuple(srun[2:6]), directives)
+        (sbatch,) = [c for c in h.calls() if c[0] == "sbatch"]
+        self.assertEqual(tuple(sbatch[3:7]), directives)
         self.assertFalse(planted.exists())
 
-    def test_the_queue_timeout_defaults_and_bounds_the_call(self) -> None:
+    def test_the_time_limit_and_the_waits_bounds(self) -> None:
+        """The time limit covers the device probe; the wait is bounded by the site's
+        `queue_timeout_sec` (its default here) while queued, and by the time limit plus the
+        transport's grace once running."""
         h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)), queue_timeout_sec=None)
         request = h.request(platform_probe=("true",))
-        with mock.patch.object(rx, "_ssh", wraps=rx._ssh) as ssh:
+        with mock.patch.object(rx, "wait_job", wraps=rx.wait_job) as wait:
             h.run(request)
-        (srun,) = [c for c in h.calls() if c[0] == "srun"]
-        self.assertIn(f"--immediate={rx.QUEUE_TIMEOUT_DEFAULT_SEC}", srun)
-        # The time limit covers the device probe; the local bound adds the queue wait on top.
+        (sbatch,) = [c for c in h.calls() if c[0] == "sbatch"]
         wall = sum(c.timeout_sec + rx.KILL_AFTER_SEC for c in request.commands) \
             + rx.TRANSPORT_GRACE_SEC + rx.PROBE_TIMEOUT_SEC
-        self.assertIn(f"--time={-(-wall // 60)}", srun)
-        (job_call,) = [c for c in ssh.call_args_list if c.kwargs["stage"] == "run the job script"]
-        self.assertEqual(job_call.kwargs["timeout"],
-                         rx.QUEUE_TIMEOUT_DEFAULT_SEC + wall + rx.TRANSPORT_GRACE_SEC)
+        self.assertIn(f"--time={-(-wall // 60)}", sbatch)
+        self.assertEqual(wait.call_args.kwargs, {
+            "queue_bound_sec": rx.QUEUE_TIMEOUT_DEFAULT_SEC,
+            "run_bound_sec": wall + rx.TRANSPORT_GRACE_SEC})
+        self.assertEqual(rx.job_bounds(self.h.request())[0], 77)
 
-    def test_the_queue_wait_is_the_time_between_asking_and_starting(self) -> None:
-        result = self.h.run(self.h.request(), SHIM_SRUN_QUEUE="1.5")
-        # Whole seconds (both ends are the sites' epoch seconds), and the wait, not an epoch.
+    def test_the_queue_wait_is_the_time_between_submission_and_start(self) -> None:
+        result = self.h.run(self.h.request(), SHIM_SBATCH_QUEUE="1.5")
+        # Whole seconds (both ends are the site's epoch seconds), and the wait, not an epoch.
         self.assertIn(result.site_record["queue_wait_ms"], (1000, 2000, 3000))
 
-    def test_the_job_line_is_printed_before_the_first_command(self) -> None:
-        """Printed after a command, or after the device probe (up to `PROBE_TIMEOUT_SEC`), the
-        "start" would count that time as queue wait."""
-        script = rx.render_job_script(self.h.request(platform_probe=("true",)))
-        job_line = script.index(f"{rx.JOB_MARKER} ")
-        self.assertLess(job_line, script.index(f"timeout -k 5 {rx.PROBE_TIMEOUT_SEC} true"))
-        self.assertLess(job_line, script.index("t0=$(date +%s)"))
-        self.assertLess(job_line, script.index(f"{rx.STATUS_MARKER} "))
+    def test_the_start_line_is_printed_before_anything_the_job_runs(self) -> None:
+        """Printed after a setup line, the device probe (up to `PROBE_TIMEOUT_SEC`) or a command,
+        the "start" would count that time as queue wait. A `none` site's job prints none."""
+        h = self._slurm(self.h, setup=("true",))
+        script = rx.render_job_script(h.request(platform_probe=("true",)))
+        start = script.index(f"{rx.START_MARKER} ")
+        for later in ("command eval", f"timeout -k 5 {rx.PROBE_TIMEOUT_SEC} true",
+                      "t0=$(date +%s)", f"{rx.STATUS_MARKER} "):
+            self.assertLess(start, script.index(later), later)
+        none = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
+        self.assertNotIn(rx.START_MARKER, rx.render_job_script(none.request()))
 
-    def test_a_start_before_the_ask_is_recorded_as_no_wait(self) -> None:
+    def test_a_start_before_the_submission_is_recorded_as_no_wait(self) -> None:
         """The two times are read on two machines; a job machine whose clock is behind the
         login's gives a negative difference, recorded as 0 rather than refused."""
-        result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
-            [r"^(spec2science-job \S+) \d+$", r"\1 1"]))
+        real = rx.submit_job
+
+        def late(*a, **k):
+            return dataclasses.replace(real(*a, **k), submitted_epoch=4_000_000_000)
+
+        with mock.patch.object(rx, "submit_job", side_effect=late):
+            result = self.h.run(self.h.request())
         self.assertEqual(result.site_record["queue_wait_ms"], 0)
         self.assertTrue(all(r["ok"] for r in result.results))
 
-    def test_a_job_not_granted_an_allocation_is_refused(self) -> None:
-        self._refused("run the job script: ssh exited 1 .*Unable to allocate resources",
-                      SHIM_SRUN_DENY="1")
+    def test_a_job_not_started_within_the_bound_is_refused_and_left_queued(self) -> None:
+        h = self._slurm(self.h, queue_timeout_sec=1)
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    r"job 4242 was not seen running within 1 sec "
+                                    r"\(queue_timeout_sec\); the last answered poll read it as "
+                                    r"queued, \d+ sec into the wait; it is left as it is.*left at "
+                                    "the site"):
+            h.run(h.request(), SHIM_SBATCH_HOLD="1")
+        self.assertEqual(h.slurm_record()["state"], "PENDING")
+        self.assertTrue(Path(h.job).is_dir())
+
+    def test_a_job_the_scheduler_killed_is_refused_although_every_status_is_in_the_file(
+            self) -> None:
+        err = self._refused("did not run to its own exit with 0 or 1",
+                            SHIM_SBATCH_END="TIMEOUT 0:15")
+        self.assertIn("left at the site", str(err))
+        out = (Path(self.h.job) / rx.CONTROL_DIR / "job.out").read_text()
+        self.assertIn(f"{rx.STATUS_MARKER} run 0 ", out)
+        self.assertIn(f"{rx.STATUS_MARKER} qc 0 ", out)
+
+    def test_a_submission_the_scheduler_refuses_is_refused_and_the_directory_left(
+            self) -> None:
+        err = self._refused("submit the job: ssh exited 1 .*Batch job submission failed",
+                            SHIM_SBATCH_FAIL="1")
+        self.assertIn("left at the site", str(err))
         self.assertTrue(Path(self.h.job).is_dir())
+        self.assertNotIn("scontrol", [c[0] for c in self.h.calls()])
 
-    def test_a_job_the_scheduler_killed_is_refused_although_every_status_arrived(self) -> None:
-        self._refused("run the job script: ssh exited 143 .*TIME LIMIT", SHIM_SRUN_KILLED="1")
+    def test_a_submission_whose_answer_names_no_job_id_is_refused(self) -> None:
+        for printed in ("", "\n", "sbatch: warning: x\n{id}\n", "-1\n", "a b\n"):
+            with self.subTest(printed=printed):
+                h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
+                with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                            "answer names no job id.*left at the site"):
+                    h.run(h.request(), SHIM_SBATCH_PRINT=printed)
+                self.assertEqual([c[0] for c in h.calls()].count("scontrol"), 0)
 
-    def test_a_job_without_its_id_is_refused(self) -> None:
-        self._refused("empty job id", SHIM_SRUN_NO_ID="1")
+    def test_a_submission_without_the_logins_time_is_polled_and_collected(self) -> None:
+        """`date` prints nothing at the login: the time feeds `queue_wait_ms` alone, so the
+        job is polled and collected as any other, and its wait is recorded as 0 (as a missing
+        start line is). Refusing it would leave a submitted job unpolled for a record no verdict
+        reads (issue #696 review 3, finding 3)."""
+        tools = self.h.root / "no-date"
+        tools.mkdir()
+        # The first `date` is the login's; the job's own (its start and status lines) read the
+        # real one, so only the submission's time is missing.
+        once = tools / "printed"
+        _script(tools / "date", f"[ -e {once} ] && exec {shutil.which('date')} \"$@\"\n"
+                                f": > {once}\n")
+        result = self.h.run(self.h.request(),
+                            SHIM_SSH_PATH=f"{tools}{os.pathsep}{self.h.shims}{os.pathsep}"
+                                          f"{os.environ['PATH']}")
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertEqual(result.site_record["queue_wait_ms"], 0)
+        self.assertIn("scontrol", [c[0] for c in self.h.calls()])
 
-    def test_the_scheduler_lines_are_one_each_and_only_under_a_scheduler(self) -> None:
-        one_each = "1 spec2science-submitted and 2 spec2science-job lines|, not one each"
-        for pattern, repl, refusal in (
-                (r"^(spec2science-job .*)$", r"\1\n\1", one_each),              # a second job line
-                (r"^(spec2science-job .*)$", "", one_each),                     # the job line lost
-                (r"^(spec2science-submitted .*)$", "", one_each),               # the ask lost
-                (r"^(spec2science-job) \S+ (.*)$", r"\1 9 9 \2", "does not parse"),  # not its shape
-                (r"^(spec2science-submitted) .*$", r"\1 soon", "does not parse"),
-                (r"^(spec2science-submitted .*)$", r"\1 2", "does not parse"),  # a third word
-                (r"^(spec2science-job) \S+ (.*)$", r"\1 a/b \2", "does not parse"),  # not an element
-                (r"^(spec2science-job \S+) .*$", r"\1 later", "does not parse"),  # not an epoch
-                # A marker glued to more letters is no scheduler line, and no status line either.
-                (r"^(spec2science-job .*)$", r"\1\nspec2science-jobx 8 999", "does not parse")):
+    def test_the_start_line_is_read_for_the_record_alone(self) -> None:
+        """Issue #696 §6.12: the start line gives `queue_wait_ms`, which no verdict reads, so a
+        second, a lost or a malformed one is not a refusal: the first in its shape is read, and
+        none is a wait of 0. A marker glued to more letters is still refused (it is no start
+        line and no status line)."""
+        real = rx.submit_job
+
+        def at_zero(*a, **k):
+            return dataclasses.replace(real(*a, **k), submitted_epoch=0)
+
+        for pattern, repl, wait in (
+                (rf"^({rx.START_MARKER}) \d+$", r"\1 7\n\1 9", 7000),     # a second one: the first
+                (rf"^({rx.START_MARKER} .*)$", "", 0),                              # lost
+                (rf"^({rx.START_MARKER}) .*$", r"\1 soon", 0),                     # not an epoch
+                (rf"^({rx.START_MARKER} .*)$", r"\1 2", 0)):                       # a third word
             with self.subTest(repl=repl, pattern=pattern):
                 h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
-                with self.assertRaisesRegex(rx.RemoteExecutionError, refusal):
-                    h.run(h.request(), SHIM_SSH_SUB=json.dumps([pattern, repl]))
-                self.assertEqual(h.log_entries("run"), [])
-        h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
-        with self.assertRaisesRegex(rx.RemoteExecutionError, "run under no scheduler"):
-            h.run(h.request(), SHIM_SSH_SUB=json.dumps(
-                [r"^(spec2science-platform machine .*)$", r"spec2science-job 1 2\n\1"]))
+                with mock.patch.object(rx, "submit_job", side_effect=at_zero):
+                    result = h.run(h.request(), SHIM_SBATCH_SUB=json.dumps([pattern, repl]))
+                self.assertTrue(all(r["ok"] for r in result.results))
+                self.assertEqual(result.site_record["queue_wait_ms"], wait)
+        h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "does not parse"):
+            h.run(h.request(), SHIM_SBATCH_SUB=json.dumps(
+                [rf"^({rx.START_MARKER} .*)$", rf"\1\n{rx.START_MARKER}x 8"]))
 
-    def test_the_launch_probe_asks_for_the_schedulers_program(self) -> None:
+    def test_the_launch_probe_asks_for_the_schedulers_programs(self) -> None:
         from tools.host_prerequisites import required_site_executables
-        self.assertEqual(rx.scheduler_executables("slurm"), ("srun",))
+        programs = _slurm_programs()
+        self.assertTrue(programs)
+        self.assertEqual(rx.scheduler_executables("slurm"), programs)
         self.assertEqual(rx.scheduler_executables("none"), ())
         selection = {"build_system": "make", "parallel": "openmp", "build_compiler": "zz-fc"}
         self.assertEqual(required_site_executables(selection, scheduler="slurm"),
-                         ("timeout", "make", "srun"))
+                         ("timeout", "make", *programs))
         self.assertEqual(required_site_executables(selection, scheduler="none"),
                          ("timeout", "make", "zz-fc"))
 
@@ -1104,7 +1313,7 @@ class SchedulerTests(unittest.TestCase):
                 self.assertEqual(
                     required_site_executables(selection, scheduler="slurm",
                                               reaches_validate=reaches_validate),
-                    ("timeout", "make", "srun"))
+                    ("timeout", "make", *_slurm_programs()))
 
     def test_the_launch_probe_asks_for_what_the_binary_runs_under(self) -> None:
         """A parallel backend that declares `device_trace` (issue #307) adds its trace's
@@ -1119,9 +1328,376 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(trace)
         selection = {"build_system": "make", "parallel": "cuda", "build_compiler": "zz-cc"}
         self.assertEqual(required_site_executables(selection, scheduler="slurm"),
-                         ("timeout", "make", "srun"))
+                         ("timeout", "make", *_slurm_programs()))
         self.assertEqual(required_site_executables(selection, scheduler="none"),
                          ("timeout", "make", "zz-cc", *trace))
+
+
+#: A shipped runner that fails (exits 3) and leaves a process behind it that waits for the job
+#: script's own status line for it (or for the script's shell to end) and then rewrites the job's
+#: output file so that every command reads as having exited 0, then leaves `job.out.rewritten`
+#: beside it. It acts on the status line, not only on the shell's end, because a real scheduler
+#: kills what a job left running once the script ends. On Slurm 20.02 with `proctrack/cgroup`
+#: the two race: in the runs `measure_slurm.py executor` recorded (jobs 1690, 1691) the kill came
+#: first and the rewrite did not land, and in one earlier run (job 1642) its truncation of the
+#: file landed and the job was refused (`not one spec2science-start line`). So these shim rows
+#: are what exercises the binding. With
+#: `KILL` set it also kills that shell first. Its parent is `timeout`, whose parent is the job
+#: script's shell.
+_FORGER = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import os, re, signal, sys, time
+    shell = int(open("/proc/%d/stat" % os.getppid()).read().rsplit(")", 1)[1].split()[1])
+    out = os.path.join("..", "ctl", "job.out")
+    if os.fork() == 0:
+        os.setsid()
+        if os.fork() == 0:
+            while True:
+                text = open(out).read()
+                if re.search(r"^spec2science-status run [1-9]", text, flags=re.M):
+                    break
+                try:
+                    os.kill(shell, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.001)
+            text = open(out).read()
+            text = re.sub(r"^(spec2science-status run) -?[0-9]+", r"\\1 0", text, flags=re.M)
+            if "spec2science-status qc " not in text:
+                text += "spec2science-status qc 0 1 2\\n"
+            # Replaced whole, so that a kill mid-write cannot leave a truncated file.
+            open(out + ".new", "w").write(text)
+            os.replace(out + ".new", out)
+            open(out + ".rewritten", "w").close()   # that the rewrite landed, for a reader
+        os._exit(0)
+    os.wait()
+    if os.environ.get("KILL"):
+        os.kill(shell, signal.SIGKILL)
+        time.sleep(1)
+    sys.exit(3)
+''')
+
+
+class BindingTests(unittest.TestCase):
+    """Issue #696 §6.3: a batch job's statuses are read from its output file, which a command
+    can rewrite, and are accepted only against the scheduler's record of how the job script
+    ended. One row per row of the plan's table, and the two seeded rows."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def _refused(self, pattern: str, request: rx.JobRequest | None = None,
+                 **knobs: str) -> rx.RemoteExecutionError:
+        with self.assertRaisesRegex(rx.RemoteExecutionError, pattern) as ctx:
+            self.h.run(request or self.h.request(), **knobs)
+        self.assertEqual(self.h.log_entries("run"), [])
+        self.assertEqual(self.h.log_entries("qc"), [])
+        self.assertTrue(Path(self.h.job).is_dir(), "a refused job's directory is left")
+        return ctx.exception
+
+    def test_ended_0_and_every_status_0_is_accepted(self) -> None:
+        result = self.h.run(self.h.request())
+        self.assertEqual(self.h.slurm_record()["state"], "COMPLETED")
+        self.assertEqual([r["return_code"] for r in result.results], [0, 0])
+
+    def test_ended_1_and_the_failed_command_is_its_result(self) -> None:
+        result = self.h.run(self.h.request(), RUNNER_RC="3")
+        self.assertEqual(self.h.slurm_record()["code"], "1:0")
+        run, qc = result.results
+        self.assertEqual((run["ok"], run["return_code"]), (False, 3))
+        self.assertIsNone(qc)
+        self.assertEqual(len(self.h.log_entries("run")), 1)
+        self.assertEqual(self.h.log_entries("qc"), [])
+
+    def test_ended_1_and_a_file_where_every_command_exited_0_is_refused(self) -> None:
+        self._refused("output file says no command failed, and the scheduler's record says the "
+                      "job script exited 1", SHIM_SBATCH_END="FAILED 1:0")
+
+    def test_ended_otherwise_is_refused_quoting_the_error_file(self) -> None:
+        self.h = SchedulerTests._slurm(self.h, setup=("echo zz-said-by-setup",))
+        for end in ("FAILED 0:9", "COMPLETED 0:9", "COMPLETED 1:0", "FAILED 3:0",
+                    "CANCELLED 0:15", "TIMEOUT 0:15", "NODE_FAIL 0:0", "OUT_OF_MEMORY 0:0"):
+            with self.subTest(end=end):
+                self._refused("(?s)did not run to its own exit with 0 or 1.*the script ran "
+                              "more than once because the scheduler requeued it.*job.err ends: "
+                              "zz-said-by-setup", SHIM_SBATCH_END=end)
+                shutil.rmtree(self.h.local / "tmp")
+                shutil.rmtree(self.h.job)
+
+    def test_an_id_the_scheduler_no_longer_knows_is_refused(self) -> None:
+        self._refused("no longer knows job 4242, so how it ended is no longer stated",
+                      SHIM_SCONTROL_FORGET="1")
+
+    def test_no_answer_decides_nothing_until_the_bound(self) -> None:
+        result = self.h.run(self.h.request(), SHIM_SCONTROL_NO_ANSWER="2")
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.h = SchedulerTests._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)),
+                                       queue_timeout_sec=1)
+        self._refused(r"not seen running within 1 sec \(queue_timeout_sec\); no poll answered its "
+                      r"state \(the last said: .*Socket timed out",
+                      SHIM_SCONTROL_NO_ANSWER="100000")
+
+    def test_a_transport_failure_while_collecting_is_refused(self) -> None:
+        self._refused("collect the job directory: scp exited 1", SHIM_SCP_FAIL="down")
+
+    def test_a_leftover_process_that_rewrites_the_file_to_all_zeros_is_refused(self) -> None:
+        """Seeded: the runner exits 3 and leaves a process that rewrites `job.out` after the job
+        script's shell ended, so that every command reads as having exited 0."""
+        forger = self.h.local / "forger"
+        forger.write_text(_FORGER)
+        forger.chmod(0o755)
+        self._refused("output file says no command failed, and the scheduler's record says the "
+                      "job script exited 1", self.h.request(ship={"bin/runner": forger}))
+        out = (Path(self.h.job) / rx.CONTROL_DIR / "job.out").read_text()
+        self.assertIn(f"{rx.STATUS_MARKER} run 0 ", out, "the seeded rewrite happened")
+        self.assertIn(f"{rx.STATUS_MARKER} qc 0 ", out)
+        self.assertTrue((Path(self.h.job) / rx.CONTROL_DIR / "job.out.rewritten").exists(),
+                        "the forger marks the rewrite it made")
+
+    def test_the_same_process_that_also_kills_the_scripts_shell_is_refused(self) -> None:
+        """Seeded: the same runner also kills the job script's shell, so that no status line of
+        its own follows; the scheduler's record says the shell was killed."""
+        forger = self.h.local / "forger"
+        forger.write_text(_FORGER)
+        forger.chmod(0o755)
+        run = self.h.command("run", (f"{self.h.job}/bin/runner",), env={"KILL": "1"})
+        qc = self.h.command("qc", ("true",), cwd="src", tool="run_quality_checks")
+        self._refused("did not run to its own exit with 0 or 1",
+                      self.h.request(run, qc, ship={"bin/runner": forger}))
+        self.assertEqual(self.h.slurm_record()["code"], "0:9")
+
+
+class StubTests(unittest.TestCase):
+    """Issue #696 §6.3: the scheduler keeps the script it runs as a file the job can write; what
+    the host submits is a two-line stub whose second line holds the job script in memory."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def test_the_submitted_script_is_two_lines(self) -> None:
+        request = self.h.request()
+        self.h.run(request)
+        kept = (self.h.slurm / "job4242" / "slurm_script").read_text()
+        self.assertEqual(kept, rx.render_stub(request))
+        # The second line is one command, whose one quoted argument spans the script's lines.
+        first, second = kept.split("\n", 1)
+        self.assertEqual(first, "#!/bin/sh")
+        self.assertEqual(shlex.split(second), ["exec", "sh", "-c", rx.render_job_script(request)])
+        self.assertTrue(second.endswith("'\n"))
+
+    def _rewrite_while_running(self, h: _Harness) -> rx.JobResult:
+        """Run a job whose first command rewrites the file the scheduler kept, from the offset
+        at which the shell reading that file stands (an ancestor's descriptor of it, read from
+        `/proc/<pid>/fdinfo`; offset 0 when no process holds one), with text of the same length
+        that prints a clean status for the second command and exits 0. The kept file is run by
+        bash, which reads a script file a command at a time (dash, this machine's `/bin/sh`,
+        read a small one whole and would observe nothing)."""
+        kept = h.slurm / "job4242" / "slurm_script"
+        rewriter = h.local / "rewriter"
+        rewriter.write_text(textwrap.dedent(f'''\
+            #!/usr/bin/env python3
+            import os
+            kept = {str(kept)!r}
+            # The output files the skipped command would have written, so that their absence
+            # is not what refuses the job.
+            for name in ("qc.stdout", "qc.stderr"):
+                open(os.path.join("..", "ctl", name), "w").close()
+            pos, pid = 0, os.getppid()
+            while pid > 1 and not pos:
+                fds = f"/proc/{{pid}}/fd"
+                for fd in os.listdir(fds):
+                    try:
+                        if os.readlink(f"{{fds}}/{{fd}}") == kept:
+                            info = open(f"/proc/{{pid}}/fdinfo/{{fd}}").read()
+                            pos = int(info.split("pos:")[1].split()[0])
+                    except OSError:
+                        pass
+                pid = int(open(f"/proc/{{pid}}/stat").read().rsplit(")", 1)[1].split()[1])
+            size = os.path.getsize(kept)
+            new = 'echo "{rx.STATUS_MARKER} qc 0 1 1"; exit 0\\n'
+            with open(kept, "r+") as f:
+                f.seek(pos)
+                f.write(new.ljust(size - pos)[:size - pos])
+        '''))
+        rewriter.chmod(0o755)
+        run = h.command("run", (f"{h.job}/bin/runner",))
+        qc = h.command("qc", ("sh", "-c", "exit 1"), cwd="src", tool="run_quality_checks")
+        bash_site = _bare_path(h.root, without="", sh="bash")
+        result = h.run(h.request(run, qc, ship={"bin/runner": rewriter}),
+                       SHIM_SSH_PATH=f"{h.shims}{os.pathsep}{bash_site}")
+        self.assertIn(f"{rx.STATUS_MARKER} qc 0 1 1", kept.read_text(), "the file was rewritten")
+        return result
+
+    def test_rewriting_the_submitted_file_while_the_job_runs_changes_nothing_that_runs(
+            self) -> None:
+        """Under the stub the second command still runs and its failure is its result. The same
+        rewrite of an unstubbed script (`render_job_script` submitted as the file) skips the
+        second command and records it as having exited 0: the row observes the stub."""
+        self.assertIsNotNone(shutil.which("bash"), "this row needs bash to run the kept file")
+        result = self._rewrite_while_running(self.h)
+        self.assertEqual((result.results[1]["ok"], result.results[1]["return_code"]), (False, 1))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(rx, "render_stub", rx.render_job_script):
+            forged = self._rewrite_while_running(SchedulerTests._slurm(_Harness(tmp)))
+        self.assertEqual((forged.results[1]["ok"], forged.results[1]["return_code"]), (True, 0))
+
+
+class PollingTests(unittest.TestCase):
+    """Issue #696 §6.4: how the host waits for a batch job."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
+
+    def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
+        self._tmp.cleanup()
+
+    def _handle(self) -> rx.JobHandle:
+        return rx.JobHandle(site="box", host="box", scheduler="slurm", job_id="7",
+                            remote_dir=self.h.job, submitted_epoch=0)
+
+    def test_the_schedule_starts_at_two_seconds_and_doubles_to_a_minute(self) -> None:
+        self.assertEqual((rx.POLL_FIRST_SEC, rx.POLL_MAX_SEC), (2, 60))
+        answers = iter([("queued", None)] * 7 + [("running", None), ("ended", 1)])
+        slept: list[float] = []
+        with mock.patch.object(rx, "_ask_state", side_effect=lambda *a: next(answers)), \
+                mock.patch.object(rx.time, "sleep", side_effect=slept.append):
+            self.assertEqual(rx.wait_job(self._handle(), queue_bound_sec=10_000,
+                                         run_bound_sec=10_000), 1)
+        self.assertEqual(slept, [2, 4, 8, 16, 32, 60, 60, 60, 60])
+
+    def test_a_poll_whose_ssh_call_fails_is_asked_again(self) -> None:
+        result = self.h.run(self.h.request(), SHIM_SSH_FAIL_ONCE="scontrol")
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertTrue(Path(str(self.h.log) + ".failed").exists(), "a poll did fail")
+
+    def test_a_poll_whose_ssh_call_hangs_past_its_bound_is_asked_again(self) -> None:
+        """A poll whose ssh call does not finish within its transport bound (or cannot be
+        started) is a failed poll, asked again, not a refusal of the wait: the first state
+        call here runs a program that outlives a 1 sec bound, and the next ones run as built."""
+        real = rx._call
+        hung: list[str] = []
+
+        def once(argv, **kw):
+            if not hung and "scontrol" in argv[-1]:
+                hung.append(argv[-1])
+                return real([sys.executable, "-c", "import time; time.sleep(30)"],
+                            **{**kw, "timeout": 1})
+            return real(argv, **kw)
+
+        with mock.patch.object(rx, "_call", side_effect=once):
+            result = self.h.run(self.h.request())
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertEqual(len(hung), 1, "the first poll did hang")
+
+    def test_a_poll_answered_no_answer_is_asked_again(self) -> None:
+        result = self.h.run(self.h.request(), SHIM_SCONTROL_NO_ANSWER="3")
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertGreaterEqual([c[0] for c in self.h.calls()].count("scontrol"), 4)
+
+    def test_an_unknown_id_is_a_refusal_at_once(self) -> None:
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "no longer knows job 4242"):
+            self.h.run(self.h.request(), SHIM_SCONTROL_FORGET="1")
+        self.assertEqual([c[0] for c in self.h.calls()].count("scontrol"), 1)
+
+    def _refusal(self, answers: list[tuple[str, object]], **bounds: int) -> str:
+        """The refusal of a wait whose polls answer `answers` (the last repeated), 10 sec
+        apart on a clock that starts at 0."""
+        clock = iter(float(t) for t in range(0, 1000, 10))
+        replies = iter(answers)
+        with mock.patch.object(rx, "_ask_state",
+                               side_effect=lambda *a: next(replies, answers[-1])), \
+                mock.patch.object(rx.time, "sleep"), \
+                mock.patch.object(rx.time, "monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaises(rx.RemoteExecutionError) as ctx:
+                rx.wait_job(self._handle(), **bounds)
+        text = str(ctx.exception)
+        self.assertIn("it is left as it is, nothing cancels it", text)
+        self.assertNotIn("left running", text)
+        return text
+
+    def test_a_job_past_its_running_bound_is_refused_and_left_as_it_is(self) -> None:
+        text = self._refusal([("running", None)], queue_bound_sec=5, run_bound_sec=25)
+        self.assertIn("job 7 did not end within 25 sec since a poll first saw it running; the "
+                      "last answered poll read it as running, 40 sec into the wait;", text)
+        self.assertNotIn("answered nothing", text)
+        self.assertNotIn("no poll answered", text)
+
+    def test_a_job_running_then_unanswered_is_not_said_to_be_running(self) -> None:
+        """The polls after the last answered one answered nothing: the job may have ended, so
+        the refusal states when it was last read as running, and how many polls followed."""
+        text = self._refusal([("running", None), ("no_answer", "zz down")],
+                             queue_bound_sec=5, run_bound_sec=25)
+        self.assertIn("the last answered poll read it as running, 10 sec into the wait, and the "
+                      "3 poll(s) after it answered nothing (the last said: zz down);", text)
+        self.assertNotIn("no poll answered", text)
+
+    def test_the_unanswered_count_starts_again_after_an_answer(self) -> None:
+        """Running at 10, nothing at 20, running at 30, nothing at 40, where the run bound of
+        25 sec since 10 refuses: one poll followed the last answered one, not two."""
+        text = self._refusal([("running", None), ("no_answer", "zz one"), ("running", None),
+                              ("no_answer", "zz two")], queue_bound_sec=5, run_bound_sec=25)
+        self.assertIn("the last answered poll read it as running, 30 sec into the wait, and the "
+                      "1 poll(s) after it answered nothing (the last said: zz two);", text)
+
+    def test_a_queued_job_past_its_queue_bound_is_refused(self) -> None:
+        text = self._refusal([("queued", None)], queue_bound_sec=25, run_bound_sec=5)
+        self.assertIn("job 7 was not seen running within 25 sec (queue_timeout_sec); the last "
+                      "answered poll read it as queued, 30 sec into the wait;", text)
+        self.assertNotIn("answered nothing", text)
+        self.assertNotIn("no poll answered", text)
+
+    def test_a_job_no_poll_answered_is_not_said_to_be_queued(self) -> None:
+        """Every poll answered `no_answer`: what is known is that no poll answered and the job
+        was not seen running, not that it did not start."""
+        text = self._refusal([("no_answer", "zz down")], queue_bound_sec=25, run_bound_sec=5)
+        self.assertIn("was not seen running within 25 sec (queue_timeout_sec); no poll answered "
+                      "its state (the last said: zz down);", text)
+        self.assertNotIn("queued", text)
+        self.assertNotIn("read it as", text)
+
+    def test_the_state_commands_are_tried_in_order_until_one_answers(self) -> None:
+        """`state_argvs` may name more than one command (a scheduler whose ended jobs are
+        stated by another); a `no_answer` from the first asks the second."""
+        answers = iter([(1, "", "zz down"), (0, "zz-second", "")])
+        submission = mock.Mock()
+        submission.state_argvs.return_value = (("first",), ("second",))
+        submission.job_state.side_effect = lambda rc, out, err: (
+            ("no_answer", err) if rc else ("ended", 0))
+
+        def call(argv, **_k):
+            rc, out, err = next(answers)
+            return subprocess.CompletedProcess(
+                argv, 0, f"\n{out}\n{rx._STATE_RC_MARKER} {rc}\n", err)
+
+        with mock.patch.object(rx, "_call", side_effect=call) as calls:
+            self.assertEqual(rx._ask_state(self._handle(), submission), ("ended", 0))
+        self.assertEqual(len(calls.call_args_list), 2)
+        self.assertIn("first", calls.call_args_list[0].args[0][-1])
+        self.assertIn("second", calls.call_args_list[1].args[0][-1])
+        self.assertEqual(submission.job_state.call_args_list[1].args[:1], (0,))
+
+    def test_a_setup_line_without_a_final_newline_leaves_the_marked_lines_whole(self) -> None:
+        """A setup line's output goes to the job's stderr (`job.err`), so one that ends without
+        a newline does not glue onto the first marked line of `job.out` (M-S6: on its stdout,
+        it does)."""
+        h = SchedulerTests._slurm(self.h, setup=("printf no-newline-out",
+                                                 "printf no-newline-err >&2"))
+        result = h.run(h.request())
+        self.assertTrue(all(r["ok"] for r in result.results))
+        err = (result.collected / rx.CONTROL_DIR / "job.err").read_text()
+        self.assertIn("no-newline-out", err)
 
 
 class SiteSetupTests(unittest.TestCase):
@@ -1137,6 +1713,7 @@ class SiteSetupTests(unittest.TestCase):
         _script(self.tools / "zz-cc", "exit 0\n")
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _setup(self, *lines: str, **kw) -> None:
@@ -1212,8 +1789,10 @@ class SiteSetupTests(unittest.TestCase):
         it: a scheduler program only a setup line puts on PATH is missing."""
         bare = _bare_path(self.h.root, without="")
         self._setup(f"export PATH={self.h.shims}:{self.tools}:$PATH", scheduler="slurm")
-        got = self._probe("srun", "zz-cc", SHIM_SSH_PATH=str(bare))
-        self.assertEqual(got.missing, ("srun",))
+        programs = _slurm_programs()
+        self.assertTrue(all((self.h.shims / p).exists() for p in programs))
+        got = self._probe(*programs, "zz-cc", SHIM_SSH_PATH=str(bare))
+        self.assertEqual(got.missing, programs)
 
     def test_the_probe_names_a_failing_setup_once(self) -> None:
         self._setup("false", "true", "exit_code_2() { return 2; }; exit_code_2")
@@ -1291,6 +1870,7 @@ class SiteSmokeTests(unittest.TestCase):
                               f"    scheduler: none\n")
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def smoke(self, *extra: str, **knobs: str) -> tuple[int, str, str]:
@@ -1351,6 +1931,7 @@ class ProbeSiteTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def probe(self, *exes: str, **knobs: str) -> rx.SiteProbe:
@@ -1510,6 +2091,7 @@ class BuildShapeTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _build(self, **kw) -> rx.CommandSpec:
@@ -1647,10 +2229,11 @@ class BuildShapeTests(unittest.TestCase):
                 [rf"^({rx.PLATFORM_MARKER} node .*)$",
                  rf"\1\n{rx.PLATFORM_MARKER} {rx.TOOLCHAIN_KEY} forged 1.0"]))
 
-    def test_the_toolchain_probe_is_inside_a_scheduled_jobs_time_after_its_job_line(self) -> None:
-        """Run under the prefix, the probe asks the node the build runs on; it may run twice (its
+    def test_the_toolchain_probe_is_inside_a_scheduled_jobs_time_after_its_start_line(
+            self) -> None:
+        """Run in the job, the probe asks the node the build runs on; it may run twice (its
         stderr is read when its stdout is empty), so the time limit covers two probes, and it
-        runs after the job line, which would otherwise count its time as queue wait."""
+        runs after the start line, which would otherwise count its time as queue wait."""
         h = SchedulerTests._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)),
                                   queue_timeout_sec=None)
         probe = _script(h.root / "probe", "echo 'tool 4.5'\n")
@@ -1658,12 +2241,12 @@ class BuildShapeTests(unittest.TestCase):
         request = h.request(build, dirs=("bin",), toolchain_probe=(str(probe), "--version"))
         result = h.run(request)
         self.assertEqual(result.toolchain_version, "tool 4.5")
-        (srun,) = [c for c in h.calls() if c[0] == "srun"]
+        (sbatch,) = [c for c in h.calls() if c[0] == "sbatch"]
         wall = build.timeout_sec + rx.KILL_AFTER_SEC + rx.TRANSPORT_GRACE_SEC \
             + 2 * rx.PROBE_TIMEOUT_SEC
-        self.assertIn(f"--time={-(-wall // 60)}", srun)
+        self.assertIn(f"--time={-(-wall // 60)}", sbatch)
         script = rx.render_job_script(request)
-        self.assertLess(script.index(f"{rx.JOB_MARKER} "), script.index(str(probe)))
+        self.assertLess(script.index(f"{rx.START_MARKER} "), script.index(str(probe)))
 
 if __name__ == "__main__":
     unittest.main()
