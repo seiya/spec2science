@@ -131,6 +131,7 @@ class JobStateTests(unittest.TestCase):
             "never_issued (never_issued)": ("unknown_id", None),
             "exit0 (after_330s)": ("unknown_id", None),
             "kill_shell_KILL (after_330s)": ("unknown_id", None),
+            "requeue_self_update (after_requeue_attempt)": ("ended", None),
         }
         teardown = {"COMPLETING": ("running", None), "CANCELLED": ("ended", None),
                     "TIMEOUT": ("ended", None)}
@@ -164,6 +165,36 @@ class JobStateTests(unittest.TestCase):
                 ("CANCELLED", "1:0", None), ("NODE_FAIL", "0:0", None)):
             with self.subTest(state=state, code=code):
                 self.assertEqual(submit.job_state(0, _with(state, code), ""), ("ended", own_exit))
+
+    def test_an_own_exit_is_read_only_from_a_job_whose_script_ran_once(self) -> None:
+        """Under `--no-requeue` the job's own command can turn its requeue flag back on and
+        requeue itself; measured (M-S5): the second pass ended `COMPLETED 0:0` with
+        `Restarts=1`. Two passes must not be recorded as one run, so a terminal record is read
+        as an own exit only at `Restarts=0`; a missing or repeated `Restarts` is not."""
+        (again,) = [a for a in _measured()
+                    if a["case"] == "requeue_self_update (after_requeue_attempt)"]
+        self.assertRegex(again["stdout"], r"\bJobState=COMPLETED\b.*\bExitCode=0:0\b")
+        self.assertIn(" Restarts=1 ", again["stdout"])
+        self.assertEqual(submit.job_state(0, again["stdout"], ""), ("ended", None))
+        # The measured own exits carry Restarts=0 and are still read as such.
+        for case, own_exit in (("exit0 (poll)", 0), ("exit1 (poll)", 1)):
+            (a,) = [a for a in _measured() if a["case"] == case]
+            with self.subTest(case=case):
+                self.assertIn(" Restarts=0 ", a["stdout"])
+                self.assertEqual(submit.job_state(0, a["stdout"], ""), ("ended", own_exit))
+        for state, code in (("COMPLETED", "0:0"), ("FAILED", "1:0")):
+            text = _with(state, code)
+            for label, changed in (
+                    ("Restarts=1", text.replace(" Restarts=0 ", " Restarts=1 ")),
+                    ("Restarts=2", text.replace(" Restarts=0 ", " Restarts=2 ")),
+                    ("missing", text.replace(" Restarts=0 ", " ")),
+                    ("twice", text.replace(" Restarts=0 ", " Restarts=0 Restarts=0 "))):
+                with self.subTest(state=state, restarts=label):
+                    self.assertNotEqual(changed, text)
+                    self.assertEqual(submit.job_state(0, changed, ""), ("ended", None))
+        # A job not yet ended is answered by its state alone: a requeued one is queued again.
+        pending = _with("PENDING").replace(" Restarts=0 ", " Restarts=1 ")
+        self.assertEqual(submit.job_state(0, pending, ""), ("queued", None))
 
     def test_a_state_not_listed_is_no_answer_quoting_it(self) -> None:
         kind, text = submit.job_state(0, _with("ZZ_UNLISTED"), "")

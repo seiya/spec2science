@@ -16,7 +16,7 @@ one node); on the machine this was written for nothing is billed.
   3; a command KILLs or TERMs the script's shell; one rewrites the output file and then KILLs the
   shell; `scancel`; past `--time`), each id again after `MinJobAge`, where the scheduler keeps the
   script and whether the two-line stub survives a rewrite of it, `--no-requeue` against a requeue
-  the job asks for, and a `setup` line printed without a final newline. About 9 minutes, most of
+  the job asks for (a plain one, and one after the job sets its own requeue flag back), and a `setup` line printed without a final newline. About 9 minutes, most of
   it the wait for `MinJobAge`.
 - `executor` is V-c and V-e: `remote_execution.execute_job` with this checkout's code against the
   real `sbatch` and `scontrol`, ssh and scp SHIMMED (they run the command, and copy, on this
@@ -74,48 +74,76 @@ def _stub(body: str) -> str:
 
 # ------------------------------------------------------------------------------------------ raw
 
+def _submit(rec: Recorder, case, body, extra=(), use_stub=True, no_requeue=True, time_min=2):
+    d = rec.out / case
+    d.mkdir(exist_ok=True)
+    argv = ["sbatch", "--parsable", f"--time={time_min}", *extra, f"--job-name=ms-{case}",
+            f"--output={d}/job.out", f"--error={d}/job.err"]
+    if no_requeue:
+        argv.append("--no-requeue")
+    script = _stub(body) if use_stub else body
+    t0 = time.time()
+    rc, so, se = _run(argv, stdin=script)
+    rec.log(case=case, what="sbatch", argv=argv, rc=rc, stdout=so, stderr=se,
+            returned_after_s=round(time.time() - t0, 3), script=script)
+    return so.strip().split(";")[0], d
+
+
+def _show(rec: Recorder, case, jid, what="scontrol"):
+    rc, so, se = _run(["scontrol", "show", "job", "-o", jid])
+    fields = dict(tok.split("=", 1) for tok in so.split() if "=" in tok)
+    rec.log(case=case, what=what, job_id=jid, rc=rc, stdout=so, stderr=se,
+            JobState=fields.get("JobState"), ExitCode=fields.get("ExitCode"),
+            Reason=fields.get("Reason"), Requeue=fields.get("Requeue"),
+            Restarts=fields.get("Restarts"))
+    return fields.get("JobState"), rc
+
+
+def _wait_end(rec: Recorder, ended: list, case, jid, d, cap=400):
+    t0 = time.time()
+    while time.time() - t0 < cap:
+        st, rc = _show(rec, case, jid, "poll")
+        if st in TERMINAL or rc != 0:
+            # M-S4: the two files at the first "ended".
+            for name in ("job.out", "job.err"):
+                p = d / name
+                rec.log(case=case, what=f"file_at_end:{name}", exists=p.exists(),
+                        content=p.read_text(errors="replace") if p.exists() else None)
+            ended.append((case, jid))
+            return st
+        time.sleep(1)
+    rec.log(case=case, what="wait_cap_reached")
+    return None
+
+
+def self_requeue(rec: Recorder, ended: list) -> None:
+    """M-S5, second half (issue #696 review 1): under `--no-requeue` the job's own command turns
+    its requeue flag back on (`scontrol update ... Requeue=1`) and then requeues itself. The
+    second pass skips both (`SLURM_RESTART_COUNT`), so the job ends instead of looping."""
+    case = "requeue_self_update"
+    body = START + ('echo "pass restart=${SLURM_RESTART_COUNT:-0}"; '
+                    'if [ "${SLURM_RESTART_COUNT:-0}" = 0 ]; then '
+                    'scontrol update JobId=$SLURM_JOB_ID Requeue=1; echo "update rc=$?"; '
+                    'scontrol requeue $SLURM_JOB_ID; echo "requeue rc=$?"; sleep 30; fi; '
+                    'echo end')
+    jid, d = _submit(rec, case, body)
+    _wait_end(rec, ended, case, jid, d, cap=400)
+    time.sleep(5)
+    _show(rec, case, jid, "after_requeue_attempt")
+
+
 def raw(rec: Recorder) -> None:
     out = rec.out
     ended: list[tuple[str, str]] = []
 
-    def submit(case, body, extra=(), use_stub=True, no_requeue=True, time_min=2):
-        d = out / case
-        d.mkdir(exist_ok=True)
-        argv = ["sbatch", "--parsable", f"--time={time_min}", *extra, f"--job-name=ms-{case}",
-                f"--output={d}/job.out", f"--error={d}/job.err"]
-        if no_requeue:
-            argv.append("--no-requeue")
-        script = _stub(body) if use_stub else body
-        t0 = time.time()
-        rc, so, se = _run(argv, stdin=script)
-        rec.log(case=case, what="sbatch", argv=argv, rc=rc, stdout=so, stderr=se,
-                returned_after_s=round(time.time() - t0, 3), script=script)
-        return so.strip().split(";")[0], d
+    def submit(*a, **k):
+        return _submit(rec, *a, **k)
 
-    def show(case, jid, what="scontrol"):
-        rc, so, se = _run(["scontrol", "show", "job", "-o", jid])
-        fields = dict(tok.split("=", 1) for tok in so.split() if "=" in tok)
-        rec.log(case=case, what=what, job_id=jid, rc=rc, stdout=so, stderr=se,
-                JobState=fields.get("JobState"), ExitCode=fields.get("ExitCode"),
-                Reason=fields.get("Reason"), Requeue=fields.get("Requeue"),
-                Restarts=fields.get("Restarts"))
-        return fields.get("JobState"), rc
+    def show(*a, **k):
+        return _show(rec, *a, **k)
 
-    def wait_end(case, jid, d, cap=400):
-        t0 = time.time()
-        while time.time() - t0 < cap:
-            st, rc = show(case, jid, "poll")
-            if st in TERMINAL or rc != 0:
-                # M-S4: the two files at the first "ended".
-                for name in ("job.out", "job.err"):
-                    p = d / name
-                    rec.log(case=case, what=f"file_at_end:{name}", exists=p.exists(),
-                            content=p.read_text(errors="replace") if p.exists() else None)
-                ended.append((case, jid))
-                return st
-            time.sleep(1)
-        rec.log(case=case, what="wait_cap_reached")
-        return None
+    def wait_end(*a, **k):
+        return _wait_end(rec, ended, *a, **k)
 
     # M-S1, M-S2: held, running
     jid, d = submit("held", START + "echo hi", extra=["--begin=now+40"])
@@ -167,6 +195,7 @@ def raw(rec: Recorder) -> None:
         show(case, jid, "after_requeue_attempt")
         if not no_requeue:
             rec.log(case=case, what="scancel", res=_run(["scancel", jid]))
+    self_requeue(rec, ended)
     # M-S6: a setup line printed without a final newline
     jid, d = submit("setup_no_newline", 'printf "to-stdout-no-nl"; printf "to-stderr-no-nl" >&2; '
                     + START + 'printf "spec2science-status 0\\n"')
@@ -301,7 +330,8 @@ def executor(rec: Recorder) -> None:
 #: The answers of `raw` that become fixtures: the first answer of each (case, what) below, and
 #: of each case's polls every distinct answer from `COMPLETING` on.
 _FIRST = {("held", "after_submit"), ("running", "running"), ("never_issued", "never_issued"),
-          ("exit0", "after_330s"), ("kill_shell_KILL", "after_330s")}
+          ("exit0", "after_330s"), ("kill_shell_KILL", "after_330s"),
+          ("requeue_self_update", "after_requeue_attempt")}
 _POLLED = ("exit0", "exit1", "exit3", "kill_shell_KILL", "kill_shell_TERM",
            "kill_shell_after_rewrite", "cancelled", "timelimit")
 
@@ -315,8 +345,8 @@ def _sanitize(text: str) -> str:
     return re.sub(r"WorkDir=\S+", "WorkDir=/work", text)
 
 
-def fixture(records: Path) -> dict:
-    rows = [json.loads(line) for line in records.read_text().splitlines()]
+def fixture(*records: Path) -> dict:
+    rows = [json.loads(line) for path in records for line in path.read_text().splitlines()]
     answers: list[dict] = []
     seen: set[tuple] = set()
     for r in rows:
@@ -336,17 +366,18 @@ def fixture(records: Path) -> dict:
         answers.append({"case": f"{r['case']} ({r['what']})", "source": "measured",
                         "returncode": r["rc"], "stdout": _sanitize(r["stdout"]),
                         "stderr": r["stderr"]})
-    return {"measured_on": "Slurm 20.02.5, one node, 2026-11-20 (issue #696, M-S2): "
+    return {"measured_on": "Slurm 20.02.5, one node, 2026-11-20 (issue #696, M-S2, M-S5): "
                            "`scontrol show job -o <id>`, verbatim but for _sanitize",
             "answers": answers}
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[0] not in ("raw", "executor", "fixture"):
+    if len(argv) < 2 or argv[0] not in ("raw", "executor", "fixture") \
+            or (argv[0] != "fixture" and len(argv) != 2):
         print(__doc__, file=sys.stderr)
         return 2
     if argv[0] == "fixture":
-        json.dump(fixture(Path(argv[1])), sys.stdout, indent=1)
+        json.dump(fixture(*(Path(a) for a in argv[1:])), sys.stdout, indent=1)
         sys.stdout.write("\n")
         return 0
     rec = Recorder(Path(argv[1]).resolve())

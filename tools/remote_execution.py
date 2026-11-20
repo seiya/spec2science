@@ -138,7 +138,9 @@ what their answer means (`job_state`, seven answers). `execute_job` composes thr
   that first prints the login's time (`SUBMIT_MARKER`, the job's `submitted_epoch`). The submit
   command's options put the time limit first, so that a directive may replace it, then the
   operator's `scheduler_directives`, then the job's name, its two files and the option that
-  forbids the scheduler from running the job a second time. The id is held to one path element.
+  forbids the scheduler's own requeue (a job whose own command requeues it anyway is "ended
+  otherwise" in the backend's `job_state`, which reads the record's restart count). The id is
+  held to one path element.
 - `wait_job` polls: the first poll `POLL_FIRST_SEC` after submission, the interval doubling to
   `POLL_MAX_SEC`. A poll whose ssh call fails, and one answered `no_answer`, are asked again; an
   id the scheduler says it does not know is refused (how the job ended is no longer stated). The

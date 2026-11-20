@@ -59,6 +59,7 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
 | `FAILED` with `3:0`, `0:9`, `0:15` | ended otherwise | yes (exit 3; a command KILLed, TERMed the script's shell) |
 | `CANCELLED` with `0:15`, `TIMEOUT` with `0:15` | ended otherwise | yes (`scancel`; past `--time`) |
 | `COMPLETED` or `FAILED` with any other `ExitCode`; `BOOT_FAIL`, `DEADLINE`, `NODE_FAIL`, `OUT_OF_MEMORY`, `PREEMPTED`, `REVOKED` | ended otherwise | no, from `man squeue` / `man scontrol` |
+| any terminal state when `Restarts` is not `0`, is missing or is named twice | ended otherwise: the script ran more than once | yes (`COMPLETED 0:0` with `Restarts=1`, a job that requeued itself) |
 | a state not above, or a field named twice (a job may rename itself) | no answer | — |
 
 Measured on Slurm 20.02.5, a one-node cluster (issue #696, M-S1 to M-S6;
@@ -72,9 +73,12 @@ answered exactly as one never issued — exit status 1, nothing on stdout,
 job's user rewrote it, and under the stub the shell held no descriptor of it and the rewrite
 changed nothing that ran; `job.out` and `job.err` were whole at the first terminal state (there
 the job writes where the host reads, so this shows nothing about a site where they differ);
-under `--no-requeue` a requeue the job's own command asks for is refused (`Requested operation is
-presently disabled`), also with `--requeue` before it, and without the option the same job was
-requeued twice; and a `setup` line printed to stdout without a final newline glues onto the first
+under `--no-requeue` a plain `scontrol requeue` of the job's own id is refused (`Requested
+operation is presently disabled`), also with `--requeue` before it, and without the option the
+same job was requeued twice, but a job whose command first turns the flag back on (`scontrol
+update JobId=$SLURM_JOB_ID Requeue=1`, which the job's user may do) and then requeues itself ran
+twice and ended `COMPLETED 0:0` with `Restarts=1`, its `job.out` holding the second pass alone;
+and a `setup` line printed to stdout without a final newline glues onto the first
 marked line of `job.out`, to stderr it stays in `job.err` (the executor sends `setup` output to
 stderr).
 
@@ -134,7 +138,11 @@ that runs long a refusal rather than the command's own timeout.
   job (issue #696; not built yet) a later attempt submits a job of its own in a directory of its own.
 - **No requeue.** A requeued batch job runs its script again from the beginning, in a directory
   holding the first pass's files, and truncates its output file, so two passes would be recorded
-  as one run. `--no-requeue` is the executor's own option, last, and forbids it.
+  as one run. `--no-requeue` is the executor's own option, last: it stops the scheduler's own
+  requeue and a plain `scontrol requeue` of the job. It does not stop the job's own commands from
+  setting the flag back (`scontrol update JobId=<id> Requeue=1`) and then requeueing the job, so
+  the backend reads an own exit only from a record with `Restarts=0`; a job that ran its script
+  more than once is refused as ended otherwise.
 - **No accounting.** Nothing reads `sacct`: it did not answer on the machine measured, so no
   output of it is recorded, and an ended job is stated for the scheduler's own retention alone.
   It enters as a second state command, with a recorded fixture, from the first site whose

@@ -17,8 +17,11 @@ scheduler; this module spells the commands and reads their answers. Measured on 
   `FAILED 3:0`, and one whose shell a command killed ends `FAILED 0:9` (KILL) or `FAILED 0:15`
   (TERM), never `COMPLETED 0:0`; a cancelled job and one past its time limit pass through
   `COMPLETING` and end `CANCELLED 0:15` / `TIMEOUT 0:15`;
-- `--no-requeue` refuses a requeue the job's own commands ask for, also when a directive says
-  `--requeue` before it (the last one wins); without it the same job was requeued.
+- under `--no-requeue` a plain `scontrol requeue` of the job's own id is refused, also when a
+  directive says `--requeue` before it (the last one wins); without it the same job was
+  requeued. The option does not stop the job's own commands from turning the flag back on
+  (`scontrol update JobId=<id> Requeue=1`) and then requeueing it: that job ran twice and ended
+  `COMPLETED 0:0` with `Restarts=1`, so `job_state` accepts an own exit only at `Restarts=0`.
 """
 
 from __future__ import annotations
@@ -108,7 +111,8 @@ def _field(stdout: str, key: str) -> str | None:
 def job_state(returncode: int, stdout: str, stderr: str) -> tuple[str, int | str | None]:
     """What one state command's answer means, as one of seven answers: `("queued", None)`,
     `("running", None)`, `("ended", 0)` and `("ended", 1)` only for the records `OWN_EXITS`
-    lists, `("ended", None)` for every other terminal record, `("unknown_id", None)` when
+    lists of a job whose script ran once (`Restarts=0`), `("ended", None)` for every other
+    terminal record, `("unknown_id", None)` when
     `scontrol` says it does not know the id, and `("no_answer", <text>)` for anything else — a
     failure for another reason, a `JobState` this module does not list, a field missing or
     repeated."""
@@ -124,5 +128,13 @@ def job_state(returncode: int, stdout: str, stderr: str) -> tuple[str, int | str
     if state in RUNNING_STATES:
         return ("running", None)
     if state in ENDED_STATES:
+        # A job ran its script more than once when `Restarts` is not 0: its own command can turn
+        # its requeue flag back on and requeue itself under `--no-requeue` (`scontrol update
+        # JobId=$SLURM_JOB_ID Requeue=1`, then `scontrol requeue`; measured, M-S5), and the
+        # second pass ends `COMPLETED 0:0` in a directory holding the first pass's files with
+        # the first pass's statuses truncated away. Breakage without this: two passes recorded
+        # as one run (issue #696 §6.12), a first pass's failure gone from the record.
+        if _field(stdout, "Restarts") != "0":
+            return ("ended", None)
         return ("ended", OWN_EXITS.get((state, exit_code)))
     return ("no_answer", f"JobState {state!r} is not a state this backend lists")
