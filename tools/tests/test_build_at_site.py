@@ -487,13 +487,20 @@ class LauncherTargetBuildAtARemoteSiteTests(unittest.TestCase):
         launches = Path(f"{n.log}.launches").read_text().splitlines()
         self.assertEqual(launches, [f"-n {self.RANKS} {exe}"])
 
-    def test_each_canary_failure_is_the_sites_and_runs_no_build(self) -> None:
+    def test_each_canary_failure_is_the_sites_and_records_no_build(self) -> None:
         under = f"under {self.launcher.EXECUTABLE} with {self.RANKS} processes"
-        for knob, needle in ((("SHIM_CANARY_BUILD", "fail"), "did not build the launch canary"),
-                             (("SHIM_LAUNCH", "refuse"), f"{under} did not complete"),
-                             (("SHIM_LAUNCH", "independent"), f"{under} did not run as one run"),
+        # Each needle reaches into the tail of what the site printed: the message is the
+        # failure's only durable copy of it (the log entries hold no output).
+        for knob, needle in ((("SHIM_CANARY_BUILD", "fail"),
+                              "did not build the launch canary (rc=1: no mpi_f08 module)"),
+                             (("SHIM_LAUNCH", "refuse"),
+                              f"{under} did not complete (rc=1: There are not enough slots"),
+                             (("SHIM_LAUNCH", "independent"),
+                              (f"{under} did not run as one run: {self.RANKS} process(es) were "
+                               f"started and they reported run sizes {['1'] * self.RANKS}")),
                              (("SHIM_BARE", "fail"),
-                              "started without the launcher did not complete")):
+                              ("started without the launcher did not complete "
+                               "(rc=1: cannot start outside the launcher)"))):
             with self.subTest(knob=knob), tempfile.TemporaryDirectory() as tmp:
                 n = self._node(tmp)
                 result = n.substep(**dict([knob]))

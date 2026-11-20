@@ -3833,8 +3833,10 @@ class _RemoteLaunchCanary:
     `LAUNCH_CANARY_SOURCE`, shipped to the job as `ship_path`, built with the compiler wrapper,
     started under the launcher with the profile's `execution.ranks`, and started bare. Each of
     the three is one of the job's ordinary commands, ahead of the build, and the job runs a
-    command only when every earlier one exited 0, so a canary that fails stops the job before
-    the build. Their entries go to `log`, the orchestration's `launch_canary.jsonl`, not to the
+    command only when every earlier one exited 0, so a canary command that exits non-zero stops
+    the job before the build; a launch that exits 0 and reports another run (a launcher of
+    another installation) lets the job run on, and `problem` refuses it after the job, before
+    the build's result is read or recorded. Their entries go to `log`, the orchestration's `launch_canary.jsonl`, not to the
     node's `src/command_log.jsonl` (they are not the node's commands) and not under
     `workspace/tmp/<agent_run_id>/`, which the substep's end removes.
 
