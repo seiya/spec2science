@@ -1,0 +1,8 @@
+# The lead of `tools/prompt_templates/workshop_generate_generate.txt`'s parallel fragments on a
+# target whose `parallel.backend` combines several models (issue #700). Composed by
+# `tools/orchestration_runtime.py` (`_compose_parallel_fragments`) before the members' own
+# sections for the same marker, and only on such a target. `{{value}}` is the target's value and
+# `{{members}}` its members; the text is the axis's, so it names no model.
+
+@@ target_lowering_floor
+This target's `parallel.backend` is `{{value}}`, which combines {{members}}. Each paragraph below is written for a target of one of those models, and all of them hold here together: what one requires is not waived by another. Where a paragraph tells you to declare its own model as the plan's `parallelization.model`, declare `{{value}}` instead. A plan that names only some of these models switches no model's floor off: the `Generate.gate` static checks of every model are asked of the source, and one that a plan may decline is declined only when the plan's model names none of them. The declaration that a model's work is not done in this node is `"model": "none"` with the reason stated in the plan, as the paragraphs below describe it; a floor that a paragraph states as independent of the plan is asked whatever the plan declares, and the reviewer holds the declaration to the source.

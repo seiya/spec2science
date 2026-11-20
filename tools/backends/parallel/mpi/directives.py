@@ -147,7 +147,8 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], plan: Any,
                   if _FORBIDDEN_STATEMENT_RE.match(raw) or _FORBIDDEN_REFERENCE_RE.search(masked)]
         if direct:
             out.append(
-                f"{path}: the target profile resolves to MPI (parallel.backend=mpi), and a "
+                f"{path}: the target profile runs MPI (its parallel.backend includes mpi), "
+                "and a "
                 "physics source reaches the message-passing runtime only through the target's "
                 "harness — its halo exchange, rank and grid queries and reductions — never "
                 f"directly; this source does: {direct[0][:120]!r}. Remove the library's "
@@ -158,7 +159,7 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], plan: Any,
     residency = plan.get("state_residency") if isinstance(plan, dict) else None
     if residency != "distributed":
         out.append(
-            f"{first}: the target profile resolves to MPI (parallel.backend=mpi), and the "
+            f"{first}: the target profile runs MPI (its parallel.backend includes mpi), and the "
             f"bundle's target_lowering_plan declares state_residency {residency!r}: the "
             "host-rendered driver decides per case and process grid, from the IR's "
             "`drive.distribute` axes, whether to distribute the case over the ranks, and on a "

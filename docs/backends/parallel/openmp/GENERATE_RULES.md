@@ -59,6 +59,10 @@ following hold. The pieces are this backend's `parallel_directives`
   member, or a value that is not a non-empty string declines nothing, and the floor applies: the
   plan is the reopened producer's own, so reading silence as an exemption would let it switch its
   own floor off (issue #284).
+  On a target whose `parallel.backend` combines `openmp` with another model (`mpi+openmp`,
+  issue #700), the validator asks every member's `lowering_plan_declines` and the plan declines
+  the floor only when all of them do: a plan that names `mpi`, which the `mpi` paragraph tells the
+  producer to write, does not decline OpenMP there.
 - **Sources out of the floor's reach** count no loop and pass: a whole-array source, and for
   `fortran` a source holding a `do concurrent` or a `do` header that wraps before it can be
   classified ([GENERATE_RULES.md](../../language/fortran/GENERATE_RULES.md) §4, which also lists

@@ -110,6 +110,12 @@ class Axis(NamedTuple):
     #: (`docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §Target lowering plan), and the Generate
     #: floor reads `openmp+simd` / `openmp_tasks` there as OpenMP claims.
     open_vocabulary: bool = False
+    #: True when a value of this axis may name several members joined by `+`
+    #: (`parallel.backend: mpi+openmp`, issue #700). A combination has no record and no package:
+    #: the registry answers each question for it from its members (`members`,
+    #: `package_members`). Declared per axis because `+` is a legal character of every token, and
+    #: another axis's value may hold one for another reason.
+    combinable: bool = False
 
 
 #: The axes, in the order a run resolves them.
@@ -165,9 +171,11 @@ AXES: dict[str, Axis] = {
         ),
         description=(
             "The parallel execution model: its directive or construct spelling in the target "
-            "language, and the knobs (thread counts, scopes) the host renders for it."
+            "language, and the knobs (thread counts, scopes) the host renders for it. A value "
+            "may combine several models, joined by `+`, in the order the operator writes them."
         ),
         open_vocabulary=True,
+        combinable=True,
     ),
     "hardware": Axis(
         name="hardware",
@@ -779,6 +787,44 @@ def backend_ids(axis: str) -> tuple[str, ...]:
     return tuple(sorted(bid for (ax, bid) in _BACKENDS if ax == axis))
 
 
+def members(axis: str, value: str) -> tuple[str, ...]:
+    """The members `value` names: its `+`-joined parts, in the operator's order, for a
+    `combinable` axis; the value itself otherwise. Each is normalized as the questions below
+    normalize a value. A repeated member, a `none` beside another and the order are the
+    operator's input, answered by the members' own rules, not refused here (issue #700)."""
+    spec = _require_axis(axis)
+    normalized = str(value or "").strip().lower()
+    if spec.combinable and "+" in normalized:
+        return tuple(part.strip() for part in normalized.split("+"))
+    return (normalized,)
+
+
+def _combination(axis: str, value: str) -> tuple[str, ...] | None:
+    """The members of `value` when it names more than one, else `None` (the one-member path
+    each question had before combinations, unchanged)."""
+    parts = members(axis, value)
+    return parts if len(parts) > 1 else None
+
+
+def package_members(axis: str, value: str, capability: str) -> tuple[str, ...]:
+    """The members of `value` whose own PACKAGE implements `capability`, in member order.
+
+    The question a dispatch site has for a capability several members may each implement
+    (`execution_env`, `parallel_directives`, `prompt_fragments`): every one of them does its
+    part, so the site asks each, through `capability_module` on the member. For a one-member
+    value it is that member when its record declares the capability in `backend_provides`, and
+    empty otherwise — the `get(...).backend_provides` read it replaces. A member with no record
+    contributes nothing; whether such a value may run at all is `unimplemented_reason`'s."""
+    _require_capability(axis, capability)
+    found: list[str] = []
+    for member in members(axis, value):
+        backend = _BACKENDS.get((axis, member))
+        if backend is not None and capability in backend.backend_provides \
+                and member not in found:
+            found.append(member)
+    return tuple(found)
+
+
 def _require_capability(axis: str, capability: str) -> None:
     axes_for = CAPABILITIES.get(capability)
     if axes_for is None:
@@ -813,6 +859,10 @@ def provides(axis: str, backend_id: str, capability: str) -> bool:
     # leaving a reader to assume it is load bearing.
     _require_axis(axis)
     _require_capability(axis, capability)
+    # A combination provides what some member provides (issue #700).
+    combination = _combination(axis, backend_id)
+    if combination is not None:
+        return any(provides(axis, member, capability) for member in combination)
     # `or ""` is load bearing, and its absence is NOT observable by inspection: `str(None)` is
     # `"none"`, which is a real backend id on the `parallel` axis, so a caller passing an absent
     # value would get that record's answer instead of a refusal.
@@ -954,6 +1004,11 @@ def unsupported_reason(axis: str, backend_id: str) -> str | None:
     members that have code, and the artifact carrying that axis deliberately does not constrain
     its value, so a membership test there would refuse values the schema exists to allow.
     """
+    combination = _combination(axis, backend_id)
+    if combination is not None:
+        # A combination answers with its first member's reason (issue #700).
+        return next((r for r in (unsupported_reason(axis, m) for m in combination)
+                     if r is not None), None)
     spec = _require_axis(axis)
     normalized = str(backend_id or "").strip().lower()
     if (axis, normalized) in _BACKENDS:
@@ -992,6 +1047,11 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     Returned rather than raised for `unsupported_reason`'s reason: the callers are deterministic
     gates that append a violation string rather than raising.
     """
+    combination = _combination(axis, backend_id)
+    if combination is not None:
+        # A combination answers with its first member's reason (issue #700).
+        return next((r for r in (unimplemented_reason(axis, m) for m in combination)
+                     if r is not None), None)
     reason = unsupported_reason(axis, backend_id)
     if reason is not None:
         return reason
@@ -1021,6 +1081,11 @@ def unavailable_reason(axis: str, backend_id: str) -> str | None:
     Fortran-only renderer on either of them would let a `cpp` node through and pin its
     signatures by rendering them as Fortran.
     """
+    combination = _combination(axis, backend_id)
+    if combination is not None:
+        # A combination answers with its first member's reason (issue #700).
+        return next((r for r in (unavailable_reason(axis, m) for m in combination)
+                     if r is not None), None)
     reason = unsupported_reason(axis, backend_id)
     if reason is not None:
         return reason
@@ -1084,6 +1149,10 @@ def load(axis: str, backend_id: str) -> ModuleType:
     cannot be one kind of failure here and another kind there — it was, for one review round.
     """
     require_available(axis, backend_id)
+    if _combination(axis, backend_id) is not None:
+        raise BackendNotExtracted(
+            f"the {axis} value '{backend_id}' combines several members and has no package of "
+            f"its own; load a member (registry.members) — see docs/BACKEND_BOUNDARY.md")
     module = _BACKENDS[(axis, str(backend_id or "").strip().lower())].module
     assert module is not None  # `require_available` returned, so the record is extracted
     return importlib.import_module(module)
@@ -1107,6 +1176,25 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
     record positively claims.
     """
     _require_capability(axis, capability)
+    combination = _combination(axis, backend_id)
+    if combination is not None:
+        # A combination has no package (issue #700): the module is the one member's whose
+        # package does the job. Several such members are REFUSED rather than resolved by order —
+        # handing one member's module to a site that asks for "the" module would drop the other
+        # member's part silently; that site asks each member through `package_members`.
+        owners = package_members(axis, backend_id, capability)
+        if len(owners) == 1:
+            return capability_module(axis, owners[0], capability)
+        if not owners:
+            require_available(axis, backend_id)
+            raise BackendNotExtracted(
+                f"no member of the {axis} value '{backend_id}' implements '{capability}' in its "
+                f"package (members: {', '.join(combination)}; see docs/BACKEND_BOUNDARY.md)")
+        raise UnsupportedBackend(
+            f"'{capability}' is implemented by several members of the {axis} value "
+            f"'{backend_id}' ({', '.join(owners)}); a caller asks each of them "
+            f"(registry.package_members) rather than for one module — see "
+            f"docs/BACKEND_BOUNDARY.md")
     require_available(axis, backend_id)
     backend = _BACKENDS[(axis, str(backend_id or "").strip().lower())]
     # `backend_provides`, not `provided`, and LOAD BEARING — an earlier comment here called it

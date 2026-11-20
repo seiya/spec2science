@@ -1,0 +1,8 @@
+# The lead of `tools/prompt_templates/workshop_generate_verify.txt`'s parallel fragments on a
+# target whose `parallel.backend` combines several models (issue #700). Composed by
+# `tools/orchestration_runtime.py` (`_compose_parallel_fragments`) before the members' own
+# sections for the same marker, and only on such a target. `{{value}}` is the target's value and
+# `{{members}}` its members; the text is the axis's, so it names no model.
+
+@@ checklist_g6_floor_scope
+This target's `parallel.backend` is `{{value}}`, which combines {{members}}. Each paragraph below is written for a target of one of those models, and all of them hold here together; a statement anywhere in this prompt about a target whose `parallel.backend` (or whose target) is one of those models applies to this target. The `Generate.gate` static checks of every one of them were asked of this source, and one that a plan may decline was declined only when the plan's model names none of them. A plan whose model names fewer of them than `{{value}}`, or none, is the producer's claim that the missing model's work is not done in this node: hold it to the source as that model's paragraph says a declared `none` is held.

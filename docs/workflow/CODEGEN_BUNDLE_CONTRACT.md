@@ -362,7 +362,11 @@ backend states a floor (today `openmp` on a `cpu` target) unless the plan's `par
 explicitly declines that model (the backend's `lowering_plan_declines` reads the members `model` /
 `method` / `scheme` / `kind`; an absent model declines nothing), and
 `Generate.verify` G6 judges the plan and the source against the whole target profile
-(`docs/workflow/phases/phase_02_generate.md`).
+(`docs/workflow/phases/phase_02_generate.md`). On a target whose `parallel.backend` combines
+several models (issue #700) the plan's `model` names the target's whole value, every member's
+floor is asked, and a plan declines a floor only when every member's `lowering_plan_declines`
+says so: a plan that names one member declines no other member's floor, and `"none"` with the
+reason stated is the declaration that no model's work is done in the node.
 
 **Coupling invariant.** `state_residency` other than `host` requires the corresponding
 **residency capability** in `capability_requirements`: `device` requires an

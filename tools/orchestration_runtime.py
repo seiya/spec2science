@@ -31,6 +31,7 @@ import yaml
 try:
     from tools import leaf_netns
     from tools.backends import registry as backend_registry
+    from tools.prompt_fragments import parse_fragments
     from tools.operator_private_root import (
         WORKFLOW_HOMES_ROOT_ENV,
         _resolve_lenient,
@@ -77,6 +78,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         sys.path.insert(0, str(_REPO_ROOT))
     from tools import leaf_netns
     from tools.backends import registry as backend_registry
+    from tools.prompt_fragments import parse_fragments
     from tools.operator_private_root import (
         WORKFLOW_HOMES_ROOT_ENV,
         _resolve_lenient,
@@ -8620,22 +8622,61 @@ def _compose_parallel_fragments(template: str, template_file: str, parallel: Any
         raise ValueError(
             f"pure launch prompt {template_file} cannot be composed for parallel backend "
             f"{backend!r}: {reason}")
-    if not backend_registry.provides("parallel", backend, "prompt_fragments"):
+    owners = backend_registry.package_members("parallel", backend, "prompt_fragments")
+    if not owners:
         return _PARALLEL_FRAGMENT_RE.sub("", template)
+    stem = _fragment_template_stem(template_file)
+    member_sections: list[dict[str, str]] = []
+    for member in owners:
+        try:
+            module = backend_registry.capability_module("parallel", member, "prompt_fragments")
+            sections = module.fragments(stem)
+        except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
+                ValueError) as exc:
+            raise ValueError(
+                f"pure launch prompt {template_file} cannot be composed for parallel backend "
+                f"{member!r}: {exc}") from None
+        missing = sorted(markers - set(sections))
+        if missing:
+            raise ValueError(
+                f"pure launch prompt {template_file}: parallel backend {member!r} defines no "
+                f"fragment for {', '.join(missing)}")
+        member_sections.append(sections)
+    members = backend_registry.members("parallel", backend)
+    lead: dict[str, str] = {}
+    if len(members) > 1:
+        lead = _parallel_combination_lead(stem, backend, members)
+        missing = sorted(markers - set(lead))
+        if missing:
+            raise ValueError(
+                f"pure launch prompt {template_file}: the combination lead defines no fragment "
+                f"for {', '.join(missing)}")
+    return _PARALLEL_FRAGMENT_RE.sub(
+        lambda m: "\n\n".join([*([lead[m.group(1)]] if lead else []),
+                                *(sections[m.group(1)] for sections in member_sections)]),
+        template)
+
+
+#: Where the lead a combination's members' fragments are composed under lives (issue #700): one
+#: file per neutral template stem, in the fragment format, named as a member's fragment file is
+#: so that a reader's digest attributes it the same way. The text is the `parallel` axis's, not a
+#: backend's, so it is outside `backends/` (`docs/BACKEND_BOUNDARY.md`).
+_PARALLEL_COMBINATION_LEAD_DIR = Path(__file__).resolve().parent / "prompt_templates" / \
+    "parallel_combination"
+
+
+def _parallel_combination_lead(stem: str, value: str, members: tuple[str, ...]) -> dict[str, str]:
+    """The lead sections for template `stem` on a target whose parallel value `value` combines
+    `members`, with the file's `{{value}}` and `{{members}}` filled. A missing file raises: the
+    composer asks only for a template with a parallel marker, on a combination."""
+    path = _PARALLEL_COMBINATION_LEAD_DIR / f"{stem}.txt"
     try:
-        module = backend_registry.capability_module("parallel", backend, "prompt_fragments")
-        sections = module.fragments(_fragment_template_stem(template_file))
-    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
-            ValueError) as exc:
-        raise ValueError(
-            f"pure launch prompt {template_file} cannot be composed for parallel backend "
-            f"{backend!r}: {exc}") from None
-    missing = sorted(markers - set(sections))
-    if missing:
-        raise ValueError(
-            f"pure launch prompt {template_file}: parallel backend {backend!r} defines no "
-            f"fragment for {', '.join(missing)}")
-    return _PARALLEL_FRAGMENT_RE.sub(lambda m: sections[m.group(1)], template)
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"no parallel combination lead for {stem!r}: {path} ({exc})") from exc
+    named = ", ".join(f"`{m}`" for m in members)
+    return {name: body.replace("{{value}}", value).replace("{{members}}", named)
+            for name, body in parse_fragments(text, source=str(path)).items()}
 
 
 def _compose_fragments(template: str, template_file: str, request_payload: dict[str, Any]) -> str:

@@ -181,10 +181,16 @@ def required_host_executables(
     add("compiler", compiler, build_runtime.syntax_compiler_executable(compiler))
 
     # The program that stands in for the compiler at build and at the syntax stage (issue #316).
+    # Attributed to the MEMBER that owns the wrapper, as a composite linter's program is to its
+    # sub-preset above: on a value that combines several models (issue #700) the member is the
+    # registered record the version gate can ask, and the whole value has none.
     parallel = selection.get("parallel")
     wrapper = _parallel_capability_module(parallel, "compiler_wrapper") if parallel else None
     if wrapper is not None:
-        add("parallel", parallel, str(wrapper.COMPILER_WRAPPER))
+        from tools.backends import registry as backend_registry
+
+        owner, = backend_registry.package_members("parallel", parallel, "compiler_wrapper")
+        add("parallel", owner, str(wrapper.COMPILER_WRAPPER))
 
     if closure_libraries:
         from tools.backends import registry as backend_registry
@@ -203,7 +209,7 @@ def _parallel_capability_module(backend_id: str, capability: str):
     from tools.backends import registry as backend_registry
 
     _require_implemented("parallel", backend_id)
-    if capability not in backend_registry.get("parallel", backend_id).backend_provides:
+    if not backend_registry.package_members("parallel", backend_id, capability):
         return None
     return backend_registry.capability_module("parallel", backend_id, capability)
 

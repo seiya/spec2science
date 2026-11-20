@@ -61,8 +61,8 @@ class PresenceFloor:
 
 def _fortran_cpu_remedy(model_file: Path, counted: int) -> str:
     return (
-        f"{model_file}: the target profile resolves to OpenMP on CPU "
-        "(hardware.class=cpu, parallel.backend=openmp, toolchain.language=fortran) and the "
+        f"{model_file}: the target profile runs OpenMP on CPU (hardware.class=cpu, the "
+        "target's parallel.backend includes openmp, toolchain.language=fortran) and the "
         "bundle's target_lowering_plan.parallelization does not decline OpenMP, but this "
         f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
         "directive — add `!$omp parallel do` to the parallelizable loops (a `do concurrent` "

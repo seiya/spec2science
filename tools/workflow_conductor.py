@@ -12609,8 +12609,8 @@ class Conductor:
     def _traces_execution(self) -> bool:
         """True when the target's parallel backend runs its binary under a device trace
         (`device_trace`, issue #307), so Validate.execute delivers `kernel_trace.csv`."""
-        return "device_trace" in backend_registry.get(
-            "parallel", self.target.parallel_backend).backend_provides
+        return bool(backend_registry.package_members(
+            "parallel", self.target.parallel_backend, "device_trace"))
 
     def _builds_checked(self) -> bool:
         """True when the target's compiler declares checked flags (`checked_build.

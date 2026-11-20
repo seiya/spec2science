@@ -777,7 +777,8 @@ def _thread_count_violations(profile: TargetProfile) -> list[str]:
     (`ValueError`, e.g. a model whose ranks run one thread each). A backend whose launch
     environment is the neutral core's empty one runs one thread whatever the profile says, so it
     admits none; a backend this repository does not implement is refused in its own words
-    elsewhere."""
+    elsewhere. A value that combines several models hands each count to every member whose
+    package declares a launch environment, and any one's refusal refuses it (issue #700)."""
     from tools.backends import registry as backend_registry
 
     counts = [("execution.threads_per_rank", profile.threads_per_rank)]
@@ -788,20 +789,22 @@ def _thread_count_violations(profile: TargetProfile) -> list[str]:
     if backend_registry.missing_capability_reason("parallel", backend, "execution_env") \
             is not None:
         return []
+    packaged = backend_registry.package_members("parallel", backend, "execution_env")
     out: list[str] = []
     for where, count in counts:
         if count == 1:
             continue
-        if "execution_env" not in backend_registry.get("parallel", backend).backend_provides:
+        if not packaged:
             out.append(f"{where}: {count} threads per rank, and parallel backend {backend} "
                        f"launches each rank as one thread")
             continue
-        module = backend_registry.capability_module("parallel", backend, "execution_env")
-        try:
-            module.environment(count)
-        except ValueError as exc:
-            out.append(f"{where}: parallel backend {backend} does not run {count} threads per "
-                       f"rank ({exc})")
+        for member in packaged:
+            module = backend_registry.capability_module("parallel", member, "execution_env")
+            try:
+                module.environment(count)
+            except ValueError as exc:
+                out.append(f"{where}: parallel backend {member} does not run {count} threads "
+                           f"per rank ({exc})")
     return out
 
 
@@ -812,7 +815,8 @@ def _block_size_violations(profile: TargetProfile) -> list[str]:
     (`BLOCK_SIZES`) and answers each, or refuses it (`ValueError`). A backend that declares no
     `BLOCK_SIZES` configures no kernel launch, so a block size it would be handed is a run
     recorded under a configuration nothing applied; a backend this repository does not
-    implement is refused in its own words elsewhere."""
+    implement is refused in its own words elsewhere. On a value that combines several models the
+    members that declare `BLOCK_SIZES` are asked (issue #700)."""
     from tools.backends import registry as backend_registry
 
     execution = profile.doc["execution"]
@@ -824,20 +828,23 @@ def _block_size_violations(profile: TargetProfile) -> list[str]:
     if not blocks or backend_registry.missing_capability_reason(
             "parallel", backend, "execution_env") is not None:
         return []
-    module = (backend_registry.capability_module("parallel", backend, "execution_env")
-              if "execution_env" in backend_registry.get("parallel", backend).backend_provides
-              else None)
-    if module is None or getattr(module, "BLOCK_SIZES", None) is None:
+    modules = [(member, module) for member in backend_registry.package_members(
+                   "parallel", backend, "execution_env")
+               for module in [backend_registry.capability_module(
+                   "parallel", member, "execution_env")]
+               if getattr(module, "BLOCK_SIZES", None) is not None]
+    if not modules:
         return [f"{where}: a block size configures the kernel launches of a backend whose launch "
                 f"environment imposes one, and parallel backend {backend} imposes none"
                 for where, _b in blocks]
     out: list[str] = []
     for where, block in blocks:
-        try:
-            module.environment(1, block_size=block)
-        except ValueError as exc:
-            out.append(f"{where}: parallel backend {backend} does not launch blocks of {block} "
-                       f"threads ({exc})")
+        for member, module in modules:
+            try:
+                module.environment(1, block_size=block)
+            except ValueError as exc:
+                out.append(f"{where}: parallel backend {member} does not launch blocks of "
+                           f"{block} threads ({exc})")
     return out
 
 
@@ -874,8 +881,8 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
     # file's compiler variable to it whatever the language: a target whose language compiles
     # with another would build its sources with the wrapper's compiler (issue #316).
     if backend_registry.unimplemented_reason("parallel", profile.parallel_backend) is None and \
-            "compiler_wrapper" in backend_registry.get(
-                "parallel", profile.parallel_backend).backend_provides and \
+            backend_registry.package_members(
+                "parallel", profile.parallel_backend, "compiler_wrapper") and \
             backend_registry.provides("language", tc["language"], "bundle_facts"):
         wrapped = str(backend_registry.capability_module(
             "parallel", profile.parallel_backend, "compiler_wrapper").WRAPPED_COMPILER)

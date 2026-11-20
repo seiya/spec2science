@@ -122,21 +122,30 @@ def _execution_env(parallel_backend: str, threads_per_rank: int,
     `process_grid` is the grid a profile imposes on its ranks, and `block_size` the threads per
     block it imposes on the kernel launches (issue #512); each is handed to the backend only when
     given, so a backend whose launches take neither keeps its one-argument contract.
+
+    A value that combines several models (issue #700) is launched with every member's
+    environment, merged in member order: each member whose PACKAGE declares `execution_env` is
+    asked (`registry.package_members`). The process grid goes to the member that declares the
+    launcher whose ranks it arranges, the block size to the member whose module declares the
+    sizes it admits (`BLOCK_SIZES`), and the thread count to every member — so a member that runs
+    one thread per process refuses a count above one on a combination as it does alone. For a
+    one-member value this is the one call it always was: the gates (`launch_shape`, the profile's
+    launch gate) refuse a grid or a block size for a value that takes neither before it gets here.
     """
     reason = registry.missing_capability_reason("parallel", parallel_backend, "execution_env")
     if reason is not None:
         raise LaunchUnavailable(f"parallel.backend: {reason}")
-    record = registry.get("parallel", parallel_backend)
-    if "execution_env" not in record.backend_provides:
-        return {}
-    module = registry.capability_module("parallel", parallel_backend, "execution_env")
-    imposed: dict[str, Any] = {}
-    if process_grid is not None:
-        imposed["process_grid"] = process_grid
-    if block_size is not None:
-        imposed["block_size"] = block_size
-    env = module.environment(threads_per_rank, **imposed)
-    return {str(k): str(v) for k, v in env.items()}
+    env: dict[str, str] = {}
+    for member in registry.package_members("parallel", parallel_backend, "execution_env"):
+        module = registry.capability_module("parallel", member, "execution_env")
+        imposed: dict[str, Any] = {}
+        if process_grid is not None and registry.provides("parallel", member, "launcher"):
+            imposed["process_grid"] = process_grid
+        if block_size is not None and getattr(module, "BLOCK_SIZES", None) is not None:
+            imposed["block_size"] = block_size
+        env.update({str(k): str(v)
+                    for k, v in module.environment(threads_per_rank, **imposed).items()})
+    return env
 
 
 def _platform_probe(hardware_class: str) -> tuple[str, ...] | None:
@@ -154,7 +163,7 @@ def _device_trace(parallel_backend: str) -> tuple[tuple[str, ...], TraceShape | 
     `parallel_backend` runs under: its package's `device_trace` answer, written under
     `KERNEL_TRACE_STEM`, when its record declares the capability; no prefix and no trace
     otherwise (issue #307)."""
-    if "device_trace" not in registry.get("parallel", parallel_backend).backend_provides:
+    if not registry.package_members("parallel", parallel_backend, "device_trace"):
         return (), None
     module = registry.capability_module("parallel", parallel_backend, "device_trace")
     prefix = tuple(str(a) for a in module.profile_argv_prefix(KERNEL_TRACE_STEM))
@@ -167,20 +176,19 @@ def imposes_block_size(parallel_backend: str) -> bool:
     """Whether the host imposes a thread-block size on the kernel launches of a binary built for
     `parallel_backend`: its `execution_env` package declares the values it admits
     (`BLOCK_SIZES`, `registry.CAPABILITIES["execution_env"]`). A value with no record, or whose
-    launch environment is the neutral core's, answers False."""
-    if not registry.provides("parallel", parallel_backend, "execution_env") or \
-            "execution_env" not in registry.get("parallel", parallel_backend).backend_provides:
-        return False
-    module = registry.capability_module("parallel", parallel_backend, "execution_env")
-    return getattr(module, "BLOCK_SIZES", None) is not None
+    launch environment is the neutral core's, answers False. A combination imposes one when a
+    member does."""
+    return any(
+        getattr(registry.capability_module("parallel", member, "execution_env"),
+                "BLOCK_SIZES", None) is not None
+        for member in registry.package_members("parallel", parallel_backend, "execution_env"))
 
 
 def declares_launcher(parallel_backend: str) -> bool:
     """Whether a binary built for `parallel_backend` runs under a launcher (`launcher`). A
     value with no record answers False, as `registry.provides` does; the gate that refuses it is
     the profile's (`target_profile.target_profile_violations`)."""
-    return registry.provides("parallel", parallel_backend, "launcher") and \
-        "launcher" in registry.get("parallel", parallel_backend).backend_provides
+    return bool(registry.package_members("parallel", parallel_backend, "launcher"))
 
 
 def _launcher(parallel_backend: str, ranks: int) -> tuple[str, ...]:
@@ -206,9 +214,8 @@ def execution_executables(parallel_backend: str) -> tuple[str, ...]:
     beyond the binary itself: its launcher's (`launcher`) and its device trace's
     (`device_trace`), none for a value that declares neither."""
     found: list[str] = []
-    backend_provides = registry.get("parallel", parallel_backend).backend_provides
     for capability in ("launcher", "device_trace"):
-        if capability in backend_provides:
+        if registry.package_members("parallel", parallel_backend, capability):
             module = registry.capability_module("parallel", parallel_backend, capability)
             found += [str(e) for e in module.EXECUTABLES if str(e) not in found]
     return tuple(found)

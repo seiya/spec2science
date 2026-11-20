@@ -1332,9 +1332,14 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # join the pin by existing (the `project_pure_prompt_gate_drift_guard_gap` class issue
         # #289's R4-b plan closed,
         # https://github.com/seiya/spec2science/issues/289#issuecomment-5824025920).
+        # The lead a combination's members' parallel fragments are composed under (issue #700)
+        # joins by the same rule, keyed by its path below the template directory: it is neutral
+        # text outside `backends/`, and its file names attribute it to a reader as a member's do.
         "language_fragments": {
-            str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
-            for path in sorted((tpl_dir / "backends").rglob("*.txt"))
+            **{str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
+               for path in sorted((tpl_dir / "backends").rglob("*.txt"))},
+            **{str(path.relative_to(tpl_dir)): path.read_text(encoding="utf-8")
+               for path in sorted((tpl_dir / "parallel_combination").glob("*.txt"))},
         },
         # The two system prompts a workshop leaf runs under (`--system-prompt` on claude; the
         # system block of an HTTP request), by kind.
@@ -1718,7 +1723,8 @@ class PurePromptContractDriftTests(unittest.TestCase):
                          "workshop_escalate_diagnose.txt", "workshop_bundle_repair.txt",
                          "workshop_ir_repair.txt",
                          "backends/language/fortran/generate_generate.txt",
-                         "backends/parallel/mpi/generate_generate.txt"):
+                         "backends/parallel/mpi/generate_generate.txt",
+                         "parallel_combination/generate_generate.txt"):
             with self.subTest(relative), tempfile.TemporaryDirectory() as tmp:
                 edited = self._edited_templates(tmp, relative)
                 self.assertNotEqual(_digest(edited), _digest())
@@ -1732,6 +1738,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
         for relative, phase in (("workshop_compile_verify.txt", "compile"),
                                 ("workshop_generate_verify.txt", "generate"),
                                 ("backends/language/fortran/generate_verify.txt", "generate"),
+                                ("parallel_combination/generate_verify.txt", "generate"),
                                 ("workshop_validate_judge.txt", "validate")):
             with self.subTest(relative), tempfile.TemporaryDirectory() as tmp:
                 edited = self._edited_templates(tmp, relative)

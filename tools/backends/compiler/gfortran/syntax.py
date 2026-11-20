@@ -65,6 +65,10 @@ def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
     del architecture  # accepted, not read (see the docstring)
     command = [EXECUTABLE, "-fsyntax-only", f"-std={standard}", *promotions,
                "-J", scratch_dir, "-I", scratch_dir, *(f"-I{d}" for d in include_dirs)]
-    if parallel_backend == "openmp":
+    from tools.backends import registry
+
+    # A member of the target's value, so a combination that includes OpenMP takes it too
+    # (issue #700).
+    if "openmp" in registry.members("parallel", parallel_backend):
         command.append("-fopenmp")
     return command + list(sources)
