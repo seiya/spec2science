@@ -1332,10 +1332,6 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(self.h.slurm_record()["state"], "COMPLETED")
         self.assertEqual([r["return_code"] for r in result.results], [0, 0])
 
-    def test_ended_0_and_a_failed_command_in_the_file_is_refused(self) -> None:
-        self._refused("output file says a command failed, and the scheduler's record says the "
-                      "job script exited 0", RUNNER_RC="3", SHIM_SBATCH_END="COMPLETED 0:0")
-
     def test_ended_1_and_the_failed_command_is_its_result(self) -> None:
         result = self.h.run(self.h.request(), RUNNER_RC="3")
         self.assertEqual(self.h.slurm_record()["code"], "1:0")

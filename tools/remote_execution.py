@@ -1133,15 +1133,16 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
 
 def _bind(statuses: list[tuple[int, int, int] | None], own_exit: int, remote: str) -> None:
     """The statuses read from a batch job's output file, held to the scheduler's record of how
-    the script ended: 0 accepts only "every command exited 0", 1 only "one command ran and exited
-    non-zero" (`_statuses` already refuses a status after it). A file rewritten to say every
-    command exited 0 under a record of 1 is refused. Leaf gain answered: a leaf whose later
-    command failed would otherwise be closer to a certified Validate (issue #696 §6.3's P1)."""
+    the script ended: a file that says no command failed is accepted only under a record of 0.
+    A file rewritten to say every command exited 0 under a record of 1 is refused. Leaf gain
+    answered: a leaf whose later command failed would otherwise be closer to a certified
+    Validate (issue #696 §6.3's P1). A file that shows a failed command under a record of 0 is
+    recorded as that failure: a forged failure gains a leaf nothing."""
     failed = any(s is not None and s[0] != 0 for s in statuses)
-    if failed != (own_exit == 1):
+    if not failed and own_exit != 0:
         raise RemoteExecutionError(
-            f"the job's output file says {'a' if failed else 'no'} command failed, and the "
-            f"scheduler's record says the job script exited {own_exit} ({remote})")
+            f"the job's output file says no command failed, and the scheduler's record says the "
+            f"job script exited {own_exit} ({remote})")
 
 
 def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,

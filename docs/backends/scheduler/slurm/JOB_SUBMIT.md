@@ -50,8 +50,9 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
   not list, decides nothing and is asked again; an id `scontrol` does not know is refused.
 - **What is accepted.** The job script exits 0 when every command exited 0 and 1 when a command
   ran and exited non-zero. The executor reads the statuses in `job.out` as "every command
-  exited 0" only under `COMPLETED` with `ExitCode=0:0`, and as "this command failed" only under
-  `FAILED` with `ExitCode=1:0`; every other terminal record is refused with the tail of `job.err`.
+  exited 0" only under `COMPLETED` with `ExitCode=0:0`, and a status that shows a failed command
+  as that failure under `COMPLETED 0:0` or `FAILED 1:0` (a forged failure gains a leaf nothing);
+  every other terminal record is refused with the tail of `job.err`.
   A command's own process can rewrite `job.out`; killing the shell that started it leaves a
   signal in the record. It can make that shell exit with a status of its choice only by
   deliberately attaching to it with a debugger (ptrace, where the site allows it), which a
