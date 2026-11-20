@@ -200,6 +200,29 @@ class ProfileCombinationTests(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
 
 
+class TraceAndBlockCombinationTests(unittest.TestCase):
+    """The sites that ask whether the value's package does a job one member may own: a
+    combination has no record, so a site still reading `registry.get` would raise here."""
+
+    def test_a_block_size_on_a_combination_with_no_device_member_is_refused(self) -> None:
+        blocked = profile_with(HYBRID, execution={**HYBRID.doc["execution"], "block_size": 128})
+        found = tp._block_size_violations(blocked)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("parallel backend mpi+openmp imposes none", found[0])
+
+    def test_a_combination_is_not_traced(self) -> None:
+        from tools import workflow_conductor as wc
+
+        self.assertFalse(wc.Conductor._traces_execution(mock.Mock(target=HYBRID)))
+        self.assertFalse(wc.Conductor._traces_execution(mock.Mock(target=MPI)))
+        with tempfile.TemporaryDirectory() as t:
+            v: list[str] = []
+            with mock.patch.object(vps, "_pipeline_target", return_value=HYBRID):
+                vps._validate_device_kernel_execution(
+                    Path(t), mock.Mock(), Path(t) / "src", v)
+            self.assertEqual(v, [])
+
+
 class HostPrerequisiteCombinationTests(unittest.TestCase):
     """The driver-side probes: a dispatch site that still asked the whole value for a record
     would raise `BackendNotExtracted` here, at every start of a combination target."""
@@ -303,6 +326,10 @@ class PresenceFloorCombinationTests(unittest.TestCase):
         found = self._run(self._OMP, {"model": "none"}, residency="host")
         self.assertEqual(len(found), 1, found)
         self.assertIn("parallel.backend includes mpi", found[0])
+        direct = self._run(self._OMP.replace("contains", "  use mpi_f08\ncontains"),
+                           {"model": "mpi+openmp"})
+        self.assertTrue(any("parallel.backend includes mpi" in v and "mpi_f08" in v
+                            for v in direct), direct)
         bare = self._OMP.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
         self.assertTrue(any("exchange_halo_r1" in v for v in self._run(bare, {"model": "mpi"})))
