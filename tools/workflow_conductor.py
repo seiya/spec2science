@@ -3836,9 +3836,10 @@ class _RemoteLaunchCanary:
     command only when every earlier one exited 0, so a canary command that exits non-zero stops
     the job before the build; a launch that exits 0 and reports another run (a launcher of
     another installation) lets the job run on, and `problem` refuses it after the job, before
-    the build's result is read or recorded. Their entries go to `log`, the orchestration's `launch_canary.jsonl`, not to the
-    node's `src/command_log.jsonl` (they are not the node's commands) and not under
-    `workspace/tmp/<agent_run_id>/`, which the substep's end removes.
+    the build's result is read or recorded. Their entries go to `log`, the orchestration's
+    `launch_canary.jsonl`, not to the node's `src/command_log.jsonl` (they are not the node's
+    commands) and not under `workspace/tmp/<agent_run_id>/`, which the substep's end
+    removes.
 
     Named breakage without it (`AGENTS.md` §Development premises): a site whose launcher,
     wrapper or allocation does not start the ranks as one run — a launcher of another
@@ -3897,12 +3898,15 @@ class _RemoteLaunchCanary:
             if ran.get("return_code") != 0:
                 tail = (ran.get("stderr") or ran.get("stdout") or "").strip()[-1500:]
                 return (f"the launch canary {how} did not complete "
-                        f"(rc={ran.get('return_code')}: {tail})")
+                        f"(rc={ran.get('return_code')}: {tail}); the site must start "
+                        f"{ranks} process(es) this way — at a batch site its "
+                        f"scheduler_directives allocate the ranks (docs/RUNBOOK.md §Refused "
+                        f"at startup — the execution site)")
             found = self.launcher.launch_canary_problem(0, ran.get("stdout") or "", ranks)
             if found is not None:
                 return (f"the launch canary {how} did not run as one run: {found}; the "
-                        f"launcher and the compiler wrapper must come from one installation, "
-                        f"and a batch site's scheduler_directives must allocate the ranks")
+                        f"launcher and the compiler wrapper must come from one installation "
+                        f"(docs/RUNBOOK.md §0-1)")
         return None
 
 

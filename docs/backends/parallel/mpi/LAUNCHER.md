@@ -136,12 +136,14 @@ the site that runs it, with the site's wrapper (issue #333).
   at `Build` meets a missing launcher in its `Build` job's canary instead (below), and `--resume`
   reuses its certified `Compile` and `Generate`. A batch site's job asks for both where it
   runs.
-- Slots for `execution.ranks` processes. At a `none` site the launcher counts the machine's own
-  cores. At a batch site it counts the allocation's tasks, which the site's
+- Slots for `execution.ranks` processes. Open MPI 4.1.2 counts them and refuses more: at a
+  `none` site the machine's own cores, at a batch site the allocation's tasks, which the site's
   `scheduler_directives` state (`docs/backends/scheduler/slurm/JOB_SUBMIT.md` §2: with no task
   option `mpirun -n 4` is refused inside a Slurm job). The threads of a rank are the CPUs per
-  task the directives give it. No CPU count is asked of a remote site: the launcher is what
-  decides whether the ranks fit.
+  task the directives give it. No CPU count is asked of a remote site: the launcher decides,
+  and a launcher that oversubscribes instead of refusing (Intel MPI 2021.10 ran `-n 64` on 48
+  CPUs and `-n 4` on one, both exit 0, measured 2026-11-21) passes the canary and runs the
+  ranks slowly; nothing refuses that, and the result does not depend on it.
 - The job directory visible at one path from every node the launcher starts a rank on.
 
 **The launch canary in the `Build` job.** For a profile of more than one rank every `Build` job

@@ -321,7 +321,8 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
                 f"exit {launched.returncode}: "
                 f"{_head(launched.stderr or launched.stdout or '')}")
             return [(f"parallel/{parallel}: {started} did not complete ({detail}); a run of "
-                    f"{ranks} ranks is started the same way at Validate.execute")]
+                    f"{ranks} ranks is started the same way on this host by the Generate "
+                    f"leaf's run, and at Validate.execute when the target runs here")]
         problem = launcher.launch_canary_problem(launched.returncode, launched.stdout or "",
                                                 canary_ranks)
         if problem is not None:
