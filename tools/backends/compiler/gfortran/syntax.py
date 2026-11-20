@@ -54,10 +54,11 @@ def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
     shares Build's object directory. `architecture` is ACCEPTED AND NOT READ: a CPU Fortran
     front end has no device architecture to be told, and the argument exists for the adapters
     that do. `parallel_backend` is the target's `parallel.backend` value: `-fopenmp` is the OpenMP
-    backend's switch for this driver, appended when the value is exactly `openmp` — the same
-    comparison `tools/backends/language/fortran/control_file.flags` makes for Build, so the two
-    stages cannot disagree on one value (the profile loader admits lowercase tokens only, and
-    `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
+    backend's switch for this driver, appended when `openmp` is a member of the value
+    (`registry.members`: the value itself, or one part of a `+`-joined combination, issue #700)
+    — the same test `tools/backends/language/fortran/control_file.flags` makes for Build, so the
+    two stages cannot disagree on one value (the profile loader admits lowercase tokens only,
+    and `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
     come first after the mode flags; the sources stay last so the compiler reads them after the
     module-directory flags. `include_dirs` are the external libraries' module directories
     (issue #644), searched after the scratch directory.
