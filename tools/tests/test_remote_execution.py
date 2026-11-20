@@ -1259,9 +1259,12 @@ class SchedulerTests(unittest.TestCase):
 
 
 #: A shipped runner that fails (exits 3) and leaves a process behind it that waits for the job
-#: script's shell to end and then rewrites the job's output file so that every command reads as
-#: having exited 0. With `KILL` set it also kills that shell first. Its parent is `timeout`,
-#: whose parent is the job script's shell.
+#: script's own status line for it (or for the script's shell to end) and then rewrites the job's
+#: output file so that every command reads as having exited 0. It acts on the status line, not
+#: only on the shell's end, because a real scheduler kills what a job left running once the
+#: script ends (measured on Slurm 20.02 with `proctrack/cgroup`: a process that waited for the
+#: shell's end never wrote). With `KILL` set it also kills that shell first. Its parent is
+#: `timeout`, whose parent is the job script's shell.
 _FORGER = textwrap.dedent('''\
     #!/usr/bin/env python3
     import os, re, signal, sys, time
@@ -1271,11 +1274,14 @@ _FORGER = textwrap.dedent('''\
         os.setsid()
         if os.fork() == 0:
             while True:
+                text = open(out).read()
+                if re.search(r"^spec2science-status run [1-9]", text, flags=re.M):
+                    break
                 try:
                     os.kill(shell, 0)
                 except ProcessLookupError:
                     break
-                time.sleep(0.005)
+                time.sleep(0.001)
             text = open(out).read()
             text = re.sub(r"^(spec2science-status run) -?[0-9]+", r"\\1 0", text, flags=re.M)
             if "spec2science-status qc " not in text:
