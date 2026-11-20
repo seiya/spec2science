@@ -1554,7 +1554,7 @@ PINNED_RENDER: dict[str, str] = {
     # the 28 certified host-rendered runners render byte-identically.)
     # The digest `render-22` shipped with at ee52b1d8:
     "render-22@ee52b1d8": "dbb6ee61f0b95899ed5206b6db3dc15bb8f7f764a8ee5cf6fcf95d71b44fe511",
-    "render-22": "cecadb34fd94f5c9fb935b1dfe2c3e0b0dae5dab7a7525fe854bd7bb96e1817a",
+    "render-22": "738169315b6c7d8ec4886ee5d42454e5660839003c6b01ae6f8082bd84a37a4f",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

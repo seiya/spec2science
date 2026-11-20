@@ -27,7 +27,7 @@ from tools.tests.target_fixtures import install_target_profile, profile_with
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MPI = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
-#: The checked-in MPI profile with the combination, one thread per rank (PR-2 lifts that).
+#: The checked-in MPI profile with the combination, one thread per rank.
 HYBRID = profile_with(MPI, parallel={"backend": "mpi+openmp"},
                       execution={**MPI.doc["execution"], "threads_per_rank": 1})
 

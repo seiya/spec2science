@@ -1716,9 +1716,6 @@ end function HARNESS__reduce_sum_int
 """
 
 
-
-
-
 def _is_distributed(harness_provides: Collection[str]) -> bool:
     """Whether the target's harness drives the program as several ranks: `distributed_state`
     among the tokens it provides (`target_profile.harness_capabilities`)."""
