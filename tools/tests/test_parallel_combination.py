@@ -132,13 +132,29 @@ class ProfileCombinationTests(unittest.TestCase):
 
     def test_a_thread_count_above_one_is_refused_by_the_member_that_runs_one(self) -> None:
         # PR-1 hands the count to every member, so `mpi`'s refusal stands until PR-2 routes it.
-        two = profile_with(MPI, parallel={"backend": "mpi+openmp"},
-                           execution={"threads_per_rank": 2, "ranks": 4})
-        found = tp._thread_count_violations(two)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("parallel backend mpi does not run 2 threads", found[0])
-        with self.assertRaises(he.LaunchUnavailable):
-            he.launch_shape(two)
+        # Both orders: the member that refuses must be asked wherever the operator writes it.
+        for backend in ("mpi+openmp", "openmp+mpi"):
+            with self.subTest(backend=backend):
+                two = profile_with(MPI, parallel={"backend": backend},
+                                   execution={"threads_per_rank": 2, "ranks": 4})
+                found = tp._thread_count_violations(two)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("parallel backend mpi does not run 2 threads", found[0])
+                with self.assertRaises(he.LaunchUnavailable):
+                    he.launch_shape(two)
+
+    def test_each_imposed_value_reaches_the_member_that_takes_it(self) -> None:
+        # The grid goes to the launcher's member and the block size to the member that declares
+        # the sizes it admits, in either order; a member that takes neither is not handed them.
+        for backend in ("mpi+cuda", "cuda+mpi"):
+            with self.subTest(backend=backend):
+                self.assertTrue(he.imposes_block_size(backend))
+                self.assertEqual(he._execution_env(backend, 1, (2, 2), 128),
+                                 {"SPEC2SCIENCE_PROCESS_GRID": "2,2",
+                                  "SPEC2SCIENCE_CUDA_BLOCK": "128"})
+        self.assertEqual(he._execution_env("openmp+mpi", 1, (2, 1), None),
+                         {"SPEC2SCIENCE_PROCESS_GRID": "2,1",
+                          "OMP_NUM_THREADS": "1", "OMP_THREAD_LIMIT": "1"})
 
     def test_the_launch_shape_merges_the_members_environments(self) -> None:
         launcher = registry.capability_module("parallel", "mpi", "launcher")
@@ -323,9 +339,18 @@ class PresenceFloorCombinationTests(unittest.TestCase):
                 self.assertEqual(self._run(self._LOOPS, {"model": model}), [])
 
     def test_the_whole_node_floor_is_asked_whatever_the_plan(self) -> None:
-        found = self._run(self._OMP, {"model": "none"}, residency="host")
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("parallel.backend includes mpi", found[0])
+        # Both orders: a plan that declines the plan-dependent floor must not skip the floors
+        # after it, wherever the operator writes the members.
+        for backend in ("mpi+openmp", "openmp+mpi"):
+            for model in (self._OMP, self._LOOPS):
+                with self.subTest(backend=backend, directive=model is self._OMP):
+                    found = self._run(model, {"model": "none"}, backend=backend,
+                                      residency="host")
+                    self.assertEqual(len(found), 1, found)
+                    self.assertIn("parallel.backend includes mpi", found[0])
+                    direct = self._run(model.replace("contains", "  use mpi_f08\ncontains"),
+                                       {"model": "none"}, backend=backend)
+                    self.assertTrue(any("mpi_f08" in v for v in direct), direct)
         direct = self._run(self._OMP.replace("contains", "  use mpi_f08\ncontains"),
                            {"model": "mpi+openmp"})
         self.assertTrue(any("parallel.backend includes mpi" in v and "mpi_f08" in v
