@@ -1190,6 +1190,19 @@ class SchedulerTests(unittest.TestCase):
                     h.run(h.request(), SHIM_SBATCH_PRINT=printed)
                 self.assertEqual([c[0] for c in h.calls()].count("scontrol"), 0)
 
+    def test_a_submission_without_the_logins_time_is_refused(self) -> None:
+        """`date` prints nothing at the login: the time is not read, and the refusal says a
+        job may have been submitted, since the submit command runs after it regardless."""
+        tools = self.h.root / "no-date"
+        tools.mkdir()
+        _script(tools / "date", "exit 0\n")
+        err = self._refused("submit the job: the login's time was not printed: .*; a job may "
+                            "have been submitted",
+                            SHIM_SSH_PATH=f"{tools}{os.pathsep}{self.h.shims}{os.pathsep}"
+                                          f"{os.environ['PATH']}")
+        self.assertIn("left at the site", str(err))
+        self.assertNotIn("scontrol", [c[0] for c in self.h.calls()])
+
     def test_the_start_line_is_read_for_the_record_alone(self) -> None:
         """Issue #696 §6.12: the start line gives `queue_wait_ms`, which no verdict reads, so a
         second, a lost or a malformed one is not a refusal: the first in its shape is read, and

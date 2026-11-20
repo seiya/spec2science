@@ -1038,8 +1038,10 @@ def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
         _, sep, answer = out.partition(f"{SUBMIT_MARKER} ")
         epoch, _, answer = answer.partition("\n")
         if not sep or not _INT.fullmatch(epoch):
+            # `&& exec` runs the submit command whatever `date` printed, so the job may exist.
             raise RemoteExecutionError(f"submit the job: the login's time was not printed: "
-                                       f"{out[-500:]!r} ({remote})")
+                                       f"{out[-500:]!r}; a job may have been submitted "
+                                       f"({remote})")
         job_id = submission.job_id(answer)
         # The id becomes an argument of every state command. Breakage without this: a line
         # the submit command printed besides the id — a warning — read as the id makes every
