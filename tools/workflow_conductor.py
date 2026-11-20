@@ -3879,19 +3879,19 @@ class _RemoteLaunchCanary:
 
     def problem(self, by_tag: Mapping[str, dict[str, Any] | None]) -> str | None:
         """None when the canary built, its launch reported one run of `ranks` processes and its
-        bare start one run of one process; otherwise what it showed."""
+        bare start one run of one process; otherwise what it showed. A command runs only when
+        every earlier one exited 0, and the first always runs, so the one that failed is read
+        before any that did not run."""
         build_tag, launch_tag, bare_tag = self.TAGS
-        built = by_tag.get(build_tag)
-        if built is None or not built.get("ok"):
-            tail = ((built or {}).get("stderr") or (built or {}).get("stdout") or "")
+        built = by_tag[build_tag]
+        if not built.get("ok"):
+            tail = (built.get("stderr") or built.get("stdout") or "").strip()[-400:]
             return (f"{self.wrapper} did not build the launch canary "
-                    f"(rc={(built or {}).get('return_code')}: {tail.strip()[-400:]})")
+                    f"(rc={built.get('return_code')}: {tail})")
         under = f"started under {self.launcher.EXECUTABLE} with {self.ranks} processes"
         for tag, ranks, how in ((launch_tag, self.ranks, under),
                                 (bare_tag, 1, "started without the launcher")):
-            ran = by_tag.get(tag)
-            if ran is None:
-                return f"the launch canary {how} did not run"
+            ran = by_tag[tag]
             if ran.get("return_code") != 0:
                 tail = (ran.get("stderr") or ran.get("stdout") or "").strip()[-1500:]
                 return (f"the launch canary {how} did not complete "
@@ -3907,12 +3907,12 @@ class _RemoteLaunchCanary:
 def remote_launch_canary(target: Any, tc: dict[str, str], local_dir: Path, *,
                          log: Path) -> _RemoteLaunchCanary | None:
     """The launch canary of `target`'s remote `Build` job, its source written under
-    `local_dir` and its commands' entries appended to `log`; None for a target whose parallel backend declares no launcher, or that runs one
-    rank (one process is one run whichever installation starts it)."""
-    from tools.host_execution import declares_launcher
-
+    `local_dir` and its commands' entries appended to `log`; None for a target that runs one
+    rank (one process is one run whichever installation starts it). A profile of more ranks
+    names a backend that declares a launcher: the launch gate refuses any other
+    (`target_profile.hardware_violations`)."""
     backend = target.parallel_backend
-    if int(target.ranks) <= 1 or not declares_launcher(backend):
+    if int(target.ranks) <= 1:
         return None
     launcher = backend_registry.capability_module("parallel", backend, "launcher")
     local_dir.mkdir(parents=True, exist_ok=True)
