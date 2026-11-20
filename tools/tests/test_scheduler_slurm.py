@@ -21,7 +21,7 @@ _ANSWERS = Path(__file__).resolve().parent / "data" / "scheduler_slurm" / "scont
 _DOCUMENTED = {
     "PENDING": "queued", "REQUEUED": "queued", "REQUEUE_FED": "queued",
     "REQUEUE_HOLD": "queued", "RESV_DEL_HOLD": "queued", "SPECIAL_EXIT": "queued",
-    "CONFIGURING": "running", "RUNNING": "running", "COMPLETING": "running",
+    "CONFIGURING": "queued", "RUNNING": "running", "COMPLETING": "running",
     "SIGNALING": "running", "STAGE_OUT": "running", "STOPPED": "running",
     "SUSPENDED": "running", "RESIZING": "running",
     "COMPLETED": "ended", "FAILED": "ended", "BOOT_FAIL": "ended", "CANCELLED": "ended",

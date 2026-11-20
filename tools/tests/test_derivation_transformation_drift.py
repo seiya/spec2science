@@ -2287,7 +2287,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # a job are in no key. (Measured by diffing `execute_tuple()` against main 8694434f's: those
     # three rows and no other.) The digest `execute-22` shipped with at 8694434f:
     "execute-22@8694434f": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
-    "execute-22": "cebcf3a17c51f7b7af526f800f28a1174b6d6bc742cb63f5e726c2d44c9618d9",
+    "execute-22": "82dc555502773de3bf8034f1dcae9ee42f8ba60c033b5dff45b25d415b4e7cd5",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

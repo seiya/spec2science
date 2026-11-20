@@ -36,11 +36,15 @@ REMOTE_EXECUTABLES: tuple[str, ...] = ("sbatch", "scontrol")
 
 #: `JobState` values `man squeue` documents (24 on Slurm 20.02), by what they mean for the
 #: host. Every documented value is in exactly one set; a value in none is not an answer.
-QUEUED_STATES = frozenset({"PENDING", "REQUEUED", "REQUEUE_FED", "REQUEUE_HOLD",
+#: `CONFIGURING` is queued: the job "has been allocated resources, but are waiting for them to
+#: become ready for use (e.g. booting)" (`man squeue`), so its script has not started. Breakage
+#: were it counted as running: at a power-saving site the nodes' boot is spent against the run
+#: bound (the script's time limit plus grace), and the host gives up on a healthy job.
+QUEUED_STATES = frozenset({"PENDING", "CONFIGURING", "REQUEUED", "REQUEUE_FED", "REQUEUE_HOLD",
                            "RESV_DEL_HOLD", "SPECIAL_EXIT"})
 #: A job the scheduler is still tearing down (`COMPLETING`) has not ended: its files may still
 #: be written (issue #696 review 1, M3).
-RUNNING_STATES = frozenset({"CONFIGURING", "RUNNING", "COMPLETING", "SIGNALING", "STAGE_OUT",
+RUNNING_STATES = frozenset({"RUNNING", "COMPLETING", "SIGNALING", "STAGE_OUT",
                             "STOPPED", "SUSPENDED", "RESIZING"})
 ENDED_STATES = frozenset({"COMPLETED", "FAILED", "BOOT_FAIL", "CANCELLED", "DEADLINE",
                           "NODE_FAIL", "OUT_OF_MEMORY", "PREEMPTED", "REVOKED", "TIMEOUT"})

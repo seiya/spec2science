@@ -53,10 +53,11 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
 | `JobState` | read as | measured |
 |---|---|---|
 | `PENDING` | queued | yes (`--begin`, `Reason=BeginTime`) |
+| `CONFIGURING` | queued: the job's resources are allocated and not yet ready (a node booting), so its script has not started and the run bound does not count | no, from `man squeue` |
 | `REQUEUED`, `REQUEUE_FED`, `REQUEUE_HOLD`, `RESV_DEL_HOLD`, `SPECIAL_EXIT` | queued | no, from `man squeue` |
 | `RUNNING` | running | yes |
 | `COMPLETING` | running: the job's files may still be written | yes (before `CANCELLED` and `TIMEOUT`) |
-| `CONFIGURING`, `SIGNALING`, `STAGE_OUT`, `STOPPED`, `SUSPENDED`, `RESIZING` | running | no, from `man squeue` |
+| `SIGNALING`, `STAGE_OUT`, `STOPPED`, `SUSPENDED`, `RESIZING` | running | no, from `man squeue` |
 | `COMPLETED` with `0:0` | ended, the script's own exit 0 | yes |
 | `FAILED` with `1:0` | ended, the script's own exit 1 | yes |
 | `FAILED` with `3:0`, `0:9`, `0:15` | ended otherwise | yes (exit 3; a command KILLed, TERMed the script's shell) |
