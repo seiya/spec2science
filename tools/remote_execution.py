@@ -160,8 +160,9 @@ what their answer means (`job_state`, seven answers). `execute_job` composes thr
   than by its own exit with 0 or 1 (quoting the tail of `job.err`), reads `job.out` against the
   record as above, and then reads, compares, removes and records as at a `none` site. The job
   prints its start (`START_MARKER`, before anything else it runs); its difference from
-  `submitted_epoch` is the record's `queue_wait_ms` (0 when the two clocks put it below 0, or
-  when the file carries no start line in its shape: the record is not a refusal's subject).
+  `submitted_epoch` is the record's `queue_wait_ms` (0 when the two clocks put it below 0, when
+  the file carries no start line in its shape, or when the login's time was not an integer: the
+  record is not a refusal's subject).
 
 A batch job is not cancelled when the host stops waiting: its time limit — the submit command's,
 or a longer one a directive set — bounds it.
@@ -343,14 +344,14 @@ class JobResult:
 class JobHandle:
     """A job a batch scheduler accepted: the site's id, host and scheduler, the id the submit
     command printed, the job directory, and the login's epoch seconds just before the submission
-    (`submit_job`). It is what `wait_job` asks about and `collect_job` collects."""
+    (`submit_job`; None when the login's `date` printed no integer). It is what `wait_job` asks about and `collect_job` collects."""
 
     site: str
     host: str
     scheduler: str
     job_id: str
     remote_dir: str
-    submitted_epoch: int
+    submitted_epoch: int | None
 
 
 def job_dir(site: Site, orchestration_id: str, agent_run_id: str) -> str:
@@ -1039,11 +1040,12 @@ def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
                    input=render_stub(request))
         _, sep, answer = out.partition(f"{SUBMIT_MARKER} ")
         epoch, _, answer = answer.partition("\n")
-        if not sep or not _INT.fullmatch(epoch):
-            # `&& exec` runs the submit command whatever `date` printed, so the job may exist.
-            raise RemoteExecutionError(f"submit the job: the login's time was not printed: "
-                                       f"{out[-500:]!r}; a job may have been submitted "
-                                       f"({remote})")
+        if not sep:
+            # The id is read from what follows the marker line. `&& exec` runs the submit
+            # command only after the marker printed, but a job may exist all the same.
+            raise RemoteExecutionError(f"submit the job: the submit call printed no "
+                                       f"{SUBMIT_MARKER} line: {out[-500:]!r}; a job may have "
+                                       f"been submitted ({remote})")
         job_id = submission.job_id(answer)
         # The id becomes an argument of every state command. Breakage without this: a line
         # the submit command printed besides the id — a warning — read as the id makes every
@@ -1055,7 +1057,10 @@ def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
     except RemoteExecutionError as exc:
         raise _left(exc, remote) from exc
     return JobHandle(site=site.site_id, host=str(site.host), scheduler=site.scheduler,
-                     job_id=job_id, remote_dir=remote, submitted_epoch=int(epoch))
+                     job_id=job_id, remote_dir=remote,
+                     # Read for `queue_wait_ms` alone, as the job's start line is (`_started`):
+                     # a login whose `date` printed no integer is a wait of 0, not a refusal.
+                     submitted_epoch=int(epoch) if _INT.fullmatch(epoch) else None)
 
 
 def _ask_state(handle: JobHandle, submission: Any) -> tuple[str, Any]:
@@ -1194,7 +1199,8 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
         started = _started(starts)
         statuses = _statuses(status_lines, request.commands, remote)
         _bind(statuses, own_exit, remote)
-        queue_wait_ms = 0 if started is None else max(0, started - handle.submitted_epoch) * 1000
+        queue_wait_ms = (0 if started is None or handle.submitted_epoch is None
+                         else max(0, started - handle.submitted_epoch) * 1000)
         return _record(request, statuses, facts, collected=collected, job_id=handle.job_id,
                        queue_wait_ms=queue_wait_ms)
     except RemoteExecutionError as exc:

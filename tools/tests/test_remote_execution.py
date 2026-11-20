@@ -1190,18 +1190,24 @@ class SchedulerTests(unittest.TestCase):
                     h.run(h.request(), SHIM_SBATCH_PRINT=printed)
                 self.assertEqual([c[0] for c in h.calls()].count("scontrol"), 0)
 
-    def test_a_submission_without_the_logins_time_is_refused(self) -> None:
-        """`date` prints nothing at the login: the time is not read, and the refusal says a
-        job may have been submitted, since the submit command runs after it regardless."""
+    def test_a_submission_without_the_logins_time_is_polled_and_collected(self) -> None:
+        """`date` prints nothing at the login: the time feeds `queue_wait_ms` alone, so the
+        job is polled and collected as any other, and its wait is recorded as 0 (as a missing
+        start line is). Refusing it would leave a submitted job unpolled for a record no verdict
+        reads (issue #696 review 3, finding 3)."""
         tools = self.h.root / "no-date"
         tools.mkdir()
-        _script(tools / "date", "exit 0\n")
-        err = self._refused("submit the job: the login's time was not printed: .*; a job may "
-                            "have been submitted",
+        # The first `date` is the login's; the job's own (its start and status lines) read the
+        # real one, so only the submission's time is missing.
+        once = tools / "printed"
+        _script(tools / "date", f"[ -e {once} ] && exec {shutil.which('date')} \"$@\"\n"
+                                f": > {once}\n")
+        result = self.h.run(self.h.request(),
                             SHIM_SSH_PATH=f"{tools}{os.pathsep}{self.h.shims}{os.pathsep}"
                                           f"{os.environ['PATH']}")
-        self.assertIn("left at the site", str(err))
-        self.assertNotIn("scontrol", [c[0] for c in self.h.calls()])
+        self.assertTrue(all(r["ok"] for r in result.results))
+        self.assertEqual(result.site_record["queue_wait_ms"], 0)
+        self.assertIn("scontrol", [c[0] for c in self.h.calls()])
 
     def test_the_start_line_is_read_for_the_record_alone(self) -> None:
         """Issue #696 §6.12: the start line gives `queue_wait_ms`, which no verdict reads, so a
