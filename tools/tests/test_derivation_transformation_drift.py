@@ -1835,7 +1835,7 @@ PINNED_BUILD: dict[str, str] = {
     # holds a site or a job. (Measured by diffing `build_tuple()` against main 8694434f's: that
     # row and no other.) The digest `build-5` shipped with at 8694434f:
     "build-5@8694434f": "db3e77ef9b85dfd8e645a2a510ea1049db47d91ac756dba54f0e5e9028fd2f39",
-    "build-5": "034c0aaf97f4583d3e8fbf1453d2f9c928eb39231dbb6234ccb6fd32ebb2a07d",
+    "build-5": "4db27ca5df821b03788ed2b9ca9c012e4533b13acb827bc0cb113a7245e9759a",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2287,7 +2287,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # a job are in no key. (Measured by diffing `execute_tuple()` against main 8694434f's: those
     # three rows and no other.) The digest `execute-22` shipped with at 8694434f:
     "execute-22@8694434f": "692592d3358d609bfbea204da1c3f02cd783d8bc01459986878039ad4c5d32a7",
-    "execute-22": "be66f440288c4d7558df8b842d8c8502cb476a056239d9c1207cec888e84172d",
+    "execute-22": "cb84c2d5159ff8f11475d1ed72b445cc7860748e00479fc4df1e7c5d5c30fb2a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

@@ -44,8 +44,11 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
   ran and exited non-zero. The executor reads the statuses in `job.out` as "every command
   exited 0" only under `COMPLETED` with `ExitCode=0:0`, and as "this command failed" only under
   `FAILED` with `ExitCode=1:0`; every other terminal record is refused with the tail of `job.err`.
-  A command's own process can rewrite `job.out`, and cannot make the shell that started it exit
-  with a status of its choice: killing it leaves a signal in the record.
+  A command's own process can rewrite `job.out`; killing the shell that started it leaves a
+  signal in the record. It can make that shell exit with a status of its choice only by
+  deliberately attaching to it with a debugger (ptrace, where the site allows it), which a
+  `none` site's pipe channel is equally open to: a deliberate attack with no ordinary spelling,
+  outside what the executor defends.
 
 | `JobState` | read as | measured |
 |---|---|---|

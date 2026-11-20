@@ -58,9 +58,12 @@ Every way the evidence could be incomplete or not this job's is a refusal
   and the host accepts "every command exited 0" only when the backend reads that record as "ran
   to its own exit, and that exit was 0" — by an allowlist of the record's fields, never by one
   integer, since a script whose shell a command killed has exit part 0 — and "this command
-  failed" only when the record says 1 (`collect_job`). A command cannot make the shell that
-  started it exit with a status of its choice; it can kill it, and the record then says so. So
-  a failed command is never read as having exited 0 on either channel (issue #696 §6.3's P1);
+  failed" only when the record says 1 (`collect_job`). A command can kill the shell that
+  started it, and the record then says so; it can make that shell exit with a status of its
+  choice only by deliberately attaching to it with a debugger (ptrace, where the site allows
+  it, then `_exit(0)`), which the pipe channel of a `none` site is equally open to — a
+  deliberate attack with no ordinary spelling, outside the defended set. So a failed command is
+  not read as having exited 0 on either channel (issue #696 §6.3's P1);
   which command failed, and the times and the platform facts, are read from the file as it
   stands (not defended: no verdict reads them as a pass). The rest of this bullet is the `none`
   channel's. A command's missing status line
