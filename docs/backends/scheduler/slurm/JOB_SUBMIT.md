@@ -66,7 +66,8 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
 | `REQUEUED`, `REQUEUE_FED`, `REQUEUE_HOLD`, `RESV_DEL_HOLD`, `SPECIAL_EXIT` | queued | no, from `man squeue` |
 | `RUNNING` | running | yes |
 | `COMPLETING` | running: the job's files may still be written | yes (before `CANCELLED` and `TIMEOUT`) |
-| `SIGNALING`, `STAGE_OUT`, `STOPPED`, `SUSPENDED`, `RESIZING` | running | no, from `man squeue` |
+| `SIGNALING`, `STAGE_OUT`, `RESIZING` | running | no, from `man squeue` |
+| `SUSPENDED`, `STOPPED` | suspended: the job has started (it ends the queue bound) and a suspended job's time limit does not advance (for `STOPPED` the manual does not say; not counting it only lengthens the wait), so the interval up to each poll that answers it is not counted against the run bound; a job suspended indefinitely is waited for indefinitely | no, from `man squeue` (no preemption on the cluster measured) |
 | `COMPLETED` with `0:0` | ended, the script's own exit 0 | yes |
 | `FAILED` with `1:0` | ended, the script's own exit 1 | yes |
 | `FAILED` with `3:0`, `0:9`, `0:15` | ended otherwise | yes (exit 3; a command KILLed, TERMed the script's shell) |

@@ -139,7 +139,7 @@ A site's `scheduler` decides how the job script runs. A `none` site runs it in t
 one ssh call, as above, and its job has no id. A batch scheduler's backend spells, through
 `job_submit` (`_submission`), the command that submits a script read on its standard input and
 returns at once, the job id in what it printed, the commands that state the job's condition, and
-what their answer means (`job_state`, seven answers). `execute_job` composes three stages:
+what their answer means (`job_state`, eight answers). `execute_job` composes three stages:
 
 - `submit_job` creates the job directory, ships the files, and submits the stub in one ssh call
   that first prints the login's time (`SUBMIT_MARKER`, the job's `submitted_epoch`). The submit
@@ -1093,11 +1093,19 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
     during a long wait, would lose the job. `unknown_id` is refused: the scheduler no longer
     states how the job ended, and polling it until the bound would only delay that. Past
     `queue_bound_sec` before the job was seen running, or `run_bound_sec` after, the wait is
-    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it."""
+    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it.
+
+    `suspended` is a started job whose time limit does not advance: it ends the queue bound as
+    running does, and the interval up to each poll that answered it is not counted against the
+    run bound. Breakage were it counted: at a site that preempts by suspension a healthy job
+    would be refused while its own limit had not run out. A job suspended indefinitely is waited
+    for indefinitely, as the scheduler itself would let it run."""
     submission = _submission(handle.scheduler)
     remote = handle.remote_dir
     t0 = time.monotonic()
     started: float | None = None
+    suspended = 0.0                              # run-bound time not counted (read suspended)
+    prev = t0
     interval: float = POLL_FIRST_SEC
     answered: tuple[str, float] | None = None   # the last state a poll answered, and when
     unanswered = 0                               # the polls after it that answered nothing
@@ -1129,18 +1137,23 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
                 unanswered, last = unanswered + 1, str(value)
             else:
                 answered, unanswered = (condition, now - t0), 0
-            if condition == "running" and started is None:
+            if condition in ("running", "suspended") and started is None:
                 started = now
+            if condition == "suspended":
+                suspended += now - max(prev, started)
+            prev = now
             if started is None and now - t0 > queue_bound_sec:
                 raise RemoteExecutionError(
                     f"wait for the job: job {handle.job_id} was not seen running within "
                     f"{queue_bound_sec} sec (queue_timeout_sec); {polls()}; it is left as it "
                     f"is, nothing cancels it ({remote})")
-            if started is not None and now - started > run_bound_sec:
+            if started is not None and now - started - suspended > run_bound_sec:
+                paused = (f", not counting {suspended:.0f} sec read as suspended"
+                          if suspended else "")
                 raise RemoteExecutionError(
                     f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
-                    f"sec since a poll first saw it running; {polls()}; it is left as it is, "
-                    f"nothing cancels it ({remote})")
+                    f"sec since a poll first saw it running or suspended{paused}; {polls()}; it "
+                    f"is left as it is, nothing cancels it ({remote})")
     except RemoteExecutionError as exc:
         raise _left(exc, remote) from exc
 

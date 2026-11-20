@@ -22,8 +22,8 @@ _DOCUMENTED = {
     "PENDING": "queued", "REQUEUED": "queued", "REQUEUE_FED": "queued",
     "REQUEUE_HOLD": "queued", "RESV_DEL_HOLD": "queued", "SPECIAL_EXIT": "queued",
     "CONFIGURING": "queued", "RUNNING": "running", "COMPLETING": "running",
-    "SIGNALING": "running", "STAGE_OUT": "running", "STOPPED": "running",
-    "SUSPENDED": "running", "RESIZING": "running",
+    "SIGNALING": "running", "STAGE_OUT": "running", "STOPPED": "suspended",
+    "SUSPENDED": "suspended", "RESIZING": "running",
     "COMPLETED": "ended", "FAILED": "ended", "BOOT_FAIL": "ended", "CANCELLED": "ended",
     "DEADLINE": "ended", "NODE_FAIL": "ended", "OUT_OF_MEMORY": "ended", "PREEMPTED": "ended",
     "REVOKED": "ended", "TIMEOUT": "ended",
@@ -114,7 +114,8 @@ class JobStateTests(unittest.TestCase):
 
     def test_the_backend_classifies_exactly_the_documented_states(self) -> None:
         self.assertEqual(len(_DOCUMENTED), 24)
-        sets = (submit.QUEUED_STATES, submit.RUNNING_STATES, submit.ENDED_STATES)
+        sets = (submit.QUEUED_STATES, submit.RUNNING_STATES, submit.SUSPENDED_STATES,
+                submit.ENDED_STATES)
         self.assertEqual(sum(len(s) for s in sets), 24)
         self.assertEqual(set().union(*sets), set(_DOCUMENTED))
 
