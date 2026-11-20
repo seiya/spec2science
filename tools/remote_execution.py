@@ -1056,8 +1056,10 @@ def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
 
 def _ask_state(handle: JobHandle, submission: Any) -> tuple[str, Any]:
     """One poll: each of the backend's state commands in turn, in one ssh call each, until one
-    answers other than `no_answer`. A call that fails, or whose stdout does not end with the
-    state command's exit status, is `no_answer` too."""
+    answers other than `no_answer`. A call that fails to run, or whose stdout does not end with
+    the state command's exit status, is `no_answer` too. The ssh call's own exit status decides
+    nothing: the remote command ends by printing that status, so a remote failure leaves no
+    marked line, and a marked answer is read whatever ssh exited."""
     answer: tuple[str, Any] = ("no_answer", "no state command")
     for argv in submission.state_argvs(handle.job_id):
         command = (f"echo; {shlex.join(str(a) for a in argv)} </dev/null; "
@@ -1070,8 +1072,9 @@ def _ask_state(handle: JobHandle, submission: Any) -> tuple[str, Any]:
             answer = ("no_answer", str(exc))
             continue
         head, sep, tail = proc.stdout.rpartition(f"\n{_STATE_RC_MARKER} ")
-        if proc.returncode != 0 or not sep or not _INT.fullmatch(tail.strip()):
-            answer = ("no_answer", f"the poll's ssh call exited {proc.returncode}: "
+        if not sep or not _INT.fullmatch(tail.strip()):
+            answer = ("no_answer", f"the poll's ssh call (exit {proc.returncode}) printed no "
+                                   f"state command's exit status: "
                                    f"{(proc.stderr or proc.stdout).strip()[-500:]}")
             continue
         answer = submission.job_state(int(tail.strip()), head, proc.stderr)
