@@ -1279,13 +1279,10 @@ def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | 
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return None, f"the record is unreadable ({exc})"
-    shape = isinstance(record, dict) and all(
-        isinstance(record.get(k), str) for k in
-        ("site", "host", "scheduler", "job_id", "remote_dir", "request_sha256")) \
-        and (record.get("submitted_epoch") is None
-             or type(record.get("submitted_epoch")) is int) \
-        and record.get("end", 0) in (0, 1, END_OTHERWISE)
-    if not shape:
+    # Without the keys a resume would fail on a `KeyError`; their values are the host's own.
+    if not (isinstance(record, dict) and all(
+            isinstance(record.get(k), str) for k in
+            ("site", "host", "scheduler", "job_id", "remote_dir", "request_sha256"))):
         return None, "the record is unreadable (not a job record's fields)"
     for key, current in (("site", site.site_id), ("host", str(site.host)),
                          ("scheduler", site.scheduler)):
@@ -1311,8 +1308,8 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
 
     A recorded job is adopted when (1) the record reads and names this site's id, host and
     scheduler; (2) `request_for(<that directory>)` has the recorded digest; and (3) the record
-    holds an end answer or the scheduler answers queued, running or ended. Otherwise the record
-    is removed and a job of this attempt's own is submitted, the event `site_job_not_adopted`
+    holds an end answer or the scheduler answers queued, running or ended. Otherwise a job of this attempt's
+    own is submitted and its record replaces the one read, the event `site_job_not_adopted`
     naming the job left behind; a scheduler that gives no answer at (3) ends the call
     (`RemoteExecutionError`) with the record kept. Breakage each condition answers: (1) another
     cluster's scheduler asked about this job's number; (2) log entries written from this
@@ -1323,7 +1320,6 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
     `emit(event, **fields)` receives `site_job_adopted` and `site_job_not_adopted`."""
     say = emit or (lambda event, **fields: None)
     fresh = request_for(fresh_dir)
-    _validate(fresh)
     submission = _submission(fresh.site.scheduler)
     if submission is None:
         return execute_job(fresh, local_tmp=local_tmp)
@@ -1367,9 +1363,9 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
             left = record or {}
             say("site_job_not_adopted", record=str(record_path), reason=why,
                 job_id=left.get("job_id"), remote_dir=left.get("remote_dir"))
-            _remove_job_record(record_path)
+            # The submit below overwrites the record; a submit that fails leaves it, and the
+            # next attempt finds it not adopted again.
             request = handle = record = None
-            end = _UNREAD
     if handle is None:
         request = fresh
         digest = request_sha256(fresh)
