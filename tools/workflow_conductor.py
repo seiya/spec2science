@@ -13729,7 +13729,9 @@ class Conductor:
             # the run directory is removed with the rest of this agent run's tmp root when the
             # substep ends (`orchestration_runtime._cleanup_agent_tmp_root`), so nothing here
             # can point at the report.
-            where = (f"(see docs/backends/parallel/{target.parallel_backend}/DEVICE_TRACE.md §1 "
+            tracer = backend_registry.package_members(
+                "parallel", target.parallel_backend, "device_trace")[0]
+            where = (f"(see docs/backends/parallel/{tracer}/DEVICE_TRACE.md §1 "
                      f"for what this means and how to reproduce it, then --resume)")
             if res_trace is None or not res_trace.get("ok"):
                 detail = "did not run" if res_trace is None else (

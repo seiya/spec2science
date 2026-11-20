@@ -363,8 +363,8 @@ explicitly declines that model (the backend's `lowering_plan_declines` reads the
 `method` / `scheme` / `kind`; an absent model declines nothing), and
 `Generate.verify` G6 judges the plan and the source against the whole target profile
 (`docs/workflow/phases/phase_02_generate.md`). On a target whose `parallel.backend` combines
-several models (issue #700) the plan's `model` names the target's whole value, every member's
-floor is asked, and a plan declines a floor only when every member's `lowering_plan_declines`
+several models (issue #700) the producer is told to name the target's whole value as the plan's
+`model` (no gate checks the spelling), every member's floor is asked, and a plan declines a floor only when every member's `lowering_plan_declines`
 says so: a plan that names one member declines no other member's floor, and `"none"` with the
 reason stated declines each member's floor that a plan may decline. A floor a member states as a
 whole-node judgment independent of the plan is asked whatever the plan names.

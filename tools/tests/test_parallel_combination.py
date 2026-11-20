@@ -229,9 +229,12 @@ class TraceAndBlockCombinationTests(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("parallel backend mpi+openmp imposes none", found[0])
 
-    def test_a_combination_is_not_traced(self) -> None:
+    def test_a_combination_is_traced_only_when_a_member_declares_the_trace(self) -> None:
         from tools import workflow_conductor as wc
 
+        gpu = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        self.assertTrue(wc.Conductor._traces_execution(mock.Mock(target=profile_with(
+            gpu, parallel={"backend": "mpi+cuda"}, execution={"threads_per_rank": 1}))))
         self.assertFalse(wc.Conductor._traces_execution(mock.Mock(target=HYBRID)))
         self.assertFalse(wc.Conductor._traces_execution(mock.Mock(target=MPI)))
         with tempfile.TemporaryDirectory() as t:

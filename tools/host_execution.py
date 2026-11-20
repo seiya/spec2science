@@ -129,8 +129,9 @@ def _execution_env(parallel_backend: str, threads_per_rank: int,
     launcher whose ranks it arranges, the block size to the member whose module declares the
     sizes it admits (`BLOCK_SIZES`), and the thread count to every member — so a member that runs
     one thread per process refuses a count above one on a combination as it does alone. For a
-    one-member value this is the one call it always was: the gates (`launch_shape`, the profile's
-    launch gate) refuse a grid or a block size for a value that takes neither before it gets here.
+    one-member value the call is the one it was, with one difference: a grid or a block size its
+    member does not take is no longer passed on (it used to raise `TypeError`); the gates
+    (`launch_shape`, the profile's launch gate) refuse such a value before it gets here.
     """
     reason = registry.missing_capability_reason("parallel", parallel_backend, "execution_env")
     if reason is not None:

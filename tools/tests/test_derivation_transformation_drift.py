@@ -1544,7 +1544,7 @@ PINNED_RENDER: dict[str, str] = {
     # (Measured by diffing `render_tuple()` against main 8d4419a9's: those two rows and no other.)
     # The digest `render-22` shipped with at 8d4419a9:
     "render-22@8d4419a9": "f629096e659a94cf4898c68bc90f8ddd9e453dfc3bfa947c9239d78ae3b5a866",
-    "render-22": "3c31b72e52124d603396fff1b3845b787edb59b6f66d30aaa69fed63384a6522",
+    "render-22": "dbb6ee61f0b95899ed5206b6db3dc15bb8f7f764a8ee5cf6fcf95d71b44fe511",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1861,7 +1861,7 @@ PINNED_BUILD: dict[str, str] = {
     # and no other.)
     # The digest `build-5` shipped with at 8d4419a9:
     "build-5@8d4419a9": "e1bd38039325fdc8a8ee100929fea53a2331c32592df1c7adceae17c138b7d1d",
-    "build-5": "47033463a1b66ce3355ab538f7e7a00c864003f57b74ace88838f5eae331c593",
+    "build-5": "64e1690c2ec8a7e675af2e916e3d66309e6f988078d29aeded4c575efb2c88d9",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2320,12 +2320,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # and no other.) The digest `execute-22` shipped with at 37db7547:
     "execute-22@37db7547": "af0e2ff111d5e18826a184d03374cd8dc2036b026cd7724fd8b01aa05c6e4969",
     # execute-22 re-pinned in place by issue #700 PR-1, for the `tools/host_execution.py` change
-    # of render-22's entry: a combination's launch environment merges its members'; a one-member
-    # value's is the one call it was. (Measured by diffing `execute_tuple()` against main
-    # 8d4419a9's: that row and no other.)
+    # of render-22's entry (a combination's launch environment merges its members'; a one-member
+    # value's is the one it was), and for `Conductor._execute_inproc` naming the document of the
+    # member that declares the device trace in its trace-failure message, which for a one-member
+    # value is the value itself. (Measured by diffing `execute_tuple()` against main 8d4419a9's:
+    # those two rows and no other.)
     # The digest `execute-22` shipped with at 8d4419a9:
     "execute-22@8d4419a9": "8de9817fbc6f6bc320814895c97c4398c0c5388ae48325e6832884304f3550f9",
-    "execute-22": "44c25a527c14db8267d57472e37ed1b6966559e94d8999df0f06f552f7586544",
+    "execute-22": "b5417e951b1b2f9cc31de010faafe132fcd3afddbb3eedd44dd1c6af65d1a6bb",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

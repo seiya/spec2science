@@ -552,6 +552,17 @@ class SiteViolationTests(unittest.TestCase):
             with self.subTest(site=name, until_phase="Generate"):
                 self.assertEqual(es.site_violations(cfg, mpi, until_phase="Generate"), [])
         self.assertEqual(es.site_violations(unmapped, mpi, until_phase="Validate"), [])
+        # A combination is refused the same way, and its remedy names the document of the member
+        # that owns the launcher, which exists (issue #700), not one named after the whole value.
+        for value in ("mpi+openmp", "openmp+mpi"):
+            with self.subTest(value=value):
+                found = es.site_violations(direct, _profile("t_cpu", "cpu",
+                                                            parallel_backend=value),
+                                           until_phase="Validate")
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("(docs/backends/parallel/mpi/LAUNCHER.md §Sites)", found[0])
+                self.assertTrue((Path(es.__file__).resolve().parents[1]
+                                 / "docs/backends/parallel/mpi/LAUNCHER.md").is_file())
         # The same site runs a target without a launcher.
         self.assertEqual(es.site_violations(direct, _profile("t_cpu", "cpu"),
                                             until_phase="Validate"), [])

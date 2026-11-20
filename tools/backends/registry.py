@@ -813,8 +813,10 @@ def package_members(axis: str, value: str, capability: str) -> tuple[str, ...]:
     (`execution_env`, `parallel_directives`, `prompt_fragments`): every one of them does its
     part, so the site asks each, through `capability_module` on the member. For a one-member
     value it is that member when its record declares the capability in `backend_provides`, and
-    empty otherwise — the `get(...).backend_provides` read it replaces. A member with no record
-    contributes nothing; whether such a value may run at all is `unimplemented_reason`'s."""
+    empty otherwise — the answer the `get(...).backend_provides` read it replaces gave, except
+    that a value with no record answers empty where `get` raised. A member with no record
+    contributes nothing; whether such a value may run at all is `unimplemented_reason`'s, which
+    the launch gate asks first."""
     _require_capability(axis, capability)
     found: list[str] = []
     for member in members(axis, value):

@@ -469,7 +469,9 @@ def site_violations(config: SitesConfig, profile: Any, *,
         return [(f"parallel.backend: {backend} runs its binary under a launcher, whose ranks a "
                  f"remote site does not place yet; target {target_id} "
                  f"maps to site {site.site_id}, and a launcher target runs at {LOCAL_SITE} only "
-                 f"(docs/backends/parallel/{backend}/LAUNCHER.md §Sites)")]
+                 f"(docs/backends/parallel/"
+                 f"{registry.package_members('parallel', backend, 'launcher')[0]}"
+                 f"/LAUNCHER.md §Sites)")]
     if hardware_class in site.executes:
         return []
     if config.path is None:

@@ -5068,7 +5068,9 @@ def _validate_device_kernel_execution(
             f"fix the site or the target, then `--resume` — or the model launches none of the "
             f"kernels it defines, or every launch it makes fails on its own account (an invalid "
             f"launch configuration) — then `--rederive generate`. "
-            f"docs/backends/parallel/{backend}/DEVICE_TRACE.md §5 gives the procedure for the "
+            f"docs/backends/parallel/"
+            f"{backend_registry.package_members('parallel', backend, 'device_trace')[0]}"
+            f"/DEVICE_TRACE.md §5 gives the procedure for the "
             f"local site and a remote one. A GPU implementation none of whose kernels ran is not "
             f"certified"))
         return
