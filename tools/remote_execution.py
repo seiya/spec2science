@@ -148,8 +148,9 @@ what their answer means (`job_state`, seven answers). `execute_job` composes thr
 - `collect_job` copies the job directory back, refuses a job whose record says it ended other
   than by its own exit with 0 or 1 (quoting the tail of `job.err`), reads `job.out` against the
   record as above, and then reads, compares, removes and records as at a `none` site. The job
-  prints its start (`START_MARKER`, exactly once, before anything else it runs); its difference
-  from `submitted_epoch` is the record's `queue_wait_ms` (0 when the two clocks put it below 0).
+  prints its start (`START_MARKER`, before anything else it runs); its difference from
+  `submitted_epoch` is the record's `queue_wait_ms` (0 when the two clocks put it below 0, or
+  when the file carries no start line in its shape: the record is not a refusal's subject).
 
 A batch job is not cancelled when the host stops waiting: its time limit — the submit command's,
 or a longer one a directive set — bounds it.
@@ -692,18 +693,20 @@ def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str,
 
 
 def _started(lines: list[list[str]], batch: bool, remote: str) -> int | None:
-    """The batch job's start, in epoch seconds, from its start lines: exactly one, in its shape,
-    for a batch job; none for a job run under no scheduler (None)."""
+    """A batch job's start, in epoch seconds: the first of its start lines in its shape, None
+    when there is none. It is read for `queue_wait_ms` alone, a record no verdict reads, so its
+    count and shape are not refusals (issue #696 §6.12: the file a command can rewrite gives a
+    leaf nothing through it). A job run under no scheduler prints none, and one that arrives
+    from it is refused, as a scheduler line from such a job always was."""
     if not batch:
         if lines:
             raise RemoteExecutionError(
                 f"start lines from a job run under no scheduler: {lines} ({remote})")
         return None
-    if len(lines) != 1 or len(lines[0]) != 2 or not _INT.fullmatch(lines[0][1]):
-        raise RemoteExecutionError(
-            f"not one {START_MARKER} line in its shape: {[' '.join(w) for w in lines]} "
-            f"({remote})")
-    return int(lines[0][1])
+    for words in lines:
+        if len(words) == 2 and _INT.fullmatch(words[1]):
+            return int(words[1])
+    return None
 
 
 def _statuses(lines: dict[str, list[tuple[str, str, str]]], commands: tuple[CommandSpec, ...],
@@ -1164,8 +1167,9 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
         started = _started(starts, True, remote)
         statuses = _statuses(status_lines, request.commands, remote)
         _bind(statuses, own_exit, remote)
+        queue_wait_ms = 0 if started is None else max(0, started - handle.submitted_epoch) * 1000
         return _record(request, statuses, facts, collected=collected, job_id=handle.job_id,
-                       queue_wait_ms=max(0, int(started or 0) - handle.submitted_epoch) * 1000)
+                       queue_wait_ms=queue_wait_ms)
     except RemoteExecutionError as exc:
         raise _left(exc, remote) from exc
 

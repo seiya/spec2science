@@ -1188,20 +1188,26 @@ class SchedulerTests(unittest.TestCase):
                     h.run(h.request(), SHIM_SBATCH_PRINT=printed)
                 self.assertEqual([c[0] for c in h.calls()].count("scontrol"), 0)
 
-    def test_the_start_line_is_one_and_only_under_a_scheduler(self) -> None:
-        not_one = f"not one {rx.START_MARKER} line in its shape"
-        for pattern, repl, refusal in (
-                (rf"^({rx.START_MARKER} .*)$", r"\1\n\1", not_one),           # a second one
-                (rf"^({rx.START_MARKER} .*)$", "", not_one),                  # lost
-                (rf"^({rx.START_MARKER}) .*$", r"\1 soon", not_one),          # not an epoch
-                (rf"^({rx.START_MARKER} .*)$", r"\1 2", not_one),             # a third word
-                # A marker glued to more letters is no start line, and no status line either.
-                (rf"^({rx.START_MARKER} .*)$", rf"\1\n{rx.START_MARKER}x 8", "does not parse")):
+    def test_the_start_line_is_read_for_the_record_alone(self) -> None:
+        """Issue #696 §6.12: the start line gives `queue_wait_ms`, which no verdict reads, so a
+        second, a lost or a malformed one is not a refusal: the first in its shape is read, and
+        none is a wait of 0. A marker glued to more letters is still refused (it is no start
+        line and no status line), and a start line from a `none` site's job still is."""
+        for pattern, repl, wait in (
+                (rf"^({rx.START_MARKER}) \d+$", r"\1 1\n\1 1", None),           # a second one
+                (rf"^({rx.START_MARKER} .*)$", "", 0),                              # lost
+                (rf"^({rx.START_MARKER}) .*$", r"\1 soon", 0),                     # not an epoch
+                (rf"^({rx.START_MARKER} .*)$", r"\1 2", 0)):                       # a third word
             with self.subTest(repl=repl, pattern=pattern):
                 h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
-                with self.assertRaisesRegex(rx.RemoteExecutionError, refusal):
-                    h.run(h.request(), SHIM_SBATCH_SUB=json.dumps([pattern, repl]))
-                self.assertEqual(h.log_entries("run"), [])
+                result = h.run(h.request(), SHIM_SBATCH_SUB=json.dumps([pattern, repl]))
+                self.assertTrue(all(r["ok"] for r in result.results))
+                if wait is not None:
+                    self.assertEqual(result.site_record["queue_wait_ms"], wait)
+        h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
+        with self.assertRaisesRegex(rx.RemoteExecutionError, "does not parse"):
+            h.run(h.request(), SHIM_SBATCH_SUB=json.dumps(
+                [rf"^({rx.START_MARKER} .*)$", rf"\1\n{rx.START_MARKER}x 8"]))
         h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
         with self.assertRaisesRegex(rx.RemoteExecutionError, "run under no scheduler"):
             h.run(h.request(), SHIM_SSH_SUB=json.dumps(
