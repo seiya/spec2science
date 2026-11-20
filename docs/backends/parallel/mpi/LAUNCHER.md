@@ -59,7 +59,10 @@ make test                                                           # the qualit
   per core (2026-11-20): at up to 2 ranks it binds each rank to one core, so a rank's threads
   share that core and the run is correct and no faster than one thread; at more ranks it binds
   each to a socket. The launcher's own environment variables change it without an argument
-  (`OMPI_MCA_hwmap_base_binding_policy=none`, or a mapping `slot:PE=<threads>`); export them in
+  (on Open MPI 4.x `OMPI_MCA_hwloc_base_binding_policy=none`, which leaves each rank unbound, or
+  `OMPI_MCA_rmaps_base_mapping_policy=slot:PE=<threads>`, which gives each rank that many cores;
+  both measured on 4.1.2 with `--report-bindings`, and the binding variable is named
+  `hwmap_base_binding_policy` from Open MPI 5 on, which 4.1.2 ignores); export them in
   the host's environment, or a site's `setup` lines, as a performance choice. It is a
   recommendation, not a rule: the result does not depend on it.
 
