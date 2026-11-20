@@ -1181,8 +1181,9 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
                 tail = f"({JOB_ERR} was not collected)"
             raise RemoteExecutionError(
                 f"the scheduler's record says job {handle.job_id} did not run to its own exit "
-                f"with 0 or 1 (a signal, a limit, a cancellation, a node failure, or the job "
-                f"script's own failure outside its commands), so its statuses are not read; "
+                f"with 0 or 1 (a signal, a limit, a cancellation, a node failure, the job "
+                f"script's own failure outside its commands, or the script ran more than once "
+                f"because the scheduler requeued it), so its statuses are not read; "
                 f"{JOB_ERR} ends: {tail[-2000:] or '(empty)'} ({remote})")
         job_out = _read_output(ctl / JOB_OUT, remote)
         status_lines, facts, starts = _job_lines(job_out, remote)

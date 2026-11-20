@@ -161,7 +161,9 @@ makes a command that runs long a refusal rather than the command's own timeout.
   requeue and a plain `scontrol requeue` of the job. It does not stop the job's own commands from
   setting the flag back (`scontrol update JobId=<id> Requeue=1`) and then requeueing the job, so
   the backend reads an own exit only from a record with `Restarts=0`; a job that ran its script
-  more than once is refused as ended otherwise.
+  more than once is refused as ended otherwise. `Restarts` counts the site's own requeues too
+  (a launch or prolog failure, `RequeueExit`), so a job the site requeued on its own is refused
+  the same way even when its script ran at most once; `--resume`, or a rerun, submits a new job.
 - **One cluster.** A directive that selects another cluster (`-M`, `--clusters`) is not
   supported: the job would be submitted there, and every poll asks `scontrol` without `-M`,
   which answers for the local cluster alone.
