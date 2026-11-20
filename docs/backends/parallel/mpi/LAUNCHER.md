@@ -80,7 +80,7 @@ make test                                                           # the qualit
 | `quality_check.json#comparison.reference.ranks` / `.candidate.ranks` | `execution.ranks` / `1`, as the conductor writes them |
 | `quality_check.json#shapes[]` | one row per execution shape, the certified run's first: its `ranks` and `process_grid`, and `observed_mpi_ranks` / `observed_process_grid`, what its harness wrote in `perf.json`; the conductor writes one row per shape of the profile and fails the quality check, and so the run, when an observation is not its shape's (`Conductor._author_quality_check`, issue #512). Last, the bounds-checked binary's `checked` row when the compiler declares checked flags (issue #589): started bare, without `mpirun`, as one process under `{"SPEC2SCIENCE_PROCESS_GRID": "1,1"}`, so its harness reports one rank in `[1, 1]` (`docs/workflow/phases/phase_04_validate.md` §4-2) |
 | `trial_meta.json#environment.sweep[]` | each sweep shape's launch: `["mpirun", "-n", "<p1 p2>"]` and `{"SPEC2SCIENCE_PROCESS_GRID": "p1,p2"}` |
-| build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` / `toolchain.compiler_version` | `mpif90`; the first line of `mpif90 -show`, the runtime installation the binary links against; and the compiler's version asked as `mpif90 --version`, which the wrapper passes to the compiler it is configured with. A change of installation or of that compiler is another build. The syntax stage's recorded `compiler_version` is asked the same way |
+| build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` / `toolchain.compiler_version` | `mpif90`; the first line of `mpif90 -show` on the host that runs `Generate.gate`, the runtime installation a binary built at `local` links against (at a remote site, §4); and the compiler's version asked as `mpif90 --version`, which the wrapper passes to the compiler it is configured with. A change of installation or of that compiler is another build. The syntax stage's recorded `compiler_version` is asked the same way |
 
 ## 3. Requirements on the host
 
@@ -153,8 +153,10 @@ one run of one — how `Validate.execute` starts the serial reference and the ch
 runtime that does not start a bare program inside an allocation fails them). A canary that does
 not build, does not complete, or reports another run fails the `Build` as the site's failure
 (`deterministic_build_error`, a transport fail_closed, not routed to `Generate`), before the
-build's result is read. Its argv and the launcher's message are in its log entries,
-`workspace/orchestrations/<orchestration_id>/launch_canary.jsonl`. It covers the first `Build` at
+build's result is read. The failure's message carries the tail of what the canary printed,
+and is kept in `workspace/orchestrations/<orchestration_id>/agents/<agent_run_id>/dialogs/deterministic.stderr.log`; the canary's log entries,
+`workspace/orchestrations/<orchestration_id>/launch_canary.jsonl`, hold each command's argv
+as the site ran it (`site.remote_command`) and its exit code, not its output. It covers the first `Build` at
 a site: a `Validate` that passes through no `Build` there (`--rederive validate`, or a
 `Validate` whose key moved under a certified `Build`) starts the launcher with no canary
 before it.
@@ -162,7 +164,10 @@ before it.
 **What is not asked or recorded at a remote site.** The runtime's identity: `mpirun
 --version` is recorded as `platform.parallel_runtime` at `local` only (issue #700 O15: no gate,
 key or verdict reads it). The site's compiler version is recorded in `binary_meta.json`, not
-keyed (`docs/ORCHESTRATION.md` §Execution sites).
+keyed (`docs/ORCHESTRATION.md` §Execution sites). The build key's `parallel_runtime` (§2) is
+this host's `mpif90 -show`, as its `compiler_version` is this host's: at a remote site it does
+not name the installation the binary links against, and a change of the site's installation
+moves no key.
 
 **Verified on one node.** Open MPI 4.1.2 at a `none` site reached over ssh, and under Slurm
 20.02.5 with no task plugin, on one node. Over several nodes the launcher places the ranks over
