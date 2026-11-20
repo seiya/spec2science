@@ -190,9 +190,10 @@ with open(kept, "w") as f:
     f.write(script)
 os.chmod(kept, 0o700)
 record(jid, "PENDING", "0:0", name=opts.get("--job-name", "sbatch"))
-subprocess.Popen([sys.executable, __file__, "--shim-run", jid, kept, opts["--output"],
-                  opts["--error"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                 stderr=subprocess.DEVNULL, start_new_session=True)
+run = subprocess.Popen([sys.executable, __file__, "--shim-run", jid, kept, opts["--output"],
+                        opts["--error"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, start_new_session=True)
+open(os.path.join(D, f"pid.{jid}"), "w").write(str(run.pid))
 sys.stdout.write(os.environ.get("SHIM_SBATCH_PRINT", "{id}\n").replace("{id}", jid))
 '''
 
@@ -230,6 +231,29 @@ _RUNNER = textwrap.dedent('''\
     print("runner stderr", file=sys.stderr)
     sys.exit(int(os.environ.get("RUNNER_RC") or 0))
 ''')
+
+
+def _reap_shim_jobs(root: str) -> None:
+    """Stop the background "jobs" the `sbatch` shim started under `root` before the tree is
+    removed. A row that is refused before its job ends (an unknown id, a bound) otherwise leaves
+    the job writing `ctl/` while `TemporaryDirectory.cleanup` removes it, which failed one row in
+    `tearDown` under `-n 24` ("Directory not empty: 'ctl'"). Each job is its own session, so its
+    group is killed, and the kill is waited for (bounded) because it lands asynchronously."""
+    import signal
+    import time
+    for pid_file in Path(root).rglob("pid.*"):
+        try:
+            pid = int(pid_file.read_text())
+            os.killpg(pid, signal.SIGKILL)
+        except (ValueError, ProcessLookupError, PermissionError):
+            continue
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
 
 
 class _Harness:
@@ -340,6 +364,7 @@ class EndToEndTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def test_two_commands_run_in_order_and_each_is_logged_where_the_caller_said(self) -> None:
@@ -607,6 +632,7 @@ class RefusalTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _refused(self, pattern: str, request: rx.JobRequest | None = None,
@@ -921,6 +947,7 @@ class RequestValidationTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _invalid(self, pattern: str, request: rx.JobRequest) -> None:
@@ -1040,6 +1067,7 @@ class SchedulerTests(unittest.TestCase):
         self.h = self._slurm(_Harness(self._tmp.name))
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     @staticmethod
@@ -1342,6 +1370,7 @@ class BindingTests(unittest.TestCase):
         self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _refused(self, pattern: str, request: rx.JobRequest | None = None,
@@ -1434,6 +1463,7 @@ class StubTests(unittest.TestCase):
         self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def test_the_submitted_script_is_two_lines(self) -> None:
@@ -1512,6 +1542,7 @@ class PollingTests(unittest.TestCase):
         self.h = SchedulerTests._slurm(_Harness(self._tmp.name))
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _handle(self) -> rx.JobHandle:
@@ -1664,6 +1695,7 @@ class SiteSetupTests(unittest.TestCase):
         _script(self.tools / "zz-cc", "exit 0\n")
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _setup(self, *lines: str, **kw) -> None:
@@ -1820,6 +1852,7 @@ class SiteSmokeTests(unittest.TestCase):
                               f"    scheduler: none\n")
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def smoke(self, *extra: str, **knobs: str) -> tuple[int, str, str]:
@@ -1880,6 +1913,7 @@ class ProbeSiteTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def probe(self, *exes: str, **knobs: str) -> rx.SiteProbe:
@@ -2039,6 +2073,7 @@ class BuildShapeTests(unittest.TestCase):
         self.h = _Harness(self._tmp.name)
 
     def tearDown(self) -> None:
+        _reap_shim_jobs(self._tmp.name)
         self._tmp.cleanup()
 
     def _build(self, **kw) -> rx.CommandSpec:
