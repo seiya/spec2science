@@ -110,8 +110,8 @@ make test                                                           # the qualit
   MPI 4.1.2 built for gfortran passes it. The binding canary is asked first; the launch canary
   is written in the same binding.
 - `mpirun` is asked only of a run that executes the binary: the local site's launch probe
-  (`missing_required_site_tools`, `host_execution.execution_executables`). A remote site is
-  asked for both programs too (§4).
+  (`missing_required_site_tools`, `host_execution.execution_executables`). What a remote site
+  is asked is §4's.
 - At the local site, the CPUs this process may run on (its affinity mask) are at least `execution.ranks`
   (`site_unfit_for_ranks`). The mask counts logical CPUs. A launcher may count its slots
   differently (Open MPI's default is one slot per physical core), so on a host with more than
@@ -131,8 +131,11 @@ the site that runs it, with the site's wrapper (issue #333).
   whose `mpi_f08` binding is built for the target's compiler (§3: the same requirements as the
   host's). The wrapper must run the language's default compiler: the wrapper runs one compiler,
   and a second compiler of a language is not built (item 6 Part 2, held in `TODO.md`). A `none`
-  site's login is asked for both programs at launch (`missing_required_site_tools`); a batch
-  site's job asks for them where it runs.
+  site's login is asked for the wrapper at launch for a run that reaches `Build`, and for the
+  launcher too when the run reaches `Validate` (`missing_required_site_tools`); a run that stops
+  at `Build` meets a missing launcher in its `Build` job's canary instead (below), and `--resume`
+  reuses its certified `Compile` and `Generate`. A batch site's job asks for both where it
+  runs.
 - Slots for `execution.ranks` processes. At a `none` site the launcher counts the machine's own
   cores. At a batch site it counts the allocation's tasks, which the site's
   `scheduler_directives` state (`docs/backends/scheduler/slurm/JOB_SUBMIT.md` §2: with no task

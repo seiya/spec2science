@@ -385,9 +385,10 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
          "(issue #316; `tools/host_execution.py` composes the prefix, the backend spells it). A "
          "value that does not declare it runs its binary as one process, and a profile asking "
          "for more ranks than one is refused (`target_profile.hardware_violations`). A target "
-         "whose backend declares it runs at any execution site (issue #337); at a remote one "
-         "the site's `Build` job first builds the backend's launch canary and starts it under "
-         "the launcher and bare (`Conductor._build_inproc`)."),
+         "whose backend declares it runs at any execution site (issue #337); at a remote one, "
+         "for a profile of more than one rank, the site's `Build` job first builds the "
+         "backend's launch canary and starts it under the launcher and bare "
+         "(`Conductor._build_inproc`)."),
     ),
     "compiler_wrapper": (
         ("parallel",),

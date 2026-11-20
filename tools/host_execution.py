@@ -33,8 +33,9 @@ A parallel backend that declares `launcher` (issue #316) starts the binary's ran
 it and the binary), and its `RUNTIME_PROBE` is `LaunchShape.runtime_probe`, whose first line is
 recorded as `platform.parallel_runtime` at the local site. Such a target runs at any site
 (issue #337): at a remote one the launcher starts the ranks inside the job, within the
-allocation the operator's `scheduler_directives` give at a batch site, and the launch canary at
-the head of the site's `Build` job (`Conductor._build_inproc`) asks the site whether it does.
+allocation the operator's `scheduler_directives` give at a batch site, and for a profile of
+more than one rank the launch canary at the head of the site's `Build` job
+(`Conductor._build_inproc`) asks the site whether it does.
 """
 
 from __future__ import annotations
