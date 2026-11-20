@@ -1269,10 +1269,12 @@ def _remove_job_record(path: Path) -> None:
 
 def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | None]:
     """The record at `path` and None when its job is one this site could adopt (adoption
-    conditions 1 of issue #696 §6.5: the site's id, host and scheduler, and a job directory
-    under its `workdir`), else the record (or None) and why not. These are the adoption key,
-    not integrity checks: the record is host-written where no leaf writes, and one that does not
-    read as a record is not adopted."""
+    condition 1 of issue #696 §6.5: the site's id, host and scheduler), else the record (or
+    None) and why not. These are the adoption key, not integrity checks: the record is
+    host-written where no leaf writes, and one that does not read as a record is not adopted.
+    The job directory is not compared with the site's `workdir`: the digest binds it (the job
+    script holds it), so a job submitted under another `workdir` is still the job this attempt
+    would submit for that directory."""
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -1289,13 +1291,6 @@ def _recorded_job(path: Path, site: Site) -> tuple[dict[str, Any] | None, str | 
                          ("scheduler", site.scheduler)):
         if record[key] != current:
             return record, f"it was submitted to {key} {record[key]!r}, not {current!r}"
-    workdir = str(site.workdir).rstrip("/")
-    try:
-        _under(record["remote_dir"], workdir, "the recorded job directory")
-    except ValueError as exc:
-        return record, str(exc)
-    if record["remote_dir"] == workdir:
-        return record, "its job directory is the site's workdir itself"
     return record, None
 
 
@@ -1315,16 +1310,15 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
     of the last two names the record.
 
     A recorded job is adopted when (1) the record reads and names this site's id, host and
-    scheduler and a job directory under its `workdir`; (2) `request_for(<that directory>)` has
-    the recorded digest; and (3) the record holds an end answer or the scheduler answers
-    queued, running or ended. Otherwise the record is removed and a job of this attempt's own is
-    submitted, the event `site_job_not_adopted` naming the job left behind; a scheduler that
-    gives no answer at (3) ends the call (`RemoteExecutionError`) with the record kept.
-    Breakage each condition answers: (1) another cluster's scheduler asked about this job's
-    number, and a remapped target meeting `_validate`'s `ValueError` on every resume; (2) log
-    entries written from this attempt's request for a job that ran other commands, a false
-    record; the end answer written at its first reading, a finished job run again because the
-    scheduler forgot it between two attempts to collect it.
+    scheduler; (2) `request_for(<that directory>)` has the recorded digest; and (3) the record
+    holds an end answer or the scheduler answers queued, running or ended. Otherwise the record
+    is removed and a job of this attempt's own is submitted, the event `site_job_not_adopted`
+    naming the job left behind; a scheduler that gives no answer at (3) ends the call
+    (`RemoteExecutionError`) with the record kept. Breakage each condition answers: (1) another
+    cluster's scheduler asked about this job's number; (2) log entries written from this
+    attempt's request for a job that ran other commands, a false record; the end answer written
+    at its first reading, a finished job run again because the scheduler forgot it between two
+    attempts to collect it.
 
     `emit(event, **fields)` receives `site_job_adopted` and `site_job_not_adopted`."""
     say = emit or (lambda event, **fields: None)
@@ -1342,15 +1336,10 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
         record, why = _recorded_job(record_path, site)
         if why is None:
             assert record is not None
-            try:
-                request = request_for(record["remote_dir"])
-                _validate(request)
-            except ValueError as exc:
-                why = f"no request composes for the recorded job directory ({exc})"
-            else:
-                if request_sha256(request) != record["request_sha256"]:
-                    why = ("the request this attempt composes for the recorded job directory "
-                           "is not the one the job was submitted for")
+            request = request_for(record["remote_dir"])
+            if request_sha256(request) != record["request_sha256"]:
+                why = ("the request this attempt composes for the recorded job directory is "
+                       "not the one the job was submitted for")
         if why is None:
             assert record is not None
             handle = JobHandle(site=record["site"], host=record["host"],

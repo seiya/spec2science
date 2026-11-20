@@ -1955,13 +1955,21 @@ class AdoptionTests(unittest.TestCase):
         self._edit_record(scheduler="pjm")
         self.assert_not_adopted("submitted to scheduler 'pjm'", self.h.job)
 
-    def test_a_record_outside_the_sites_workdir_is_not_adopted_and_raises_nothing(
-            self) -> None:
-        """After a remap the recorded directory need not lie under the current site's
-        `workdir`; `_validate` would raise `ValueError` for it on every resume."""
+    def test_a_job_under_another_workdir_is_adopted(self) -> None:
+        """The site's `workdir` changed between the attempts and nothing else: the job the
+        record names is the one this attempt would submit for its directory, and it is adopted
+        and collected from there (review 1 of PR-2, finding 3)."""
+        self.interrupted()
+        _wait_for_shim_end(self.h)
+        self.h.site = dataclasses.replace(self.h.site, workdir=f"{self.h.root}/moved")
+        self.assert_adopted(self.attempt("arid-2"))
+
+    def test_a_record_of_another_directory_is_not_adopted(self) -> None:
+        """The digest binds the job directory: the job script holds it."""
         self.interrupted(SHIM_SBATCH_HOLD="1")
         self._edit_record(remote_dir="/elsewhere/orch_1/arid-1")
-        self.assert_not_adopted("is not under", "/elsewhere/orch_1/arid-1")
+        self.assert_not_adopted("not the one the job was submitted for",
+                                "/elsewhere/orch_1/arid-1")
 
     def test_an_unreadable_record_is_not_adopted(self) -> None:
         self.record.parent.mkdir(parents=True)
