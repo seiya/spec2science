@@ -143,10 +143,15 @@ makes a command that runs long a refusal rather than the command's own timeout.
   probe asks the login only; the job script checks its programs again, on the machine it runs on,
   before its first command, and for a `Validate` job that machine's architecture against the one
   the binary was built on.
-- **A retention longer than 60 seconds.** The executor reads how a job ended from `scontrol`,
-  which states an ended job for `MinJobAge` seconds. A poll comes within one interval of the
-  end — at most 60 seconds — so a site that forgets an ended job sooner than that refuses the
-  jobs that ended between two polls (`the scheduler no longer knows job <id>`). A longer
+- **A retention of several minutes.** The executor reads how a job ended from `scontrol`, which
+  states an ended job for `MinJobAge` seconds; a job forgotten before a poll reads it is refused
+  (`the scheduler no longer knows job <id>`). The first poll after the end comes within one
+  interval of it, at most 60 s (`remote_execution.POLL_MAX_SEC`), and each poll that answers
+  nothing adds one more interval, plus the time the poll took to fail: at once for a refused
+  connection, up to the transport bound of 300 s (`TRANSPORT_GRACE_SEC`) for one that hangs. So
+  `MinJobAge` must be at least (1 + k) × 60 s to survive k unanswered polls that fail at once, and
+  (1 + k) × 60 s + k × 300 s for k that hang: the 300 s of the machine measured covers 4
+  unanswered polls that fail at once and none that hangs, which needs 420 s for one. A longer
   retention buys more: once a resumed run adopts a batch job (issue #696; not built yet), a job
   that ended while no run was waiting is adoptable for as long as the scheduler states it.
 - `queue_timeout_sec` is how long one run waits for the job to start. Past it the run is refused
