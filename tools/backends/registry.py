@@ -966,6 +966,13 @@ def get(axis: str, backend_id: str) -> Backend:
     reason = unsupported_reason(axis, backend_id)
     if reason is not None:
         raise UnsupportedBackend(reason)
+    if _combination(axis, backend_id) is not None:
+        # A combination has no record by design (issue #700): the remedy is to ask its members,
+        # not to register it.
+        raise BackendNotExtracted(
+            f"the {axis} value '{backend_id}' combines several members and has no record of its "
+            f"own; ask each member (registry.members, registry.package_members) — see "
+            f"docs/BACKEND_BOUNDARY.md")
     raise BackendNotExtracted(_no_record_reason(axis, backend_id))
 
 

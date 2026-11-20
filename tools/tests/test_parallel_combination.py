@@ -97,9 +97,12 @@ class RegistryCombinationTests(unittest.TestCase):
         # No member does it.
         with self.assertRaises(registry.BackendNotExtracted):
             registry.capability_module("parallel", "mpi+openmp", "device_trace")
-        # A combination has no record and no package.
-        with self.assertRaises(registry.BackendNotExtracted):
+        # A combination has no record and no package, and the refusal says to ask the members
+        # rather than to register the value.
+        with self.assertRaises(registry.BackendNotExtracted) as caught:
             registry.get("parallel", "mpi+openmp")
+        self.assertIn("ask each member", str(caught.exception))
+        self.assertNotIn("register it", str(caught.exception))
         with self.assertRaises(registry.BackendNotExtracted):
             registry.load("parallel", "mpi+openmp")
 
