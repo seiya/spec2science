@@ -168,8 +168,7 @@ makes a command that runs long a refusal rather than the command's own timeout.
   unanswered polls. The 300 s of the machine measured is exactly (1 + 4) × 60 s, four refused
   polls that took no time at all, so it is read as covering 3 refused at once (240 s, a 60 s
   margin), 2 that reach the connect timeout (240 s, the same margin), and none that hangs, which
-  needs 420 s for one. A longer
-  retention buys more: once a resumed run adopts a batch job (issue #696; not built yet), a job
+  needs 420 s for one. A longer retention buys more: once a resumed run adopts a batch job (issue #696; not built yet), a job
   that ended while no run was waiting is adoptable for as long as the scheduler states it.
 - `queue_timeout_sec` is how long one run waits for the job to start. Past it the run is refused
   as a transport failure and the job is LEFT as it is: nothing cancels it. `scancel` it by hand
