@@ -1367,7 +1367,8 @@ class BindingTests(unittest.TestCase):
         for end in ("FAILED 0:9", "COMPLETED 0:9", "COMPLETED 1:0", "FAILED 3:0",
                     "CANCELLED 0:15", "TIMEOUT 0:15", "NODE_FAIL 0:0", "OUT_OF_MEMORY 0:0"):
             with self.subTest(end=end):
-                self._refused("(?s)did not run to its own exit with 0 or 1.*job.err ends: "
+                self._refused("(?s)did not run to its own exit with 0 or 1.*the script ran "
+                              "more than once because the scheduler requeued it.*job.err ends: "
                               "zz-said-by-setup", SHIM_SBATCH_END=end)
                 shutil.rmtree(self.h.local / "tmp")
                 shutil.rmtree(self.h.job)
