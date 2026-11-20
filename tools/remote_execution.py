@@ -945,6 +945,15 @@ def _left(exc: RemoteExecutionError, remote: str) -> RemoteExecutionError:
         f"done")
 
 
+def _kept(message: str, record_path: Path, job_id: str) -> RemoteExecutionError:
+    """A refusal that keeps the job's `site job record`: it names the record and what a later
+    attempt does with it, and not the job directory, which that attempt collects."""
+    return RemoteExecutionError(
+        f"{message}; the site job record {record_path} is kept, and a later attempt "
+        f"(`--resume`) adopts job {job_id} — removing the record abandons the job (cancel it "
+        f"by hand first if it should not run)")
+
+
 def _create_and_ship(request: JobRequest, stage_dir: Path) -> None:
     """Steps 1 and 2: the fresh job directory, then the staged files shipped into it."""
     host, remote, q = str(request.site.host), request.job_dir, shlex.quote
@@ -999,7 +1008,10 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
     if _submission(request.site.scheduler) is not None:
         handle = submit_job(request, local_tmp=local_tmp)
         queue_bound, run_bound = job_bounds(request)
-        own_exit = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
+        try:
+            own_exit = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
+        except RemoteExecutionError as exc:
+            raise _left(exc, handle.remote_dir) from exc
         return collect_job(handle, request, local_tmp=local_tmp, own_exit=own_exit)
     stage_dir, collected = _local_dirs(local_tmp)
     _create_and_ship(request, stage_dir)
@@ -1113,7 +1125,9 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
     during a long wait, would lose the job. `unknown_id` is refused: the scheduler no longer
     states how the job ended, and polling it until the bound would only delay that. Past
     `queue_bound_sec` before the job was seen running, or `run_bound_sec` after, the wait is
-    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it."""
+    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it. What the
+    refusal says about the job directory is its caller's: `execute_or_adopt_job` keeps the
+    record, which a later attempt adopts."""
     submission = _submission(handle.scheduler)
     remote = handle.remote_dir
     t0 = time.monotonic()
@@ -1133,36 +1147,33 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
                      f"said: {last})")
         return said
 
-    try:
-        while True:
-            time.sleep(interval)
-            interval = min(interval * 2, POLL_MAX_SEC)
-            condition, value = _ask_state(handle, submission)
-            now = time.monotonic()
-            if condition == "ended":
-                return value
-            if condition == "unknown_id":
-                raise JobNotStated(
-                    f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
-                    f"longer stated; its output is not read ({remote})")
-            if condition == "no_answer":
-                unanswered, last = unanswered + 1, str(value)
-            else:
-                answered, unanswered = (condition, now - t0), 0
-            if condition == "running" and started is None:
-                started = now
-            if started is None and now - t0 > queue_bound_sec:
-                raise RemoteExecutionError(
-                    f"wait for the job: job {handle.job_id} was not seen running within "
-                    f"{queue_bound_sec} sec (queue_timeout_sec); {polls()}; it is left as it "
-                    f"is, nothing cancels it ({remote})")
-            if started is not None and now - started > run_bound_sec:
-                raise RemoteExecutionError(
-                    f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
-                    f"sec since a poll first saw it running; {polls()}; it is left as it is, "
-                    f"nothing cancels it ({remote})")
-    except RemoteExecutionError as exc:
-        raise _left(exc, remote) from exc
+    while True:
+        time.sleep(interval)
+        interval = min(interval * 2, POLL_MAX_SEC)
+        condition, value = _ask_state(handle, submission)
+        now = time.monotonic()
+        if condition == "ended":
+            return value
+        if condition == "unknown_id":
+            raise JobNotStated(
+                f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
+                f"longer stated; its output is not read ({remote})")
+        if condition == "no_answer":
+            unanswered, last = unanswered + 1, str(value)
+        else:
+            answered, unanswered = (condition, now - t0), 0
+        if condition == "running" and started is None:
+            started = now
+        if started is None and now - t0 > queue_bound_sec:
+            raise RemoteExecutionError(
+                f"wait for the job: job {handle.job_id} was not seen running within "
+                f"{queue_bound_sec} sec (queue_timeout_sec); {polls()}; it is left as it "
+                f"is, nothing cancels it ({remote})")
+        if started is not None and now - started > run_bound_sec:
+            raise RemoteExecutionError(
+                f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
+                f"sec since a poll first saw it running; {polls()}; it is left as it is, "
+                f"nothing cancels it ({remote})")
 
 
 def _bind(statuses: list[tuple[int, int, int] | None], own_exit: int, remote: str) -> None:
@@ -1204,9 +1215,7 @@ def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
     except RemoteExecutionError as exc:
         if record_path is None:
             raise _left(exc, remote) from exc
-        raise RemoteExecutionError(
-            f"{exc}; the site job record {record_path} is kept, and a later attempt collects "
-            f"job {handle.job_id} again — removing the record abandons the job") from exc
+        raise _kept(str(exc), record_path, handle.job_id) from exc
     if record_path is not None:
         _remove_job_record(record_path)
     try:
@@ -1349,11 +1358,10 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
             else:
                 condition, value = _ask_state(handle, submission)
                 if condition == "no_answer":
-                    raise RemoteExecutionError(
+                    raise _kept(
                         f"adopt the recorded job: the scheduler gave no answer about job "
-                        f"{handle.job_id} ({value}); the record {record_path} is kept, and a "
-                        f"later attempt asks again — remove it to abandon the job "
-                        f"({handle.remote_dir})")
+                        f"{handle.job_id} ({value}) ({handle.remote_dir})", record_path,
+                        handle.job_id)
                 if condition == "unknown_id":
                     why = (f"the scheduler no longer knows job {handle.job_id}, so how it "
                            f"ended is no longer stated")
@@ -1382,9 +1390,11 @@ def execute_or_adopt_job(request_for: Callable[[str], JobRequest], *, fresh_dir:
         queue_bound, run_bound = job_bounds(request)
         try:
             end = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
-        except JobNotStated:
+        except JobNotStated as exc:
             _remove_job_record(record_path)
-            raise
+            raise _left(exc, handle.remote_dir) from exc
+        except RemoteExecutionError as exc:
+            raise _kept(str(exc), record_path, handle.job_id) from exc
         _write_job_record(record_path,
                           {**record, "end": END_OTHERWISE if end is None else end})
     return collect_job(handle, request, local_tmp=local_tmp, own_exit=end,

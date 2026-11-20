@@ -2030,9 +2030,16 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual(self.sbatch_calls(), 1)
 
     def test_a_wait_past_its_bound_leaves_the_job_and_the_record(self) -> None:
+        """The refusal names the kept record and what `--resume` does with it, and does not
+        tell the operator to remove the job directory a later attempt would collect."""
         self.h.site = dataclasses.replace(self.h.site, queue_timeout_sec=1)
-        with self.assertRaisesRegex(rx.RemoteExecutionError, "was not seen running within 1"):
+        with self.assertRaisesRegex(rx.RemoteExecutionError,
+                                    "was not seen running within 1") as caught:
             self.attempt("arid-1", SHIM_SBATCH_HOLD="1")
+        said = str(caught.exception)
+        self.assertIn(f"the site job record {self.record} is kept", said)
+        self.assertIn("`--resume`", said)
+        self.assertNotIn(f"remove {self.h.job}", said)
         self.assertEqual(json.loads(self.record.read_text())["job_id"], "4242")
         self.assertEqual(self.h.slurm_record()["state"], "PENDING")
         self.assertNotIn("end", json.loads(self.record.read_text()))
