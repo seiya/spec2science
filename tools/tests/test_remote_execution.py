@@ -1194,17 +1194,22 @@ class SchedulerTests(unittest.TestCase):
         second, a lost or a malformed one is not a refusal: the first in its shape is read, and
         none is a wait of 0. A marker glued to more letters is still refused (it is no start
         line and no status line)."""
+        real = rx.submit_job
+
+        def at_zero(*a, **k):
+            return dataclasses.replace(real(*a, **k), submitted_epoch=0)
+
         for pattern, repl, wait in (
-                (rf"^({rx.START_MARKER}) \d+$", r"\1 1\n\1 1", None),           # a second one
+                (rf"^({rx.START_MARKER}) \d+$", r"\1 7\n\1 9", 7000),     # a second one: the first
                 (rf"^({rx.START_MARKER} .*)$", "", 0),                              # lost
                 (rf"^({rx.START_MARKER}) .*$", r"\1 soon", 0),                     # not an epoch
                 (rf"^({rx.START_MARKER} .*)$", r"\1 2", 0)):                       # a third word
             with self.subTest(repl=repl, pattern=pattern):
                 h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
-                result = h.run(h.request(), SHIM_SBATCH_SUB=json.dumps([pattern, repl]))
+                with mock.patch.object(rx, "submit_job", side_effect=at_zero):
+                    result = h.run(h.request(), SHIM_SBATCH_SUB=json.dumps([pattern, repl]))
                 self.assertTrue(all(r["ok"] for r in result.results))
-                if wait is not None:
-                    self.assertEqual(result.site_record["queue_wait_ms"], wait)
+                self.assertEqual(result.site_record["queue_wait_ms"], wait)
         h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
         with self.assertRaisesRegex(rx.RemoteExecutionError, "does not parse"):
             h.run(h.request(), SHIM_SBATCH_SUB=json.dumps(
