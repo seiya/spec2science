@@ -76,7 +76,9 @@ ssh <options> -- <host> 'echo; scontrol show job -o <id> </dev/null; printf ...'
 
 Measured on Slurm 20.02.5, a one-node cluster (issue #696, M-S1 to M-S6;
 `tools/tests/data/scheduler_slurm/measure_slurm.py`, whose recorded answers are the fixtures of
-`tools/tests/test_scheduler_slurm.py`): `sbatch --parsable` with the script on standard input
+`tools/tests/test_scheduler_slurm.py`; the records came from an earlier version of its `raw`, a
+separate short run for M-S3 and a run of `self_requeue` alone, which its docstring lists, and
+`fixture` regenerates the answers byte-identically from them): `sbatch --parsable` with the script on standard input
 prints `<id>` and returns in about 10 ms, before the job starts; the states and exit codes in the
 table's measured rows; a script whose shell a command killed is never `COMPLETED 0:0`, whether or
 not the command rewrote `job.out` first; an id ended more than `MinJobAge` (300 s there) ago is

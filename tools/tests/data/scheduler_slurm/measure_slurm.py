@@ -29,6 +29,23 @@ one node); on the machine this was written for nothing is billed.
   `JobStateTests` reads, with the operator's names and paths replaced (`_sanitize`).
 
 Each record is one JSON line in `<out_dir>/records.jsonl`, written as it happens.
+
+Provenance of the committed records (2026-11-20, Slurm 20.02.5, this repository's measurement
+machine). This script's `raw` has NOT been re-run as a whole since it was revised. The records
+`scontrol_answers.json` was built from came from two runs:
+
+1. An earlier version of `raw` (jobs 1611 to 1627): the same cases but for M-S3, whose cases
+   there were named `stub`, `self_rewrite_stub` and `self_rewrite_nostub` (here `stub_rewrite`
+   and `nostub_rewrite`), and without `self_requeue`. Every answer in the fixture but the last
+   is from this run; M-S3's own figures — the kept script's path and mode, `rewrote rc=0`, no
+   descriptor under the stub — were re-measured in a separate short run of the same two
+   scripts (jobs 1628 and 1629), and no fixture answer is from it.
+2. `self_requeue` alone, called from a short driver after review 1 (job 1660): the last
+   answer, `requeue_self_update (after_requeue_attempt)`.
+
+`fixture <run 1>/records.jsonl <run 2>/records.jsonl` regenerates `scontrol_answers.json`
+byte-identically from those two files (checked when the second was added); the files themselves
+hold the operator's names and paths and are not committed.
 """
 
 from __future__ import annotations
