@@ -205,20 +205,10 @@ def _snapshot_schema(ir: dict[str, Any]) -> tuple[dict[str, str], str]:
     return runner_ir.snapshot_schema(ir, check_name)
 
 
-def _threads(target: dict[str, Any]) -> int:
-    """The threads per rank the run executes with — the target profile's `execution`, which
-    is what `run_program` is told. Until R4-a PR-2 this read the IR's
-    `backend_overrides.openmp.num_threads`, a count the run never used. Only the DISTRIBUTED
-    variant's perf record writes it (a launcher target runs one thread per rank, so every
-    shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
-    writes the one the run's shared-memory runtime gives the program, obtained at run time
-    (`_SINGLE_PROCESS_WRITE_PERF`, issue #512)."""
-    return int(target["execution"]["threads_per_rank"])
-
-
 #: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
-#: IR renders, and discards the text. The class and the thread count reach nothing but the
-#: perf-record line, which raises for no value; the rank count is the grid list of the
+#: IR renders, and discards the text. The class and the device count `perf_parallelism` derives
+#: from the thread count reach nothing but the perf-record line, which raises for no value; the
+#: rank count is the grid list of the
 #: distributed form's replication table (issue #610, B6), here `(1, 1)` alone, so the dry render
 #: builds that row and a real target's table adds rows of the same width (a case id per line).
 #: None of the three decides a violation.
@@ -360,7 +350,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     it; ``harness_provides`` is the capability set its target implies
     (``target_profile.harness_capabilities``), and a harness providing ``distributed_state``
     takes the distributed form (module docstring). ``target`` is the run's target profile
-    document, read for the perf record's hardware class, thread and device counts
+    document, read for the perf record's hardware class and device count
     (``host_execution.perf_parallelism``) and, on the distributed form, for the process grids the
     replication table lists (``runner_ir.distribute_grids``). See module docstring for the
     render-error matrix. The returned text is the complete Fortran source (trailing newline
@@ -641,7 +631,6 @@ class _Dist:
     global_states: tuple[str, ...]
     table: tuple[tuple[tuple[int, int], tuple[str, ...]], ...]
     grids: tuple[tuple[int, int], ...]
-    threads: int
     init_checks: tuple[str, ...]
 
     @property
@@ -687,7 +676,7 @@ def _distribution(ir: dict[str, Any], schema: dict[str, str], plan: runner_ir.Dr
         H=H, axes=plan.axes, layouts=spatial, gathered=gathered,
         global_states=tuple(v for v in plan.arrays if v in spatial and v not in plan.written),
         table=runner_ir.replication_table(ir, grids) if plan.axes else (), grids=grids,
-        threads=_threads(target), init_checks=checks)
+        init_checks=checks)
 
 
 def _distributed_ops(plan: runner_ir.DriverPlan, dist: _Dist) -> list[str]:
@@ -969,8 +958,7 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         a("  if (rank == 0) then")
         a(f"    call {H('write_perf')}(trim(case_ids(ncases)), '{_flit(target_class)}', &")
         a("      steps_total, int(min(cells_total, int(huge(0), int64))), walltime, nranks, "
-          f"{dist.threads}, &")
-        a(f"      {devices})")
+          f"{devices})")
         a("  end if")
         a(f"  call {H('finalize')}()")
     a("")
@@ -1452,10 +1440,11 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
 # --- harness interface signature pin (fail-closed, run before rendering) ------
 #
 # The template is written against an interface BLOCK per capability token of the target's harness
-# (issue #690): `sync_single_case@1`'s block below, in the single-process form (a seven-argument
-# `__write_perf`, the thread count obtained by the harness at run time) or the distributed form
-# (the eight-argument writer, the runner passing one thread per rank), and on a target whose
-# harness provides `distributed_state@2` the distributed-state block after it. Which tokens the
+# (issue #690): `sync_single_case@1`'s block below, and on a target whose harness provides
+# `distributed_state@2` the distributed-state block after it. The block's `__write_perf` takes
+# seven arguments on every Fortran target: no thread count, which the harness obtains from the
+# shared-memory runtime at run time (issue #512 for one process, issue #700 for ranks, whose
+# threads a combination target runs). Which tokens the
 # harness provides is the target profile's fact (`target_profile.harness_capabilities`), handed in
 # as `harness_provides`. The blocks are written under the placeholder `HARNESS__` and substituted
 # with the harness's own `<spec_id>__` names at use (`harness_interface_block`): the framework
@@ -1472,11 +1461,10 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
 #: The placeholder the embedded blocks name the harness's symbols by.
 _PLACEHOLDER = "HARNESS__"
 
-# The `sync_single_case@1` block in the distributed form (the pin compares signatures, not
-# versions); the single-process form, `_SINGLE_PROCESS_INTERFACE` below, is derived from it by
-# replacing the `write_perf` stanza, so an edit to that stanza here must keep the replacement
-# applying. If the block changes, the render template must change with it, and every harness that
-# publishes it must be re-certified against it (the pin message says so).
+# The `sync_single_case@1` block, one form for the single-process and the distributed harness
+# (the pin compares signatures, not versions). If the block changes, the render template must
+# change with it, and every harness that publishes it must be re-certified against it (the pin
+# message says so).
 _HARNESS_V3_INTERFACE = """\
 type :: HARNESS__h_var
   character(len=:), allocatable :: name
@@ -1541,14 +1529,13 @@ end subroutine HARNESS__capture_commit
 subroutine HARNESS__capture_close()
 end subroutine HARNESS__capture_close
 
-subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
+subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, gpu_devices)
   character(len=*), intent(in) :: case_id
   character(len=*), intent(in) :: target
   integer, intent(in) :: steps
   integer, intent(in) :: cells_updated
   real(dp), intent(in) :: walltime_sec
   integer, intent(in) :: mpi_ranks
-  integer, intent(in) :: threads_per_rank
   integer, intent(in) :: gpu_devices
 end subroutine HARNESS__write_perf
 
@@ -1729,36 +1716,6 @@ end function HARNESS__reduce_sum_int
 """
 
 
-# The single-process form's `__write_perf` (issue #512): the stanza of `_HARNESS_V3_INTERFACE`
-# without the `threads_per_rank` argument, because a single-process harness's writer obtains the
-# thread count itself, at run time; the distributed form keeps the eight-argument writer (its
-# runner passes the count, one thread per rank).
-_V3_WRITE_PERF_THREADS = """\
-subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
-  character(len=*), intent(in) :: case_id
-  character(len=*), intent(in) :: target
-  integer, intent(in) :: steps
-  integer, intent(in) :: cells_updated
-  real(dp), intent(in) :: walltime_sec
-  integer, intent(in) :: mpi_ranks
-  integer, intent(in) :: threads_per_rank
-  integer, intent(in) :: gpu_devices
-end subroutine HARNESS__write_perf
-"""
-_SINGLE_PROCESS_WRITE_PERF = """\
-subroutine HARNESS__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, gpu_devices)
-  character(len=*), intent(in) :: case_id
-  character(len=*), intent(in) :: target
-  integer, intent(in) :: steps
-  integer, intent(in) :: cells_updated
-  real(dp), intent(in) :: walltime_sec
-  integer, intent(in) :: mpi_ranks
-  integer, intent(in) :: gpu_devices
-end subroutine HARNESS__write_perf
-"""
-_SINGLE_PROCESS_INTERFACE = _HARNESS_V3_INTERFACE.replace(
-    _V3_WRITE_PERF_THREADS, _SINGLE_PROCESS_WRITE_PERF)
-assert _SINGLE_PROCESS_INTERFACE != _HARNESS_V3_INTERFACE, "the write_perf replacement must apply"
 
 
 
@@ -1774,7 +1731,7 @@ def harness_interface_block(harness_spec_id: str, harness_provides: Collection[s
     """The interface block the rendered driver is written against, for a harness providing
     `harness_provides`, under the harness's own `<harness_spec_id>__` names (issue #690)."""
     text = (_HARNESS_V3_INTERFACE + "\n" + _DISTRIBUTED_STATE_INTERFACE
-            if _is_distributed(harness_provides) else _SINGLE_PROCESS_INTERFACE)
+            if _is_distributed(harness_provides) else _HARNESS_V3_INTERFACE)
     return text.replace(_PLACEHOLDER, f"{(harness_spec_id or '').strip()}__")
 
 
@@ -1785,7 +1742,7 @@ _PIN_DRIFT_HINT = (
     "harness was meant to serve this target, make its controlled_spec §5.1 publish the block "
     "(`host_render.harness_block_drift` names each differing symbol) and re-certify the "
     "harness; when the block itself changed, change the renderer's block (_HARNESS_V3_INTERFACE "
-    "/ _SINGLE_PROCESS_INTERFACE / _DISTRIBUTED_STATE_INTERFACE / _HARNESS_V3_PARAMETERS) and the "
+    "/ _DISTRIBUTED_STATE_INTERFACE / _HARNESS_V3_PARAMETERS) and the "
     "render template together; then re-certify dependent nodes")
 
 

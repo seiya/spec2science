@@ -341,9 +341,12 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "process grid on the ranks (`environment(threads_per_rank, process_grid=)`), and, for a "
         "backend whose kernel launches the host configures, the thread-block size it imposes on "
         "them (a module-level `BLOCK_SIZES`, the values it admits, and "
-        "`environment(threads_per_rank, block_size=)`; issue #512). A thread "
-        "count the model does not run is refused with `ValueError`, which the launch gate asks "
-        "of every count a profile names (`target_profile._thread_count_violations`). An empty set is an answer — the binary inherits the host's "
+        "`environment(threads_per_rank, block_size=)`; issue #512). A model that runs threads "
+        "inside a process declares a module-level `RUNS_THREADS = True` and is handed the "
+        "profile's thread count; every other one is handed one, and the launch gate refuses a "
+        "count above one on a value with no such member "
+        "(`target_profile._thread_count_violations`, issue #700). A malformed argument is "
+        "refused with `ValueError`. An empty set is an answer — the binary inherits the host's "
         "environment unchanged — and a value that does not declare this job has no answer: the "
         "launch shape refuses it rather than guessing which of the two it meant.",
     ),

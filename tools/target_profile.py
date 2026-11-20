@@ -248,8 +248,8 @@ class TargetProfile:
         configuration in which the thread count a run's harness reports
         (`perf.json#parallelism.threads_per_rank`) can be told apart from a constant `1`, so the
         quality check (`thread_match`) and the post-execute gate compare it with each shape's
-        count. A target whose every shape runs one thread per rank — a launcher target, a
-        device target — is not compared."""
+        count. A target whose every shape runs one thread per rank — one whose ranks run one
+        thread each, a device target — is not compared."""
         return any(s.threads_per_rank > 1 for s in self.execution_shapes)
 
     @property
@@ -772,14 +772,16 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
 
 def _thread_count_violations(profile: TargetProfile) -> list[str]:
     """Every thread count the profile runs a rank with other than one — `threads_per_rank` and
-    each of `execution.sweep.threads_per_rank` (issue #512) — must be one the parallel
-    backend's launch environment admits: its `execution_env` answers the count, or refuses it
-    (`ValueError`, e.g. a model whose ranks run one thread each). A backend whose launch
-    environment is the neutral core's empty one runs one thread whatever the profile says, so it
-    admits none; a backend this repository does not implement is refused in its own words
-    elsewhere. A value that combines several models hands each count to every member whose
-    package declares a launch environment, and any one's refusal refuses it (issue #700)."""
+    each of `execution.sweep.threads_per_rank` (issue #512) — needs a member of the parallel
+    backend whose launch environment declares that it runs threads inside a process
+    (`RUNS_THREADS`, issue #700): the host hands the count to that member and one to every other
+    (`host_execution._execution_env`). A value with no such member — a model whose ranks run one
+    thread each, a device model's host side, or the serial value, whose launch environment is the
+    neutral core's empty one — runs one thread whatever the profile says, so a profile stating
+    more would record a count nothing ran with. A backend this repository does not implement is
+    refused in its own words elsewhere."""
     from tools.backends import registry as backend_registry
+    from tools.host_execution import runs_threads
 
     counts = [("execution.threads_per_rank", profile.threads_per_rank)]
     counts += [("execution.sweep.threads_per_rank", int(t))
@@ -789,23 +791,12 @@ def _thread_count_violations(profile: TargetProfile) -> list[str]:
     if backend_registry.missing_capability_reason("parallel", backend, "execution_env") \
             is not None:
         return []
-    packaged = backend_registry.package_members("parallel", backend, "execution_env")
-    out: list[str] = []
-    for where, count in counts:
-        if count == 1:
-            continue
-        if not packaged:
-            out.append(f"{where}: {count} threads per rank, and parallel backend {backend} "
-                       f"launches each rank as one thread")
-            continue
-        for member in packaged:
-            module = backend_registry.capability_module("parallel", member, "execution_env")
-            try:
-                module.environment(count)
-            except ValueError as exc:
-                out.append(f"{where}: parallel backend {member} does not run {count} threads "
-                           f"per rank ({exc})")
-    return out
+    if any(runs_threads(backend_registry.capability_module("parallel", member, "execution_env"))
+           for member in backend_registry.package_members("parallel", backend, "execution_env")):
+        return []
+    return [f"{where}: {count} threads per rank, and no member of parallel backend {backend} "
+            f"runs threads inside a process; each rank runs one thread"
+            for where, count in counts if count != 1]
 
 
 def _block_size_violations(profile: TargetProfile) -> list[str]:

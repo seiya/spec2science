@@ -564,13 +564,13 @@ class WorkspaceLayoutTargetLayerTests(unittest.TestCase):
 
 
 class RunnerRenderTargetTests(unittest.TestCase):
-    def test_the_perf_record_names_the_targets_class_and_threads(self) -> None:
-        """The rendered runner's perf record reads the target, not the IR's knob."""
+    def test_the_perf_record_names_the_targets_class(self) -> None:
+        """The rendered runner's perf record reads the target, not the IR's knob. The thread
+        count is the harness's own on every Fortran target (issue #700), so the runner reads
+        none."""
         from tools.backends.language.fortran import runner
         self.assertEqual(runner._target_class(FORTRAN_CPU.doc), FORTRAN_CPU.hardware_class)
-        self.assertEqual(runner._threads(FORTRAN_CPU.doc), FORTRAN_CPU.threads_per_rank)
-        other = {**FORTRAN_CPU.doc, "execution": {"threads_per_rank": 7}}
-        self.assertEqual(runner._threads(other), 7)
+        self.assertFalse(hasattr(runner, "_threads"))
 
 
 if __name__ == "__main__":

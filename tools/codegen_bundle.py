@@ -417,8 +417,10 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # issue #589 extended it by `__read_case` and the typed getters, and issue #644 replaced its
 # emitters and snapshot writer by the capture operations, under the same token, because no
 # physics bundle calls an operation of the block and no consumer distinguishes a generation. Its
-# `__write_perf` takes no `threads_per_rank` argument on a single-process target (issue #512); a
-# distributed or device harness publishes the eight-argument writer instead. The mechanical
+# `__write_perf` takes no `threads_per_rank` argument where the harness obtains the count
+# itself: a single-process harness (issue #512), and a distributed one whose ranks may run
+# threads (issue #700); a device harness publishes the eight-argument writer instead. The
+# mechanical
 # enforcer is the language backend's `assert_harness_pin`; this contract names the ABI, it does
 # not re-check it.
 #

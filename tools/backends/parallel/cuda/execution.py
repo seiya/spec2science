@@ -20,16 +20,14 @@ BLOCK_SIZES = frozenset({32, 64, 128, 256, 512, 1024})
 def environment(threads_per_rank: int, block_size: int | None = None) -> dict[str, str]:
     """The overrides a run is launched with: the imposed block size, when one is given.
     `threads_per_rank` is validated like the OpenMP backend validates it, so a malformed profile
-    value is refused the same way whichever model the profile names; a count other than one
-    is refused, since the host side of a CUDA binary runs one thread and nothing here would make
-    it run more (the launch gate asks this, `target_profile._thread_count_violations`). A block
-    size outside `BLOCK_SIZES` is refused too (the launch gate asks it,
-    `target_profile._block_size_violations`)."""
+    value is refused the same way whichever model the profile names. This module declares no
+    `RUNS_THREADS`: the host side of a CUDA binary runs one thread, so the host hands it a count
+    of one and the launch gate refuses a count above one on a value with no threaded member
+    (`target_profile._thread_count_violations`, issue #700). A block size outside `BLOCK_SIZES`
+    is refused (the launch gate asks it, `target_profile._block_size_violations`)."""
     if isinstance(threads_per_rank, bool) or not isinstance(threads_per_rank, int) \
             or threads_per_rank < 1:
         raise ValueError(f"threads_per_rank must be an integer >= 1, got {threads_per_rank!r}")
-    if threads_per_rank != 1:
-        raise ValueError(f"the host side runs one thread, got threads_per_rank={threads_per_rank}")
     if block_size is None:
         return {}
     if type(block_size) is not int or block_size not in BLOCK_SIZES:

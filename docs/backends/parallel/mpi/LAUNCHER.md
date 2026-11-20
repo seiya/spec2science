@@ -42,6 +42,26 @@ make test                                                           # the qualit
   whose backend is `mpi` does not pin `toolchain.compiler`; the launch gate refuses the pin.
 - `mpif90` is the wrapper name that Intel MPI, Open MPI and MPICH all install. `mpifort` is not
   installed by Intel MPI.
+- **Threads inside each rank** (issue #700). A profile whose `parallel.backend` combines `mpi`
+  with `openmp` (`mpi+openmp`, `fortran_cpu_mpi_openmp`) runs each rank with
+  `execution.threads_per_rank` threads: the launch shape sets the OpenMP backend's variables
+  (`OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`) beside `SPEC2SCIENCE_PROCESS_GRID`, the control file
+  adds the compiler's thread switch, and `mpirun` passes the variables of its own environment
+  to every rank it starts on this host. `mpi` itself declares no `RUNS_THREADS`, so on a profile
+  whose value is `mpi` alone the gate refuses a count above one
+  (`target_profile._thread_count_violations`). Each `execution.sweep.threads_per_rank` is a
+  further run at the certified ranks and grid; the singleton re-run is handed one thread
+  (`host_execution.serial_execution_env`). The harness initializes the runtime asking for the
+  level under which only the initializing thread calls it (`MPI_THREAD_FUNNELED`), and does not
+  stop on a lower grant (its controlled_spec §3.3).
+- **Where the threads run** is the launcher's binding, which the host does not set (no binding
+  argument is added, issue #700 O9). Measured on Open MPI 4.1.2 with 48 CPUs, one hardware thread
+  per core (2026-11-20): at up to 2 ranks it binds each rank to one core, so a rank's threads
+  share that core and the run is correct and no faster than one thread; at more ranks it binds
+  each to a socket. The launcher's own environment variables change it without an argument
+  (`OMPI_MCA_hwmap_base_binding_policy=none`, or a mapping `slot:PE=<threads>`); export them in
+  the host's environment, or a site's `setup` lines, as a performance choice. It is a
+  recommendation, not a rule: the result does not depend on it.
 
 ## 2. What is recorded
 
@@ -51,7 +71,8 @@ make test                                                           # the qualit
 | `trial_meta.json#environment.ranks` | the profile's `execution.ranks` |
 | `trial_meta.json#environment.platform.parallel_runtime` | the first line of `mpirun --version`, `null` when it cannot be read; recorded, not interpreted |
 | `perf.json#parallelism.mpi_ranks` | the process count the runner writes; the quality check requires it to equal `execution.ranks` (`observed_mpi_ranks` below). It detects a launch that started independent one-process runs only when the runner writes the count the harness observes at run time, which the distributed runner a launcher target runs does (issue #316 PR-4) |
-| `trial_meta.json#environment.launch.env` | `{"SPEC2SCIENCE_PROCESS_GRID": "p1,p2"}` when the profile imposes a grid, `{}` otherwise |
+| `trial_meta.json#environment.launch.env` | `{"SPEC2SCIENCE_PROCESS_GRID": "p1,p2"}` when the profile imposes a grid, `{}` otherwise; on a combination with `openmp`, the OpenMP backend's two thread variables beside it |
+| `perf.json#parallelism.threads_per_rank` | the team size the shared-memory runtime gives rank 0, which the harness's writer obtains itself (`1` in a build without the compiler's thread switch); on a profile some shape of which runs more than one thread the quality check requires each shape's count (`thread_match`, issue #700) |
 | `perf.json#parallelism.process_grid` | `[p1, p2]`, the grid the harness arranged the ranks in; the quality check requires the profile's `execution.process_grid`, or `[execution.ranks, 1]` when it imposes none (issue #512; `observed_process_grid` below). The harness writes it from the grid it established; on the harness's own Validate run the post-execute gate requires the self-test snapshots' `p1`, `p2` (the grid `__grid_dims` reports) to be the launch grid, so a perf record that echoes the imposed grid while the harness arranged its ranks another way is refused (`validate_pipeline_semantics._validate_harness_reported_grid`) |
 | `quality_check.json#comparison.reference.ranks` / `.candidate.ranks` | `execution.ranks` / `1`, as the conductor writes them |
 | `quality_check.json#shapes[]` | one row per execution shape, the certified run's first: its `ranks` and `process_grid`, and `observed_mpi_ranks` / `observed_process_grid`, what its harness wrote in `perf.json`; the conductor writes one row per shape of the profile and fails the quality check, and so the run, when an observation is not its shape's (`Conductor._author_quality_check`, issue #512). Last, the bounds-checked binary's `checked` row when the compiler declares checked flags (issue #589): started bare, without `mpirun`, as one process under `{"SPEC2SCIENCE_PROCESS_GRID": "1,1"}`, so its harness reports one rank in `[1, 1]` (`docs/workflow/phases/phase_04_validate.md` §4-2) |
@@ -116,10 +137,6 @@ there.
 
 ## 5. Out of scope
 
-- More than one thread per rank, and a hybrid model with threads inside each rank: the
-  backend's launch environment refuses a thread count other than one, and the launch gate asks it
-  of `execution.threads_per_rank` and of each `execution.sweep.threads_per_rank`
-  (`target_profile._thread_count_violations`).
 - The presence floor of `mpi` in `Generate.static` (`parallel_directives`), and the
   distributed-state harness a domain-decomposed kernel calls. Both belong to later stages of
   issue #316.

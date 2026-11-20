@@ -133,18 +133,30 @@ class ProfileCombinationTests(unittest.TestCase):
             encoding="utf-8")
         ort._load_spec_catalog.cache_clear()
 
-    def test_a_thread_count_above_one_is_refused_by_the_member_that_runs_one(self) -> None:
-        # PR-1 hands the count to every member, so `mpi`'s refusal stands until PR-2 routes it.
-        # Both orders: the member that refuses must be asked wherever the operator writes it.
+    def test_a_thread_count_above_one_reaches_the_member_that_runs_threads(self) -> None:
+        # Issue #700 PR-2: the count goes to the member that declares `RUNS_THREADS` and one to
+        # every other, in both orders; the launch gate admits it. A combination with no such
+        # member is refused by the gate alone, naming the value.
         for backend in ("mpi+openmp", "openmp+mpi"):
             with self.subTest(backend=backend):
                 two = profile_with(MPI, parallel={"backend": backend},
-                                   execution={"threads_per_rank": 2, "ranks": 4})
-                found = tp._thread_count_violations(two)
+                                   execution={"threads_per_rank": 2, "ranks": 4,
+                                              "process_grid": [2, 2],
+                                              "sweep": {"threads_per_rank": [3]}})
+                self.assertEqual(tp._thread_count_violations(two), [])
+                self.assertEqual(he.launch_shape(two).env,
+                                 {"SPEC2SCIENCE_PROCESS_GRID": "2,2",
+                                  "OMP_NUM_THREADS": "2", "OMP_THREAD_LIMIT": "2"})
+                sweep = next(s for s in two.execution_shapes if s.threads_per_rank == 3)
+                self.assertEqual(he.launch_shape(two, None, sweep).env["OMP_NUM_THREADS"], "3")
+        for backend in ("mpi+cuda", "cuda+mpi"):
+            with self.subTest(backend=backend):
+                none_runs = profile_with(MPI, parallel={"backend": backend},
+                                         execution={"threads_per_rank": 2, "ranks": 4})
+                found = tp._thread_count_violations(none_runs)
                 self.assertEqual(len(found), 1, found)
-                self.assertIn("parallel backend mpi does not run 2 threads", found[0])
-                with self.assertRaises(he.LaunchUnavailable):
-                    he.launch_shape(two)
+                self.assertIn(f"no member of parallel backend {backend} runs threads", found[0])
+                self.assertNotIn("OMP_NUM_THREADS", he._execution_env(backend, 2, (2, 2), None))
 
     def test_each_imposed_value_reaches_the_member_that_takes_it(self) -> None:
         # The grid goes to the launcher's member and the block size to the member that declares

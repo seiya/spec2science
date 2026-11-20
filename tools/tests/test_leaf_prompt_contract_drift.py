@@ -1211,6 +1211,10 @@ PINNED: dict[str, str] = {
     # The digest `leaf-104` shipped with at 8d4419a9:
     "leaf-104@8d4419a9": "8b1117cc2cf26eab407115d10fb81b87f9845f41ac4e363343de2bb45e6d1e3f",
     "leaf-104": "dc37a78cc288064b40507f2cbc2a33090d7d06ca8576b40c201d437a0da7147c",
+    # leaf-105 (issue #700 PR-2): the `mpi` producer fragment states that each harness operation
+    # is called from serial code, outside every threaded region (the harness's `0.6.0` asks the
+    # runtime for the level under which only the initializing thread calls it).
+    "leaf-105": "0a28922c7a46cfdb51de2d7ff110f803dbb6035801fe72c683e079c1fff1627c",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
