@@ -1244,9 +1244,12 @@ _UNREAD = object()   # no end answer read yet
 def request_sha256(request: JobRequest) -> str:
     """The digest a job record holds of the request its job was submitted for: the rendered
     job script — the job directory, every command's argv, directory, environment and timeout,
-    the site's `setup` lines and the probes — and each shipped file's relative path and content
-    hash. Two requests with one digest ask one site for the same job."""
+    the site's `setup` lines and the probes — the site's `scheduler_directives`, the one part of
+    the submit command the script does not determine, and each shipped file's relative path and
+    content hash. Two requests with one digest, at one host under one scheduler, submit the same
+    job."""
     digest = hashlib.sha256(render_job_script(request).encode("utf-8"))
+    digest.update(("\0" + json.dumps(list(request.site.scheduler_directives))).encode("utf-8"))
     for rel in sorted(request.ship):
         content = hashlib.sha256(Path(request.ship[rel]).read_bytes()).hexdigest()
         digest.update(f"\0{rel}\0{content}".encode("utf-8"))

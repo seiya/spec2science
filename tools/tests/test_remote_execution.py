@@ -1930,6 +1930,16 @@ class AdoptionTests(unittest.TestCase):
         (event, fields), = [ev for ev in self.events if ev[0] == "site_job_not_adopted"]
         self.assertEqual((fields["job_id"], fields["remote_dir"]), ("4242", self.h.job))
 
+    def test_a_site_with_other_directives_is_not_adopted(self) -> None:
+        """An operator who fixes a directive after a queue timeout and resumes gets a job
+        submitted with it, not the old one (review 1 of PR-2, finding 2)."""
+        self.interrupted(SHIM_SBATCH_HOLD="1")
+        self.h.site = dataclasses.replace(self.h.site,
+                                          scheduler_directives=("--partition=fixed",))
+        self.assert_not_adopted("not the one the job was submitted for", self.h.job)
+        (sbatch,) = [c for c in self.h.calls() if c[0] == "sbatch"][1:]
+        self.assertIn("--partition=fixed", sbatch)
+
     def _edit_record(self, **fields) -> None:
         record = json.loads(self.record.read_text())
         record.update(fields)
