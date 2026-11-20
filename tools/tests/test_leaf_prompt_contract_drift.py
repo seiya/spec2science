@@ -1204,7 +1204,13 @@ PINNED: dict[str, str] = {
     # leaf-104 (issue #643 PR-6): `workshop_compile_generate.txt` stops telling the Compile
     # producer a `source` key on a snapshot-schema variable is refused (U36, PE-207: the refusal
     # went).
-    "leaf-104": "8b1117cc2cf26eab407115d10fb81b87f9845f41ac4e363343de2bb45e6d1e3f",
+    # leaf-104 re-pinned in place by issue #700 PR-1: the whole tuple gains the two lead files a
+    # combination target's parallel fragments are composed under
+    # (`tools/prompt_templates/parallel_combination/`); no checked-in profile names a combination,
+    # so the composed prompt of every existing target is byte-identical.
+    # The digest `leaf-104` shipped with at 8d4419a9:
+    "leaf-104@8d4419a9": "8b1117cc2cf26eab407115d10fb81b87f9845f41ac4e363343de2bb45e6d1e3f",
+    "leaf-104": "6f3de8e4e14e50a28699c3e0d0d583a9ba3eff266391e03f3b946e37d9395b89",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1294,7 +1300,13 @@ PINNED_READER: dict[str, str] = {
     # verify/ver_f2.md`, OR1-89), so no judgment certified at this version read the removed text.
     # The digest `generate-verify-13` shipped with at 03643f31:
     "generate-verify-13@03643f31": "b89bd69867dee9b1eb9226940bda45544ecfda28af7b8344273b8484809fbbd7",
-    "generate-verify-13": "642a136dcaba042b1dfae6b2e526759861f878a18d95afab9b8ca9397240ae1d",
+    # generate-verify-13 re-pinned in place by issue #700 PR-1 (operator decision O13,
+    # 2026-11-20): the reviewer's lead file for a combination target joins the Generate reader's
+    # fragments; no checked-in profile names a combination, so the composed reviewer prompt of
+    # every target that holds a certified Generate is byte-identical.
+    # The digest `generate-verify-13` shipped with at 8d4419a9:
+    "generate-verify-13@8d4419a9": "642a136dcaba042b1dfae6b2e526759861f878a18d95afab9b8ca9397240ae1d",
+    "generate-verify-13": "cb030ec6187bd082320b6f3966517f22da26bcf2796616d094200fd189c28c2d",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",
