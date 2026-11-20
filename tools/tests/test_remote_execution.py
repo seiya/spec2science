@@ -1156,8 +1156,9 @@ class SchedulerTests(unittest.TestCase):
     def test_a_job_not_started_within_the_bound_is_refused_and_left_queued(self) -> None:
         h = self._slurm(self.h, queue_timeout_sec=1)
         with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                    "job 4242 did not start within 1 sec .*left queued.*left at "
-                                    "the site"):
+                                    r"job 4242 was not seen running within 1 sec "
+                                    r"\(queue_timeout_sec; a poll answered it queued\); it is "
+                                    "left as it is.*left at the site"):
             h.run(h.request(), SHIM_SBATCH_HOLD="1")
         self.assertEqual(h.slurm_record()["state"], "PENDING")
         self.assertTrue(Path(h.job).is_dir())
@@ -1366,7 +1367,8 @@ class BindingTests(unittest.TestCase):
         self.assertTrue(all(r["ok"] for r in result.results))
         self.h = SchedulerTests._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)),
                                        queue_timeout_sec=1)
-        self._refused("did not start within 1 sec .*last unanswered poll: .*Socket timed out",
+        self._refused(r"not seen running within 1 sec \(queue_timeout_sec; no poll answered its "
+                      r"state\).*last unanswered poll: .*Socket timed out",
                       SHIM_SCONTROL_NO_ANSWER="100000")
 
     def test_a_transport_failure_while_collecting_is_refused(self) -> None:
@@ -1531,8 +1533,24 @@ class PollingTests(unittest.TestCase):
                 mock.patch.object(rx.time, "sleep"), \
                 mock.patch.object(rx.time, "monotonic", side_effect=lambda: next(clock)):
             with self.assertRaisesRegex(rx.RemoteExecutionError,
-                                        "job 7 did not start within 25 sec"):
+                                        "job 7 was not seen running within 25 sec "
+                                        r"\(queue_timeout_sec; a poll answered it queued\)"):
                 rx.wait_job(self._handle(), queue_bound_sec=25, run_bound_sec=5)
+
+    def test_a_job_no_poll_answered_is_not_said_to_be_queued(self) -> None:
+        """Every poll answered `no_answer`: what is known is that no poll answered and the job
+        was not seen running, not that it did not start."""
+        clock = iter(float(t) for t in range(0, 1000, 10))
+        with mock.patch.object(rx, "_ask_state", return_value=("no_answer", "zz down")), \
+                mock.patch.object(rx.time, "sleep"), \
+                mock.patch.object(rx.time, "monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaises(rx.RemoteExecutionError) as ctx:
+                rx.wait_job(self._handle(), queue_bound_sec=25, run_bound_sec=5)
+        text = str(ctx.exception)
+        self.assertIn("was not seen running within 25 sec (queue_timeout_sec; no poll answered "
+                      "its state)", text)
+        self.assertIn("last unanswered poll: zz down", text)
+        self.assertNotIn("queued", text)
 
     def test_the_state_commands_are_tried_in_order_until_one_answers(self) -> None:
         """`state_argvs` may name more than one command (a scheduler whose ended jobs are

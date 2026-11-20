@@ -199,7 +199,7 @@ KILL_AFTER_SEC = 30
 #: every other transport call.
 TRANSPORT_GRACE_SEC = 300
 #: Seconds the host waits for a batch job to start when its site states no `queue_timeout_sec`;
-#: past it the wait is refused and the job is left queued.
+#: past it, the job not seen running, the wait is refused and the job is left as it is.
 QUEUE_TIMEOUT_DEFAULT_SEC = 3600
 #: Seconds before the first poll of a batch job, and the cap the interval doubles to. A job that
 #: runs for seconds is not kept a minute longer by a fixed interval of a minute.
@@ -1101,6 +1101,7 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
     remote = handle.remote_dir
     t0 = time.monotonic()
     started: float | None = None
+    queued = False
     interval: float = POLL_FIRST_SEC
     last = "no poll was answered"
     try:
@@ -1117,13 +1118,16 @@ def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> 
                     f"longer stated; its output is not read ({remote})")
             if condition == "running" and started is None:
                 started = now
+            queued = queued or condition == "queued"
             if condition == "no_answer":
                 last = str(value)
             if started is None and now - t0 > queue_bound_sec:
+                seen = ("a poll answered it queued" if queued
+                        else "no poll answered its state")
                 raise RemoteExecutionError(
-                    f"wait for the job: job {handle.job_id} did not start within "
-                    f"{queue_bound_sec} sec (queue_timeout_sec); it is left queued (last "
-                    f"unanswered poll: {last}) ({remote})")
+                    f"wait for the job: job {handle.job_id} was not seen running within "
+                    f"{queue_bound_sec} sec (queue_timeout_sec; {seen}); it is left as it is, "
+                    f"nothing cancels it (last unanswered poll: {last}) ({remote})")
             if started is not None and now - started > run_bound_sec:
                 raise RemoteExecutionError(
                     f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
