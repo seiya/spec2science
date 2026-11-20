@@ -5,10 +5,11 @@ reached over ssh (issues #293, #333).
 The local path runs each command through the build-runtime library (`tools/build_runtime.py`)
 in this process (`tool_run_program`, `tool_run_quality_checks`), and the library writes one
 `command_log.jsonl` entry per command. No Python of this checkout runs at a remote site: the host
-stages the files a job needs, renders
-ONE POSIX `sh` job script that runs the commands in order, runs it with one ssh call, copies the
-job directory back with scp, and then writes the same log entries itself — through the library's
-own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
+stages the files a job needs, renders ONE POSIX `sh` job script that runs the commands in order,
+runs it — in the foreground of one ssh call at a site whose `scheduler` is `none`, as a batch job
+the host submits, polls and collects at a site with a batch scheduler (below) — copies the job
+directory back with scp, and then writes the same log entries itself — through the library's own
+`_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
 §Execution sites). An entry's `command` names each shipped file by its LOCAL source, because the
 post-execute gate binds the binary — the argument after the recorded launch prefix — to the
 node's own build `bin/`; the argv the site executed
@@ -34,13 +35,31 @@ Every way the evidence could be incomplete or not this job's is a refusal
 - a job directory that already exists — a stale job's output — is refused rather than read: the
   first ssh call checks for it and names it, and creates it with `mkdir` and no `-p`, so one that
   appears between the check and the creation is refused too (that race is not pinned);
-- the job script is the ssh call's command string, held in the shell's memory, never a file: a
-  file is one a running command can rewrite, and bash executes a rewritten script file's rest;
-- a command's exit status and times travel on the job script's own stdout, one status line per
-  command that ran (`STATUS_MARKER`), and never in a file: the command itself — leaf-authored
-  code, for the runner — can write anything under the job directory, including a file planted
-  before the script writes its own, but its stdout and stderr go to files and its stdin is
-  `/dev/null`, so it holds no descriptor of the script's stdout. A command's missing status line
+- the job script is never a file a running command can rewrite (bash executes a rewritten
+  script file's rest): at a `none` site it is the ssh call's command string, held in the shell's
+  memory; a batch scheduler runs a script FILE, so what the host submits is a two-line stub
+  whose second line is `exec sh -c '<the job script>'` — the shell reads that one command whole
+  before it runs anything, and after `exec` the job script is an argument of the new shell, held
+  in its memory as at a `none` site (`render_stub`; measured on Slurm 20.02, issue #696 M-S3: the
+  shell then holds no descriptor of the file, and rewriting it changed nothing that ran);
+- a command's exit status and times travel as one status line per command that ran
+  (`STATUS_MARKER`), on one of TWO CHANNELS. At a `none` site the channel is the job script's
+  own stdout, never a file: the command itself — leaf-authored code, for the runner — can write
+  anything under the job directory, including a file planted before the script writes its own,
+  but its stdout and stderr go to files and its stdin is `/dev/null`, so it holds no descriptor
+  of the script's stdout. At a batch scheduler's site the channel is the job's output file
+  (`<job_dir>/ctl/job.out`, the script's stdout; its stderr is `job.err`), which a command CAN
+  rewrite, and the file is read only against the scheduler's own record of how the script
+  ended: the script exits 0 when every command exited 0 and 1 when one ran and exited non-zero,
+  and the host accepts "every command exited 0" only when the backend reads that record as "ran
+  to its own exit, and that exit was 0" — by an allowlist of the record's fields, never by one
+  integer, since a script whose shell a command killed has exit part 0 — and "this command
+  failed" only when the record says 1 (`collect_job`). A command cannot make the shell that
+  started it exit with a status of its choice; it can kill it, and the record then says so. So
+  a failed command is never read as having exited 0 on either channel (issue #696 §6.3's P1);
+  which command failed, and the times and the platform facts, are read from the file as it
+  stands (not defended: no verdict reads them as a pass). The rest of this bullet is the `none`
+  channel's. A command's missing status line
   is a lost status and is refused, never read as 0; a second line for one command, a line for a
   command that should not have run (a command runs only when every earlier one exited 0), and
   a line that does not parse are refused too. A process that reaches the script's stdout
@@ -104,24 +123,36 @@ program the job needs, or cannot hold or run it is refused before that node is b
 A site's `setup` lines (`execution_sites.Site.setup`) are the environment its commands run in:
 the job script runs them first, in its own shell, so every check and command after them sees
 what they set, and `probe_site` runs them before it asks for the job's programs. Under a batch
-scheduler they run inside the job, on the node it runs on; the scheduler's prefix runs before
-them, so the probe asks for the scheduler's program before them, and a line that fails on the
-login is not a problem the probe reports there. A change to the lines moves no key.
+scheduler they run inside the job, on the node it runs on; the scheduler's own programs run on
+the login, outside the job, where no setup line runs, so the probe asks for them before the
+lines, and a line that fails on the login is not a problem the probe reports there. A change to
+the lines moves no key.
 
-A site's `scheduler` changes one thing: the argv PREFIX the job script runs under in the same ssh
-call. A `none` site runs it under none. A batch scheduler's backend spells one through
-`job_submit` (`_submission`): a command that waits for an allocation, runs the script as the job's
-one task with the task's stdout relayed to its own — so the statuses travel on the same channel
-and every refusal above holds unchanged — and exits with the task's status. Two more lines then
-travel on that channel, each exactly once: `SUBMIT_MARKER`, printed by the login shell before the
-prefix runs, with the time the job was asked for, and `JOB_MARKER`, printed by the job before its
-first command, with its id (read from the backend's `JOB_ID_VARIABLE`) and the time it started;
-the difference is the record's `queue_wait_ms`. A job that is not granted an allocation within the
-site's `queue_timeout_sec` (default `QUEUE_TIMEOUT_DEFAULT_SEC`) is ended by the prefix, and one
-that outlives the scheduler's time limit is killed by the scheduler: both make the ssh call exit
-non-zero, which is refused like any transport failure. A scheduler's job is not cancelled when
-the ssh call ends early; the time limit in force bounds it — the prefix's, or a longer one a
-directive set.
+A site's `scheduler` decides how the job script runs. A `none` site runs it in the foreground of
+one ssh call, as above, and its job has no id. A batch scheduler's backend spells, through
+`job_submit` (`_submission`), the command that submits a script read on its standard input and
+returns at once, the job id in what it printed, the commands that state the job's condition, and
+what their answer means (`job_state`, seven answers). `execute_job` composes three stages:
+
+- `submit_job` creates the job directory, ships the files, and submits the stub in one ssh call
+  that first prints the login's time (`SUBMIT_MARKER`, the job's `submitted_epoch`). The submit
+  command's options put the time limit first, so that a directive may replace it, then the
+  operator's `scheduler_directives`, then the job's name, its two files and the option that
+  forbids the scheduler from running the job a second time. The id is held to one path element.
+- `wait_job` polls: the first poll `POLL_FIRST_SEC` after submission, the interval doubling to
+  `POLL_MAX_SEC`. A poll whose ssh call fails, and one answered `no_answer`, are asked again; an
+  id the scheduler says it does not know is refused (how the job ended is no longer stated). The
+  bound is the site's `queue_timeout_sec` (default `QUEUE_TIMEOUT_DEFAULT_SEC`) while the job is
+  queued and the commands' bounds plus `TRANSPORT_GRACE_SEC` once it runs; past either the wait
+  is refused and the job is LEFT as it is — nothing cancels it.
+- `collect_job` copies the job directory back, refuses a job whose record says it ended other
+  than by its own exit with 0 or 1 (quoting the tail of `job.err`), reads `job.out` against the
+  record as above, and then reads, compares, removes and records as at a `none` site. The job
+  prints its start (`START_MARKER`, exactly once, before anything else it runs); its difference
+  from `submitted_epoch` is the record's `queue_wait_ms` (0 when the two clocks put it below 0).
+
+A batch job is not cancelled when the host stops waiting: its time limit — the submit command's,
+or a longer one a directive set — bounds it.
 """
 
 from __future__ import annotations
@@ -130,6 +161,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -156,9 +188,13 @@ KILL_AFTER_SEC = 30
 #: Seconds the job's ssh call is allowed beyond the sum of its commands' bounds, and the bound on
 #: every other transport call.
 TRANSPORT_GRACE_SEC = 300
-#: Seconds a scheduler's job may wait for an allocation when its site states no
-#: `queue_timeout_sec`.
+#: Seconds the host waits for a batch job to start when its site states no `queue_timeout_sec`;
+#: past it the wait is refused and the job is left queued.
 QUEUE_TIMEOUT_DEFAULT_SEC = 3600
+#: Seconds before the first poll of a batch job, and the cap the interval doubles to. A job that
+#: runs for seconds is not kept a minute longer by a fixed interval of a minute.
+POLL_FIRST_SEC = 2
+POLL_MAX_SEC = 60
 #: Each command's output lives in this subdirectory of the job directory, which no shipped file may enter.
 CONTROL_DIR = "ctl"
 #: A path element of a job directory or a shipped file: no separator, no shell-active character,
@@ -175,13 +211,19 @@ PLATFORM_KEYS = ("machine", "node", "cpu")
 #: The platform line's key for the toolchain version, printed only when the request carries a
 #: `toolchain_probe`; it is read into `JobResult.toolchain_version`, not into `platform`.
 TOOLCHAIN_KEY = "toolchain"
-#: A scheduler's job only: `<marker> <epoch>`, printed by the login shell before the job is asked
-#: for, and `<marker> <job_id> <epoch>`, printed by the job when it starts.
+#: A batch job only: `<marker> <epoch>`, printed by the job before anything else it runs.
+START_MARKER = "spec2science-start"
+#: The submit call only: `<marker> <epoch>`, printed by the login shell before the submit command
+#: runs; what follows the line is the submit command's answer.
 SUBMIT_MARKER = "spec2science-submitted"
-JOB_MARKER = "spec2science-job"
-#: A line of the script's stdout that carries no marker — what a login shell's startup files
-#: print — is not read; one that carries a marker must carry exactly one, at its start.
-_MARKERS = (STATUS_MARKER, PLATFORM_MARKER, SUBMIT_MARKER, JOB_MARKER)
+#: A batch job's script's stdout and stderr, under the control directory.
+JOB_OUT = "job.out"
+JOB_ERR = "job.err"
+#: The last line of a poll call's stdout: `<marker> <exit status of the state command>`.
+_STATE_RC_MARKER = "spec2science-state-rc"
+#: A line of the job's stdout that carries no marker — what a login shell's startup files print —
+#: is not read; one that carries a marker must carry exactly one, at its start.
+_MARKERS = (STATUS_MARKER, PLATFORM_MARKER, START_MARKER)
 _STATUS_LINE = re.compile(rf"{STATUS_MARKER} (\S*) (\S*) (\S*) (\S*)")
 _INT = re.compile(r"-?[0-9]+")
 #: A `timeout` that fired exits 124, or 137 when the command ignored TERM and was killed.
@@ -285,6 +327,20 @@ class JobResult:
     toolchain_version: str | None = None
 
 
+@dataclass(frozen=True)
+class JobHandle:
+    """A job a batch scheduler accepted: the site's id, host and scheduler, the id the submit
+    command printed, the job directory, and the login's epoch seconds just before the submission
+    (`submit_job`). It is what `wait_job` asks about and `collect_job` collects."""
+
+    site: str
+    host: str
+    scheduler: str
+    job_id: str
+    remote_dir: str
+    submitted_epoch: int
+
+
 def job_dir(site: Site, orchestration_id: str, agent_run_id: str) -> str:
     """The remote directory one job runs in: `<workdir>/<orchestration_id>/<agent_run_id>`."""
     if site.is_local or not site.workdir or not site.host:
@@ -313,11 +369,10 @@ def _under(path: str, root: str, what: str) -> None:
 
 
 def _submission(scheduler: str) -> Any:
-    """The `job_submit` module of `scheduler`'s backend package, or None for a scheduler whose
-    `job_submit` the neutral core implements — any such record runs the job script under no
-    prefix and records no job id (`none` is the one today; until PR-4 the executor refused every
-    scheduler but `none` by name). A scheduler that does not declare `job_submit` is refused
-    (`ValueError`)."""
+    """The `job_submit` module of `scheduler`'s backend package — a batch scheduler — or None
+    for a scheduler whose `job_submit` the neutral core implements: any such record runs the job
+    script in the foreground of the ssh call and records no job id (`none` is the one today). A
+    scheduler that does not declare `job_submit` is refused (`ValueError`)."""
     reason = registry.missing_capability_reason("scheduler", scheduler, "job_submit")
     if reason is not None:
         raise ValueError(f"scheduler: {reason}")
@@ -450,7 +505,9 @@ def render_job_script(request: JobRequest) -> str:
     before a command whose program cannot be found or is not executable, by the same rule: the
     local library raises for a program it cannot start rather than reporting an exit status, so
     these are the host's failures here too. Each such exit names what failed on stderr. Every
-    value is quoted with `shlex.quote`.
+    value is quoted with `shlex.quote`. The script ends with `exit 0` at a `none` site whatever
+    its commands' statuses; a batch scheduler's ends with `exit 1` when a command ran and exited
+    non-zero, and prints its start (`START_MARKER`) before anything else it runs.
 
     With a `request.toolchain_probe`, one more fact line (`toolchain`) is printed before the
     first command: the probe's stdout, or its stderr when its stdout is empty, reduced to the
@@ -466,10 +523,15 @@ def render_job_script(request: JobRequest) -> str:
     q = shlex.quote
     j = request.job_dir
     ctl = f"{j}/{CONTROL_DIR}"
+    batch = _submission(request.site.scheduler) is not None
     # The first line printed is empty, so that a login banner printed without a newline ends
     # there rather than gluing onto the first platform line.
     lines = ["#!/bin/sh", "set -u", "echo",
              "fail() { echo \"job script: $2\" >&2; exit \"$1\"; }"]
+    if batch:
+        # A batch job's start, before anything else it runs (a setup line, a probe): the host
+        # reads it for `queue_wait_ms` alone.
+        lines.append(f"printf '%s %s\\n' {START_MARKER} \"$(date +%s)\"")
     if request.site.setup:
         # `set -u` is lifted around the lines: an environment-module shell function reads
         # variables it has not set. After them the script's own options are set again: `-e`
@@ -497,13 +559,6 @@ def render_job_script(request: JobRequest) -> str:
         lines.append(f"mkdir -p {q(f'{j}/{rel}')} || fail 3 {q(f'cannot make {rel}')}")
     for c in request.commands:
         lines.append(f"[ -d {q(c.cwd)} ] || mkdir -p {q(c.cwd)} || fail 3 {q(f'cannot make {c.cwd}')}")
-    submission = _submission(request.site.scheduler)
-    if submission is not None:
-        # The job's id and start, before any command: an empty id is refused by the reader.
-        variable = str(submission.JOB_ID_VARIABLE)
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
-            raise ValueError(f"JOB_ID_VARIABLE {variable!r} is not a variable name")
-        lines.append(f"printf '%s %s %s\\n' {JOB_MARKER} \"${{{variable}-}}\" \"$(date +%s)\"")
     # The platform facts, before any command runs, each on a line of its own and always printed:
     # a site that lacks one tool prints that fact empty.
     facts = [("machine", "uname -m"), ("node", "hostname"),
@@ -545,22 +600,47 @@ def render_job_script(request: JobRequest) -> str:
             f'  echo "{STATUS_MARKER} {c.tag} $rc $t0 $t1"',
             "fi",
         ]
+    if batch:
+        # The statuses of a batch job are read against the scheduler's record of how the script
+        # ended (`collect_job`): 1 when a command ran and exited non-zero, 0 when every one
+        # exited 0. A `none` site's script exits 0 in both cases, because there a non-zero exit
+        # of the ssh call is the transport's failure.
+        lines.append('[ "$rc" = 0 ] || exit 1')
     lines.append("exit 0")
     return "\n".join(lines) + "\n"
 
 
-def _transport(argv: list[str], *, stage: str, timeout: int, remote: str) -> str:
-    # stdin is /dev/null so that ssh never reads the operator's terminal; not pinned, because
-    # the test process's own stdin is not a terminal either.
+def render_stub(request: JobRequest) -> str:
+    """What a batch scheduler is handed for `request`: two lines, the second of which is
+    `exec sh -c '<render_job_script(request)>'`. The scheduler keeps the script it runs as a file
+    the job's user can write (measured on Slurm 20.02), and a shell reading a script file runs
+    whatever the file holds when it reads the next command; this shell reads its one command
+    whole before running it, and the job script then lives in the memory of the shell it
+    `exec`s, as it does at a `none` site, where it is the ssh call's command string."""
+    return f"#!/bin/sh\nexec sh -c {shlex.quote(render_job_script(request))}\n"
+
+
+def _call(argv: list[str], *, stage: str, timeout: int, remote: str,
+          input: str | None = None) -> subprocess.CompletedProcess:
+    """One transport call, whatever its exit status. Its stdin is `input` when given, else
+    /dev/null, so that ssh never reads the operator's terminal (not pinned: the test process's
+    own stdin is not a terminal either)."""
+    stdin: dict[str, Any] = ({"input": input} if input is not None
+                             else {"stdin": subprocess.DEVNULL})
     try:
-        proc = subprocess.run(argv, text=True, capture_output=True, timeout=timeout,
-                              check=False, stdin=subprocess.DEVNULL)
+        return subprocess.run(argv, text=True, capture_output=True, timeout=timeout,
+                              check=False, **stdin)
     except subprocess.TimeoutExpired:
         raise RemoteExecutionError(
             f"{stage}: {argv[0]} did not finish within {timeout} sec; the job may still be "
             f"running ({remote})") from None
     except OSError as exc:
         raise RemoteExecutionError(f"{stage}: {argv[0]} could not be started: {exc}") from exc
+
+
+def _transport(argv: list[str], *, stage: str, timeout: int, remote: str,
+               input: str | None = None) -> str:
+    proc = _call(argv, stage=stage, timeout=timeout, remote=remote, input=input)
     if proc.returncode != 0:
         raise RemoteExecutionError(
             f"{stage}: {argv[0]} exited {proc.returncode} ({remote}): "
@@ -568,9 +648,10 @@ def _transport(argv: list[str], *, stage: str, timeout: int, remote: str) -> str
     return proc.stdout
 
 
-def _ssh(host: str, command: str, *, stage: str, timeout: int, remote: str) -> str:
+def _ssh(host: str, command: str, *, stage: str, timeout: int, remote: str,
+         input: str | None = None) -> str:
     return _transport(["ssh", *SSH_OPTIONS, "--", host, command],
-                      stage=stage, timeout=timeout, remote=remote)
+                      stage=stage, timeout=timeout, remote=remote, input=input)
 
 
 def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
@@ -582,13 +663,13 @@ def _scp(sources: list[str], dest: str, *, stage: str, remote: str) -> None:
 
 def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str, str]]],
                                                    dict[str, list[str]], list[list[str]]]:
-    """The status lines by tag, the platform values by key, and the scheduler's lines (each a
-    list of words, the marker first), from the job script's stdout. A line with no marker is
-    skipped; a line with a marker anywhere but once at its start, or a status line that does not
-    parse, is refused."""
+    """The status lines by tag, the platform values by key, and the start lines (each a list of
+    words, the marker first), from the job script's stdout. A line with no marker is skipped; a
+    line with a marker anywhere but once at its start, or a status line that does not parse, is
+    refused."""
     statuses: dict[str, list[tuple[str, str, str]]] = {}
     facts: dict[str, list[str]] = {}
-    scheduled: list[list[str]] = []
+    starts: list[list[str]] = []
     for line in stdout.splitlines():
         hits = sum(line.count(m) for m in _MARKERS)
         if not hits:
@@ -600,39 +681,29 @@ def _job_lines(stdout: str, remote: str) -> tuple[dict[str, list[tuple[str, str,
             key, _, value = line[len(PLATFORM_MARKER) + 1:].partition(" ")
             facts.setdefault(key, []).append(value)
             continue
-        if line.startswith((SUBMIT_MARKER + " ", JOB_MARKER + " ")):
-            scheduled.append(line.split(" "))
+        if line.startswith(START_MARKER + " "):
+            starts.append(line.split(" "))
             continue
         m = _STATUS_LINE.fullmatch(line)
         if not m or not all(_INT.fullmatch(v) for v in m.group(2, 3, 4)):
             raise RemoteExecutionError(f"a status line does not parse: {line[:200]!r} ({remote})")
         statuses.setdefault(m.group(1), []).append(m.group(2, 3, 4))
-    return statuses, facts, scheduled
+    return statuses, facts, starts
 
 
-def _scheduled(lines: list[list[str]], scheduler: bool, remote: str) -> tuple[str | None, int]:
-    """The job id and the queue wait in ms, from the scheduler's lines: none for a job run under
-    no scheduler, exactly one `SUBMIT_MARKER` line and one `JOB_MARKER` line, each in its shape,
-    otherwise. A wait that comes out negative — the two times are read on two machines, the login
-    node and the job's — is recorded as 0."""
-    if not scheduler:
+def _started(lines: list[list[str]], batch: bool, remote: str) -> int | None:
+    """The batch job's start, in epoch seconds, from its start lines: exactly one, in its shape,
+    for a batch job; none for a job run under no scheduler (None)."""
+    if not batch:
         if lines:
             raise RemoteExecutionError(
-                f"scheduler lines from a job run under no scheduler: {lines} ({remote})")
-        return None, 0
-    submits = [w for w in lines if w[0] == SUBMIT_MARKER]
-    jobs = [w for w in lines if w[0] == JOB_MARKER]
-    if len(submits) != 1 or len(jobs) != 1:
+                f"start lines from a job run under no scheduler: {lines} ({remote})")
+        return None
+    if len(lines) != 1 or len(lines[0]) != 2 or not _INT.fullmatch(lines[0][1]):
         raise RemoteExecutionError(
-            f"{len(submits)} {SUBMIT_MARKER} and {len(jobs)} {JOB_MARKER} lines, not one each "
+            f"not one {START_MARKER} line in its shape: {[' '.join(w) for w in lines]} "
             f"({remote})")
-    submit, job = submits[0], jobs[0]
-    if len(submit) != 2 or not _INT.fullmatch(submit[1]) or len(job) != 3 \
-            or not _ELEMENT.fullmatch(job[1]) or not _INT.fullmatch(job[2]):
-        raise RemoteExecutionError(
-            f"a scheduler line does not parse (an empty job id is the job's variable unset): "
-            f"{' '.join(submit)!r}, {' '.join(job)!r} ({remote})")
-    return job[1], max(0, int(job[2]) - int(submit[1])) * 1000
+    return int(lines[0][1])
 
 
 def _statuses(lines: dict[str, list[tuple[str, str, str]]], commands: tuple[CommandSpec, ...],
@@ -738,8 +809,8 @@ class SiteProbe:
 
 def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     """Ask the site, in one ssh call, which of `executables` its login shell cannot resolve —
-    a program the site's scheduler runs the job under before its `setup`, as the job's prefix
-    runs before it, and every other program after it, as the job script asks for them — whether
+    the site's scheduler's programs before its `setup`, since they run on the login outside the
+    job, and every other program after it, as the job script asks for them — whether
     each `setup` line exits 0 (at a `none` site only: a batch scheduler runs the job on another
     node, where a line — a module only the compute nodes have — may succeed that fails on the
     login this probe reaches, and the job script refuses a failing one where it runs),
@@ -833,22 +904,24 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     return SiteProbe(missing=tuple(missing), problems=tuple(problems))
 
 
-def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
-    """Run `request` at its site and return its results; see the module docstring for the
-    refusals. `local_tmp` is a local directory this job owns: the files are staged in
-    `<local_tmp>/stage` and the job directory is collected to `<local_tmp>/collected`, and
-    neither may exist beforehand."""
-    _validate(request)
-    site = request.site
-    host = str(site.host)
-    remote = request.job_dir
-    q = shlex.quote
-    stage_dir = local_tmp / "stage"
-    collected = local_tmp / "collected"
+def _local_dirs(local_tmp: Path) -> tuple[Path, Path]:
+    """`<local_tmp>/stage` and `<local_tmp>/collected`, neither of which may exist yet."""
+    stage_dir, collected = local_tmp / "stage", local_tmp / "collected"
     for p in (stage_dir, collected):
         if p.exists():
             raise ValueError(f"{p} already exists; a job owns a fresh local_tmp")
+    return stage_dir, collected
 
+
+def _left(exc: RemoteExecutionError, remote: str) -> RemoteExecutionError:
+    return RemoteExecutionError(
+        f"{exc}; the job directory is left at the site for inspection — remove {remote} when "
+        f"done")
+
+
+def _create_and_ship(request: JobRequest, stage_dir: Path) -> None:
+    """Steps 1 and 2: the fresh job directory, then the staged files shipped into it."""
+    host, remote, q = str(request.site.host), request.job_dir, shlex.quote
     # 1. The job directory, fresh: an existing one is named and refused; `mkdir` without `-p` also
     #    refuses one that appeared after the check (not pinned: only a race reaches it).
     parent = remote.rsplit("/", 1)[0]
@@ -856,68 +929,257 @@ def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
                f" >&2; exit 1; fi; mkdir -p {q(parent)} && mkdir {q(remote)}",
          stage="create the job directory", timeout=TRANSPORT_GRACE_SEC, remote=remote)
     try:
-        return _run_job(request, remote=remote, stage_dir=stage_dir, collected=collected)
+        # 2. Stage and ship the files, and an empty control directory for the commands' output.
+        for rel, src in request.ship.items():
+            dst = stage_dir / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            except OSError as exc:
+                raise RemoteExecutionError(f"stage the job's files: {rel}: {exc} ({remote})"
+                                           ) from exc
+        (stage_dir / CONTROL_DIR).mkdir(parents=True, exist_ok=True)
+        tops = sorted({p.name for p in stage_dir.iterdir()})
+        _scp([str(stage_dir / t) for t in tops], f"{host}:{remote}/",
+             stage="ship the job's files", remote=remote)
     except RemoteExecutionError as exc:
+        raise _left(exc, remote) from exc
+
+
+def _wall_clock_sec(request: JobRequest) -> int:
+    """The time the job script may take: every command's bound and `KILL_AFTER_SEC`, the device
+    probe's bound when the request carries one, two of the toolchain probe's (its stderr is
+    read when its stdout is empty), and `TRANSPORT_GRACE_SEC`."""
+    return (sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
+            + (PROBE_TIMEOUT_SEC if request.platform_probe else 0)
+            + (2 * PROBE_TIMEOUT_SEC if request.toolchain_probe else 0))
+
+
+def job_bounds(request: JobRequest) -> tuple[int, int]:
+    """The two bounds of `wait_job` for `request`: how long the job may stay queued (the site's
+    `queue_timeout_sec`, default `QUEUE_TIMEOUT_DEFAULT_SEC`), and how long it may run once it
+    started (its time limit, `_wall_clock_sec`, plus `TRANSPORT_GRACE_SEC`)."""
+    return (request.site.queue_timeout_sec or QUEUE_TIMEOUT_DEFAULT_SEC,
+            _wall_clock_sec(request) + TRANSPORT_GRACE_SEC)
+
+
+def execute_job(request: JobRequest, *, local_tmp: Path) -> JobResult:
+    """Run `request` at its site and return its results; see the module docstring for the
+    refusals. `local_tmp` is a local directory this job owns: the files are staged in
+    `<local_tmp>/stage` and the job directory is collected to `<local_tmp>/collected`, and
+    neither may exist beforehand. A `none` site runs the job in the foreground of one ssh call;
+    a batch scheduler's site runs `submit_job`, `wait_job` and `collect_job`."""
+    _validate(request)
+    if _submission(request.site.scheduler) is not None:
+        handle = submit_job(request, local_tmp=local_tmp)
+        queue_bound, run_bound = job_bounds(request)
+        own_exit = wait_job(handle, queue_bound_sec=queue_bound, run_bound_sec=run_bound)
+        return collect_job(handle, request, local_tmp=local_tmp, own_exit=own_exit)
+    stage_dir, collected = _local_dirs(local_tmp)
+    _create_and_ship(request, stage_dir)
+    remote = request.job_dir
+    try:
+        # 3. Run the script in the foreground; its commands' statuses are on its stdout, and its
+        #    own exit status is non-zero only when it failed outside them. The script is the ssh
+        #    call's command string, held in the shell's memory — never a file: a file under the
+        #    job directory (or anywhere else this user owns) is one the command can rewrite while
+        #    the script runs, and bash reads a script file a command at a time, so the rewritten
+        #    rest is what it executes (reproduced in round 4: the second command skipped, a clean
+        #    status printed in its place).
+        bound = sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
+        job_stdout = _ssh(str(request.site.host),
+                          f"sh -c {shlex.quote(render_job_script(request))}",
+                          stage="run the job script", timeout=bound, remote=remote)
+        # 4. Collect. A failure here leaves the remote directory for the operator.
+        _scp([f"{request.site.host}:{remote}"], str(collected), stage="collect the job directory",
+             remote=remote)
+        # 5. Read every status, and the platform, before anything is recorded.
+        status_lines, facts, starts = _job_lines(job_stdout, remote)
+        _started(starts, False, remote)
+        statuses = _statuses(status_lines, request.commands, remote)
+        return _record(request, statuses, facts, collected=collected, job_id=None,
+                       queue_wait_ms=0)
+    except RemoteExecutionError as exc:
+        raise _left(exc, remote) from exc
+
+
+def submit_job(request: JobRequest, *, local_tmp: Path) -> JobHandle:
+    """Submit `request` to its site's batch scheduler: create the job directory, ship the files
+    (into `<local_tmp>/stage`, which must not exist), and hand the scheduler `render_stub` on the
+    standard input of the submit command, in one ssh call that first prints the login's time.
+    Raises `ValueError` for a malformed request or a site that is not a batch scheduler's, and
+    `RemoteExecutionError` for every other failure (the job directory, once made, is left)."""
+    _validate(request)
+    submission = _submission(request.site.scheduler)
+    if submission is None:
+        raise ValueError(f"site {request.site.site_id!r} runs its jobs in the foreground; "
+                         f"execute_job runs them")
+    stage_dir, _collected = _local_dirs(local_tmp)
+    _create_and_ship(request, stage_dir)
+    site, remote = request.site, request.job_dir
+    ctl = f"{remote}/{CONTROL_DIR}"
+    argv = submission.submit_argv(
+        directives=tuple(site.scheduler_directives),
+        job_name=f"spec2science-{remote.rsplit('/', 1)[1]}",
+        wall_clock_sec=_wall_clock_sec(request),
+        output_path=f"{ctl}/{JOB_OUT}", error_path=f"{ctl}/{JOB_ERR}")
+    try:
+        # The first line printed is empty, for the reason the job script's is.
+        out = _ssh(str(site.host), f"echo; printf '%s %s\\n' {SUBMIT_MARKER} \"$(date +%s)\" "
+                                   f"&& exec {shlex.join(str(a) for a in argv)}",
+                   stage="submit the job", timeout=TRANSPORT_GRACE_SEC, remote=remote,
+                   input=render_stub(request))
+        before, sep, answer = out.partition(f"{SUBMIT_MARKER} ")
+        epoch, _, answer = answer.partition("\n")
+        if not sep or (before and not before.endswith("\n")) or not _INT.fullmatch(epoch):
+            raise RemoteExecutionError(f"submit the job: the login's time was not printed: "
+                                       f"{out[-500:]!r} ({remote})")
+        job_id = submission.job_id(answer)
+        # The id becomes an argument of every state command. Breakage without this: a line
+        # the submit command printed besides the id — a warning — read as the id makes every
+        # poll answer `unknown_id`, and the job is lost (issue #696 review 1, L7).
+        if job_id is None or not _ELEMENT.fullmatch(job_id):
+            raise RemoteExecutionError(
+                f"submit the job: the submit command's answer names no job id: {answer[-500:]!r}; "
+                f"a job may have been submitted ({remote})")
+    except RemoteExecutionError as exc:
+        raise _left(exc, remote) from exc
+    return JobHandle(site=site.site_id, host=str(site.host), scheduler=site.scheduler,
+                     job_id=job_id, remote_dir=remote, submitted_epoch=int(epoch))
+
+
+def _ask_state(handle: JobHandle, submission: Any) -> tuple[str, Any]:
+    """One poll: each of the backend's state commands in turn, in one ssh call each, until one
+    answers other than `no_answer`. A call that fails, or whose stdout does not end with the
+    state command's exit status, is `no_answer` too."""
+    answer: tuple[str, Any] = ("no_answer", "no state command")
+    for argv in submission.state_argvs(handle.job_id):
+        command = (f"echo; {shlex.join(str(a) for a in argv)} </dev/null; "
+                   f"printf '\\n%s %s\\n' {_STATE_RC_MARKER} \"$?\"")
+        try:
+            proc = _call(["ssh", *SSH_OPTIONS, "--", handle.host, command],
+                         stage="ask the job's state", timeout=TRANSPORT_GRACE_SEC,
+                         remote=handle.remote_dir)
+        except RemoteExecutionError as exc:
+            answer = ("no_answer", str(exc))
+            continue
+        head, sep, tail = proc.stdout.rpartition(f"\n{_STATE_RC_MARKER} ")
+        if proc.returncode != 0 or not sep or not _INT.fullmatch(tail.strip()):
+            answer = ("no_answer", f"the poll's ssh call exited {proc.returncode}: "
+                                   f"{(proc.stderr or proc.stdout).strip()[-500:]}")
+            continue
+        answer = submission.job_state(int(tail.strip()), head, proc.stderr)
+        if answer[0] != "no_answer":
+            return answer
+    return answer
+
+
+def wait_job(handle: JobHandle, *, queue_bound_sec: int, run_bound_sec: int) -> int | None:
+    """Poll `handle`'s job until its scheduler says it ended, and return how: 0 or 1 when the
+    script ran to its own exit with that status, None when it ended otherwise. The first poll is
+    `POLL_FIRST_SEC` after the call, and the interval doubles to `POLL_MAX_SEC`.
+
+    A poll whose call fails and one answered `no_answer` decide nothing and are asked again.
+    Breakage without that: one dropped connection, or one restart of the scheduler's controller
+    during a long wait, would lose the job. `unknown_id` is refused: the scheduler no longer
+    states how the job ended, and polling it until the bound would only delay that. Past
+    `queue_bound_sec` before the job was seen running, or `run_bound_sec` after, the wait is
+    refused (`RemoteExecutionError`) and the job is left as it is; nothing cancels it."""
+    submission = _submission(handle.scheduler)
+    remote = handle.remote_dir
+    t0 = time.monotonic()
+    started: float | None = None
+    interval: float = POLL_FIRST_SEC
+    last = "no poll was answered"
+    try:
+        while True:
+            time.sleep(interval)
+            interval = min(interval * 2, POLL_MAX_SEC)
+            condition, value = _ask_state(handle, submission)
+            now = time.monotonic()
+            if condition == "ended":
+                return value
+            if condition == "unknown_id":
+                raise RemoteExecutionError(
+                    f"the scheduler no longer knows job {handle.job_id}, so how it ended is no "
+                    f"longer stated; its output is not read ({remote})")
+            if condition == "running" and started is None:
+                started = now
+            if condition == "no_answer":
+                last = str(value)
+            if started is None and now - t0 > queue_bound_sec:
+                raise RemoteExecutionError(
+                    f"wait for the job: job {handle.job_id} did not start within "
+                    f"{queue_bound_sec} sec (queue_timeout_sec); it is left queued (last "
+                    f"unanswered poll: {last}) ({remote})")
+            if started is not None and now - started > run_bound_sec:
+                raise RemoteExecutionError(
+                    f"wait for the job: job {handle.job_id} did not end within {run_bound_sec} "
+                    f"sec of its start; it is left running (last unanswered poll: {last}) "
+                    f"({remote})")
+    except RemoteExecutionError as exc:
+        raise _left(exc, remote) from exc
+
+
+def _bind(statuses: list[tuple[int, int, int] | None], own_exit: int, remote: str) -> None:
+    """The statuses read from a batch job's output file, held to the scheduler's record of how
+    the script ended: 0 accepts only "every command exited 0", 1 only "one command ran and exited
+    non-zero" (`_statuses` already refuses a status after it). A file rewritten to say every
+    command exited 0 under a record of 1 is refused. Leaf gain answered: a leaf whose later
+    command failed would otherwise be closer to a certified Validate (issue #696 §6.3's P1)."""
+    failed = any(s is not None and s[0] != 0 for s in statuses)
+    if failed != (own_exit == 1):
         raise RemoteExecutionError(
-            f"{exc}; the job directory is left at the site for inspection — remove {remote} "
-            f"when done") from exc
+            f"the job's output file says {'a' if failed else 'no'} command failed, and the "
+            f"scheduler's record says the job script exited {own_exit} ({remote})")
 
 
-def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
-             collected: Path) -> JobResult:
-    """`execute_job` once the job directory exists."""
+def collect_job(handle: JobHandle, request: JobRequest, *, local_tmp: Path,
+                own_exit: int | None) -> JobResult:
+    """Collect `handle`'s ended job, whose scheduler said `own_exit` (`wait_job`), into
+    `<local_tmp>/collected`, which must not exist, and read it: refused when `own_exit` is None
+    (quoting the tail of `job.err`), and otherwise its output file is read against `own_exit`
+    (`_bind`), then read, compared, removed and recorded as `execute_job` does at a `none` site.
+    The job directory is left at the site on every refusal."""
+    remote = handle.remote_dir
+    collected = local_tmp / "collected"
+    if collected.exists():
+        raise ValueError(f"{collected} already exists; a job owns a fresh local_tmp")
+    try:
+        _scp([f"{handle.host}:{remote}"], str(collected), stage="collect the job directory",
+             remote=remote)
+        ctl = collected / CONTROL_DIR
+        if own_exit is None:
+            try:
+                tail = (ctl / JOB_ERR).read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                tail = f"({JOB_ERR} was not collected)"
+            raise RemoteExecutionError(
+                f"the scheduler's record says job {handle.job_id} did not run to its own exit "
+                f"with 0 or 1 (a signal, a limit, a cancellation, a node failure, or the job "
+                f"script's own failure outside its commands), so its statuses are not read; "
+                f"{JOB_ERR} ends: {tail[-2000:] or '(empty)'} ({remote})")
+        job_out = _read_output(ctl / JOB_OUT, remote)
+        status_lines, facts, starts = _job_lines(job_out, remote)
+        started = _started(starts, True, remote)
+        statuses = _statuses(status_lines, request.commands, remote)
+        _bind(statuses, own_exit, remote)
+        return _record(request, statuses, facts, collected=collected, job_id=handle.job_id,
+                       queue_wait_ms=max(0, int(started or 0) - handle.submitted_epoch) * 1000)
+    except RemoteExecutionError as exc:
+        raise _left(exc, remote) from exc
+
+
+def _record(request: JobRequest, statuses: list[tuple[int, int, int] | None],
+            facts: dict[str, list[str]], *, collected: Path, job_id: str | None,
+            queue_wait_ms: int) -> JobResult:
+    """Steps 5 to 7 once the statuses are read: the facts, the shipped files, the launch codes,
+    the removal of the remote directory and the log entries."""
     site = request.site
     host = str(site.host)
+    remote = request.job_dir
     q = shlex.quote
-
-    # 2. Stage and ship the files, and an empty control directory for the commands' output.
-    for rel, src in request.ship.items():
-        dst = stage_dir / rel
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        except OSError as exc:
-            raise RemoteExecutionError(f"stage the job's files: {rel}: {exc} ({remote})") from exc
-    (stage_dir / CONTROL_DIR).mkdir(parents=True, exist_ok=True)
-    tops = sorted({p.name for p in stage_dir.iterdir()})
-    _scp([str(stage_dir / t) for t in tops], f"{host}:{remote}/",
-         stage="ship the job's files", remote=remote)
-
-    # 3. Run the script in the foreground; its commands' statuses are on its stdout, and its own
-    #    exit status is non-zero only when it failed outside them. The script is the ssh call's
-    #    command string, held in the shell's memory — never a file: a file under the job
-    #    directory (or anywhere else this user owns) is one the command can rewrite while the
-    #    script runs, and bash reads a script file a command at a time, so the rewritten rest is
-    #    what it executes (reproduced in round 4: the second command skipped, a clean status
-    #    printed in its place).
-    #    A scheduler's job runs the same script under its backend's prefix, which is given the
-    #    time the script may take and is itself bounded by the queue wait on top of it.
-    bound = sum(c.timeout_sec + KILL_AFTER_SEC for c in request.commands) + TRANSPORT_GRACE_SEC
-    command = f"sh -c {q(render_job_script(request))}"
-    submission = _submission(site.scheduler)
-    if submission is not None:
-        queue_timeout = site.queue_timeout_sec or QUEUE_TIMEOUT_DEFAULT_SEC
-        # The toolchain probe may run twice (its stderr is read when its stdout is empty).
-        wall_clock = (bound + (PROBE_TIMEOUT_SEC if request.platform_probe else 0)
-                      + (2 * PROBE_TIMEOUT_SEC if request.toolchain_probe else 0))
-        prefix = submission.foreground_argv(
-            directives=tuple(site.scheduler_directives),
-            job_name=f"spec2science-{remote.rsplit('/', 1)[1]}",
-            wall_clock_sec=wall_clock, queue_timeout_sec=queue_timeout)
-        # The first line printed is empty, for the reason the job script's is.
-        command = (f"echo; printf '%s %s\\n' {SUBMIT_MARKER} \"$(date +%s)\" && "
-                   f"exec {shlex.join(str(a) for a in prefix)} {command}")
-        bound = queue_timeout + wall_clock + TRANSPORT_GRACE_SEC
-    job_stdout = _ssh(host, command, stage="run the job script", timeout=bound, remote=remote)
-
-    # 4. Collect. A failure here leaves the remote directory for the operator.
-    _scp([f"{host}:{remote}"], str(collected), stage="collect the job directory", remote=remote)
     ctl = collected / CONTROL_DIR
-
-    # 5. Read every status, and the platform, before anything is recorded.
-    status_lines, facts, scheduler_lines = _job_lines(job_stdout, remote)
-    job_id, queue_wait_ms = _scheduled(scheduler_lines, submission is not None, remote)
-    statuses = _statuses(status_lines, request.commands, remote)
     toolchain_version = _toolchain(facts, request.toolchain_probe is not None, remote)
     platform_record = _platform(facts, bool(request.platform_probe), remote)
     # Every shipped file must come back as it was sent. The entries name each one by its local

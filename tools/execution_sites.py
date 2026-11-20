@@ -54,7 +54,8 @@ DEFAULT_SITES_PATH = "sites.yaml"
 #: `Validate.execute` launches in-process on this host (`tools/backends/registry.py`'s `hardware`
 #: records say which class that is). A host that can run another class lists it under `local:`.
 LOCAL_DEFAULT_EXECUTES: tuple[str, ...] = ("cpu",)
-#: The scheduler a site uses when it submits nothing: the job script runs in the foreground.
+#: The scheduler a site uses when it submits nothing: the job script runs in the foreground of
+#: the ssh call; every other scheduler submits it as a batch job (`remote_execution`).
 DIRECT_SCHEDULER = "none"
 
 #: Every refusal this loader can raise. `docs/ORCHESTRATION.md` §Execution sites lists them and

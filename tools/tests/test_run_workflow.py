@@ -11244,9 +11244,14 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
             self.assertIsInstance(run_workflow._sites_rejection(self.repo_root, cuda, "validate"),
                                   SitesConfig)
 
-    def test_a_scheduler_site_is_asked_for_the_schedulers_program(self) -> None:
-        """A `slurm` site's login must resolve the program its jobs run under; one that has
-        every other program the job needs is refused naming that one alone."""
+    def test_a_scheduler_site_is_asked_for_the_schedulers_programs(self) -> None:
+        """A `slurm` site's login must resolve the programs its jobs are submitted with and
+        asked about with; one that has every other program the job needs is refused naming
+        those alone."""
+        from tools.backends import registry
+        programs = list(registry.capability_module("scheduler", "slurm",
+                                                   "job_submit").REMOTE_EXECUTABLES)
+        self.assertTrue(programs)
         self._remote(scheduler="slurm")
         bare = Path(self._tmp.name) / "bare"
         bare.mkdir()
@@ -11255,8 +11260,8 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         code, events, calls = self._main(SHIM_SSH_PATH=str(bare))
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "missing_required_site_tools")
-        self.assertEqual(events[-1]["missing"], ["srun"])
-        self.assertEqual(events[-1]["required"], ["timeout", "make", "srun"])
+        self.assertEqual(events[-1]["missing"], programs)
+        self.assertEqual(events[-1]["required"], ["timeout", "make", *programs])
         self.assertEqual(calls, [])
 
     def test_a_launcher_target_at_a_remote_site_is_told_to_run_at_local(self) -> None:
@@ -11322,7 +11327,9 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         bare.mkdir()
         for tool in ("sh", "uname", "timeout", "make", "mkdir", "chmod", "rm"):
             (bare / tool).symlink_to(shutil.which(tool))
-        (bare / "srun").symlink_to(shutil.which("true"))
+        for program in registry.capability_module("scheduler", "slurm",
+                                                  "job_submit").REMOTE_EXECUTABLES:
+            (bare / program).symlink_to(shutil.which("true"))
         for tool in tracer:
             self.assertFalse((bare / tool).exists())
         self._remote(scheduler="slurm")
