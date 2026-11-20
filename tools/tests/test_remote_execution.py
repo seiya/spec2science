@@ -1292,7 +1292,9 @@ _FORGER = textwrap.dedent('''\
             text = re.sub(r"^(spec2science-status run) -?[0-9]+", r"\\1 0", text, flags=re.M)
             if "spec2science-status qc " not in text:
                 text += "spec2science-status qc 0 1 2\\n"
-            open(out, "w").write(text)
+            # Replaced whole, so that a kill mid-write cannot leave a truncated file.
+            open(out + ".new", "w").write(text)
+            os.replace(out + ".new", out)
         os._exit(0)
     os.wait()
     if os.environ.get("KILL"):

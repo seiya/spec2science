@@ -143,8 +143,8 @@ what their answer means (`job_state`, seven answers). `execute_job` composes thr
   `POLL_MAX_SEC`. A poll whose ssh call fails, and one answered `no_answer`, are asked again; an
   id the scheduler says it does not know is refused (how the job ended is no longer stated). The
   bound is the site's `queue_timeout_sec` (default `QUEUE_TIMEOUT_DEFAULT_SEC`) while the job is
-  queued and the commands' bounds plus `TRANSPORT_GRACE_SEC` once it runs; past either the wait
-  is refused and the job is LEFT as it is — nothing cancels it.
+  queued and its time limit plus `TRANSPORT_GRACE_SEC` once it runs (`job_bounds`); past either
+  the wait is refused and the job is LEFT as it is — nothing cancels it.
 - `collect_job` copies the job directory back, refuses a job whose record says it ended other
   than by its own exit with 0 or 1 (quoting the tail of `job.err`), reads `job.out` against the
   record as above, and then reads, compares, removes and records as at a `none` site. The job
