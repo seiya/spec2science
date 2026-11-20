@@ -159,6 +159,9 @@ makes a command that runs long a refusal rather than the command's own timeout.
   setting the flag back (`scontrol update JobId=<id> Requeue=1`) and then requeueing the job, so
   the backend reads an own exit only from a record with `Restarts=0`; a job that ran its script
   more than once is refused as ended otherwise.
+- **One cluster.** A directive that selects another cluster (`-M`, `--clusters`) is not
+  supported: the job would be submitted there, and every poll asks `scontrol` without `-M`,
+  which answers for the local cluster alone.
 - **No accounting.** Nothing reads `sacct`: it did not answer on the machine measured, so no
   output of it is recorded, and an ended job is stated for the scheduler's own retention alone.
   It enters as a second state command, with a recorded fixture, from the first site whose

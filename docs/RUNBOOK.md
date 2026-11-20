@@ -235,6 +235,23 @@ command's output. `--ship FILE` sends a local file into the job directory (`$JOB
 where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writes nothing under
 `workspace/`.
 
+**A `slurm` site written before batch submission (issue #696).** A job at a `slurm` site is a
+batch job since issue #696: its `scheduler_directives` go to `sbatch`, not `srun`, and the host
+submits, polls and collects it ([docs/backends/scheduler/slurm/JOB_SUBMIT.md](backends/scheduler/slurm/JOB_SUBMIT.md)
+§1, §2). An existing site entry may need these changes:
+
+- **Remove `srun`-only options from `scheduler_directives`.** `--mpi=`, `--cpu-bind=`,
+  `--overlap`, `--exact`, `--immediate` and `--pty` are each `unrecognized option` to `sbatch`
+  (measured with `sbatch --test-only` on Slurm 20.02.5), so a site that keeps one has every
+  submission refused (`submit the job: ssh exited 1`).
+- **A job past `queue_timeout_sec` is left queued.** The run is refused as a transport failure
+  and nothing cancels the job; `scancel` it by hand (its name is `spec2science-<agent_run_id>`)
+  until a resumed run adopts such a job (issue #696; not built yet).
+- **The site must keep an ended job for more than 60 seconds** (`MinJobAge`): how the job ended
+  is read from `scontrol`, and a job forgotten between two polls is refused.
+- **No `%` in the site's `workdir`**: `sbatch` expands `%` in the job's output file names, which
+  are under it.
+
 ### Refused at startup — external libraries
 
 A run that goes past `Compile` and whose closure declares an `external library` (`docs/GLOSSARY.md`;
