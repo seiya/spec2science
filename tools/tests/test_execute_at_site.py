@@ -1520,9 +1520,11 @@ class ContinuationAtExecuteTests(unittest.TestCase):
 
 def _at_a_batch_site(n: _Node) -> Path:
     """`n`'s site as a `slurm` site reached through the scheduler shims; the shims' state
-    directory, which `SHIM_SLURM_DIR` names."""
+    directory, which `SHIM_SLURM_DIR` names. The conductor's events are kept in `n.events`."""
     import dataclasses
     n.conductor.site = n.site = dataclasses.replace(n.site, scheduler="slurm")
+    n.events = []
+    n.conductor.emit = lambda event, **fields: n.events.append((event, fields))
     for name, body in (("sbatch", _SBATCH_SHIM), ("scontrol", _SCONTROL_SHIM)):
         path = n.shims / name
         path.write_text(body)
@@ -1581,6 +1583,10 @@ class ExecuteAdoptedAtABatchSiteTests(unittest.TestCase):
         self.assertEqual(out["returncode"], 0, out)
         self.assertEqual([c[0] for c in n.calls()].count("sbatch"), 1)
         self.assertFalse(record.exists())
+        # The operator finds the adopted job by the conductor's event.
+        adopted = [f for e, f in n.events if e == "site_job_adopted"]
+        self.assertEqual([(f["job_id"], f["remote_dir"]) for f in adopted],
+                         [("4242", first_dir)])
         meta = json.loads((n.node_dir / "trial_meta.json").read_text())
         self.assertEqual(meta["environment"]["execution_site"]["job_id"], "4242")
         self.assertEqual(meta["environment"]["execution_site"]["remote_dir"], first_dir)
@@ -1615,6 +1621,10 @@ class ExecuteAdoptedAtABatchSiteTests(unittest.TestCase):
                                  "--job-name=spec2science-arid-1.restart",
                                  "--job-name=spec2science-arid-2"])
         self.assertEqual(sorted(p.name for p in record.iterdir()), [])
+        # The operator finds the adopted restart job by the conductor's event.
+        adopted = [f for e, f in n.events if e == "site_job_adopted"]
+        self.assertEqual([(f["job_id"], f["remote_dir"]) for f in adopted],
+                         [(restart["job_id"], restart["remote_dir"])])
         meta = json.loads((n.node_dir / "trial_meta.json").read_text())
         for label, entry in meta["restart_pass"].items():
             (row,) = entry["continuations"]

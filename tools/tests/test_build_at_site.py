@@ -385,6 +385,8 @@ class BuildAdoptedAtABatchSiteTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.n = n = _Node(self._tmp.name)
         n.conductor.site = n.site = dataclasses.replace(n.site, scheduler="slurm")
+        self.events: list[tuple[str, dict]] = []
+        n.conductor.emit = lambda event, **fields: self.events.append((event, fields))
         # The scheduler's programs, where the site's login finds them.
         for name, body in (("sbatch", _SBATCH_SHIM), ("scontrol", _SCONTROL_SHIM)):
             path = n.site_bin / name
@@ -435,6 +437,9 @@ class BuildAdoptedAtABatchSiteTests(unittest.TestCase):
         self.assertEqual(out["returncode"], 0, out)
         sbatch = [c for c in n.calls() if c[0] == "sbatch"]
         self.assertEqual(len(sbatch), 1, "one job, submitted by the first attempt")
+        # The operator finds the adopted job by the conductor's event.
+        adopted = [f for e, f in self.events if e == "site_job_adopted"]
+        self.assertEqual([(f["job_id"], f["remote_dir"]) for f in adopted], [("4242", n.job)])
         meta = n.meta()
         self.assertEqual(meta["verification_status"], "pass", meta)
         self.assertEqual(meta["environment"]["build_site"]["job_id"], "4242")
