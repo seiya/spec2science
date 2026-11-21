@@ -24,6 +24,8 @@ point rather than growing the item here.
 
 - **The two-root sandbox is certified by a billed run under one CLI family alone** (2026-11-21, low, issue #705). The billed run R-P certified the SCALE Project's harness and three nodes in a Project outside the checkout under the `codex` CLI. The other CLI family and the wrapper run are measured there by V-d's sandbox rows under real `bwrap`, and the HTTP host loop by V-h up to its first request (issue #705, PR-1). Removal condition: a billed run in a Project outside the checkout under the `claude` CLI and under an HTTP provider.
 
+- **No tool creates a Project** (2026-11-21, design limit, issue #705). A Project is a directory laid out as `docs/SPEC.md` states (the `spec/` trees, the catalog, target profiles, a harness, and a `.gitignore` for State); the SCALE Project was written by hand. Removal condition: a second Project whose setup repeats the SCALE Project's.
+
 - **A run records the framework's commit and no commit of its Project** (2026-11-21, design limit, issue #705). `repo_revision` is the framework checkout's; a Project's `spec` files are identified in every key by their hash, not by a revision. Removal condition: a reader that needs the Project's commit.
 
 - **`evidence_refs` of a verdict name framework documents by a framework-relative path beside Project-relative ones** (2026-11-21, low, issue #705). No reader that resolves them was found. Removal condition: a reader that must resolve one.
