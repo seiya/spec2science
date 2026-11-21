@@ -5778,8 +5778,74 @@ class ListFormCasesTest(unittest.TestCase):
         var["shape_expr"] = "[nz]"
         self.assertEqual(pe.drive_violations(ir, kind="component"), [
             f"(c) case {cid!r}: state.vterm_r: shape_expr token 'nz' names 'nz', which no "
-            "drive entry binds as a rank-0 dummy, so the extent of an array no entry running "
-            "this case binds is unknown" for cid in ("adj_a", "adj_b")])
+            "drive entry binds as a rank-0 dummy and no scalar derived value of this case "
+            "names, so the extent of an array no entry running this case binds is unknown"
+            for cid in ("adj_a", "adj_b")])
+
+    def test_an_unbound_token_resolves_from_the_case_derived_value(self) -> None:
+        """Issue #709 F-1b: a `shape_expr` token of an array no entry running the case binds,
+        which no rank-0 dummy carries (the face extent of an operation only other cases run),
+        resolves as the case's scalar `derived.<name>`, as a bound `shape_expr` token does —
+        per case and integral; an entry's rank-0 dummy of that name shadows it."""
+        def kessler_nz(values: dict[str, object]) -> dict:
+            ir = _kessler()
+            var = next(v for v in ir["io_contract"]["raw_requirements"]["required_evidence"][0][
+                "schema"]["variables"] if v["name"] == "vterm_r")
+            var["shape_expr"] = "[nz]"
+            for case in ir["case"]["test_case_set"]:
+                case["derived"] = {"nz": values[case["case_id"]]}
+            return ir
+
+        ir = kessler_nz({"adj_a": 6, "adj_b": 5, "tv_a": 3})
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        payload = pe.evaluate_case_inputs(ir)
+        self.assertEqual(payload["adj_a"]["vterm_r"], [-1.0] * 6)     # no entry of adj_a binds
+        self.assertEqual(payload["adj_b"]["vterm_r"], [-1.0] * 5)     # THIS case's value
+        self.assertEqual(len(payload["tv_a"]["vterm_r"]), 8)          # bound: its dummy's dims
+        self.assertEqual(pe.drive_violations(kessler_nz({"adj_a": 6.5, "adj_b": 5, "tv_a": 3}),
+                                             kind="component"),
+                         ["(c) case 'adj_a': state.vterm_r: derived.nz is 6.5, not an integer"])
+        # an array `derived` value of that name is no extent: the name stays unresolved
+        self.assertEqual(pe.drive_violations(kessler_nz({"adj_a": "0 * x + 6", "adj_b": 5,
+                                                         "tv_a": 3}), kind="component"),
+                         [("(c) case 'adj_a': state.vterm_r: shape_expr token 'nz' names 'nz', "
+                           "which no drive entry binds as a rank-0 dummy and no scalar derived "
+                           "value of this case names, so the extent of an array no entry running "
+                           "this case binds is unknown")])
+        # a derived name an entry also binds as a rank-0 dummy: the dummy's value, whatever
+        # the derived value says (the previous rule's result, unchanged)
+        ir = _kessler()
+        base = pe.evaluate_case_inputs(ir)
+        for case in ir["case"]["test_case_set"]:
+            case["derived"] = {"ka": 9}
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        self.assertEqual(pe.evaluate_case_inputs(ir)["adj_b"]["rhoq_c"],
+                         base["adj_b"]["rhoq_c"])
+        self.assertEqual(len(base["adj_b"]["rhoq_c"]), 8)
+        # a dummy only ONE entry binds shadows the derived value too (`dt`: the adjustment's)
+        ir = kessler_nz({"adj_a": 6, "adj_b": 5, "tv_a": 3})
+        var = next(v for v in ir["io_contract"]["raw_requirements"]["required_evidence"][0][
+            "schema"]["variables"] if v["name"] == "vterm_r")
+        var["shape_expr"] = "[dt]"
+        for case in ir["case"]["test_case_set"]:
+            case["derived"] = {"dt": 3}
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        self.assertEqual(len(pe.evaluate_case_inputs(ir)["adj_a"]["vterm_r"]), 10)
+        # a derived value does not settle two entries that disagree
+        ir = _kessler()
+        ir["drive"]["step"][1]["arguments"]["ka"] = "inputs.grid.ka_tv"
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["grid"]["ka_tv"] = 9 if case["case_id"] != "tv_a" else 8
+            case["derived"] = {"ka": 8}
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [
+            f"(c) case {cid!r}: state.rhoq_c: shape_expr token 'ka' names 'ka', which the "
+            "drive entries bind to different values in this case ({'drive.step[0]': 8, "
+            "'drive.step[1]': 9})" for cid in ("adj_a", "adj_b")])
+        # a negative derived value is no extent
+        self.assertEqual(pe.drive_violations(kessler_nz({"adj_a": -6, "adj_b": 5, "tv_a": 3}),
+                                             kind="component"),
+                         [("(c) case 'adj_a': state.vterm_r: dims token 'nz' evaluates to -6, "
+                           "not an extent >= 0")])
 
     def test_d7_counts_a_scalar_only_where_its_entry_runs(self) -> None:
         """`record_scalar_pairing` with `one_call_by_case`: a one-call scalar is a kernel
