@@ -699,26 +699,17 @@ A disagreement ends the run: `Validate.execute` fails with `trial_meta.json#fail
 
 Three further outcomes are a transport `fail_closed` of `Validate.execute` (no leaf ran), reported as listed under "no tag" in §3-1: `oracle_run_failed`, `oracle_unevaluable` and `oracle_declaration_invalid`.
 
-**The two microphysics nodes.** `microphysics_saturation_liquid_1d_column` and `microphysics_kessler_warm_rain_1d_column` declare the original SCALE procedures as their oracle, over the libraries `scale_mp_oracle` and `scale_mp_oracle_alt`. Build both by the measurement directory's `lib` target (`docs/design/kessler_measurement/README.md` §Oracle library) and list them in `sites.yaml` under the local site, each directory as an absolute path, as both `include` and `lib` (in an existing file, add the two entries to `sites.local.libraries`):
+**Its libraries.** An oracle links the existing code through `external library` declarations (`spec/libraries/<library_id>.yaml`, `docs/SPEC.md` requirement 16), one per distinct build of that code: code that holds a value the cases vary as a compile-time constant needs one library per value set (`skills/spec-from-code` step 4). Build each where the Project's record of it says, outside the Project root (a wrapper run refuses a bind at or under it), and list it in `sites.yaml` under the local site, each directory as an absolute path, as both `include` and `lib` (in an existing file, add the entries to `sites.local.libraries`):
 
 ```yaml
 sites_version: 1
 sites:
   local:
     libraries:
-      scale_mp_oracle:     {include: <dir>/default, lib: <dir>/default}
-      scale_mp_oracle_alt: {include: <dir>/alt, lib: <dir>/alt}
+      <library_id>: {include: <dir>, lib: <dir>}
 ```
 
-Without them, on a target of the oracle's language, a run of either node that reaches `Build`, and a run past `Compile` of a node whose closure holds one of them, ends `library_unavailable` at startup; at a remote site it is refused as `oracle_at_remote_site` (§0-1, "Refused at startup — external libraries").
-
-**The PBL tracer node.** `pbl_tracer_diffusion_1d_column` declares the original SCALE procedure as its oracle, over the one library `scale_bl_oracle`. Build it as `docs/design/pbl_tracer_measurement/README.md` §Oracle library states and list it the same way, beside the two above in an existing file:
-
-```yaml
-      scale_bl_oracle:     {include: <dir>/default, lib: <dir>/default}
-```
-
-The same refusals apply without it.
+Without them, on a target of the oracle's language, a run of the node that reaches `Build`, and a run past `Compile` of a node whose closure holds it, ends `library_unavailable` at startup; at a remote site it is refused as `oracle_at_remote_site` (§0-1, "Refused at startup — external libraries"). No node of the sample declares an oracle; the nodes converted from SCALE, which do, left for a SCALE Project of their own ([issue #705](https://github.com/seiya/spec2science/issues/705)).
 
 ## 3-1. Resuming a failed workflow (`--resume`)
 

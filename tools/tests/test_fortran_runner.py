@@ -41,7 +41,7 @@ from tools.backends.language.fortran.runner import (
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
-from tools.tests.target_fixtures import SAMPLE_ROOT
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT
 from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir, sampled
 from tools.tests.yaml_fixtures import load_yaml_fixture
 
@@ -83,6 +83,10 @@ def _require_declared_linter() -> None:
 REAL = {"type": "real", "kind": "dp"}
 DRIVER_E2E = Path(__file__).parent / "data" / "driver_e2e"
 DRIVE_IR_EVIDENCE = Path(__file__).parent / "data" / "drive_ir" / "pr3_evidence"
+#: The bench IRs a runner is rendered from: the sample's, and the SCALE fixture's three, which
+#: left `pr3_evidence/ir/` with their nodes (issue #705 PR-3) and are the only list-form IRs.
+EVIDENCE_IRS = sorted([*(DRIVE_IR_EVIDENCE / "ir").glob("*.yaml"),
+                       *(SCALE_FIXTURE_ROOT / "ir").glob("*.yaml")], key=lambda p: p.stem)
 
 
 def _dummy(name: str, intent: str, spec: dict, rank: int = 0) -> dict:
@@ -1679,7 +1683,7 @@ class HarnessPinTest(unittest.TestCase):
                   ("call", call_ir(0), "drv_toy"), ("procedure", procedure_ir(), "drv_toy"),
                   *((sid, builder(), sid) for sid, builder in MPI_FIXTURES.items()),
                   *((p.stem, load_yaml_fixture(p), p.stem)
-                    for p in sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml")))]
+                    for p in EVIDENCE_IRS)]
         self.assertEqual(len(shapes), 4 + 5 + 21)
         for label, ir, sid in shapes:
             with self.subTest(label):
@@ -1892,7 +1896,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
     def test_every_evidence_ir_renders_a_clean_runner(self) -> None:
         # The evidence bench builds and runs these runners and never lints them, so the shape of
         # a real physics node reached the gate first in a billed run.
-        paths = sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml"))
+        paths = EVIDENCE_IRS
         self.assertEqual(len(paths), 21)
         for harness, _target in _FORMS:
             for path in paths:

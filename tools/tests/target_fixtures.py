@@ -38,6 +38,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 #: reads a framework file (`docs/`, `spec/schema/`, `tools/`) keeps `REPO_ROOT`.
 SAMPLE_ROOT = REPO_ROOT / "sample"
 
+#: The three SCALE nodes as a fixture (issue #705 PR-3): they left the sample for the SCALE
+#: Project, and these are their `spec` files, oracle declarations, library declarations and
+#: catalog as they stood at 78d3626f, with their hand transcriptions under `ir/`. They are the
+#: suite's only nodes with an oracle and the only ones holding cases in the list form, so the
+#: rows that read those two framework grammars read them here. Not a Project a run starts in:
+#: it holds no target and no harness.
+SCALE_FIXTURE_ROOT = REPO_ROOT / "tools" / "tests" / "data" / "scale_project"
+
 #: The `fortran_cpu` profile, loaded the way a run loads it. Named, not discovered: the checkout
 #: declares more than one profile since issue #289 (R4-b PR-5), and every fixture built on this
 #: one is a Fortran/CPU fixture.

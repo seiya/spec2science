@@ -13,8 +13,10 @@ def latest(kind,sid):
     g=sorted(glob.glob(f'{PROJECT}/workspace/pipelines/{kind}__{sid}__{v}/fortran_cpu/*/source/src_*/src/{sid}_model.f90'))
     return g[-1] if g else None
 SWE=[f'tools/tests/data/driver_e2e/{d}_model.f90' for d in('dynamics_shallow_water_boundary_2d_periodic_copy','dynamics_shallow_water_flux_2d_rusanov_p0','dynamics_shallow_water_time_update_2d_ssprk2')]
-SP={'shallow_water2d':('tools/tests/data/driver_e2e/shallow_water2d_model.f90',SWE),
- 'microphysics_kessler_warm_rain_1d_column':(None,[latest('component','microphysics_saturation_liquid_1d_column')])}
+# The two microphysics transcriptions and the PBL one left `ir/` with their nodes (issue #705
+# PR-3, `tools/tests/data/scale_project/ir/`); the Kessler row that took the certified
+# saturation kernel as its dependency went with them.
+SP={'shallow_water2d':('tools/tests/data/driver_e2e/shallow_water2d_model.f90',SWE)}
 def deps_of(ir,sid):
     out=[]
     for e in (ir.get('dependency') or {}).get('direct_deps') or []:

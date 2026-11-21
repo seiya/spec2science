@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import yaml
 
-from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT, provides_for
 import tools.validate_pipeline_semantics as vps
 from tools import capture_store
 from tools.backends import registry as backend_registry
@@ -9709,10 +9709,11 @@ end program shallow_water2d_runner
     def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
         """`docs/TESTS.md` §Cross-target judgment states the rule: a pass test applies it and an
         xfail or fail test does not. This pins the reader against the 21 physics tests.md under
-        that rule, both prose forms; a harness applies none."""
+        that rule, both prose forms; a harness applies none. The list form is the SCALE
+        fixture's alone since issue #705 PR-3, so its three tests.md are read beside the sample's."""
         import glob
-        repo = SAMPLE_ROOT
-        files = sorted(glob.glob(str(repo / "spec/*/*/*/*/tests.md")))
+        files = sorted(glob.glob(str(SAMPLE_ROOT / "spec/*/*/*/*/tests.md"))
+                       + glob.glob(str(SCALE_FIXTURE_ROOT / "spec/*/*/*/*/tests.md")))
         judged_total = 0
         for f in files:
             path = Path(f)
@@ -26320,12 +26321,14 @@ class DistributeLineGateTests(unittest.TestCase):
         with unittest.mock.patch.object(vps, "_distribute_line_violations", spy):
             self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
         self.assertEqual(seen, ["component", "problem"])
-        # the corpus: one line on each of the 21 physics nodes, none on the 4 harnesses
-        repo = SAMPLE_ROOT
-        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
-        catalog = [e for e in catalog if e.get("tests_path")]   # a profile has no tests.md
-        counts = {e["spec_kind"]: [] for e in catalog}
-        for entry in catalog:
+        # the corpus: one line on each of the 21 physics nodes (18 in the sample and the 3 of
+        # the SCALE fixture), none on the 4 harnesses
+        catalog = [(repo, e) for repo in (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
+                   for e in yaml.safe_load((repo / "spec/registry/spec_catalog.yaml")
+                                           .read_text())["specs"]
+                   if e.get("tests_path")]   # a profile has no tests.md
+        counts = {e["spec_kind"]: [] for _, e in catalog}
+        for repo, entry in catalog:
             text = (repo / entry["tests_path"]).read_text(encoding="utf-8")
             counts[entry["spec_kind"]].append(sum(
                 1 for ln in text.splitlines() if vps.TEST_DISTRIBUTE_LINE.match(ln.strip())))
@@ -26447,11 +26450,12 @@ class DistributeLineGateTests(unittest.TestCase):
                 parsed, why = vps._parse_distribute_line(body)
                 self.assertIsNone(why)
                 self.assertEqual(len(parsed), body.count("="))
-        # every line of the corpus parses
-        repo = SAMPLE_ROOT
-        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        # every line of the corpus parses (the sample's and the SCALE fixture's)
         bodies = [m.group(1).replace("`", "").strip()
-                  for e in catalog if e.get("spec_kind") in ("component", "problem")
+                  for repo in (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
+                  for e in yaml.safe_load((repo / "spec/registry/spec_catalog.yaml")
+                                          .read_text())["specs"]
+                  if e.get("spec_kind") in ("component", "problem")
                   for ln in (repo / e["tests_path"]).read_text(encoding="utf-8").splitlines()
                   if (m := vps.TEST_DISTRIBUTE_LINE.match(ln.strip()))]
         self.assertEqual(len(bodies), 21)

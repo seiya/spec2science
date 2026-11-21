@@ -2,8 +2,10 @@
 
 > **Audience: the person who writes the `oracle adapter` of a node (`docs/SPEC.md` requirement 17)
 > whose oracle declares `language: fortran`.** No leaf reads this document, and no gate reads an
-> adapter. `skills/spec-from-code` is the procedure that leads here; the two microphysics nodes'
-> `oracle/adapter.f90` are the worked examples.
+> adapter. `skills/spec-from-code` is the procedure that leads here. The worked examples are the
+> `oracle/adapter.f90` of the two microphysics nodes converted from SCALE, which live in the SCALE
+> Project since [issue #705](https://github.com/seiya/spec2science/issues/705); the suite keeps
+> them as a fixture under `tools/tests/data/scale_project/`.
 
 ## 1. What the build does with it
 
@@ -31,8 +33,8 @@ arguments with; a derived type of §5.1 is declared with the same components.
 ## 3. The array form
 
 The existing code's arrays seldom have the node's shape. Copy into a local array of the existing
-code's shape, call, and copy back, as `docs/design/kessler_measurement/driver.F90` does for one
-column of a `(KA,IA,JA)` routine with `IA = JA = 1`. Copy an `intent(inout)` argument back whole,
+code's shape, call, and copy back, as the microphysics adapters do for one column of a
+`(KA,IA,JA)` routine with `IA = JA = 1`. Copy an `intent(inout)` argument back whole,
 halo cells included, so that a halo the existing code does not write keeps its input value.
 Initialise an `intent(out)` array before the call to the value the Controlled Spec gives a cell
 the existing code leaves unwritten (`0` at a halo cell on both microphysics nodes).
@@ -48,8 +50,9 @@ every default.
 
 A constant the node takes as an argument and the existing code holds at compile time is not read
 by the adapter. A case whose constants differ goes to a second `builds:` entry of `oracle.yaml`,
-linked with a library built with those constants: `ALT_CONSTANTS=1` of
-`docs/design/kessler_measurement/Makefile` is the example.
+linked with a library built with those constants: the microphysics nodes' `alt` build, linked
+with an archive of the existing code built with the suites' alternative constants, is the
+example.
 
 ## 5. Outputs the existing code does not have
 

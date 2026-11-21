@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from tools.tests.target_fixtures import SAMPLE_ROOT
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT
 from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.validate_pipeline_semantics import (
     TEST_HISTORY_LINE,
@@ -227,8 +227,8 @@ def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
 
 
 class SpecCorpusVersionTest(unittest.TestCase):
-    def _entries(self) -> list[dict]:
-        doc = yaml.safe_load((SAMPLE_ROOT / "spec/registry/spec_catalog.yaml").read_text())
+    def _entries(self, root: Path = SAMPLE_ROOT) -> list[dict]:
+        doc = yaml.safe_load((root / "spec/registry/spec_catalog.yaml").read_text())
         return doc["specs"]
 
     def test_the_corpus_agrees(self) -> None:
@@ -345,18 +345,28 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
     def test_every_suite_is_migrated(self) -> None:
         entries = self._entries()
-        # a tests.md of every kind that has one: the four harnesses and the 21 physics nodes
+        # a tests.md of every kind that has one: the four harnesses and the 18 physics nodes of
+        # the sample, and the 3 physics nodes of the SCALE fixture (issue #705 PR-3)
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 4)
-        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 25)
+        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 22)
         self.assertEqual(suites_unmigrated(entries, SAMPLE_ROOT), [])
+        scale = self._entries(SCALE_FIXTURE_ROOT)
+        self.assertEqual(sum(bool(e.get("tests_path")) for e in scale), 3)
+        self.assertEqual(suites_unmigrated(scale, SCALE_FIXTURE_ROOT), [])
 
     def test_each_physics_node_has_a_transcription(self) -> None:
         """Issue #589 PR-3: `data/drive_ir/pr3_evidence/ir/` holds one hand-written IR per physics
         node — exactly those — and a `test_transcription_compile_static_accepts_<spec_id>` row
-        is generated for each, so the rows cover every physics node and nothing else."""
+        is generated for each, so the rows cover every physics node and nothing else. The SCALE
+        fixture's three nodes keep theirs under its own `ir/` (issue #705 PR-3)."""
         physics = {e["spec_id"] for e in self._entries()
                    if e.get("spec_kind") in ("problem", "component")}
         self.assertEqual({p.stem for p in _PR3_EVIDENCE.glob("*.yaml")}, physics)
+        scale = {e["spec_id"] for e in self._entries(SCALE_FIXTURE_ROOT)
+                 if e.get("spec_kind") in ("problem", "component")}
+        self.assertEqual({p.stem for p in _SCALE_EVIDENCE.glob("*.yaml")}, scale)
+        self.assertFalse(physics & scale)
+        physics |= scale
         # each row validates its own node's IR, not the last one a loop variable held: run
         # every row with the validation recorded instead of performed
         read: dict[str, str] = {}
@@ -465,8 +475,11 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
         from tools.validate_pipeline_semantics import validate_compile_ir_dir
         with tempfile.TemporaryDirectory() as tmp:
-            text = (_PR3_EVIDENCE / f"{spec_id}.yaml").read_text(encoding="utf-8")
-            ir = load_yaml_fixture(_PR3_EVIDENCE / f"{spec_id}.yaml")
+            evidence, root = ((_PR3_EVIDENCE, SAMPLE_ROOT)
+                              if (_PR3_EVIDENCE / f"{spec_id}.yaml").exists()
+                              else (_SCALE_EVIDENCE, SCALE_FIXTURE_ROOT))
+            text = (evidence / f"{spec_id}.yaml").read_text(encoding="utf-8")
+            ir = load_yaml_fixture(evidence / f"{spec_id}.yaml")
             ir_dir = Path(tmp)
             (ir_dir / "spec.ir.yaml").write_text(text, encoding="utf-8")
             key = ir["meta"]["node_key"]
@@ -479,7 +492,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
             (ir_dir / "ir_meta.json").write_text(json.dumps({
                 "attempt_count": 1, "verification_status": "pass",
                 "last_fail_reason": None, "debug_mode": False, "context_isolated": True}))
-            self.assertEqual(validate_compile_ir_dir(SAMPLE_ROOT, ir_dir), [])
+            self.assertEqual(validate_compile_ir_dir(root, ir_dir), [])
 
     def test_each_declared_axis_set_distributes_a_pass_case(self) -> None:
         """Issue #610 (B6, §10 approval (a)): for every bench IR whose `distribute:` line
@@ -490,7 +503,6 @@ class SpecCorpusVersionTest(unittest.TestCase):
         bench transcribes it distributes a `pass` case", and skips a node whose line is
         `none`. A lower bound of one, not the census counts, so a case edit does not redden it."""
         from tools.runner_ir import distribute_plan, drive_distribute_axes
-        evidence = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
         launchers = {}
         for path in sorted((SAMPLE_ROOT / "spec/targets").glob("*.yaml")):
             execution = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get(
@@ -500,7 +512,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
                 launchers[path.stem] = (int(grid[0]), int(grid[1]))
         self.assertIn("fortran_cpu_mpi", launchers)
         with_axes = 0
-        for path in sorted(evidence.glob("*.yaml")):
+        for path in sorted([*_PR3_EVIDENCE.glob("*.yaml"), *_SCALE_EVIDENCE.glob("*.yaml")]):
             ir = load_yaml_fixture(path)
             axes = drive_distribute_axes(ir)
             if not axes:
@@ -606,6 +618,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
 
 _PR3_EVIDENCE = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
+_SCALE_EVIDENCE = SCALE_FIXTURE_ROOT / "ir"
 
 _TRANSCRIPTION_ROW = "test_transcription_compile_static_accepts_"
 
@@ -617,7 +630,8 @@ def _transcription_row(spec_id: str):
     return row
 
 
-for _spec_id in sorted(p.stem for p in _PR3_EVIDENCE.glob("*.yaml")):
+for _spec_id in sorted(p.stem for p in [*_PR3_EVIDENCE.glob("*.yaml"),
+                                        *_SCALE_EVIDENCE.glob("*.yaml")]):
     setattr(SpecCorpusVersionTest, f"{_TRANSCRIPTION_ROW}{_spec_id}",
             _transcription_row(_spec_id))
 
