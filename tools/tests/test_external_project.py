@@ -59,9 +59,15 @@ class ChildToolPathTests(unittest.TestCase):
         names = []
         for rel in self._HOSTS:
             tree = ast.parse((FRAMEWORK_ROOT / rel).read_text(encoding="utf-8"))
+            # A `framework_tool` inside `shlex.join(...)` spells a command for a RECORD or a
+            # remedy (the recorded `invocation.command`, the resume command), not a launch.
+            spelled = {id(inner) for call in ast.walk(tree)
+                       if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                       and call.func.attr == "join"
+                       for arg in call.args for inner in ast.walk(arg)}
             for node in ast.walk(tree):
                 if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                        and node.func.id == "framework_tool"):
+                        and node.func.id == "framework_tool" and id(node) not in spelled):
                     self.assertEqual(len(node.args), 1)
                     self.assertIsInstance(node.args[0], ast.Constant)
                     names.append((rel, node.args[0].value))

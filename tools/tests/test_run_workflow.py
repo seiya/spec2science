@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -2135,9 +2136,12 @@ class RunWorkflowTests(unittest.TestCase):
             warned = [e for e in events if e.get("event") == "prior_incomplete_orchestration"]
             self.assertEqual([e["orchestration_id"] for e in warned], ["orch_abandoned"],
                              "only a non-terminal run of THIS spec is resumable")
+            # Anchored on both sides (issue #705): pasted from anywhere, it resumes this Project.
             self.assertEqual(
                 warned[0]["resume_command"],
-                "python3 tools/run_workflow.py --resume --orchestration-id orch_abandoned")
+                shlex.join(["python3", str(FRAMEWORK_ROOT / "tools" / "run_workflow.py"),
+                            "--resume", "--orchestration-id", "orch_abandoned",
+                            "--repo-root", str(repo_root)]))
             self.assertEqual(warned[0]["orchestration_status"], "running")
 
     def test_the_resumable_prior_warning_skips_a_run_of_another_target(self) -> None:
@@ -3268,7 +3272,11 @@ class RunWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(rec["argv"], ["spec/problem/a", "validate"])
         self.assertEqual(rec["generate_executor"], "pure")  # M-F: always the hardcoded provenance
-        self.assertIn("python3 tools/run_workflow.py", rec["command"])
+        # The framework's script by its absolute path (issue #705), so the record reproduces the
+        # run from a Project outside the checkout.
+        self.assertTrue(rec["command"].startswith(
+            shlex.join(["python3", str(FRAMEWORK_ROOT / "tools" / "run_workflow.py")])),
+            rec["command"])
         self.assertEqual(rec["spec_ref"], "spec/problem/a")
         self.assertEqual(rec["until_phase"], "Validate")
         self.assertEqual(rec["agent_model"], "opus")

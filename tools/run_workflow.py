@@ -481,7 +481,11 @@ def _build_invocation_record(
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
     record: dict[str, Any] = {
         "argv": raw_argv,
-        "command": shlex.join(["python3", "tools/run_workflow.py", *raw_argv]),
+        # The framework's script by its absolute path (issue #705): re-run from the Project
+        # root, the working directory the run was started in unless `argv` names
+        # `--repo-root`, this reproduces the run; a relative `tools/run_workflow.py` does not
+        # exist in a Project outside the checkout.
+        "command": shlex.join(["python3", framework_tool("run_workflow.py"), *raw_argv]),
         "spec_ref": spec_ref,
         "until_phase": until_phase,
         "llm": llm,
@@ -995,17 +999,19 @@ def _warn_about_resumable_priors(repo_root: Path, spec_ref: str,
                 "spec_ref": spec_ref,
                 "orchestration_id": entry.name,
                 "orchestration_status": status,
-                "resume_command": _resume_command_for(entry.name),
+                "resume_command": _resume_command_for(entry.name, repo_root),
             },
             stdout_format,
         )
 
 
-def _resume_command_for(orchestration_id: str) -> str:
-    return (
-        "python3 tools/run_workflow.py --resume --orchestration-id "
-        f"{orchestration_id}"
-    )
+def _resume_command_for(orchestration_id: str, repo_root: Path) -> str:
+    """The command an operator pastes to resume `orchestration_id`. Anchored on both sides
+    (issue #705): the framework's script by its absolute path, and the Project by
+    `--repo-root`, so it works from any working directory — a Project outside the checkout
+    holds no `tools/run_workflow.py`, and a relative one would start whatever is there."""
+    return shlex.join(["python3", framework_tool("run_workflow.py"), "--resume",
+                       "--orchestration-id", orchestration_id, "--repo-root", str(repo_root)])
 
 
 def _is_valid_failure_analysis(
@@ -1387,7 +1393,7 @@ def _terminalize_interrupted_orchestration(
                     "event": "driver_interrupted",
                     "orchestration_id": orchestration_id,
                     "reason_code": "driver_interrupted",
-                    "resume_command": _resume_command_for(orchestration_id),
+                    "resume_command": _resume_command_for(orchestration_id, repo_root),
                 },
                 ensure_ascii=False,
             ),

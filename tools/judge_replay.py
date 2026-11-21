@@ -352,7 +352,8 @@ def replay_invocation(source: SourceLaunch, *, llm_config: Any,
     record: dict[str, Any] = {
         "kind": REPLAY_KIND,
         "argv": list(argv),
-        "command": shlex.join(["python3", "tools/judge_replay.py", *argv]),
+        # The framework's script by its absolute path, as `run_workflow.py` records it (#705).
+        "command": shlex.join(["python3", str(REPO_ROOT / "tools" / "judge_replay.py"), *argv]),
         "spec_ref": source.meta.get("spec_ref"),
         "mode": src_inv.get("mode") or "dev",
         "source_orchestration_id": source.orchestration_id,
