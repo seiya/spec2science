@@ -10546,9 +10546,13 @@ class LlmConfigStartupTests(unittest.TestCase):
                  (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
         self.assertIn(f"/{lc.DEFAULT_CONFIG_FILENAME}", lines)
         self.assertNotIn(lc.DEFAULT_CONFIG_FILENAME, lines)
-        # The sample Project's own copy (issue #705 PR-2): a run of a sample node starts in
-        # `sample/` and loads `sample/llm.yaml`.
-        self.assertIn(f"/{SAMPLE_ROOT.name}/{lc.DEFAULT_CONFIG_FILENAME}", lines)
+        # The sample Project's State (issue #705 PR-2): a run of a sample node starts in
+        # `sample/`, loads `sample/llm.yaml` and `sample/sites.yaml`, and records the
+        # framework checkout's `git status` as `repo_revision.dirty`; an untracked copy, or a
+        # suffixed one an operator keeps beside it, would record every run dirty.
+        for name in (lc.DEFAULT_CONFIG_FILENAME, "sites.yaml"):
+            for pattern in (f"/{SAMPLE_ROOT.name}/{name}", f"/{SAMPLE_ROOT.name}/{name}.*"):
+                self.assertIn(pattern, lines)
 
     def test_the_closure_and_entry_gates_are_the_same_predicate(self) -> None:
         """Twin gates: both call sites must reach `_llm_config_resume_rejection`, or a closure
