@@ -1591,6 +1591,19 @@ class OracleExecuteTest(unittest.TestCase):
                          [("default", ["c_alpha"]), ("alt", ["c_beta"])])
         self.assertEqual(check["status"], "agree")
 
+    def test_every_case_of_a_build_with_several_is_compared(self) -> None:
+        """The comparison reads every case of every build (`compared`), not one per build: the
+        default build takes c_alpha and c_delta, and its unreadable capture of the second is
+        `unevaluable`, never `agree`."""
+        cases = ("c_alpha", "c_beta", "c_delta")
+        result, seen = self.execute(ir=_exec_ir(cases), cases=cases,
+                                    oracle_broken=("c_delta",))
+        self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]],
+                         [["c_alpha", "c_delta"], ["c_beta"]])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(oracle.UNEVALUABLE, self.summary(result))
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+
     def test_a_node_whose_every_compared_case_is_a_continuation_is_unevaluable(self) -> None:
         """Nothing is compared, so nothing agrees: the oracle does not run, the comparison
         stops `oracle_unevaluable`, and the remedy removes the declaration and never the

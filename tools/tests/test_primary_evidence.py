@@ -2412,6 +2412,31 @@ class CrossTargetEvaluationTest(unittest.TestCase):
         self.assertEqual((cross["evaluated"], cross["comparands"]), ([], []))
         self.assertEqual(mass["kind"], "pass")
 
+    def test_only_cases_evaluates_those_cases_and_reads_target_cases_as_before(self) -> None:
+        """`only_cases` (issue #709 F-1, the oracle comparison): each predicate is evaluated in
+        the listed cases of its scope alone, so a comparand without a capture of another case
+        is never asked for it; a predicate none of whose scope is listed is absent; and an
+        `at(<case>)` read of an unlisted case still reads this run's capture of it."""
+        (self.runs["mpi"].sdir / "b.json").unlink()
+        at_b = {**CROSS, "expr": "maxabs(at('b').final.h - comparand.final.h) "
+                                 "/ max(maxabs(comparand.final.h), 1e-14)",
+                "value": 1.0e30}
+        only_b = {**CROSS, "per_case": False, "case": "b"}
+        records = pe.evaluate_primary_predicates(
+            _ir([CROSS, at_b, only_b]), self.runs["own"].root,
+            comparands=[_comparand(self.runs["mpi"], "mpi")], output_format="json",
+            cross_target_only=True, only_cases={"a"})
+        self.assertEqual(len(records), 2)
+        for record in records:
+            self.assertEqual(record["kind"], "pass", record)
+            self.assertEqual([e["case"] for e in record["evaluated"]], ["a"])
+            self.assertEqual(record["target_cases"], ["a", "b"])
+        # `at('b')` read this run's b, which differs from the comparand's a.
+        self.assertGreater(records[1]["evaluated"][0]["value"], 0.0)
+        # Without `only_cases` the absent capture of b is structural.
+        [cross] = self._eval([CROSS], ["mpi"])
+        self.assertEqual(cross["kind"], "structural")
+
     def test_a_comparand_read_needs_a_bound_comparand(self) -> None:
         env = pe.load_case_env(self.runs["own"].root, _case("a"), pe.snapshot_schema(_ir(None)),
                                output_format="json")
