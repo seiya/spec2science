@@ -26609,6 +26609,26 @@ class TwoRootWrapperSandboxTests(unittest.TestCase):
             self._render(self.proj, toolchain_ro_roots=[str(alias)])
         self.assertIn(str(self.fw), str(caught.exception))
 
+    def test_a_nested_projects_own_virtualenv_is_bound_back(self) -> None:
+        """The Project nested in the framework checkout (the `sample/` layout): its own
+        virtualenv is judged against the INNERMOST root that holds it, the Project, and bound
+        back after both tmpfs; judged against the framework root it would be refused as a part
+        of the checkout that is not one of its virtualenv directories."""
+        venv = self.nested / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        cmd = self._render(self.nested, toolchain_ro_roots=[str(venv)])
+        bind = cmd.index(str(venv)) - 1
+        self.assertEqual(cmd[bind], "--ro-bind")
+        for root in (self.fw, self.nested):
+            self.assertLess(cmd.index(str(root)), bind)
+
+    def test_an_install_root_that_aliases_the_project_is_refused_with_two_roots(self) -> None:
+        alias = self.home / "proj_alias"
+        alias.symlink_to(self.proj)
+        with self.assertRaises(ValueError) as caught:
+            self._render(self.proj, toolchain_ro_roots=[str(alias)])
+        self.assertIn(str(self.proj), str(caught.exception))
+
     def test_the_hidden_roots_are_one_root_when_the_project_is_the_framework(self) -> None:
         self.assertEqual(ort.sandbox_hidden_roots(self.fw), [str(self.fw)])
         self.assertEqual(sorted(ort.sandbox_hidden_roots(self.proj)),

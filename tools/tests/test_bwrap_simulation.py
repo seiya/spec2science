@@ -410,6 +410,42 @@ class BwrapLineageProfileTests(unittest.TestCase):
                 self.assertIn(str(fw), tmpfs)
                 self.assertIn(str(repo), tmpfs)
 
+    def test_a_project_nested_in_the_framework_keeps_its_scratch_and_hides_the_rest(self) -> None:
+        """Issue #705, the `sample/` layout: the Project is a directory of the framework
+        checkout. Both tmpfs come before the leaf's scratch binds, so the scratch root under the
+        Project (the leaf's `TMPDIR`) stays writable while the framework's `tools/` and the
+        Project's own spec are hidden. Both CLI families."""
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as t:
+                fw = Path(t).resolve() / "fw"
+                repo = fw / "sample"
+                for path in (fw / "tools" / "gate.py", repo / "spec" / "x.yaml"):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("x\n", encoding="utf-8")
+                orch, arid = f"orch_nest_{backend}", f"arid_nest_{backend}"
+                _ensure_orchestration_audit_dirs(repo, orch)
+                _iso, kwargs = _prepared_lineage(self, repo, orch, backend)
+                probe = textwrap.dedent(f"""
+                    import os, pathlib
+                    for tag, p in (("FW_TOOLS", {str(fw / "tools" / "gate.py")!r}),
+                                   ("PROJECT_SPEC", {str(repo / "spec" / "x.yaml")!r})):
+                        print(tag + ":" + ("READABLE" if pathlib.Path(p).exists() else "HIDDEN"),
+                              flush=True)
+                    t = pathlib.Path(os.environ["TMPDIR"]) / "probe.txt"
+                    t.write_text("x")
+                    print("TMPDIR:WRITABLE", flush=True)
+                """)
+                with mock.patch.object(ort, "FRAMEWORK_ROOT", fw):
+                    profile = build_lineage_bwrap_profile(
+                        repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                        backend_command="python3", backend_type=backend, **kwargs)
+                    cmd = render_bwrap_command(profile=profile,
+                                               command_argv=["python3", "-c", probe])
+                out = _bwrap_stdout(cmd)
+                self.assertIn("FW_TOOLS:HIDDEN", out, out)
+                self.assertIn("PROJECT_SPEC:HIDDEN", out, out)
+                self.assertIn("TMPDIR:WRITABLE", out, out)
+
     def test_an_install_root_aliasing_the_framework_checkout_is_refused(self) -> None:
         """Issue #705: the alias refusal runs for the framework root as for the Project root.
         A `$HOME` child symlinked onto the framework checkout would bind it at a path neither

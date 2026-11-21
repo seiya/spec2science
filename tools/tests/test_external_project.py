@@ -69,7 +69,8 @@ class ChildToolPathTests(unittest.TestCase):
 
     def test_each_child_names_a_script_that_exists_under_the_framework_root(self) -> None:
         names = self._framework_tool_names()
-        # The ten child tools of the conductor and `run_workflow.py`, and the `--jobs` child.
+        # Eleven launch sites of five scripts: the conductor's and `run_workflow.py`'s children,
+        # and the `--jobs` child.
         self.assertEqual(len(names), 11, names)
         for rel, name in names:
             with self.subTest(host=rel, tool=name):
