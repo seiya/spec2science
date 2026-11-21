@@ -24,8 +24,7 @@ from tools.spec_input_gates import (
     problem_member_violation,
     spec_id_length_violation,
 )
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 MAX_SPEC_ID_LEN = max_spec_id_len()
 
@@ -378,14 +377,14 @@ class ProblemDependencySurfaceTest(unittest.TestCase):
         for sid in ("shallow_water2d", "advdiff1d_linear", "shallow_water2d_rotating",
                     "shallow_water2d_channel"):
             with self.subTest(sid=sid):
-                ref = resolve_spec_ref_for(_REPO_ROOT, "problem", sid)
+                ref = resolve_spec_ref_for(SAMPLE_ROOT, "problem", sid)
                 self.assertTrue(ref)
-                self.assertIsNone(problem_dependency_surface_violation(_REPO_ROOT, ref))
-        ref = resolve_spec_ref_for(_REPO_ROOT, "problem", "shallow_water2d_channel")
-        self.assertEqual(problem_procedure_names(_REPO_ROOT, ref),
+                self.assertIsNone(problem_dependency_surface_violation(SAMPLE_ROOT, ref))
+        ref = resolve_spec_ref_for(SAMPLE_ROOT, "problem", "shallow_water2d_channel")
+        self.assertEqual(problem_procedure_names(SAMPLE_ROOT, ref),
                          ({"shallow_water2d_channel__step", "shallow_water2d_channel__init"}, ""))
         self._assert_refused(problem_dependency_surface_violation(
-            _REPO_ROOT, "spec/problem/dynamics/shallow_water/does_not_exist"))
+            SAMPLE_ROOT, "spec/problem/dynamics/shallow_water/does_not_exist"))
 
 
 _INIT = _STEP + "      - name: {init}\n        args: []\n"

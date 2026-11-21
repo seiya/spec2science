@@ -25,7 +25,7 @@ from pathlib import Path
 
 import yaml
 
-from tools.tests.target_fixtures import provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools.backends.language.cuda_cpp import header as cpp_header
@@ -62,7 +62,7 @@ def _render(ir: dict, sid: str, target: dict = GPU_TARGET) -> str:
 def _harness_struct() -> dict:
     """The sample harness's §5.1, which its certified IR publishes: the block the renderer pins
     under its names, and `__real_token`, which its own source calls (issue #690)."""
-    spec = (Path(__file__).resolve().parents[2]
+    spec = (SAMPLE_ROOT
             / "spec/infrastructure/infra/harness" / HARNESS / "controlled_spec.md")
     block = re.search(r"### 5\.1.*?```yaml\n(.*?)```", spec.read_text(encoding="utf-8"),
                       re.DOTALL)
@@ -345,7 +345,7 @@ class HarnessPinTest(unittest.TestCase):
             self.source if source is None else source, harness_provides=provides_for(harness))
 
     def test_the_pinned_interface_is_the_controlled_spec_s(self) -> None:
-        spec = Path(__file__).resolve().parents[2] / (
+        spec = SAMPLE_ROOT / (
             "spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md")
         block = re.search(r"### 5\.1.*?```yaml\n(.*?)```", spec.read_text(encoding="utf-8"),
                           re.DOTALL)

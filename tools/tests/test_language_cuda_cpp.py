@@ -32,7 +32,7 @@ from tools.backends.parallel.cuda import directives as cuda_directives
 from tools.backends.parallel.cuda import execution as cuda_execution
 from tools.backends.parallel.cuda import trace as cuda_trace
 from tools.tests import skip_probes
-from tools.tests.target_fixtures import provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVCC = shutil.which("nvcc")
@@ -332,10 +332,10 @@ class CorpusRoundTripTests(unittest.TestCase):
         `signatures`, so a §5.1 in this tree that C++ could not lower would fail every Compile.
         Each renders, reads back to exactly its symbols, and each symbol rendered alone is one
         stanza with the same atoms."""
-        specs = sorted(p for p in (REPO_ROOT / "spec").rglob("controlled_spec.md") if _section51(p))
+        specs = sorted(p for p in (SAMPLE_ROOT / "spec").rglob("controlled_spec.md") if _section51(p))
         self.assertGreaterEqual(len(specs), 13)
         for path in specs:
-            with self.subTest(spec=str(path.relative_to(REPO_ROOT))):
+            with self.subTest(spec=str(path.relative_to(SAMPLE_ROOT))):
                 struct, err = cs.load_structured_signatures(_section51(path))
                 self.assertIsNone(err)
                 ops, types, ifaces, errors = cs.parse_interface_stanzas(cs.render_signatures(struct))
@@ -645,7 +645,7 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
 
     def test_the_rusanov_flux_section_is_pointwise(self) -> None:
         """The node that motivated the binding, read from the tree."""
-        path = (REPO_ROOT / "spec/component/dynamics/shallow_water"
+        path = (SAMPLE_ROOT / "spec/component/dynamics/shallow_water"
                 "/dynamics_shallow_water_flux_2d_rusanov/controlled_spec.md")
         struct, err = cs.load_structured_signatures(_section51(path))
         self.assertIsNone(err)
@@ -3250,7 +3250,7 @@ class RealDriverTests(unittest.TestCase):
         """The host-rendered header is CONTEXT to the lint (a leaf source includes it), so a
         warning in it would be charged to the leaf: every §5.1 in spec/ renders to a header a
         source including it lints clean under the declared rule set."""
-        specs = sorted(p for p in (REPO_ROOT / "spec").rglob("controlled_spec.md") if _section51(p))
+        specs = sorted(p for p in (SAMPLE_ROOT / "spec").rglob("controlled_spec.md") if _section51(p))
         for path in specs:
             with self.subTest(spec=path.parent.name):
                 struct, _err = cs.load_structured_signatures(_section51(path))
@@ -3259,7 +3259,7 @@ class RealDriverTests(unittest.TestCase):
                     (Path(tmp) / cpp_header.basename(spec_id)).write_text(
                         cpp_header.render(
                             spec_id, _public_api(struct),
-                            spec_kind=path.relative_to(REPO_ROOT / "spec").parts[0]))
+                            spec_kind=path.relative_to(SAMPLE_ROOT / "spec").parts[0]))
                     (Path(tmp) / "x.cu").write_text(f'#include "{cpp_header.basename(spec_id)}"\n')
                     proc = subprocess.run(list(nvcc_lint.source_argv(["./x.cu"])), cwd=tmp,
                                           capture_output=True, text=True, check=False)

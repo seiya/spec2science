@@ -33,7 +33,7 @@ from tools.orchestration_runtime import (
     toolchain_version_argv,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
-from tools.tests.target_fixtures import TARGET_ID, profile_with
+from tools.tests.target_fixtures import SAMPLE_ROOT, TARGET_ID, profile_with
 from tools.tests.test_execute_at_site import _real_gate_free_run
 from tools.tests.test_remote_execution import (
     _SBATCH_SHIM,
@@ -730,7 +730,7 @@ class ToolchainVersionArgvTests(unittest.TestCase):
         the remote build job's toolchain probe runs — for every checked-in profile, the one
         whose parallel backend puts a compiler wrapper in the compiler's place included."""
         from tools.target_profile import list_target_ids, load_target_profile
-        repo = Path(__file__).resolve().parents[2]
+        repo = SAMPLE_ROOT
         server = _build_runtime()
         ids = sorted(list_target_ids(repo))
         self.assertIn("fortran_cpu_mpi", ids)

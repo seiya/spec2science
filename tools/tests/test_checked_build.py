@@ -26,13 +26,14 @@ from tools.orchestration_runtime import _target_toolchain_identity
 from tools.target_profile import load_target_profile
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import (
+    SAMPLE_ROOT,
     FORTRAN_CPU,
     TARGET_ID,
     profile_with,
 )
 from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = SAMPLE_ROOT
 PROFILES = {t: load_target_profile(REPO, t) for t in ("fortran_cpu", "fortran_cpu_mpi",
                                                       "cpp_gpu")}
 MPI = PROFILES["fortran_cpu_mpi"]

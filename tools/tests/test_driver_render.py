@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from tools.tests.target_fixtures import provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
 from tools import capture_store
 from tools import primary_evidence as pe
 from tools import runner_ir, verdict_evaluator
@@ -394,7 +394,7 @@ def run_second_pass(run: Run, ir: dict[str, Any]) -> list[str]:
 
 
 def _harness_public_api() -> dict[str, Any]:
-    spec = (ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md").read_text()
+    spec = (SAMPLE_ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md").read_text()
     block = yaml.safe_load(spec.split("### 5.1", 1)[1].split("```yaml", 1)[1].split("```", 1)[0])
     return {"module_parameters": block["module_parameters"],
             "signatures": [{"symbol": t["name"], "signature": t} for t in block["types"]]
@@ -2820,7 +2820,7 @@ SINGLETON = (1, 1)
 
 
 def _mpi_target() -> dict[str, Any]:
-    return load_yaml_fixture(ROOT / "spec/targets/fortran_cpu_mpi.yaml")
+    return load_yaml_fixture(SAMPLE_ROOT / "spec/targets/fortran_cpu_mpi.yaml")
 
 
 def _mpi_flag_sets() -> dict[str, list[str]]:
@@ -3390,7 +3390,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         from tools import workflow_conductor as wc
         from tools.backends.language.fortran import control_file
         from tools.host_execution import launch_shape, serial_execution_env
-        profile = tp.load_target_profile(ROOT, "fortran_cpu_mpi_openmp")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu_mpi_openmp")
         self.assertTrue(profile.thread_count_observable)
         shapes = [s for s in profile.execution_shapes
                   if s.label in ("certified", "threads_3", "grid_3x1")]
@@ -3551,7 +3551,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         `tests.md` line), and the fixture harness publishes what the renderer pins against the
         real `harness_fortran_cpu_mpi@0.4.0` §5.1 (plan B §8 (k))."""
         from tools.validate_pipeline_semantics import _distribute_line_violations
-        spec = (ROOT / "spec/infrastructure/infra/harness/harness_fortran_cpu_mpi/"
+        spec = (SAMPLE_ROOT / "spec/infrastructure/infra/harness/harness_fortran_cpu_mpi/"
                        "controlled_spec.md").read_text()
         block = yaml.safe_load(spec.split("### 5.1", 1)[1].split("```yaml", 1)[1].split("```", 1)[0])
         signatures = [{"symbol": t["name"], "signature": t} for t in block["types"]] + [

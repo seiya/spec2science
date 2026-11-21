@@ -25,8 +25,9 @@ from tools import external_library as xl
 from tools.checked_build import target_compiler
 from tools.execution_sites import SiteLibrary
 from tools.target_profile import load_target_profile
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = SAMPLE_ROOT
 HARNESS = "harness_fortran_cpu_netcdf"
 MODEL = Path(__file__).parent / "data" / "driver_e2e" / f"{HARNESS}_model.f90"
 LIBRARY = "netcdf_fortran"

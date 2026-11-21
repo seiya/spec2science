@@ -28,11 +28,12 @@ from tools import capture_store
 from tools import primary_evidence as pe
 from tools.tests import skip_probes
 from tools.tests.object_cache import compile_cached
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).parent / "data" / "harness_capture_groups"
 MODELS = Path(__file__).parent / "data" / "driver_e2e"
-_HARNESS_DIR = ROOT / "spec" / "infrastructure" / "infra" / "harness"
+_HARNESS_DIR = SAMPLE_ROOT / "spec" / "infrastructure" / "infra" / "harness"
 HARNESSES = ("harness_fortran_cpu", "harness_fortran_cpu_mpi", "harness_cpp_gpu",
              "harness_fortran_cpu_netcdf")
 CASE = "l0_capture_groups_pass"

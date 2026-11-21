@@ -40,9 +40,9 @@ from tools import primary_evidence as pe
 from tools import verdict_evaluator
 from tools.backends import registry
 from tools.backends.linter.fortitude import lint
-from tools.tests.target_fixtures import FORTRAN_CPU
+from tools.tests.target_fixtures import FORTRAN_CPU, SAMPLE_ROOT
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = SAMPLE_ROOT
 EVIDENCE = Path(__file__).parent / "data" / "drive_ir" / "pr3_evidence"
 SPEC_ID = "dense_solve_lu"
 SPEC_REF = f"spec/component/numerics/linear_algebra/{SPEC_ID}"

@@ -24,7 +24,7 @@ from unittest import mock
 
 from tools import external_library as xl
 from tools import oracle
-from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
+from tools.tests.target_fixtures import FORTRAN_CPU, SAMPLE_ROOT, profile_with
 from tools.tests.test_external_library import _Fixture, write_sites
 
 NODE = "component/n@0.1.0"
@@ -410,10 +410,9 @@ class OracleVerdictTest(_OracleFixture):
     def test_an_oracle_at_a_remote_site_is_refused_whatever_it_links(self) -> None:
         """`oracle_at_remote_site` names the oracle's node — the node's own, or a closure
         member's — whether the oracle links a library or none."""
-        repo_root = Path(__file__).resolve().parents[2]
         targets = self.repo / "spec/targets"
         targets.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(repo_root / "spec/targets/fortran_cpu.yaml", targets)
+        shutil.copy2(SAMPLE_ROOT / "spec/targets/fortran_cpu.yaml", targets)
         try:
             (self.repo / "sites.yaml").write_text(textwrap.dedent("""\
                 sites_version: 1
@@ -1733,7 +1732,7 @@ class CorpusOracleTest(unittest.TestCase):
     `constants: alt` cases, every one a `pass` case, and names the library declared for those
     constants (which archive a library id resolves to is the site's)."""
 
-    REPO = Path(__file__).resolve().parents[2]
+    REPO = SAMPLE_ROOT
     _MICROPHYSICS = ("microphysics_saturation_liquid_1d_column",
                      "microphysics_kessler_warm_rain_1d_column")
 

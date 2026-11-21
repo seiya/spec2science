@@ -35,7 +35,7 @@ from tools.backends import registry
 from tools.backends.build_system.make import control_file as make_control_file
 from tools.backends.build_system.make import execute as make_execute
 from tools.execution_sites import SitesConfigError, load_sites
-from tools.tests.target_fixtures import FORTRAN_CPU
+from tools.tests.target_fixtures import FORTRAN_CPU, SAMPLE_ROOT
 
 GFORTRAN = shutil.which("gfortran")
 
@@ -460,10 +460,9 @@ class ResolveTests(_Fixture):
             self.assertIn(str(d), roots)
 
     def test_a_remote_site_is_refused(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
         targets = self.repo / "spec/targets"
         targets.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(repo_root / "spec/targets/fortran_cpu.yaml", targets)
+        shutil.copy2(SAMPLE_ROOT / "spec/targets/fortran_cpu.yaml", targets)
         (self.repo / "sites.yaml").write_text(textwrap.dedent(f"""\
             sites_version: 1
             sites:
@@ -515,7 +514,7 @@ class ResolveTests(_Fixture):
             xl.resolve_closure(self.repo, FORTRAN_CPU, decls)
         self.assertEqual(cm.exception.reason, "library_not_at_site")
         from tools.target_profile import load_target_profile
-        gpu = load_target_profile(Path(__file__).resolve().parents[2], "cpp_gpu")
+        gpu = load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         with self.assertRaises(xl.LibraryUnusable) as cm:
             xl.resolve_closure(self.repo, gpu, decls)
         self.assertEqual(cm.exception.reason, "library_language_mismatch")

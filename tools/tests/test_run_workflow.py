@@ -29,6 +29,7 @@ from tools.framework_root import FRAMEWORK_ROOT
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP_RW
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_DIR = REPO_ROOT / "docs" / "examples"
@@ -69,7 +70,7 @@ _REAL_RESOLVE_RUN_TARGET = tp.resolve_run_target
 
 
 def _checkout_harness_node_key_for_target(repo_root: Path, profile: tp.TargetProfile) -> str:
-    return _REAL_HARNESS_NODE_KEY_FOR_TARGET(REPO_ROOT, profile)
+    return _REAL_HARNESS_NODE_KEY_FOR_TARGET(SAMPLE_ROOT, profile)
 
 
 def _checkout_resolve_run_target(repo_root: Path, requested: str | None, *,
@@ -84,7 +85,7 @@ def _checkout_resolve_run_target(repo_root: Path, requested: str | None, *,
     # two profiles since issue #289 (R4-b PR-5), so the real selection would refuse it as
     # `target_required`, and these tests are about something else. That refusal is exercised
     # under `_real_target_resolution`.
-    return _REAL_RESOLVE_RUN_TARGET(REPO_ROOT, requested if requested is not None else _TARGET_ID,
+    return _REAL_RESOLVE_RUN_TARGET(SAMPLE_ROOT, requested if requested is not None else _TARGET_ID,
                                     until_phase=until_phase)
 
 
@@ -4600,7 +4601,7 @@ class RunWorkflowTests(unittest.TestCase):
         `build`. Before the probe moved after target resolution it re-ran the gate with no node,
         read the harness as a physics node the GPU language cannot serve, and probed nothing."""
         from tools.target_profile import list_target_ids, load_target_profile
-        root = Path(run_workflow.__file__).resolve().parent.parent
+        root = SAMPLE_ROOT
         ids = list_target_ids(root)
         self.assertGreater(len(ids), 1)
         languages = set()
@@ -4893,7 +4894,7 @@ _HARNESS_REF = "spec/infrastructure/harness_fortran_cpu"
 #: The runner harness's catalogued version, which a scratch catalog registers, read from the
 #: checkout's catalog so that a version bump of the sample harness edits no test (issue #690).
 _HARNESS_VERSION = next(
-    entry["spec_version"] for entry in orchestration_runtime._spec_catalog_entries(REPO_ROOT)
+    entry["spec_version"] for entry in orchestration_runtime._spec_catalog_entries(SAMPLE_ROOT)
     if entry.get("spec_kind") == "infrastructure" and entry.get("spec_id") == _HARNESS_ID)
 
 
@@ -4907,7 +4908,7 @@ def _seed_target_profile_into(repo_root: Path, *, target_id: str = "fortran_cpu"
     target path itself. The harness must be in the scratch catalog for the profile to load."""
     import yaml
 
-    doc = yaml.safe_load((REPO_ROOT / "spec" / "targets" / "fortran_cpu.yaml").read_text(
+    doc = yaml.safe_load((SAMPLE_ROOT / "spec" / "targets" / "fortran_cpu.yaml").read_text(
         encoding="utf-8"))
     doc["target_id"] = target_id
     doc["harness"] = {"infrastructure_id": harness_id, "version_constraint": constraint}
@@ -10545,6 +10546,9 @@ class LlmConfigStartupTests(unittest.TestCase):
                  (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
         self.assertIn(f"/{lc.DEFAULT_CONFIG_FILENAME}", lines)
         self.assertNotIn(lc.DEFAULT_CONFIG_FILENAME, lines)
+        # The sample Project's own copy (issue #705 PR-2): a run of a sample node starts in
+        # `sample/` and loads `sample/llm.yaml`.
+        self.assertIn(f"/{SAMPLE_ROOT.name}/{lc.DEFAULT_CONFIG_FILENAME}", lines)
 
     def test_the_closure_and_entry_gates_are_the_same_predicate(self) -> None:
         """Twin gates: both call sites must reach `_llm_config_resume_rejection`, or a closure
@@ -10844,7 +10848,7 @@ class TargetProfileLaunchTests(unittest.TestCase):
             self._seed(repo_root)
             path = _seed_target_profile_into(repo_root, target_id="t_g",
                                              harness_id="harness_a", hardware={"class": "gpu"})
-            gpu = yaml.safe_load(REPO_ROOT.joinpath("spec", "targets", "cpp_gpu.yaml")
+            gpu = yaml.safe_load(SAMPLE_ROOT.joinpath("spec", "targets", "cpp_gpu.yaml")
                                  .read_text(encoding="utf-8"))
             doc = yaml.safe_load(path.read_text(encoding="utf-8"))
             doc["toolchain"], doc["parallel"] = gpu["toolchain"], gpu["parallel"]
@@ -10894,7 +10898,7 @@ class TargetProfileLaunchTests(unittest.TestCase):
             self._seed(repo_root)
             path = _seed_target_profile_into(repo_root, target_id="t_g",
                                              harness_id="harness_a", hardware={"class": "gpu"})
-            gpu = yaml.safe_load(REPO_ROOT.joinpath("spec", "targets", "cpp_gpu.yaml")
+            gpu = yaml.safe_load(SAMPLE_ROOT.joinpath("spec", "targets", "cpp_gpu.yaml")
                                  .read_text(encoding="utf-8"))
             doc = yaml.safe_load(path.read_text(encoding="utf-8"))
             doc["toolchain"], doc["parallel"] = gpu["toolchain"], gpu["parallel"]

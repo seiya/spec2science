@@ -41,14 +41,14 @@ from tools.backends.language.fortran.runner import (
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
+from tools.tests.target_fixtures import SAMPLE_ROOT
 from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir, sampled
 from tools.tests.yaml_fixtures import load_yaml_fixture
 
 HARNESS = "harness_fortran_cpu"
 #: The distributed harness, and the target a physics node is built for over it (issue #610).
 DIST_HARNESS = "harness_fortran_cpu_mpi"
-_MPI_TARGET_DOC = yaml.safe_load((Path(__file__).resolve().parents[2]
-                                  / "spec/targets/fortran_cpu_mpi.yaml").read_text())
+_MPI_TARGET_DOC = yaml.safe_load((SAMPLE_ROOT / "spec/targets/fortran_cpu_mpi.yaml").read_text())
 #: (harness, target document) of each form of the driver: the serial one and the distributed one.
 _FORMS = ((HARNESS, None), (DIST_HARNESS, _MPI_TARGET_DOC))
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -2252,7 +2252,7 @@ class HarnessPinTableTest(unittest.TestCase):
         from tools.backends import registry
         from tools.codegen_bundle import DISTRIBUTED_STATE_TOKEN
         from tools.validate_pipeline_semantics import _section51_fence_body
-        root = Path(__file__).resolve().parents[2]
+        root = SAMPLE_ROOT
         seen = set()
         for target_id in tp.list_target_ids(root):
             profile = tp.load_target_profile(root, target_id)
@@ -2286,7 +2286,7 @@ class HarnessPinTableTest(unittest.TestCase):
         import yaml as _yaml
         from tools import host_render
         from tools.validate_pipeline_semantics import _section51_fence_body
-        root = Path(__file__).resolve().parents[2]
+        root = SAMPLE_ROOT
         for language, sid in (("fortran", "harness_fortran_cpu"), ("cuda_cpp", "harness_cpp_gpu")):
             body, err = _section51_fence_body(
                 root / "spec/infrastructure/infra/harness" / sid / "controlled_spec.md")

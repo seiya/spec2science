@@ -14,13 +14,14 @@ import yaml
 
 from tools import target_profile as tp
 from tools.orchestration_runtime import _load_spec_catalog
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "spec" / "schema" / "targets" / "target_profile.schema.json"
 
 
 def _checkout_doc() -> dict:
-    return yaml.safe_load((REPO_ROOT / tp.TARGETS_DIR / "fortran_cpu.yaml").read_text(
+    return yaml.safe_load((SAMPLE_ROOT / tp.TARGETS_DIR / "fortran_cpu.yaml").read_text(
         encoding="utf-8"))
 
 
@@ -75,25 +76,25 @@ _HARNESS_X = "infrastructure/harness_x@0.7.0"
 
 class CheckedInProfileTests(unittest.TestCase):
     def test_the_checked_in_profile_loads_gates_clean_and_names_the_catalog_harness(self) -> None:
-        self.assertEqual(tp.list_target_ids(REPO_ROOT),
+        self.assertEqual(tp.list_target_ids(SAMPLE_ROOT),
                          ["cpp_gpu", "fortran_cpu", "fortran_cpu_mpi", "fortran_cpu_mpi_openmp",
                           "fortran_cpu_netcdf"])
-        profile = tp.resolve_run_target(REPO_ROOT, "fortran_cpu")
+        profile = tp.resolve_run_target(SAMPLE_ROOT, "fortran_cpu")
         self.assertEqual(profile.target_id, "fortran_cpu")
         self.assertRegex(profile.sha256, r"^sha256:[0-9a-f]{64}$")
-        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
+        harness = tp.harness_node_key_for_target(SAMPLE_ROOT, profile)
         self.assertTrue(harness.startswith("infrastructure/harness_fortran_cpu@"), harness)
         # The harness is an infrastructure node for this target, and the profile passes the
         # launch gate FOR it too.
-        self.assertEqual(tp.target_profile_violations(REPO_ROOT, profile, node_key=harness), [])
-        self.assertEqual(profile.record(REPO_ROOT), {
+        self.assertEqual(tp.target_profile_violations(SAMPLE_ROOT, profile, node_key=harness), [])
+        self.assertEqual(profile.record(SAMPLE_ROOT), {
             "target_id": "fortran_cpu", "sha256": profile.sha256, "harness_node_key": harness})
 
     def test_two_checked_in_profiles_make_the_target_a_required_choice(self) -> None:
         """Issue #289 (R4-b PR-5): with a second profile, a run that names none is refused
         rather than defaulted — `--target` is the operator's choice every time."""
         with self.assertRaises(tp.TargetProfileError) as cm:
-            tp.resolve_run_target(REPO_ROOT, None)
+            tp.resolve_run_target(SAMPLE_ROOT, None)
         self.assertEqual(cm.exception.reason, "target_required")
         self.assertIn("cpp_gpu, fortran_cpu, fortran_cpu_mpi", cm.exception.detail)
 
@@ -111,15 +112,15 @@ class CheckedInProfileTests(unittest.TestCase):
         )
         from tools.host_execution import LOCAL_SITE
 
-        profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         self.assertEqual("all", profile.doc["hardware"]["architecture"])
-        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
+        harness = tp.harness_node_key_for_target(SAMPLE_ROOT, profile)
         self.assertTrue(harness.startswith("infrastructure/harness_cpp_gpu@"), harness)
         for phase in sorted(tp.NON_EXECUTING_PHASES):
             self.assertEqual(tp.target_profile_violations(
-                REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
+                SAMPLE_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
         self.assertEqual(tp.target_profile_violations(
-            REPO_ROOT, profile, node_key=harness, until_phase="validate"), [])
+            SAMPLE_ROOT, profile, node_key=harness, until_phase="validate"), [])
         no_file = SitesConfig(sites={LOCAL_SITE: Site(LOCAL_SITE, LOCAL_DEFAULT_EXECUTES)})
         # Since issue #333 the binary is built at the site that runs it, so the site half is
         # asked of a run that reaches Build as well: with no `sites.yaml`, a run of this target
@@ -136,13 +137,13 @@ class CheckedInProfileTests(unittest.TestCase):
         # runner); until then it was refused at every phase for want of `runner_render`.
         for phase in sorted(tp.NON_EXECUTING_PHASES):
             self.assertEqual(tp.target_profile_violations(
-                REPO_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
+                SAMPLE_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
                 until_phase=phase), [], phase)
 
     def test_the_checked_in_cpu_profile_runs_threads_and_sweeps_them(self) -> None:
         """Issue #512: `fortran_cpu`'s certified run is multi-threaded and its sweep varies the
         count, so a race or a team-size dependence meets the one-thread serial reference."""
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu")
         self.assertGreater(profile.threads_per_rank, 1)
         counts = [s.threads_per_rank for s in profile.sweep_shapes]
         self.assertTrue(counts and all(c > 1 for c in counts), counts)
@@ -156,9 +157,9 @@ class CheckedInProfileTests(unittest.TestCase):
         harness that ignores `SPEC2SCIENCE_CUDA_BLOCK` satisfies the tie. The default is read from
         the harness spec's §3.3, so a change of either side is red here."""
         import re
-        profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         self.assertIsNotNone(profile.block_size)
-        spec = (REPO_ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/"
+        spec = (SAMPLE_ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/"
                 "controlled_spec.md").read_text(encoding="utf-8")
         defaults = re.findall(r"unset or empty the block size is `(\d+)`", spec)
         self.assertEqual(len(defaults), 1, defaults)
@@ -176,7 +177,7 @@ class CheckedInProfileTests(unittest.TestCase):
         from tools.execution_sites import LOCAL_DEFAULT_EXECUTES, Site, SitesConfig, site_violations
         from tools.host_execution import LOCAL_SITE
 
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu_mpi")
         self.assertEqual((profile.hardware_class, profile.parallel_backend, profile.ranks,
                           profile.threads_per_rank), ("cpu", "mpi", 4, 1))
         # Issue #512: its Validate run is on a grid with both dimensions above 1, the only kind
@@ -192,12 +193,12 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertTrue(all(g[0] * g[1] <= profile.ranks for g in grids), grids)
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
-        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
+        harness = tp.harness_node_key_for_target(SAMPLE_ROOT, profile)
         # The version is the catalog's, so a bump of the sample harness edits no test (#690).
         self.assertTrue(harness.startswith("infrastructure/harness_fortran_cpu_mpi@"), harness)
         for phase in sorted(tp.NON_EXECUTING_PHASES) + ["validate"]:
             self.assertEqual(tp.target_profile_violations(
-                REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
+                SAMPLE_ROOT, profile, node_key=harness, until_phase=phase), [], phase)
         no_file = SitesConfig(sites={LOCAL_SITE: Site(LOCAL_SITE, LOCAL_DEFAULT_EXECUTES)})
         self.assertEqual(site_violations(no_file, profile, until_phase="validate"), [])
 
@@ -213,10 +214,10 @@ class CheckedInProfileTests(unittest.TestCase):
             "cpp_gpu": "sha256:746e56a4f5c478771f14cb444ee5d3738219b74d2ad0f8553756fd94e489518f",
             "fortran_cpu": "sha256:826abe218051af61ab1f2541ab7ed40f3d4b227c435489653b9edbd1ae149e55",
         }
-        got = {tid: tp.load_target_profile(REPO_ROOT, tid).sha256 for tid in expected}
+        got = {tid: tp.load_target_profile(SAMPLE_ROOT, tid).sha256 for tid in expected}
         self.assertEqual(got, expected)
         for tid in expected:
-            profile = tp.load_target_profile(REPO_ROOT, tid)
+            profile = tp.load_target_profile(SAMPLE_ROOT, tid)
             self.assertNotIn("ranks", profile.doc["execution"])
             self.assertEqual(profile.ranks, 1)
 
@@ -552,9 +553,9 @@ class OutputFormatTests(unittest.TestCase):
             repo.write("t1", harness__infrastructure_id="harness_sample_cpu")
             self.assertEqual(tp.load_target_profile(repo.root, "t1").harness["infrastructure_id"],
                              "harness_sample_cpu")
-        for target_id in tp.list_target_ids(REPO_ROOT):
+        for target_id in tp.list_target_ids(SAMPLE_ROOT):
             with self.subTest(target=target_id):
-                tp.load_target_profile(REPO_ROOT, target_id)
+                tp.load_target_profile(SAMPLE_ROOT, target_id)
 
     def test_the_launch_gate_refuses_a_format_no_backend_declares(self) -> None:
         # Kills: deleting the launch gate's clause (the run would fail at its first capture
@@ -609,11 +610,11 @@ class OutputFormatTests(unittest.TestCase):
                                        "capture_format_json@1"},
             "fortran_cpu_netcdf": {"sync_single_case@1", "capture_format_netcdf@1"},
         }
-        self.assertEqual(set(tp.list_target_ids(REPO_ROOT)), set(expected))
+        self.assertEqual(set(tp.list_target_ids(SAMPLE_ROOT)), set(expected))
         for tid, tokens in expected.items():
             with self.subTest(target=tid):
                 self.assertEqual(tp.harness_capabilities(
-                    tp.load_target_profile(REPO_ROOT, tid)), frozenset(tokens))
+                    tp.load_target_profile(SAMPLE_ROOT, tid)), frozenset(tokens))
 
 
 class SchemaAgreementTests(unittest.TestCase):
@@ -1120,14 +1121,14 @@ class LauncherTargetAdmissionTests(unittest.TestCase):
         # The operator's own target admits the physics spec the corpus names, in compile and in
         # validate, with the answer its harness gets less what only an infrastructure node is
         # asked (the toolchain's harness half), which may carry this machine's tool reasons.
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
-        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu_mpi")
+        harness = tp.harness_node_key_for_target(SAMPLE_ROOT, profile)
         for phase in ("compile", "validate"):
             for node_key in (None, "problem/shallow_water2d@0.4.7"):
                 with self.subTest(phase=phase, node_key=node_key):
-                    physics = tp.target_profile_violations(REPO_ROOT, profile,
+                    physics = tp.target_profile_violations(SAMPLE_ROOT, profile,
                                                            node_key=node_key, until_phase=phase)
-                    of_harness = tp.target_profile_violations(REPO_ROOT, profile,
+                    of_harness = tp.target_profile_violations(SAMPLE_ROOT, profile,
                                                               node_key=harness, until_phase=phase)
                     self.assertEqual([v for v in physics if not v.startswith("toolchain:")],
                                      [v for v in of_harness if not v.startswith("toolchain:")])
@@ -1138,7 +1139,7 @@ class HarnessEntriesTests(unittest.TestCase):
     R4-a PR-3) — the harness, for every node whose kind is not `infrastructure`."""
 
     def test_a_non_infrastructure_node_gains_the_targets_harness(self) -> None:
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu")
         harness = _checkout_doc()["harness"]
         expected = [("infrastructure", harness["infrastructure_id"],
                      harness["version_constraint"])]
@@ -1147,7 +1148,7 @@ class HarnessEntriesTests(unittest.TestCase):
                 self.assertEqual(tp.target_harness_entries(profile, kind), expected)
 
     def test_an_infrastructure_node_and_a_run_with_no_target_gain_nothing(self) -> None:
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu")
         self.assertEqual(tp.target_harness_entries(profile, "infrastructure"), [])
         self.assertEqual(tp.target_harness_entries(profile, " infrastructure "), [])
         self.assertEqual(tp.target_harness_entries(None, "component"), [])

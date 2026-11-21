@@ -38,7 +38,7 @@ from tools.orchestration_runtime import (
 from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.orchestration_fixtures import netns_socket_dir
-from tools.tests.target_fixtures import TARGET_ID
+from tools.tests.target_fixtures import SAMPLE_ROOT, TARGET_ID
 from tools.tests.target_fixtures import composed_pure_template
 from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
@@ -3370,7 +3370,7 @@ class LanguageFragmentCompositionTests(unittest.TestCase):
         markers were made to carry (the `.f90` runner, `associate`, `!$omp`, `intent(out)` in the
         gate-checked classes) reaches them."""
         from tools import target_profile as tp
-        cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
+        cuda = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         for key in self._KEYS:
             with self.subTest(template=key):
                 composed = composed_pure_template(key, cuda)
@@ -3586,7 +3586,7 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         from types import SimpleNamespace
         from tools.tests.target_fixtures import FORTRAN_CPU
         from tools import target_profile as tp
-        cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
+        cuda = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         for profile in (FORTRAN_CPU, cuda):
             holder = SimpleNamespace(target=profile)
             self.assertEqual(wc.Conductor._leaf_parallel(holder, "generate"),

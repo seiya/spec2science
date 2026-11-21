@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import yaml
 
-from tools.tests.target_fixtures import provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
 import tools.validate_pipeline_semantics as vps
 from tools import capture_store
 from tools.backends import registry as backend_registry
@@ -9711,7 +9711,7 @@ end program shallow_water2d_runner
         xfail or fail test does not. This pins the reader against the 21 physics tests.md under
         that rule, both prose forms; a harness applies none."""
         import glob
-        repo = Path(__file__).resolve().parents[2]
+        repo = SAMPLE_ROOT
         files = sorted(glob.glob(str(repo / "spec/*/*/*/*/tests.md")))
         judged_total = 0
         for f in files:
@@ -10595,7 +10595,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         """`HARNESS_BLOCK_SNAPSHOT_VARIABLE` against the device harness's tests.md: its test's
         predicates read it, and §4 has every case capture the real value, because the gate reads
         it in every snapshot and a placeholder there is a violation."""
-        text = (Path(__file__).resolve().parents[2] / "spec/infrastructure/infra/harness/"
+        text = (SAMPLE_ROOT / "spec/infrastructure/infra/harness/"
                 "harness_cpp_gpu/tests.md").read_text(encoding="utf-8")
         name = vps.HARNESS_BLOCK_SNAPSHOT_VARIABLE
         block = text.split("- `test_id`: `l0_block_size_pass`", 1)[1].split("- `test_id`:", 1)[0]
@@ -10607,7 +10607,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         """`HARNESS_GRID_SNAPSHOT_VARIABLES` against the harness's tests.md: both grid tests'
         predicates read them, and §4 has every case capture the real values, because the gate
         reads them in every snapshot and a placeholder there is a violation."""
-        text = (Path(__file__).resolve().parents[2] / "spec/infrastructure/infra/harness/"
+        text = (SAMPLE_ROOT / "spec/infrastructure/infra/harness/"
                 "harness_fortran_cpu_mpi/tests.md").read_text(encoding="utf-8")
         for test_id in ("l0_process_grid_pass", "l0_partition_tile_pass"):
             block = text.split(f"- `test_id`: `{test_id}`", 1)[1].split("- `test_id`:", 1)[0]
@@ -18233,7 +18233,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     billed run. And it says nothing about the generated SOURCE, which is
     `_validate_generated_signatures`' half."""
 
-    _REPO = Path(__file__).resolve().parents[2]
+    _REPO = SAMPLE_ROOT
     _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
 
     def _pinned_entries(self) -> list[dict]:
@@ -25105,7 +25105,7 @@ def _seed_drive_repo(repo: Path, ir: dict, which: str, *, tests_md: str | None =
     (``catalog``: None — the IR's own kind / spec_id / controlled_spec ref; a list — those
     entries; `_OMIT` — no catalog file), the conductor-authored dependency sidecar and
     `ir_meta.json`. Returns the IR directory, holding ``ir``."""
-    repo_real = Path(__file__).resolve().parents[2]
+    repo_real = SAMPLE_ROOT
     local = _DRIVE_FIXTURES[which][1]
     refs = ir["meta"]["source_refs"]
     for key in ("controlled_spec", "tests", "deps"):
@@ -25171,7 +25171,7 @@ _CORIOLIS_INIT = {
 
 def _coriolis_spec_with_init() -> str:
     """The real coriolis controlled_spec with `_CORIOLIS_INIT` published in §5 and §5.1."""
-    repo_real = Path(__file__).resolve().parents[2]
+    repo_real = SAMPLE_ROOT
     text = (repo_real / _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
             ).read_text(encoding="utf-8")
     text = text.replace(f"The only published `operation_id` is `{_CORIOLIS_ID}__apply`.",
@@ -25186,13 +25186,13 @@ def _coriolis_spec_with_init() -> str:
 
 def _coriolis_tests_md() -> str:
     """The coriolis fixture's real tests.md, the text its stage rows mutate."""
-    return (Path(__file__).resolve().parents[2]
+    return (SAMPLE_ROOT
             / _drive_fixture("coriolis")["meta"]["source_refs"]["tests"]).read_text(encoding="utf-8")
 
 
 def _coriolis_tests_md_with_init() -> str:
     """The real coriolis tests.md whose first test (`_coriolis_with_init`'s) lists `init_ok`."""
-    repo_real = Path(__file__).resolve().parents[2]
+    repo_real = SAMPLE_ROOT
     text = (repo_real / _drive_fixture("coriolis")["meta"]["source_refs"]["tests"]
             ).read_text(encoding="utf-8")
     old = "  - `quantities`: `guard_pass`, `max_abs_s`\n"
@@ -25885,7 +25885,7 @@ class DriveGateStageTests(unittest.TestCase):
                 self.assertEqual(len(self._hits(v, fragment)), count, v)
 
     def test_a_node_without_a_loop_carries_no_history_line(self) -> None:   # (m)
-        repo_real = Path(__file__).resolve().parents[2]
+        repo_real = SAMPLE_ROOT
         cor_tests = (repo_real / _drive_fixture("coriolis")["meta"]["source_refs"]["tests"]
                      ).read_text(encoding="utf-8")
         v = _drive_stage("coriolis", tests_md=cor_tests + "\n- history: every = 1 (history.every)\n")
@@ -26258,7 +26258,7 @@ class DistributeLineGateTests(unittest.TestCase):
 
     @staticmethod
     def _cor_tests(line: str | None = None, extra: str = "") -> str:
-        real = Path(__file__).resolve().parents[2] / _drive_fixture("coriolis")["meta"][
+        real = SAMPLE_ROOT / _drive_fixture("coriolis")["meta"][
             "source_refs"]["tests"]
         text = real.read_text(encoding="utf-8")
         assert text.count(DistributeLineGateTests._COR) == 1
@@ -26321,7 +26321,7 @@ class DistributeLineGateTests(unittest.TestCase):
             self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
         self.assertEqual(seen, ["component", "problem"])
         # the corpus: one line on each of the 21 physics nodes, none on the 4 harnesses
-        repo = Path(__file__).resolve().parents[2]
+        repo = SAMPLE_ROOT
         catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
         catalog = [e for e in catalog if e.get("tests_path")]   # a profile has no tests.md
         counts = {e["spec_kind"]: [] for e in catalog}
@@ -26448,7 +26448,7 @@ class DistributeLineGateTests(unittest.TestCase):
                 self.assertIsNone(why)
                 self.assertEqual(len(parsed), body.count("="))
         # every line of the corpus parses
-        repo = Path(__file__).resolve().parents[2]
+        repo = SAMPLE_ROOT
         catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
         bodies = [m.group(1).replace("`", "").strip()
                   for e in catalog if e.get("spec_kind") in ("component", "problem")
@@ -26485,7 +26485,7 @@ class DistributeLineGateTests(unittest.TestCase):
         dry render of every declared target, gates (b), (n) and (o)): an integer `in` dummy
         added to §5.1 and to the IR, bound to a declared axis, is admitted; bound to an axis
         the line does not declare, gate (n) refuses it."""
-        repo_real = Path(__file__).resolve().parents[2]
+        repo_real = SAMPLE_ROOT
         spec_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
         spec = (repo_real / spec_ref).read_text(encoding="utf-8")
         anchor = ("  - name: ny\n    rank: 0\n    intent: in\n    spec:\n      type: integer\n")

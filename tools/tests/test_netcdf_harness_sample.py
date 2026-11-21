@@ -41,8 +41,9 @@ from tools import external_library as xl
 from tools import target_profile as tp
 from tools.backends.linter.fortitude import lint
 from tools.tests import netcdf_harness as nh
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = SAMPLE_ROOT
 SPEC_REF = f"spec/infrastructure/infra/harness/{nh.HARNESS}"
 DATA = Path(__file__).parent / "data" / "driver_e2e"
 FLAGS = ["-std=f2008", "-O2", "-fopenmp"]

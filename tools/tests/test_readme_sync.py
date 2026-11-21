@@ -9,8 +9,8 @@ source that OWNS it, never against a second literal:
 
 * the substep sequences against `workflow_conductor.SUBSTEPS`,
 * the `LLM`-leaf column against `llm_config.LLM_LEAF_SUBSTEPS`,
-* the `spec` table against `spec/registry/spec_catalog.yaml` AND against the
-  `controlled_spec.md` files on disk (the registry and the tree can disagree; the README is
+* the `spec` table against the sample Project's `spec/registry/spec_catalog.yaml` (under
+  `sample/` since issue #705 PR-2) AND against the `controlled_spec.md` files on disk (the registry and the tree can disagree; the README is
   wrong if it matches only one).
 
 Only these two tables are pinned. (A third, the MCP tool table, went with the MCP layer in
@@ -27,6 +27,8 @@ import unittest
 from pathlib import Path
 
 import yaml
+
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README = REPO_ROOT / "README.md"
@@ -145,7 +147,7 @@ class ReadmeSpecTableTest(unittest.TestCase):
 
     def test_matches_the_registry(self) -> None:
         catalog = yaml.safe_load(
-            (REPO_ROOT / "spec" / "registry" / "spec_catalog.yaml").read_text(encoding="utf-8")
+            (SAMPLE_ROOT / "spec" / "registry" / "spec_catalog.yaml").read_text(encoding="utf-8")
         )
         registered = {
             (str(entry["spec_kind"]), str(entry["spec_id"])) for entry in catalog["specs"]
@@ -158,8 +160,8 @@ class ReadmeSpecTableTest(unittest.TestCase):
     def test_matches_the_tree(self) -> None:
         """Walked, not globbed through the shell: `grep`/`rg` here honours `.gitignore`."""
         on_disk: set[tuple[str, str]] = set()
-        for path in (REPO_ROOT / "spec").rglob("controlled_spec.md"):
-            rel = path.relative_to(REPO_ROOT / "spec").parts
+        for path in (SAMPLE_ROOT / "spec").rglob("controlled_spec.md"):
+            rel = path.relative_to(SAMPLE_ROOT / "spec").parts
             on_disk.add((rel[0], rel[-2]))
         self.assertEqual(
             self._declared(), on_disk,

@@ -176,6 +176,7 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.llm_samples import workshop_yaml as _workshop_yaml
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 # ONE answer to "can bwrap actually run here", shared with test_bwrap_simulation.py:
 # `shutil.which` alone says the binary exists, not that unprivileged user namespaces
@@ -24845,6 +24846,11 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "expected_node_set: the reconstruction reads each profile's deps.yaml",
     }
 
+    def _path(self, rel: str) -> Path:
+        """A catalog-derived surface (`spec/...`) is the sample Project's file; every other
+        surface is a framework file under the checkout."""
+        return (SAMPLE_ROOT if rel.startswith("spec/") else self.REPO_ROOT) / rel
+
     def _surfaces(self) -> list[str]:
         """The repo-relative files that state this rule, derived from the code that decides
         which documents reach a compile leaf — never hand-listed.
@@ -24878,7 +24884,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         # host inlines the file as `controlled_spec_document`. From the catalog, so a `problem`
         # added later is scanned without editing this test.
         catalog = _yaml.safe_load(
-            (self.REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+            (SAMPLE_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
         for entry in catalog.get("specs") or []:
             if isinstance(entry, dict) and entry.get("spec_kind") == "problem":
                 path = str(entry.get("controlled_spec_path") or "")
@@ -24920,7 +24926,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     def _statement_keys(self) -> dict[str, tuple[str, int, str]]:
         out: dict[str, tuple[str, int, str]] = {}
         for rel in self._surfaces():
-            path = self.REPO_ROOT / rel
+            path = self._path(rel)
             if not path.is_file():
                 continue  # the existence row owns this; do not mask it with a crash
             for number, joined in self._statements_in(path.read_text(encoding="utf-8")):
@@ -24935,7 +24941,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         # A surface that vanished (a renamed SKILL, a catalog entry pointing at nothing) must be
         # a FAILURE, not a smaller scan. An emptiness assertion cannot self-test its own surface
         # list, so this is the row that holds the list together.
-        missing = [rel for rel in self._surfaces() if not (self.REPO_ROOT / rel).is_file()]
+        missing = [rel for rel in self._surfaces() if not self._path(rel).is_file()]
         self.assertEqual(
             missing, [],
             "these surfaces are named by the code that decides what a compile leaf reads, but "
@@ -24964,7 +24970,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         # surface leaves the scan.
         self.assertEqual([s for s in surfaces if s.startswith("skills/")], [], surfaces)
         catalog = _yaml.safe_load(
-            (self.REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+            (SAMPLE_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
         expected_problems = sum(
             1 for e in (catalog.get("specs") or [])
             if isinstance(e, dict) and e.get("spec_kind") == "problem")
@@ -26702,7 +26708,7 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
     ALLOWED and not required, paired in both key tables, refused inside a profile, and moving
     no corpus graph."""
 
-    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    _SAMPLE_ROOT = SAMPLE_ROOT
 
     def test_a_problems_entry_parses_to_a_problem_dependency(self) -> None:
         from tools.orchestration_runtime import _parse_dep_entries
@@ -26735,8 +26741,8 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         # Every deps.yaml of the corpus parses well-formed; the two assembled models of the
         # corpus (system tier PR-S2, issue #632 P4) are the only ones with a `problem` entry.
         problems = {}
-        for deps in sorted((self._REPO_ROOT / "spec").rglob("deps.yaml")):
-            with self.subTest(deps=str(deps.relative_to(self._REPO_ROOT))):
+        for deps in sorted((self._SAMPLE_ROOT / "spec").rglob("deps.yaml")):
+            with self.subTest(deps=str(deps.relative_to(self._SAMPLE_ROOT))):
                 import yaml as _yaml
                 entries, ok = _parse_dep_entries(
                     _yaml.safe_load(deps.read_text(encoding="utf-8")))
@@ -26834,9 +26840,9 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         self.assertNotEqual(old_pairs, ort._DEPS_KEY_KIND_FIELDS)
         for sid in ("advdiff1d_linear", "shallow_water2d", "shallow_water2d_channel"):
             with self.subTest(sid=sid):
-                ref = ort.resolve_spec_ref_for(self._REPO_ROOT, "problem", sid)
+                ref = ort.resolve_spec_ref_for(self._SAMPLE_ROOT, "problem", sid)
                 self.assertTrue(ref)
-                version = ort._load_spec_catalog(str(self._REPO_ROOT))[("problem", sid)][0]
+                version = ort._load_spec_catalog(str(self._SAMPLE_ROOT))[("problem", sid)][0]
                 nk = f"problem/{sid}@{version}"
                 results = []
                 for allowed, pairs in ((ort._DEPS_YAML_ALLOWED_KEYS, ort._DEPS_KEY_KIND_FIELDS),
@@ -26844,7 +26850,7 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
                     with mock.patch.object(ort, "_DEPS_YAML_ALLOWED_KEYS", allowed), \
                             mock.patch.object(ort, "_DEPS_KEY_KIND_FIELDS", pairs):
                         graph, err = build_dependency_graph(
-                            self._REPO_ROOT, target_spec_ref=ref, target_node_key=nk,
+                            self._SAMPLE_ROOT, target_spec_ref=ref, target_node_key=nk,
                             include_via=False)
                         self.assertIsNone(err, err)
                         results.append((ort._closure_signature(graph),

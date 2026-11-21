@@ -34,7 +34,7 @@ from unittest import mock
 
 import pytest
 
-from tools.tests.target_fixtures import provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
@@ -7488,7 +7488,7 @@ class NodeAllocationTest(unittest.TestCase):
         failure that says nothing about `resolve_node` (it did, on issue #153 PR-2)."""
         import yaml as _yaml
         doc = _yaml.safe_load(
-            (Path(REPO_ROOT) / "spec" / "registry" / "spec_catalog.yaml").read_text(
+            (SAMPLE_ROOT / "spec" / "registry" / "spec_catalog.yaml").read_text(
                 encoding="utf-8"))
         matches = [e["spec_version"] for e in doc["specs"] if e["spec_id"] == spec_id]
         assert len(matches) == 1, (spec_id, matches)
@@ -7497,7 +7497,7 @@ class NodeAllocationTest(unittest.TestCase):
     def test_resolve_node_from_catalog(self) -> None:
         spec_id = "dynamics_advdiff_flux_1d_upwind_center2"
         node_key, spec_path = wc.resolve_node(
-            REPO_ROOT,
+            SAMPLE_ROOT,
             f"spec/component/dynamics/advection_diffusion/{spec_id}",
         )
         self.assertEqual(node_key, f"component/{spec_id}@{self._catalog_version(spec_id)}")
@@ -7505,7 +7505,7 @@ class NodeAllocationTest(unittest.TestCase):
 
     def test_resolve_node_unknown_raises(self) -> None:
         with self.assertRaises(ValueError):
-            wc.resolve_node(REPO_ROOT, "spec/component/does/not/exist_spec_zzz")
+            wc.resolve_node(SAMPLE_ROOT, "spec/component/does/not/exist_spec_zzz")
 
     def test_resolve_node_rejects_overlong_spec_id(self) -> None:
         # M3d spec-input gate: a spec_id over max_spec_id_len() is rejected before the
@@ -7515,7 +7515,7 @@ class NodeAllocationTest(unittest.TestCase):
         MAX_SPEC_ID_LEN = max_spec_id_len()
         overlong = "component/dynamics/" + "z" * (MAX_SPEC_ID_LEN + 3)
         with self.assertRaises(ValueError) as ctx:
-            wc.resolve_node(REPO_ROOT, "spec/" + overlong)
+            wc.resolve_node(SAMPLE_ROOT, "spec/" + overlong)
         self.assertIn("spec-input rejected", str(ctx.exception))
         self.assertIn(str(MAX_SPEC_ID_LEN + 3), str(ctx.exception))
 
@@ -7830,7 +7830,7 @@ class NodeAllocationTest(unittest.TestCase):
         expected = f"component/{spec_id}@{self._catalog_version(spec_id)}"
         for ref in (base + "/controlled_spec.md", base + "/tests.md",
                     base + "/deps.yaml", base + "/"):
-            node_key, _ = wc.resolve_node(REPO_ROOT, ref)
+            node_key, _ = wc.resolve_node(SAMPLE_ROOT, ref)
             self.assertEqual(node_key, expected, f"failed for {ref}")
 
     def test_prepare_node_allocates_and_reserves(self) -> None:
@@ -16731,14 +16731,14 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU
         fixture_tc = (FORTRAN_CPU.toolchain["build_system"], FORTRAN_CPU.toolchain["language"])
         catalog = _yaml.safe_load(
-            (REPO_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
+            (SAMPLE_ROOT / "spec/registry/spec_catalog.yaml").read_text(encoding="utf-8"))
         entries = [e for e in (catalog.get("specs") or []) if isinstance(e, dict)]
         self.assertTrue(entries, "the spec catalog names no node")
         seen: set[str] = set()
         for entry in entries:
             node_key = (f"{entry.get('spec_kind')}/{entry.get('spec_id')}"
                         f"@{entry.get('spec_version')}")
-            deps_path = REPO_ROOT / str(entry.get("deps_path") or "")
+            deps_path = SAMPLE_ROOT / str(entry.get("deps_path") or "")
             self.assertTrue(deps_path.is_file(), f"{node_key}: {deps_path} is not a file")
             deps = _yaml.safe_load(deps_path.read_text(encoding="utf-8")) or {}
             infra = ((deps.get("dependencies") or {}).get("infrastructure") or [])
@@ -25291,7 +25291,7 @@ class ConductTargetTests(unittest.TestCase):
             from tools import target_profile as tp
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
                    llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), env={},
-                   target_profile=tp.load_target_profile(REPO_ROOT, "fortran_cpu"))
+                   target_profile=tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu"))
             c._seed_repairs_from_revocations = lambda refs, phases: {}  # type: ignore[assignment]
             self.assertEqual(c.conduct(refs, "validate"), "pass")
             self.assertEqual(ran, ["compile", "generate", "build", "validate"])
@@ -25300,7 +25300,7 @@ class ConductTargetTests(unittest.TestCase):
     def test_run_conductor_hands_the_driver_target_to_the_conductor(self) -> None:
         from tools import target_profile as tp
 
-        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        profile = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu")
         seen: list = []
 
         def _conduct(self, refs, until_phase):
@@ -25480,7 +25480,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
         from tools import target_profile as tp
         c = _FakeConductor(repo_root=repo, orchestration_id="o",
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
-                           env={}, target_profile=tp.load_target_profile(REPO_ROOT, target))
+                           env={}, target_profile=tp.load_target_profile(SAMPLE_ROOT, target))
         c.calls = []
         return c
 
@@ -25676,7 +25676,7 @@ class CudaCppLintAttributionTest(unittest.TestCase):
                               host_finding=host_finding, ir=ir)
             c = _FakeConductor(repo_root=repo, orchestration_id="o",
                                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
-                               env={}, target_profile=tp.load_target_profile(REPO_ROOT, "cpp_gpu"))
+                               env={}, target_profile=tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu"))
             with mock.patch.object(wc.Conductor, "_host_rendered_src_names",
                                    return_value=frozenset(host)):
                 return c._attribute_lint_findings(refs, "child-lint", "nvcc", [])

@@ -30,6 +30,7 @@ from unittest import mock
 
 from tools.framework_root import FRAMEWORK_ROOT
 from tools.target_profile import list_target_ids, load_target_profile
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 #: The sample's Project directories (`docs/design/scale_migration.md` §Structural layers):
 #: everything under `spec/` but the framework's schema.
@@ -43,7 +44,7 @@ def make_external_project(dest: Path) -> Path:
     `tools/` package of its own that shadows the framework's if anything imports through the
     Project root."""
     for name in _PROJECT_SPEC_DIRS:
-        shutil.copytree(FRAMEWORK_ROOT / "spec" / name, dest / "spec" / name)
+        shutil.copytree(SAMPLE_ROOT / "spec" / name, dest / "spec" / name)
     (dest / "tools").mkdir(parents=True)
     (dest / "tools" / "__init__.py").write_text(
         "raise ImportError('the Project tools/ package was imported')\n", encoding="utf-8")
@@ -116,13 +117,13 @@ class ExternalProjectTests(unittest.TestCase):
     def test_the_projects_profiles_and_catalog_load(self) -> None:
         from tools import orchestration_runtime as ort
         ids = list_target_ids(self.proj)
-        self.assertEqual(ids, list_target_ids(FRAMEWORK_ROOT))
+        self.assertEqual(ids, list_target_ids(SAMPLE_ROOT))
         for tid in ids:
             with self.subTest(target=tid):
                 self.assertEqual(load_target_profile(self.proj, tid).sha256,
-                                 load_target_profile(FRAMEWORK_ROOT, tid).sha256)
+                                 load_target_profile(SAMPLE_ROOT, tid).sha256)
         self.assertEqual(ort._load_spec_catalog(str(self.proj)),
-                         ort._load_spec_catalog(str(FRAMEWORK_ROOT)))
+                         ort._load_spec_catalog(str(SAMPLE_ROOT)))
 
     def _env(self) -> dict[str, str]:
         # The suite's own environment, PYTHONPATH included: it may carry the site-packages the

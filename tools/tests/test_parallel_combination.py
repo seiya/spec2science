@@ -23,10 +23,10 @@ from tools import orchestration_runtime as ort
 from tools import target_profile as tp
 from tools import validate_pipeline_semantics as vps
 from tools.backends import registry
-from tools.tests.target_fixtures import install_target_profile, profile_with
+from tools.tests.target_fixtures import SAMPLE_ROOT, install_target_profile, profile_with
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MPI = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
+MPI = tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu_mpi")
 #: The checked-in MPI profile with the combination, one thread per rank.
 HYBRID = profile_with(MPI, parallel={"backend": "mpi+openmp"},
                       execution={**MPI.doc["execution"], "threads_per_rank": 1})
@@ -222,10 +222,10 @@ class ProfileCombinationTests(unittest.TestCase):
 
     def test_a_device_member_beside_a_language_the_wrapper_does_not_compile_is_refused(
             self) -> None:
-        gpu = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        gpu = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         combined = profile_with(gpu, parallel={"backend": "mpi+cuda"},
                                 execution={"threads_per_rank": 1})
-        found = [v for v in tp.target_profile_violations(REPO_ROOT, combined,
+        found = [v for v in tp.target_profile_violations(SAMPLE_ROOT, combined,
                                                          until_phase="compile")
                  if "compiler wrapper runs" in v]
         self.assertEqual(len(found), 1, found)
@@ -244,7 +244,7 @@ class TraceAndBlockCombinationTests(unittest.TestCase):
     def test_a_combination_is_traced_only_when_a_member_declares_the_trace(self) -> None:
         from tools import workflow_conductor as wc
 
-        gpu = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        gpu = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         self.assertTrue(wc.Conductor._traces_execution(mock.Mock(target=profile_with(
             gpu, parallel={"backend": "mpi+cuda"}, execution={"threads_per_rank": 1}))))
         self.assertFalse(wc.Conductor._traces_execution(mock.Mock(target=HYBRID)))

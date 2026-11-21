@@ -652,7 +652,9 @@ class ProseCouplingTests(unittest.TestCase):
         "tools/prompt_templates/workshop_generate_verify.txt",
         "tools/prompt_templates/workshop_generate_verify_harness.txt",
         "tools/prompt_templates/workshop_generate_generate_harness.txt",
-        "spec/component/dynamics/shallow_water/"
+        # A sample node's spec, under the sample Project `sample/` (issue #705 PR-2); every path
+        # here is relative to the checkout.
+        "sample/spec/component/dynamics/shallow_water/"
         "dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md",
     )
 

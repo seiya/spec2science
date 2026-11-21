@@ -26,6 +26,7 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.tests import llm_samples
+from tools.tests.target_fixtures import SAMPLE_ROOT
 from tools import leaf_contract, workshop_tree
 from tools.tests.test_leaf_producer import (
     _PureFakeConductor,
@@ -892,7 +893,7 @@ class DriverPromptTests(unittest.TestCase):
     @staticmethod
     def _profile(target_id: str):
         from tools.target_profile import load_target_profile
-        return load_target_profile(Path(wc.__file__).resolve().parents[1], target_id)
+        return load_target_profile(SAMPLE_ROOT, target_id)
 
     def _render(self, step: str, substep: str, shape: str, target_id: str) -> str:
         """Through `build_launch_request` -> `prepare_launch_request_payload` ->

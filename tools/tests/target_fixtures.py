@@ -5,7 +5,7 @@ lives under `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/`, an
 that holds only a path loads the target profile the path names from the repository it is
 given. A fixture repository therefore needs the profile file itself, not just the path segment.
 
-`FORTRAN_CPU` is the checked-in profile, loaded from THIS checkout — a test that needs "the"
+`FORTRAN_CPU` is the checked-in profile, loaded from the sample Project of THIS checkout — a test that needs "the"
 target reads it from here rather than restating a technology name. `SECOND_TARGET` is the
 fixture second target the R4-a plan names (`fortran_cpu_t2`): the same document under another
 id, so anything keyed by the target differs and nothing else does.
@@ -32,10 +32,16 @@ from tools.target_profile import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: The sample Project (issue #705 PR-2): the in-tree `spec` nodes, their targets and their
+#: catalog live under `sample/`, a Project root of its own, and the framework's files stay under
+#: `REPO_ROOT`. A row that reads a sample node, profile or catalog reads it from here; a row that
+#: reads a framework file (`docs/`, `spec/schema/`, `tools/`) keeps `REPO_ROOT`.
+SAMPLE_ROOT = REPO_ROOT / "sample"
+
 #: The `fortran_cpu` profile, loaded the way a run loads it. Named, not discovered: the checkout
 #: declares more than one profile since issue #289 (R4-b PR-5), and every fixture built on this
 #: one is a Fortran/CPU fixture.
-FORTRAN_CPU: TargetProfile = load_target_profile(REPO_ROOT, "fortran_cpu")
+FORTRAN_CPU: TargetProfile = load_target_profile(SAMPLE_ROOT, "fortran_cpu")
 TARGET_ID: str = FORTRAN_CPU.target_id
 
 SECOND_TARGET_ID = "fortran_cpu_t2"
@@ -44,9 +50,9 @@ SECOND_TARGET_ID = "fortran_cpu_t2"
 #: (`target_profile.harness_capabilities`, issue #690): what a run over that harness hands the
 #: renderer seam as `harness_provides`.
 SAMPLE_HARNESS_PROVIDES: dict[str, frozenset[str]] = {
-    harness_node_key_for_target(REPO_ROOT, profile).split("/", 1)[1].split("@", 1)[0]:
+    harness_node_key_for_target(SAMPLE_ROOT, profile).split("/", 1)[1].split("@", 1)[0]:
         harness_capabilities(profile)
-    for profile in (load_target_profile(REPO_ROOT, tid) for tid in list_target_ids(REPO_ROOT))
+    for profile in (load_target_profile(SAMPLE_ROOT, tid) for tid in list_target_ids(SAMPLE_ROOT))
 }
 #: The set of a single-process target's harness (`fortran_cpu`'s).
 SINGLE_PROCESS_PROVIDES: frozenset[str] = harness_capabilities(FORTRAN_CPU)
@@ -99,8 +105,8 @@ def install_target_profile(repo_root: Path | str,
 
     dest = Path(repo_root) / TARGETS_DIR / f"{profile.target_id}{TARGET_PROFILE_SUFFIX}"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    source = REPO_ROOT / TARGETS_DIR / f"{profile.target_id}{TARGET_PROFILE_SUFFIX}"
-    if source.is_file() and load_target_profile(REPO_ROOT, profile.target_id).sha256 == \
+    source = SAMPLE_ROOT / TARGETS_DIR / f"{profile.target_id}{TARGET_PROFILE_SUFFIX}"
+    if source.is_file() and load_target_profile(SAMPLE_ROOT, profile.target_id).sha256 == \
             profile.sha256:
         shutil.copyfile(source, dest)
     else:
