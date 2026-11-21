@@ -227,7 +227,7 @@ class RetiredArtifactNameTest(unittest.TestCase):
             planted: set[str] = set()
             # Spelled out rather than read from the module constants: a family generated from
             # the constant shrinks with it, and dropping a root, a suffix or a name would pass.
-            for top in ("docs", "spec", "tools/prompt_templates"):
+            for top in ("docs", "spec", "sample/spec", "tools/prompt_templates"):
                 for suffix in (".md", ".yaml", ".json", ".txt"):
                     for index, name in enumerate((
                             "dependency.resolved.yaml", "case.resolved.yaml", "/generate/<",
