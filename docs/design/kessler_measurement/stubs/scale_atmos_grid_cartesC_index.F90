@@ -1,3 +1,0 @@
-module scale_atmos_grid_cartesC_index
-  implicit none
-end module scale_atmos_grid_cartesC_index

@@ -46,7 +46,7 @@ import numpy as np
 
 from tools import primary_evidence as pe
 from tools import runner_ir
-from tools.tests.target_fixtures import SAMPLE_ROOT
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT
 from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
@@ -5312,10 +5312,11 @@ def _rus_alone() -> dict:
 
 
 # Review round 2, R2-2 / R2-3: two-operation LIST-form nodes, one schema, partitioned cases —
-# the shapes PR-3 converts. The dummies are the real §5.1 fences, read from the spec.
+# the shapes PR-3 converts. The dummies are the real §5.1 fences, read from the spec (the
+# SCALE fixture since issue #705 PR-3, which moved both nodes to the SCALE Project).
 
 _REPO = SAMPLE_ROOT
-_MICRO = _REPO / "spec" / "component" / "microphysics"
+_MICRO = SCALE_FIXTURE_ROOT / "spec" / "component" / "microphysics"
 
 
 def _fence_procedures(rel: str) -> dict[str, list[dict]]:

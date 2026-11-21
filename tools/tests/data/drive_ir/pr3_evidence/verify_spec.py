@@ -7,10 +7,12 @@ evidence, a hand-written transcription of each `tests.md` and not an output of `
 
   PYTHONPATH=. python3 <this file> <ir.yaml> --model <model.f90> [--dep <dep.f90>]...
       [--library <library_id>[=<dir>]]... [--flag=<flag>]... [--compared-only] [--gate-only] [--keep <dir>]
-      [--mutate 'old=>new']... [--show-values]
+      [--mutate 'old=>new']... [--show-values] [--project <dir>]
 
-1. `validate_compile_ir_dir` with the sample Project as root: Compile.static's gates, incl. the
-   quantities / expected_outcome / history lines against the real tests.md.
+1. `validate_compile_ir_dir` with the sample Project as root (`--project <dir>`: another Project
+   root, e.g. the SCALE Project, whose spec documents, catalog and library declarations the gates
+   and `--library` then read): Compile.static's gates, incl. the quantities / expected_outcome /
+   history lines against the real tests.md.
 2. Render the Fortran driver, compile harness + deps + model + runner with bounds checking, run
    every case, evaluate every predicate, print each test's status against expected_outcome and
    every record that did not hold, cut at 400 characters (`--show-values`: every record, whole).
@@ -171,7 +173,11 @@ def main() -> int:
     ap.add_argument("--keep")
     ap.add_argument("--mutate", action="append", default=[])
     ap.add_argument("--show-values", action="store_true", help="print every record's value")
+    ap.add_argument("--project", help="the Project root the IR's node is in (default: sample/)")
     a = ap.parse_args()
+    if a.project:
+        global PROJECT
+        PROJECT = Path(a.project).resolve()
     ir = yaml.safe_load(Path(a.ir).read_text())
     findings = gate(ir)
     print(f"GATE findings: {len(findings)}")

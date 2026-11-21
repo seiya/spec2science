@@ -19,7 +19,12 @@ from tools.tests.test_driver_render import (_lst_entry, list_record_ir, lst_init
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
 from tools.tests.yaml_fixtures import load_yaml_fixture
-from tools.tests.target_fixtures import SAMPLE_ROOT
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT
+
+#: Every bench IR: the sample's, and the SCALE fixture's three, which left `pr3_evidence/ir/` with
+#: their nodes (issue #705 PR-3) and are the only list-form IRs.
+_BENCH_IRS = sorted([*_BENCH_DIR.glob("*.yaml"), *(SCALE_FIXTURE_ROOT / "ir").glob("*.yaml")],
+                    key=lambda p: p.stem)
 
 
 def _swe2d() -> dict:
@@ -289,7 +294,7 @@ class DriveAgreementTest(unittest.TestCase):
         over its entry parser) and the renderer's (`runner_ir.distribute_layouts`, over the
         render readers) give equal layouts over every bench IR and the two renamed-prototype
         rk4 variants, where a lookup of the recorded dummy's name among the states differs."""
-        irs = {p.stem: load_yaml_fixture(p) for p in sorted(_BENCH_DIR.glob("*.yaml"))}
+        irs = {p.stem: load_yaml_fixture(p) for p in _BENCH_IRS}
         irs.update({f"rk4_{new}": _rk4_renamed(new) for new in ("V", "stage_t")})
         irs.update(self._fixtures())
         with_axes = 0
@@ -470,7 +475,7 @@ class DistributeBlockTests(unittest.TestCase):
             with self.subTest(spec_id=spec_id):
                 ir = _bench_ir(spec_id)
                 self.assertEqual(r.distribute_layouts(ir, _variables(ir)), (want, []))
-        for path in sorted(_BENCH_DIR.glob("*.yaml")):
+        for path in _BENCH_IRS:
             if path.stem not in _LAYOUTS:
                 ir = load_yaml_fixture(path)
                 self.assertEqual(r.drive_distribute_axes(ir), (), path.stem)
@@ -602,7 +607,7 @@ class DistributeBlockTests(unittest.TestCase):
 
     def test_distribute_plan_matches_the_census_table(self) -> None:
         never: dict[str, list[str]] = {}
-        for path in sorted(_BENCH_DIR.glob("*.yaml")):
+        for path in _BENCH_IRS:
             ir = load_yaml_fixture(path)
             passing = {c for t in ir["io_contract"]["tests"]
                        if str(t["expected_outcome"]).strip().lower() == "pass"
@@ -660,7 +665,7 @@ class DistributedDriverPlanTests(unittest.TestCase):
                 r.distribute_grids({"execution": {"ranks": 4, "process_grid": bad}})
 
     def test_the_replication_table_is_distribute_plan_per_grid(self) -> None:
-        for path in sorted(_BENCH_DIR.glob("*.yaml")):
+        for path in _BENCH_IRS:
             ir = load_yaml_fixture(path)
             grids = _GRIDS + ((1, 1),)
             with self.subTest(spec_id=path.stem):

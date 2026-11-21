@@ -24,7 +24,7 @@ from unittest import mock
 
 from tools import external_library as xl
 from tools import oracle
-from tools.tests.target_fixtures import FORTRAN_CPU, SAMPLE_ROOT, profile_with
+from tools.tests.target_fixtures import FORTRAN_CPU, SAMPLE_ROOT, SCALE_FIXTURE_ROOT, profile_with
 from tools.tests.test_external_library import _Fixture, write_sites
 
 NODE = "component/n@0.1.0"
@@ -1730,9 +1730,10 @@ class CorpusOracleTest(unittest.TestCase):
     nodes, whose `tests.md` §2 holds its cases as one YAML list, are checked against it: the
     original holds its constants at compile time, so the `alt` build takes exactly the
     `constants: alt` cases, every one a `pass` case, and names the library declared for those
-    constants (which archive a library id resolves to is the site's)."""
+    constants (which archive a library id resolves to is the site's). The declarations are
+    the SCALE fixture's since issue #705 PR-3: no sample node declares an oracle."""
 
-    REPO = SAMPLE_ROOT
+    REPO = SCALE_FIXTURE_ROOT
     _MICROPHYSICS = ("microphysics_saturation_liquid_1d_column",
                      "microphysics_kessler_warm_rain_1d_column")
 

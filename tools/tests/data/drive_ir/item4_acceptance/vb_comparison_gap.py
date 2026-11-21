@@ -10,7 +10,9 @@ compare` reads.
 builds (README §Operations); `--work` is a scratch directory this script fills (the oracle runs,
 the mutant builds and their runs) and never a directory of the checkout. Needs the certified
 pipelines of billed run R-O (`PIPELINES` below; main `e27b6b1c`), whose `bin_oracle/` binaries
-it runs, and `gfortran` and `make` for the mutants.
+it runs, and `gfortran` and `make` for the mutants. The measurement directory and the two nodes
+are the SCALE Project's since issue #705 PR-3: set `KESSLER_MEASUREMENT=<that Project>/docs/design/
+kessler_measurement`, and read every `docs/design/kessler_measurement/` path here as that copy.
 
 Table 1. For each node, per (compared case, variable): the effective absolute tolerance each
 comparison applies to the captured variable.
@@ -72,6 +74,10 @@ REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 #: The sample Project (issue #705 PR-2): the spec documents and the `workspace/` State.
 PROJECT = REPO / "sample"
+#: Where the two nodes' `spec` files are read (their oracle declarations and `tests.md`): they left
+#: the sample by issue #705 PR-3, and the suite's fixture holds them at the bytes R-O certified.
+#: R-O's State (its pipelines and IRs) stays the sample's, read through `PROJECT`.
+SPEC_ROOT = REPO / "tools" / "tests" / "data" / "scale_project"
 
 from tools import capture_store  # noqa: E402
 from tools import oracle as oracle_mod  # noqa: E402
@@ -82,7 +88,13 @@ from tools.primary_evidence import (  # noqa: E402
 )
 from tools.workflow_conductor import Conductor  # noqa: E402
 
-COMPARE = REPO / "docs" / "design" / "kessler_measurement" / "compare.py"
+#: The measurement directory left for the SCALE Project with its nodes (issue #705 PR-3): name
+#: that Project's copy in `KESSLER_MEASUREMENT` (its `docs/design/kessler_measurement`); the
+#: script stops naming the variable when it is unset.
+if not os.environ.get("KESSLER_MEASUREMENT"):
+    raise SystemExit("set KESSLER_MEASUREMENT to the SCALE Project's "
+                     "docs/design/kessler_measurement (it left this repository, issue #705)")
+COMPARE = Path(os.environ["KESSLER_MEASUREMENT"]) / "compare.py"
 sys.path.insert(0, str(COMPARE.parent))
 import compare as offline  # noqa: E402
 
@@ -158,7 +170,7 @@ def run_cases(binary: Path, ir_spec: Path, cases: list[str], run_dir: Path) -> N
 
 def oracle_captures(node: Node, work: Path) -> Path:
     """The oracle's captures of every compared case, merged as `_compare_with_oracle` does."""
-    oracle = oracle_mod.load(PROJECT, node.spec_ref, "fortran")
+    oracle = oracle_mod.load(SPEC_ROOT, node.spec_ref, "fortran")
     plan = oracle_mod.case_plan(node.ir, oracle)
     root = work / node.name / "oracle"
     if root.exists():
@@ -219,7 +231,7 @@ def offline_tolerance(suite: dict, case: dict, var: str, got: dict, ref: dict) -
 
 
 def table1(node: Node, merged: Path) -> list[dict]:
-    suite = offline.load_suite(PROJECT / node.spec_ref / "tests.md", node.name)
+    suite = offline.load_suite(SPEC_ROOT / node.spec_ref / "tests.md", node.name)
     reads = workflow_reads(node.ir)
     rows = []
     for case in suite["cases"]:

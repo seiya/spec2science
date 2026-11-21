@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import yaml
 
-from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT, provides_for
 import tools.validate_pipeline_semantics as vps
 from tools import capture_store
 from tools.backends import registry as backend_registry
@@ -9709,10 +9709,11 @@ end program shallow_water2d_runner
     def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
         """`docs/TESTS.md` §Cross-target judgment states the rule: a pass test applies it and an
         xfail or fail test does not. This pins the reader against the 21 physics tests.md under
-        that rule, both prose forms; a harness applies none."""
+        that rule, both prose forms; a harness applies none. The list form is the SCALE
+        fixture's alone since issue #705 PR-3, so its three tests.md are read beside the sample's."""
         import glob
-        repo = SAMPLE_ROOT
-        files = sorted(glob.glob(str(repo / "spec/*/*/*/*/tests.md")))
+        files = sorted(glob.glob(str(SAMPLE_ROOT / "spec/*/*/*/*/tests.md"))
+                       + glob.glob(str(SCALE_FIXTURE_ROOT / "spec/*/*/*/*/tests.md")))
         judged_total = 0
         for f in files:
             path = Path(f)
@@ -18233,12 +18234,14 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     billed run. And it says nothing about the generated SOURCE, which is
     `_validate_generated_signatures`' half."""
 
-    _REPO = SAMPLE_ROOT
-    _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
+    #: The sample's catalog and the SCALE fixture's (issue #705 PR-3): each row reads a spec
+    #: under the root whose catalog names it.
+    _ROOTS = (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
 
     def _pinned_entries(self) -> list[dict]:
-        doc = yaml.safe_load(self._CATALOG.read_text(encoding="utf-8"))
-        rows = [e for e in doc["specs"]
+        rows = [{**e, "_root": root} for root in self._ROOTS
+                for e in yaml.safe_load((root / "spec" / "registry" / "spec_catalog.yaml")
+                                        .read_text(encoding="utf-8"))["specs"]
                 if e.get("spec_kind") in vps._EXACT_PUBLISHED_SURFACE_KINDS]
         # Derived from the same constant the gate uses, so adding a kind to the set puts its specs
         # under this check automatically rather than silently leaving them out.
@@ -18247,7 +18250,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
 
     def test_every_pinned_spec_declares_a_section51_matching_its_section5(self) -> None:
         for entry in self._pinned_entries():
-            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            cs = entry["_root"] / Path(entry["deps_path"]).parent / "controlled_spec.md"
             tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
             with self.subTest(spec=tag):
                 ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
@@ -18261,7 +18264,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     def test_the_gate_accepts_the_ir_every_pinned_spec_implies(self) -> None:
         from tools.backends.language.fortran.signatures import load_structured_signatures
         for entry in self._pinned_entries():
-            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            cs = entry["_root"] / Path(entry["deps_path"]).parent / "controlled_spec.md"
             tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
             with self.subTest(spec=tag):
                 body, ferr = vps._section51_fence_body(cs)
@@ -18292,7 +18295,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
                     (ir_dir / "spec.ir.yaml").write_text(
                         yaml.safe_dump(ir), encoding="utf-8")
                     violations: list[str] = []
-                    vps._validate_published_surface(self._REPO, ir_dir, violations)
+                    vps._validate_published_surface(entry["_root"], ir_dir, violations)
                 self.assertEqual(violations, [], f"{tag}: {violations}")
 
     def test_this_check_is_not_vacuous(self) -> None:
@@ -18300,7 +18303,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
         change that made `_parse_canonical_interface_from_controlled_spec` return nothing would
         leave both rows above green over an empty comparison."""
         entry = self._pinned_entries()[0]
-        cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+        cs = entry["_root"] / Path(entry["deps_path"]).parent / "controlled_spec.md"
         ops, _types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
         op_stanzas, _t, _p, err = _parse_canonical_interface_from_controlled_spec(cs)
         self.assertIsNone(err)
@@ -26320,12 +26323,14 @@ class DistributeLineGateTests(unittest.TestCase):
         with unittest.mock.patch.object(vps, "_distribute_line_violations", spy):
             self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
         self.assertEqual(seen, ["component", "problem"])
-        # the corpus: one line on each of the 21 physics nodes, none on the 4 harnesses
-        repo = SAMPLE_ROOT
-        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
-        catalog = [e for e in catalog if e.get("tests_path")]   # a profile has no tests.md
-        counts = {e["spec_kind"]: [] for e in catalog}
-        for entry in catalog:
+        # the corpus: one line on each of the 21 physics nodes (18 in the sample and the 3 of
+        # the SCALE fixture), none on the 4 harnesses
+        catalog = [(repo, e) for repo in (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
+                   for e in yaml.safe_load((repo / "spec/registry/spec_catalog.yaml")
+                                           .read_text())["specs"]
+                   if e.get("tests_path")]   # a profile has no tests.md
+        counts = {e["spec_kind"]: [] for _, e in catalog}
+        for repo, entry in catalog:
             text = (repo / entry["tests_path"]).read_text(encoding="utf-8")
             counts[entry["spec_kind"]].append(sum(
                 1 for ln in text.splitlines() if vps.TEST_DISTRIBUTE_LINE.match(ln.strip())))
@@ -26447,11 +26452,12 @@ class DistributeLineGateTests(unittest.TestCase):
                 parsed, why = vps._parse_distribute_line(body)
                 self.assertIsNone(why)
                 self.assertEqual(len(parsed), body.count("="))
-        # every line of the corpus parses
-        repo = SAMPLE_ROOT
-        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        # every line of the corpus parses (the sample's and the SCALE fixture's)
         bodies = [m.group(1).replace("`", "").strip()
-                  for e in catalog if e.get("spec_kind") in ("component", "problem")
+                  for repo in (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
+                  for e in yaml.safe_load((repo / "spec/registry/spec_catalog.yaml")
+                                          .read_text())["specs"]
+                  if e.get("spec_kind") in ("component", "problem")
                   for ln in (repo / e["tests_path"]).read_text(encoding="utf-8").splitlines()
                   if (m := vps.TEST_DISTRIBUTE_LINE.match(ln.strip()))]
         self.assertEqual(len(bodies), 21)
