@@ -49,10 +49,14 @@ WORKSPACE_ROOT = "workspace/orchestrations"
 
 
 def repo_root(start=None):
-    """Walk up to the checkout root, so an id resolves from any cwd as the sibling does."""
+    """Walk up to the Project root, so an id resolves from any cwd as the sibling does: the
+    nearest ancestor that holds `workspace/orchestrations`, as `analyze_timing.py` beside this
+    script finds it. Not the nearest `.git`: since issue #705 PR-2 the sample's State sits under
+    `sample/`, a Project nested in the framework checkout, and the checkout root holds none of
+    its runs."""
     here = os.path.abspath(start or os.getcwd())
     while True:
-        if os.path.isdir(os.path.join(here, ".git")):
+        if os.path.isdir(os.path.join(here, "workspace", "orchestrations")):
             return here
         parent = os.path.dirname(here)
         if parent == here:

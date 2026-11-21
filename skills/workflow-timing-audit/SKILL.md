@@ -128,6 +128,11 @@ transcript").
 ## Procedure
 
 ### Step 1 — run the analyzer
+The three scripts find the State they read by walking up from the working directory to the nearest
+directory that holds `workspace/orchestrations`: the Project root (`docs/GLOSSARY.md` §14). Start
+them inside the Project whose runs you audit — `sample/` for this repository's sample nodes, where
+the paths below are `../skills/…`. From the framework checkout's root they find none of the
+sample's runs.
 ```bash
 # auto-pick the most recent orch_* directory
 python3 skills/workflow-timing-audit/scripts/analyze_timing.py
@@ -216,7 +221,7 @@ a first launch costs (leaf internals, prompt size). Report the two separately:
 python3 skills/workflow-timing-audit/scripts/attempt_cost_report.py --since <ISO> --until <ISO> [--node <node_key> ...] [--json]
 ```
 
-It reads the in-repo `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` and
+It reads the `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` under the Project root and
 prints, for the rows in the window: the retry share of `output_tokens` / `total_tokens` /
 `cost_usd`, the first-launch median `output_tokens` per `step.substep`, and the retry cost
 attributed to the failure that sent the run back (for example

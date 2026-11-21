@@ -530,6 +530,23 @@ class AttemptCostReportTests(unittest.TestCase):
             report["totals"]["first"], report["totals"]["retry"], "output_tokens"))
         self.assertIn("output_tokens n/a", attempt_cost_report.render(report))
 
+    def test_the_root_is_the_nearest_project_state_not_the_checkout_s_git(self):
+        # Issue #705 PR-2: the sample is a Project nested in the framework checkout, so `.git`
+        # sits above the State. The layout is spelled literally, not from `ORCH_GLOB`. A walk to
+        # the nearest `.git` answers the checkout and the glob then finds none of the sample's
+        # runs, without a message.
+        checkout = self.root / "checkout"
+        (checkout / ".git").mkdir(parents=True)
+        project = checkout / "sample"
+        self._orch("orch_a", [_row("compile", "generate", "2026-09-01T00:01:00Z", out=10)],
+                   workspace="checkout/sample/workspace")
+        deep = project / "spec" / "problem"
+        deep.mkdir(parents=True)
+        self.assertEqual(attempt_cost_report.repo_root(str(deep)), str(project))
+        self.assertEqual(attempt_cost_report.repo_root(str(project)), str(project))
+        rows = attempt_cost_report.load_rows(attempt_cost_report.repo_root(str(deep)))
+        self.assertEqual([k[0] for k in rows], ["orch_a"])
+
 
 if __name__ == "__main__":
     unittest.main()

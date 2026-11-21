@@ -87,10 +87,13 @@ TOKEN_CLASSES = ("input_tokens", "output_tokens", "cache_read_input_tokens",
 
 
 def repo_root(start=None):
-    """Walk up to the checkout root, so the glob resolves from any cwd."""
+    """Walk up to the Project root, so the glob resolves from any cwd: the nearest ancestor that
+    holds `workspace/orchestrations`, as `analyze_timing.py` beside this script finds it. Not
+    the nearest `.git`: since issue #705 PR-2 the sample's State sits under `sample/`, a Project
+    nested in the framework checkout, and the checkout root holds none of its runs."""
     here = os.path.abspath(start or os.getcwd())
     while True:
-        if os.path.isdir(os.path.join(here, ".git")):
+        if os.path.isdir(os.path.join(here, "workspace", "orchestrations")):
             return here
         parent = os.path.dirname(here)
         if parent == here:
