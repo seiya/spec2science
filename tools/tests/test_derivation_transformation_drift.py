@@ -1010,7 +1010,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # pr3_evidence fixtures, `drive_violations` and `evaluate_case_inputs` are equal at main
     # 3a60cdbe and at this change except on the one IR main refused (`dynamics_flux_xyz_3d_cd4`, gate (c)
     # refusals -> 0). So no certified Compile is invalid, and a bump would re-derive every
-    # node's Compile for a rule each satisfies. (Measured by diffing `compile_documents_tuple()`
+    # node's Compile for a rule each satisfies. The edit widens what a valid IR is, which the
+    # module docstring's in-place criterion does not cover; the re-pin without a bump of
+    # compile-docs-38, execute-22 and verdict-20 is the operator's decision (2026-11-21), as
+    # #643 PR-6's widening was. (Measured by diffing `compile_documents_tuple()`
     # against main 3a60cdbe's: the `phase_contract_document` row alone.) The digest
     # `compile-docs-38` shipped with at 3a60cdbe:
     "compile-docs-38@3a60cdbe": "7f8365c96cc429ae5dc78a91e0ebcc210d3a1a95ef4e70a4cef5f47bfd18aa03",
