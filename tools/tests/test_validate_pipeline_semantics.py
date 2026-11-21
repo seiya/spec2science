@@ -18234,12 +18234,14 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     billed run. And it says nothing about the generated SOURCE, which is
     `_validate_generated_signatures`' half."""
 
-    _REPO = SAMPLE_ROOT
-    _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
+    #: The sample's catalog and the SCALE fixture's (issue #705 PR-3): each row reads a spec
+    #: under the root whose catalog names it.
+    _ROOTS = (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
 
     def _pinned_entries(self) -> list[dict]:
-        doc = yaml.safe_load(self._CATALOG.read_text(encoding="utf-8"))
-        rows = [e for e in doc["specs"]
+        rows = [{**e, "_root": root} for root in self._ROOTS
+                for e in yaml.safe_load((root / "spec" / "registry" / "spec_catalog.yaml")
+                                        .read_text(encoding="utf-8"))["specs"]
                 if e.get("spec_kind") in vps._EXACT_PUBLISHED_SURFACE_KINDS]
         # Derived from the same constant the gate uses, so adding a kind to the set puts its specs
         # under this check automatically rather than silently leaving them out.
@@ -18248,7 +18250,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
 
     def test_every_pinned_spec_declares_a_section51_matching_its_section5(self) -> None:
         for entry in self._pinned_entries():
-            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            cs = entry["_root"] / Path(entry["deps_path"]).parent / "controlled_spec.md"
             tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
             with self.subTest(spec=tag):
                 ops, types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
@@ -18262,7 +18264,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     def test_the_gate_accepts_the_ir_every_pinned_spec_implies(self) -> None:
         from tools.backends.language.fortran.signatures import load_structured_signatures
         for entry in self._pinned_entries():
-            cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+            cs = entry["_root"] / Path(entry["deps_path"]).parent / "controlled_spec.md"
             tag = f'{entry["spec_kind"]}/{entry["spec_id"]}@{entry["spec_version"]}'
             with self.subTest(spec=tag):
                 body, ferr = vps._section51_fence_body(cs)
@@ -18293,7 +18295,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
                     (ir_dir / "spec.ir.yaml").write_text(
                         yaml.safe_dump(ir), encoding="utf-8")
                     violations: list[str] = []
-                    vps._validate_published_surface(self._REPO, ir_dir, violations)
+                    vps._validate_published_surface(entry["_root"], ir_dir, violations)
                 self.assertEqual(violations, [], f"{tag}: {violations}")
 
     def test_this_check_is_not_vacuous(self) -> None:
@@ -18301,7 +18303,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
         change that made `_parse_canonical_interface_from_controlled_spec` return nothing would
         leave both rows above green over an empty comparison."""
         entry = self._pinned_entries()[0]
-        cs = self._REPO / Path(entry["deps_path"]).parent / "controlled_spec.md"
+        cs = entry["_root"] / Path(entry["deps_path"]).parent / "controlled_spec.md"
         ops, _types = vps._parse_public_api_from_controlled_spec(cs, entry["spec_id"])
         op_stanzas, _t, _p, err = _parse_canonical_interface_from_controlled_spec(cs)
         self.assertIsNone(err)
