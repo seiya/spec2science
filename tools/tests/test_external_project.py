@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -218,6 +219,37 @@ class OperatorToolRootTests(unittest.TestCase):
                                            load_llm_config(self.proj / "llm.yaml"), {})
         metas = list((self.proj / "workspace" / "orchestrations").glob("*/orchestration_meta.json"))
         self.assertEqual(len(metas), 1, metas)
+
+
+class RecordedCommandTests(unittest.TestCase):
+    """The commands an operator re-runs or pastes name the framework's script by its absolute
+    path (issue #705): a Project outside the checkout holds no `tools/` of the framework."""
+
+    def test_the_driver_interrupted_resume_command_is_anchored(self) -> None:
+        from tools import run_workflow as rw
+        proj = Path("/scratch/proj")
+        out = io.StringIO()
+        with mock.patch.object(rw, "_read_orchestration_meta", return_value={"status": "running"}), \
+                mock.patch.object(rw, "_runtime_command"), contextlib.redirect_stdout(out):
+            rw._terminalize_interrupted_orchestration(proj, {}, "orch_1")
+        event = json.loads(out.getvalue().strip().splitlines()[-1])
+        self.assertEqual(event["event"], "driver_interrupted")
+        self.assertEqual(event["resume_command"], shlex.join([
+            "python3", str(FRAMEWORK_ROOT / "tools" / "run_workflow.py"), "--resume",
+            "--orchestration-id", "orch_1", "--repo-root", str(proj)]))
+
+    def test_the_judge_replay_record_names_the_framework_script(self) -> None:
+        from tools import judge_replay as jr
+        source = types.SimpleNamespace(
+            meta={"spec_ref": _HARNESS}, orchestration_id="orch_src", agent_run_id="arid",
+            request={}, pair=("validate", "judge"))
+        llm = types.SimpleNamespace(path=FRAMEWORK_ROOT / "llm.yaml", sha256="x",
+                                    provenance_map=dict)
+        record = jr.replay_invocation(source, llm_config=llm, argv=["orch_src", "arid"],
+                                      check=True, label=None, mutations={},
+                                      repo_root=Path("/scratch/proj"))
+        self.assertEqual(record["command"], shlex.join([
+            "python3", str(FRAMEWORK_ROOT / "tools" / "judge_replay.py"), "orch_src", "arid"]))
 
 
 if __name__ == "__main__":
