@@ -474,10 +474,11 @@ class SpecCorpusVersionTest(unittest.TestCase):
         import tempfile
 
         from tools.validate_pipeline_semantics import validate_compile_ir_dir
-        with tempfile.TemporaryDirectory() as tmp:
-            evidence, root = ((_PR3_EVIDENCE, SAMPLE_ROOT)
-                              if (_PR3_EVIDENCE / f"{spec_id}.yaml").exists()
-                              else (_SCALE_EVIDENCE, SCALE_FIXTURE_ROOT))
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as proj:
+            if (_PR3_EVIDENCE / f"{spec_id}.yaml").exists():
+                evidence, root = _PR3_EVIDENCE, SAMPLE_ROOT
+            else:
+                evidence, root = _SCALE_EVIDENCE, _scale_project_with_sample_targets(Path(proj))
             text = (evidence / f"{spec_id}.yaml").read_text(encoding="utf-8")
             ir = load_yaml_fixture(evidence / f"{spec_id}.yaml")
             ir_dir = Path(tmp)
@@ -619,6 +620,24 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
 _PR3_EVIDENCE = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
 _SCALE_EVIDENCE = SCALE_FIXTURE_ROOT / "ir"
+
+
+def _scale_project_with_sample_targets(root: Path) -> Path:
+    """A Project at ``root``: the SCALE fixture's nodes and library declarations beside the
+    sample's target profiles and harnesses, with one catalog of both. `Compile.static` renders a
+    runner for every target the root declares (`_compile_render_targets`), and the fixture
+    declares none, so a transcription row run at the fixture root alone renders nothing; at
+    this root it renders for the sample's five targets, as it did while the nodes were the
+    sample's (issue #705 PR-3)."""
+    import shutil
+    shutil.copytree(SCALE_FIXTURE_ROOT / "spec", root / "spec")
+    for sub in ("targets", "infrastructure"):
+        shutil.copytree(SAMPLE_ROOT / "spec" / sub, root / "spec" / sub)
+    catalog = yaml.safe_load((SCALE_FIXTURE_ROOT / "spec/registry/spec_catalog.yaml").read_text())
+    sample = yaml.safe_load((SAMPLE_ROOT / "spec/registry/spec_catalog.yaml").read_text())
+    catalog["specs"] += [e for e in sample["specs"] if e.get("spec_kind") == "infrastructure"]
+    (root / "spec/registry/spec_catalog.yaml").write_text(yaml.safe_dump(catalog))
+    return root
 
 _TRANSCRIPTION_ROW = "test_transcription_compile_static_accepts_"
 
