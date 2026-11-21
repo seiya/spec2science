@@ -173,7 +173,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1909,6 +1909,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                                 output_format: str,
                                 comparands: Sequence[ComparandEvidence] = (),
                                 cross_target_only: bool = False,
+                                only_cases: Collection[str] | None = None,
                                 ) -> list[dict[str, Any]]:
     """Evaluate every `io_contract.predicates[]` entry of ``ir`` against the captures
     under ``run_dir``, read through the store of ``output_format`` — the format of the target
@@ -1945,7 +1946,10 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     The verdict author passes no comparand, so in a `verdict.json` every cross-target record is
     the ``no_comparand`` placeholder (issue #383). ``cross_target_only`` evaluates the
     cross-target predicates alone, every other one skipped and absent from the result: the
-    cross-target agreement (`orchestration_runtime.cross_target_agreement`) asks that way."""
+    cross-target agreement (`orchestration_runtime.cross_target_agreement`) asks that way.
+    ``only_cases`` evaluates each predicate in those cases of its scope alone, and a predicate
+    none of whose scope is among them is absent from the result; its `target_cases` are read
+    as before. The oracle comparison asks that way (`oracle.compared_cases`, issue #709)."""
     preds = primary_predicates(ir)
     if not preds:
         return []
@@ -1984,6 +1988,10 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         cross = predicate_reads_comparand(expr_refs, bind_refs)
         if cross_target_only and not cross:
             continue
+        if only_cases is not None:
+            contexts = [cid for cid in contexts if cid in only_cases]
+            if not contexts:
+                continue
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),

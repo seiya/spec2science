@@ -43,7 +43,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, ClassVar, NamedTuple
 
@@ -12924,7 +12924,8 @@ class Conductor:
 
     @staticmethod
     def _shape_state_agreement(ir: dict[str, Any], reference_dir: Path, label: str,
-                               shape_dir: Path, output_format: str) -> dict[str, Any]:
+                               shape_dir: Path, output_format: str,
+                               cases: Collection[str] | None = None) -> dict[str, Any]:
         """Whether the state one execution shape captured agrees with the serial reference's,
         under the IR's cross-target predicates (issue #512): the comparison those predicates
         state between two targets' runs of one node holds between two shapes of one run too —
@@ -12936,7 +12937,8 @@ class Conductor:
         `status` is `agree`, `disagree` (a comparison failed: `failures` names the case, the
         quantity and the value), `unevaluable` (an evaluation error, or no capture; `error`) or
         `not_applicable`. `worst` lists the five comparisons nearest their bound, for the
-        record."""
+        record. ``cases`` compares in those cases alone (`evaluate_primary_predicates`'s
+        ``only_cases``); none of them is `unevaluable`, since nothing is compared."""
         from tools.primary_evidence import (
             ComparandEvidence,
             PrimaryEvidenceError,
@@ -12945,6 +12947,8 @@ class Conductor:
         )
         if not cross_target_predicates(ir):
             return {"status": "not_applicable"}
+        if cases is not None and not cases:
+            return {"status": "unevaluable", "error": "no case is compared"}
         try:
             # Both directories are this run's, so both are read in the target's own format.
             comparand = ComparandEvidence(
@@ -12952,7 +12956,7 @@ class Conductor:
                 output_format=output_format)
             records = evaluate_primary_predicates(
                 ir, reference_dir, output_format=output_format, comparands=[comparand],
-                cross_target_only=True)
+                cross_target_only=True, only_cases=cases)
         except PrimaryEvidenceError as exc:
             return {"status": "unevaluable", "error": str(exc)[:400]}
         evaluated = [(r, ev) for r in records for ev in (r.get("evaluated") or [])
@@ -14265,17 +14269,19 @@ class Conductor:
                              library_dirs: Sequence[str], ir_spec: Path, cmd_log: Path,
                              run_raw_dirs: Sequence[tuple[str, ...]]) -> dict[str, Any]:
         """Run the node's oracle (issue #680) on the cases the IR's cross-target predicates
-        compare, and compare its captures with the serial reference's under those predicates;
-        return the `oracle_check.json` record, whose `status` is `agree` or `disagree`.
+        compare that are not continuation cases (`oracle.compared_cases`, issue #709), and
+        compare its captures with the serial reference's under those predicates in those
+        cases; return the `oracle_check.json` record, whose `status` is `agree` or `disagree`.
 
         Each build runs its cases (`oracle.case_plan`) as the serial reference runs: bare, one
         process, one thread, the binary `Build` left at `bin_oracle/<build_id>/<exe>`, with
         the loader path over the closure's library directories and then this build's. Its
         captures are moved into one directory, which `_shape_state_agreement` compares with
-        the reference unchanged and unrestricted: a compared case with no oracle capture (a
-        continuation case, which the oracle runs no second pass for) is `unevaluable`, never
-        `agree`. Raises — a transport `fail_closed`, never a Generate retry, since no
-        re-authored model changes it — on a declaration whose case plan is refused
+        the reference in every compared case: a compared case with no oracle capture is
+        `unevaluable`, never `agree`, and a node whose every case under a cross-target
+        predicate is a continuation case compares nothing and is `unevaluable`. Raises — a
+        transport `fail_closed`, never a Generate retry, since no re-authored model changes
+        it — on a declaration whose case plan is refused
         (`oracle_declaration_invalid`), on an oracle run that does not exit 0
         (`oracle_run_failed`), and on a comparison that is `unevaluable` or `not_applicable`
         (`oracle_unevaluable`: the node declares an oracle and its IR compares nothing). Each
@@ -14284,7 +14290,6 @@ class Conductor:
         from tools import oracle as oracle_mod
         from tools.build_runtime import tool_run_program
         from tools.host_execution import serial_execution_env
-        from tools.primary_evidence import continuation_cases
 
         target = self.target
         declaration = self._rel(oracle_mod.oracle_dir(self.repo_root, refs.spec_path)
@@ -14298,7 +14303,6 @@ class Conductor:
         built = {b.get("id"): b for b in
                  ((_read_json(bin_dir.parent / "binary_meta.json") or {}).get("oracle")
                   or {}).get("builds") or [] if isinstance(b, dict)}
-        conts = continuation_cases(ir)
         store = capture_store.store(target.output_format)
         # Under this launch's own agent-run id, so nothing is there before.
         root = self.repo_root / "workspace" / "tmp" / child_arid / "oracle_run"
@@ -14306,16 +14310,15 @@ class Conductor:
         merged.mkdir(parents=True)
         runs: list[dict[str, Any]] = []
         for build in oracle.builds:
+            # No continuation case is in the plan (`oracle.compared_cases`): the oracle runs
+            # no second pass, and the run's restart test holds each continuation to its base.
             cases = plan[build.build_id]
-            # The oracle runs no second pass: a continuation case is left without a capture,
-            # which the comparison below answers `unevaluable`.
-            first = [c for c in cases if c not in conts]
             record = built.get(build.build_id) or {}
             entry: dict[str, Any] = {"id": build.build_id,
                                      "binary_ref": record.get("binary_ref"),
                                      "cases": cases, "command_id": None}
             runs.append(entry)
-            if not first:
+            if not cases:
                 continue
             run_dir = root / build.build_id
             for raw_dir in run_raw_dirs:
@@ -14326,7 +14329,7 @@ class Conductor:
             binary = (bin_dir.parent / "bin_oracle" / build.build_id / exe).resolve()
             res = tool_run_program({
                 "project_dir": str(run_dir),
-                "command": [str(binary), "--cases", str(ir_spec), *first],
+                "command": [str(binary), "--cases", str(ir_spec), *cases],
                 "env": {**serial_execution_env(target.parallel_backend, target.block_size),
                         **xl.loader_env(target, dirs, os.environ)},
                 "command_log_path": str(cmd_log),
@@ -14343,34 +14346,32 @@ class Conductor:
                 # The run's tail and the case list first, the verdict last: the run's failure
                 # summary keeps the last 400 characters (`_leaf_failure_summary`).
                 raise RuntimeError(
-                    f"\n{tail}\n(oracle build {build.build_id!r} ran cases {first})\n"
+                    f"\n{tail}\n(oracle build {build.build_id!r} ran cases {cases})\n"
                     f"{oracle_mod.RUN_FAILED}: oracle build {build.build_id!r} of "
                     f"{refs.node_key} {outcome}; the run's own tests passed. Fix the adapter or "
                     f"{declaration}, then --resume")
             # `case_plan` gives each case to one build and `merged/` is new, so no file of a
             # moved case is there before it: `move_case` refuses nothing here.
-            for case_id in first:
+            for case_id in cases:
                 store.move_case(capture_store.snapshot_dir(run_dir),
                                 capture_store.snapshot_dir(merged), case_id)
+        compared = [c for cs in plan.values() for c in cs]
         agreement = self._shape_state_agreement(ir, reference_dir, "oracle", merged,
-                                                target.output_format)
+                                                target.output_format, cases=compared)
         status = agreement.get("status")
         if status not in ("agree", "disagree"):
             # The cause and its remedy, by what the comparison could not do; the detail first
             # and the verdict last, as above.
-            skipped = sorted(c for cs in plan.values() for c in cs if c in conts)
             if status != "unevaluable":
                 detail = "its IR holds no cross-target predicate, so nothing is compared"
                 remedy = ("give a node an oracle only where a cross-target judgment compares "
                           "it: fix the spec or remove the declaration")
-            elif skipped:
-                detail = (f"{agreement.get('error')}; the oracle runs no second pass, and the "
-                          f"continuation cases {skipped} have no oracle capture")
-                # A designed stop: the oracle has no second pass (issue #680 lists this stop as
-                # not verified against a node). The remedy does not touch the spec: the
-                # judgment also compares two declared targets.
-                remedy = ("an oracle cannot yet be compared on a continuation case: remove "
-                          "the declaration")
+            elif not compared:
+                detail = ("every case its cross-target predicates compare is a continuation "
+                          "case, which the oracle does not run (it runs no second pass)")
+                # The remedy does not touch the spec's judgment: it also compares two declared
+                # targets.
+                remedy = "an oracle compares no continuation case: remove the declaration"
             else:
                 detail = str(agreement.get("error"))
                 remedy = f"an oracle capture is absent or unreadable: fix the adapter or {declaration}"
