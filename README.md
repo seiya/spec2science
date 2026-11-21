@@ -42,7 +42,7 @@ The deterministic `Compile.static` and `Generate.gate` substeps route a violatio
 
 The host prerequisites — the CLI tools, the Python packages, the target `spec`'s toolchain and `static lint` tool, the sandbox runtime, and the provider credentials — are one list in [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-1, which also carries the SUPPORTED VERSION RANGE of the `static lint` tool (a build outside it is refused at launch, because the rule set the `Generate.gate` applies is measured against that range), pointers to the backend documents that carry the install lines, and the reason code each absence is refused with. Every one of them is refused before the first `LLM` leaf is launched. This paragraph used to be a second list, and it was the longer of the two while the one an operator setting up a machine reads was the shorter (issue #109).
 
-A run reads one Project: the tree of `spec` nodes, target profiles and catalog that `--repo-root` names, default the working directory (`docs/GLOSSARY.md` §14). This repository's own `spec` nodes are the sample Project under `sample/`; the commands below start in it, and name the framework's tools by their path from there. A Project elsewhere has the same shape with the framework checkout's path in place of `..`.
+A run reads one Project: the tree of `spec` nodes, target profiles and catalog that `--repo-root` names, default the working directory (`docs/GLOSSARY.md` §14). This repository's own `spec` nodes are the sample Project under `sample/`; the run commands below start in it, and name the framework's tools by their path from there; the suite (§Tests) runs from the checkout root. A Project elsewhere has the same shape with the framework checkout's path in place of `..`.
 
 Create the leaf-`LLM` configuration once, in the Project root. It selects the provider, model, and reasoning effort of each `LLM` leaf, and is the only thing that says what a leaf launches: no flag overrides its contents, and `--llm-config` only selects which file is read. It is gitignored.
 
@@ -62,7 +62,7 @@ python3 ../tools/run_workflow.py <spec_ref> <until_phase> --target <target_id> [
 python3 ../tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1d_linear validate --with-deps --target fortran_cpu
 ```
 
-`<spec_ref>` is the `spec` directory of the target node, relative to the Project root, and `<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. `python3 tools/run_workflow.py --help` is canonical for the full option set (`docs/CLI_REFERENCE.md` §Information-acquisition policy); the options a first run needs are:
+`<spec_ref>` is the `spec` directory of the target node, relative to the Project root, and `<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. `python3 ../tools/run_workflow.py --help` is canonical for the full option set (`docs/CLI_REFERENCE.md` §Information-acquisition policy); the options a first run needs are:
 
 | option | effect |
 |---|---|
@@ -125,7 +125,7 @@ They are the sample Project's, under `sample/spec/`. `sample/spec/registry/spec_
 
 ## Tests
 
-Full suite (the default):
+From the framework checkout's root. Full suite (the default):
 
 ```bash
 python3 -m pytest tools/tests/ -q
