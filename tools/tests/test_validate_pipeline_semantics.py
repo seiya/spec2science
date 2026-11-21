@@ -1960,7 +1960,7 @@ end program shallow_water2d_runner
         for expr in ("[vector(3)]", "[matrix(3,3)]", "[3, vector(2)]", "vector(3)", "tensor"):
             ok, _, _ = _parse_shape_expr(expr)
             self.assertFalse(ok, f"bundled schema must reject {expr!r} via its own regex")
-        # Repo-local schema with extended dim-token grammar must work.
+        # A schema with an extended dim-token grammar, at the patched location, must work.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             sd = repo / "spec" / "schema" / "ir"

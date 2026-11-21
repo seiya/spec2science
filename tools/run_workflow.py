@@ -481,10 +481,10 @@ def _build_invocation_record(
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
     record: dict[str, Any] = {
         "argv": raw_argv,
-        # The framework's script by its absolute path (issue #705): re-run from the Project
-        # root, the working directory the run was started in unless `argv` names
-        # `--repo-root`, this reproduces the run; a relative `tools/run_workflow.py` does not
-        # exist in a Project outside the checkout.
+        # The framework's script by its absolute path (issue #705): re-run from the working
+        # directory the run was started in (a relative `--repo-root` in `argv` is relative to
+        # it), this reproduces the run; a relative `tools/run_workflow.py` does not exist in a
+        # Project outside the checkout.
         "command": shlex.join(["python3", framework_tool("run_workflow.py"), *raw_argv]),
         "spec_ref": spec_ref,
         "until_phase": until_phase,
