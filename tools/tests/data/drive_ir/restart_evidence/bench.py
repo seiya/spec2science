@@ -138,6 +138,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the `workspace/` State.
+PROJECT = REPO / "sample"
 
 from tools.tests.target_fixtures import provides_for
 from tools import capture_store  # noqa: E402
@@ -171,14 +173,14 @@ PR3 = HERE.parent / "pr3_evidence"
 #: current harness spec stands in for it until one is certified.
 HAND_HARNESS = REPO / "tools/tests/data/driver_e2e/harness_fortran_cpu_model.f90"
 PIPES = {
-    "rot": REPO / "workspace/pipelines/problem__shallow_water2d_rotating__0.1.0/fortran_cpu/"
+    "rot": PROJECT / "workspace/pipelines/problem__shallow_water2d_rotating__0.1.0/fortran_cpu/"
                   "shallow-water2d-rotating_20261112_001",
-    "chan": REPO / "workspace/pipelines/problem__shallow_water2d_channel__0.3.1/fortran_cpu/"
+    "chan": PROJECT / "workspace/pipelines/problem__shallow_water2d_channel__0.3.1/fortran_cpu/"
                    "shallow-water2d-channel_20261106_001",
     # issue #632 P6 V-a: the pipelines the billed run R certified (2026-11-13)
-    "rot_r": REPO / "workspace/pipelines/problem__shallow_water2d_rotating__0.1.1/fortran_cpu/"
+    "rot_r": PROJECT / "workspace/pipelines/problem__shallow_water2d_rotating__0.1.1/fortran_cpu/"
                     "shallow-water2d-rotating_20261113_001",
-    "chan_r": REPO / "workspace/pipelines/problem__shallow_water2d_channel__0.4.1/fortran_cpu/"
+    "chan_r": PROJECT / "workspace/pipelines/problem__shallow_water2d_channel__0.4.1/fortran_cpu/"
                      "shallow-water2d-channel_20261113_001",
 }
 RESTART_TEST = "l3_restart_equivalence"
@@ -202,7 +204,7 @@ def _source(pipe: Path) -> Path:
 
 
 def _verdict_of(dep: dict[str, Any]) -> str:
-    ref = REPO / dep.get("aggregate_verdict_ref", "")
+    ref = PROJECT / dep.get("aggregate_verdict_ref", "")
     return json.loads(ref.read_text()).get("aggregate_verdict") if ref.is_file() else "absent"
 
 
@@ -214,7 +216,7 @@ def closure(pipe: Path, top: bool = True) -> list[tuple[str, Path]]:
     harness: list[tuple[str, Path]] = []
     out: list[tuple[str, Path]] = []
     for dep in lin["resolved_dependencies"]:
-        dpipe = REPO / dep["pipeline_ref"]
+        dpipe = PROJECT / dep["pipeline_ref"]
         verdict = _verdict_of(dep)
         dl = _lineage(dpipe)
         note = "" if dl.get("run_id") == dep.get("run_id") else \
@@ -244,7 +246,7 @@ def _restart_ids(ir: dict[str, Any]) -> list[str]:
 
 def chan_gen_ir() -> dict[str, Any]:
     lin = _lineage(PIPES["chan"])
-    ir = yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
+    ir = yaml.safe_load((PROJECT / lin["ir_ref"] / "spec.ir.yaml").read_text())
     print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml")
     hand = yaml.safe_load((PR3 / "ir" / "shallow_water2d_channel.yaml").read_text())
     base = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == CHAN_BASE)
@@ -268,7 +270,7 @@ def certified_ir(pipe: Path) -> dict[str, Any]:
     and `l3_restart_equivalence` themselves (issue #632 P2's `tests.md`)."""
     lin = _lineage(pipe)
     print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml (in the P4b drive shape)")
-    ir = yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
+    ir = yaml.safe_load((PROJECT / lin["ir_ref"] / "spec.ir.yaml").read_text())
     sid = ir["meta"]["spec_id"]
     return p4b_shape(ir, like=yaml.safe_load((PR3 / "ir" / f"{sid}.yaml").read_text()))
 

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tools import capture_store as cs
 from tools.backends import registry
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 STORE = cs.store("json")
 
@@ -86,7 +87,7 @@ class ControlFileRecipeGoldenTests(unittest.TestCase):
         # each moves a rendered byte of every control file, and with it a Generate output.
         from tools import workflow_conductor as wc
         from tools.target_profile import load_target_profile
-        repo = Path(__file__).resolve().parents[2]
+        repo = SAMPLE_ROOT
         profile = load_target_profile(repo, "fortran_cpu")
         rules = wc.Conductor._control_file_rules(
             {**profile.toolchain, "backend": profile.parallel_backend}, None)
@@ -692,7 +693,7 @@ class ValidatorFormatResolutionTests(unittest.TestCase):
 
         from tools import target_profile as tp
         from tools import validate_pipeline_semantics as vps
-        repo = Path(__file__).resolve().parents[2]
+        repo = SAMPLE_ROOT
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             doc = yaml.safe_load((repo / tp.TARGETS_DIR / "fortran_cpu.yaml").read_text())

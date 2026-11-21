@@ -23,6 +23,8 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
+#: The sample Project (issue #705 PR-2): the `workspace/` State.
+PROJECT = REPO / "sample"
 
 
 def main() -> int:
@@ -34,7 +36,7 @@ def main() -> int:
     ok = True
     for node in stage["nodes"]:
         safe = node["node"].replace("/", "__").replace("@", "__")
-        path = (REPO / "workspace" / "orchestrations" / node["orchestration_id"] / "cross_target"
+        path = (PROJECT / "workspace" / "orchestrations" / node["orchestration_id"] / "cross_target"
                 / f"{safe}.json")
         if not path.exists():
             print(f"FAIL {node['node']}: no record ({path.relative_to(REPO)})")

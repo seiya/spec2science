@@ -46,6 +46,7 @@ import numpy as np
 
 from tools import primary_evidence as pe
 from tools import runner_ir
+from tools.tests.target_fixtures import SAMPLE_ROOT
 from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.verdict_evaluator import PredicateError, evaluate_verdict
 
@@ -103,9 +104,8 @@ def _mixed_ir(primary: list[dict] | None, coordinates: list[dict] | None,
 
 
 #: The Project whose `spec/targets/` holds the profiles a run outside a pipeline tree is read
-#: against (`--repo-root`, issue #705): the sample Project, which is this checkout until it
-#: moves to its own directory.
-_SAMPLE_PROJECT = Path(__file__).resolve().parents[2]
+#: against (`--repo-root`, issue #705): the sample Project.
+_SAMPLE_PROJECT = SAMPLE_ROOT
 
 class _RunDir:
     """A run node directory with the two captures of every case written in the runner's
@@ -5314,7 +5314,7 @@ def _rus_alone() -> dict:
 # Review round 2, R2-2 / R2-3: two-operation LIST-form nodes, one schema, partitioned cases —
 # the shapes PR-3 converts. The dummies are the real §5.1 fences, read from the spec.
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = SAMPLE_ROOT
 _MICRO = _REPO / "spec" / "component" / "microphysics"
 
 

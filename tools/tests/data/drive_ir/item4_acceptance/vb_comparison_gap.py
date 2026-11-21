@@ -70,6 +70,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the spec documents and the `workspace/` State.
+PROJECT = REPO / "sample"
 
 from tools import capture_store  # noqa: E402
 from tools import oracle as oracle_mod  # noqa: E402
@@ -126,18 +128,18 @@ class Node:
     def __init__(self, name: str) -> None:
         self.name = name
         rel, self.stem = PIPELINES[name]
-        self.pipeline = REPO / rel
+        self.pipeline = PROJECT / rel
         lineage = json.loads((self.pipeline / "lineage.json").read_text(encoding="utf-8"))
         self.spec_ref = lineage["spec_ref"]
         self.node_key = lineage["node_key"]
-        self.ir_spec = REPO / lineage["ir_ref"] / "spec.ir.yaml"
+        self.ir_spec = PROJECT / lineage["ir_ref"] / "spec.ir.yaml"
         self.ir = yaml.safe_load(self.ir_spec.read_text(encoding="utf-8"))
         self.src = self.pipeline / "source" / lineage["source_id"] / "src"
         self.bin_dir = self.pipeline / "binary" / lineage["binary_id"]
         safe = self.node_key.replace("/", "__").replace("@", "__")
         self.run_dir = self.pipeline / "runs" / lineage["run_id"] / safe
         meta = json.loads((self.bin_dir / "binary_meta.json").read_text(encoding="utf-8"))
-        self.closure = {b["node_key"].split("/")[1].split("@")[0]: REPO / b["model_source_ref"]
+        self.closure = {b["node_key"].split("/")[1].split("@")[0]: PROJECT / b["model_source_ref"]
                         for b in meta["dependency_check"]["closure_bindings"]}
         self.exe = f"{self.stem}_runner"
         self.cases = [c["case_id"] for c in self.ir["case"]["test_case_set"]]
@@ -156,7 +158,7 @@ def run_cases(binary: Path, ir_spec: Path, cases: list[str], run_dir: Path) -> N
 
 def oracle_captures(node: Node, work: Path) -> Path:
     """The oracle's captures of every compared case, merged as `_compare_with_oracle` does."""
-    oracle = oracle_mod.load(REPO, node.spec_ref, "fortran")
+    oracle = oracle_mod.load(PROJECT, node.spec_ref, "fortran")
     plan = oracle_mod.case_plan(node.ir, oracle)
     root = work / node.name / "oracle"
     if root.exists():
@@ -217,7 +219,7 @@ def offline_tolerance(suite: dict, case: dict, var: str, got: dict, ref: dict) -
 
 
 def table1(node: Node, merged: Path) -> list[dict]:
-    suite = offline.load_suite(REPO / node.spec_ref / "tests.md", node.name)
+    suite = offline.load_suite(PROJECT / node.spec_ref / "tests.md", node.name)
     reads = workflow_reads(node.ir)
     rows = []
     for case in suite["cases"]:

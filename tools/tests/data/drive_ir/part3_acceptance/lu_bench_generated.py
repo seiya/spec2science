@@ -35,6 +35,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the spec documents and library declarations.
+PROJECT = REPO / "sample"
 
 from tools import external_library as xl  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
@@ -139,7 +141,7 @@ def main() -> int:
                            cwd=td, check=True, capture_output=True)
             _record, violation = xl.symbol_check(
                 FORTRAN_CPU, [Path(td) / "model.o"], resolved,
-                xl.node_library_ids(REPO, "spec/component/numerics/linear_algebra/dense_solve_lu"))
+                xl.node_library_ids(PROJECT, "spec/component/numerics/linear_algebra/dense_solve_lu"))
         return violation
 
     base = moved(source)

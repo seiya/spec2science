@@ -30,7 +30,7 @@ rule that keeps it out of everything else.
   backend facts as HISTORY, the same ground on which `docs/design/` is excluded below.
 
 Out of scope, each for a stated reason:
-- `spec/`. A `spec` is required to be language-neutral by `docs/CONTROLLED_SPEC.md`, and that
+- `spec/`, and the sample Project's `sample/spec/` (issue #705 PR-2). A `spec` is required to be language-neutral by `docs/CONTROLLED_SPEC.md`, and that
   requirement — not this rule — is what governs it. The requirement is not fully met today: the
   `harness_fortran_cpu` `controlled_spec` names Fortran spellings in the prose around its §5.1
   block. Closing that is a `docs/CONTROLLED_SPEC.md` matter, so `spec/` stays out of this rule's

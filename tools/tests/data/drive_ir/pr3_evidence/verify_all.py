@@ -5,10 +5,12 @@ certifies it, so `latest` answers None for the flux and `deps_of` asserts for `a
 run `verify_spec.py <ir> --gate-only` for those two until then."""
 import glob,os,subprocess,sys,yaml,concurrent.futures as cf
 S=os.path.dirname(os.path.abspath(__file__))
+#: The sample Project (issue #705 PR-2): the catalog and the `workspace/` State, from the repository root.
+PROJECT='sample'
 def latest(kind,sid):
-    cat=yaml.safe_load(open('spec/registry/spec_catalog.yaml'))['specs']
+    cat=yaml.safe_load(open(f'{PROJECT}/spec/registry/spec_catalog.yaml'))['specs']
     v=next(e['spec_version'] for e in cat if e['spec_id']==sid)
-    g=sorted(glob.glob(f'workspace/pipelines/{kind}__{sid}__{v}/fortran_cpu/*/source/src_*/src/{sid}_model.f90'))
+    g=sorted(glob.glob(f'{PROJECT}/workspace/pipelines/{kind}__{sid}__{v}/fortran_cpu/*/source/src_*/src/{sid}_model.f90'))
     return g[-1] if g else None
 SWE=[f'tools/tests/data/driver_e2e/{d}_model.f90' for d in('dynamics_shallow_water_boundary_2d_periodic_copy','dynamics_shallow_water_flux_2d_rusanov_p0','dynamics_shallow_water_time_update_2d_ssprk2')]
 SP={'shallow_water2d':('tools/tests/data/driver_e2e/shallow_water2d_model.f90',SWE),

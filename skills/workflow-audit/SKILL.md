@@ -17,13 +17,13 @@ Enumerate, for one `orchestration`, the following five findings from the records
 The audit reads in-repo records only. The one read outside the checkout is the leaf transcript tail that finding 5 correlates, which `tools/audit_orchestration.py` performs itself (`## Transcripts`).
 
 ## Scope
-- Run from an operator terminal at the checkout root. The audit is not part of a workflow run and is never launched by one.
+- Run from an operator terminal in the Project root whose State holds the orchestration (`docs/GLOSSARY.md` §14): `sample/` for this repository's sample nodes, where the commands below are written as `../tools/…`. The audit is not part of a workflow run and is never launched by one.
 - Read-only. No artifact under `workspace/` is modified.
 - Backend-neutral: every record the audit reads is written by the host, so a `claude_cli`, `codex_cli`, `openai_compatible` or `anthropic_api` leaf is audited by the same command.
 
 ## Canonical sources
 - Record placement and the meaning of each file: `docs/WORKSPACE_LAYOUT.md`.
-- The tool's arguments, output formats and exit codes: `python3 tools/audit_orchestration.py --help` (`docs/CLI_REFERENCE.md` makes `--help` canonical for this tool).
+- The tool's arguments, output formats and exit codes: `python3 ../tools/audit_orchestration.py --help` (`docs/CLI_REFERENCE.md` makes `--help` canonical for this tool).
 - The dangling-launch section and the recovery it leads to: `docs/RUNBOOK.md` §"Incomplete launch recovery" (`{#launch-incomplete-recovery}`). Exit code `2` is defined there and in `--help`; this document does not restate it.
 
 ## Procedure
@@ -39,7 +39,7 @@ Take the instructed `orchestration_id`, or the newest `orch_YYYYMMDDTHHMMSSZ_*` 
 ### Step 2 — Run the tool
 
 ```bash
-python3 tools/audit_orchestration.py --orchestration-id <orchestration_id> --format markdown
+python3 ../tools/audit_orchestration.py --orchestration-id <orchestration_id> --format markdown
 ```
 
 `--format json` returns the same content as one document for a script. Exit code `2` means the report cannot be trusted at face value; read the `## ⚠` sections first and follow `docs/RUNBOOK.md` §"Incomplete launch recovery" for the cause before concluding anything from the other sections.

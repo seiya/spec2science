@@ -39,7 +39,7 @@ from tools.tests.private_root_fixture import (
 )
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
-from tools.tests.target_fixtures import REPO_ROOT as _TARGET_REPO_ROOT
+from tools.tests.target_fixtures import SAMPLE_ROOT as _TARGET_REPO_ROOT
 from tools import target_profile as _tp
 from tools.backends import registry as _backend_registry
 
@@ -3229,7 +3229,7 @@ class CudaCppHarnessTests(unittest.TestCase):
             toolchain={"language": "cuda_cpp", "standard": "c++17", "compiler": "nvcc"},
             hardware={"class": "gpu", "architecture": "sm_90"},
             parallel={"backend": "cuda"}))
-        real = Path(wc.__file__).resolve().parents[1] / _HARNESS_SPEC_PATH / "controlled_spec.md"
+        real = _TARGET_REPO_ROOT / _HARNESS_SPEC_PATH / "controlled_spec.md"
         body = re.search(r"### 5\.1.*?```ya?ml\n(.*?)```", real.read_text(encoding="utf-8"),
                          re.DOTALL).group(1)
         struct, _err = cs.load_structured_signatures(body)

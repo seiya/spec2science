@@ -28,7 +28,7 @@ from the repository root:
       [--cases <id>,...] [--show-values]
   PYTHONPATH=. python3 <this file> --all-mutants [--jobs N] [--json <file>]
 
-1. (`--gate`) `validate_compile_ir_dir` with the repository as root: Compile.static's gates,
+1. (`--gate`) `validate_compile_ir_dir` with the sample Project as root: Compile.static's gates,
    including the `quantities` / `expected_outcome` / `history` / `restart` / `distribute` lines
    against the real `tests.md`, and the member's published set read from its spec file.
 2. The model gates of `Generate.gate` over the composing model (`model_source_gates` with the
@@ -73,6 +73,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the `workspace/` State.
+PROJECT = REPO / "sample"
 
 from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
@@ -104,7 +106,7 @@ THREADS = "4"
 
 #: issue #632 P6 V-a: the composite's pipeline the billed run R certified (2026-11-13); its
 #: lineage resolves the generated member `shallow_water2d_channel@0.4.1` of the same run
-R_PIPE = (REPO / "workspace/pipelines/problem__shallow_water2d_channel_subcycled__0.1.0/"
+R_PIPE = (PROJECT / "workspace/pipelines/problem__shallow_water2d_channel_subcycled__0.1.0/"
           "fortran_cpu/shallow-water2d-channel-subcycled_20261113_001")
 
 
@@ -128,7 +130,7 @@ def sources(closure_of: str = "p4", member: str = "hand") -> list[tuple[str, Pat
 def certified_ir() -> dict[str, Any]:
     lin = json.loads((R_PIPE / "lineage.json").read_text())
     print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml (in the P4b drive shape)", flush=True)
-    return _RST.p4b_shape(yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text()),
+    return _RST.p4b_shape(yaml.safe_load((PROJECT / lin["ir_ref"] / "spec.ir.yaml").read_text()),
                           like=yaml.safe_load(B.TRANSCRIPTION.read_text()))
 
 

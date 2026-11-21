@@ -16,6 +16,7 @@ from unittest import mock
 from tools import execution_sites as es
 from tools import host_execution
 from tools.backends import registry
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = REPO_ROOT / "docs" / "examples" / "sites.example.yaml"
@@ -82,7 +83,7 @@ class LoadTests(unittest.TestCase):
     def test_the_example_loads(self) -> None:
         """`docs/examples/sites.example.yaml` is what an operator copies; it must load against
         this checkout's own targets and registry."""
-        cfg = es.load_sites(REPO_ROOT, path=EXAMPLE)
+        cfg = es.load_sites(SAMPLE_ROOT, path=EXAMPLE)
         self.assertEqual(cfg.path, EXAMPLE)
         self.assertRegex(cfg.sha256, r"^sha256:[0-9a-f]{64}$")
         self.assertIn("local", cfg.sites)

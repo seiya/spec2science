@@ -28,14 +28,14 @@ from tools import primary_evidence as pe
 from tools.backends.language.cuda_cpp import runner as cuda_runner
 from tools.backends.language.cuda_cpp import signatures as cuda_signatures
 from tools.backends.language.fortran import runner as fortran_runner
-from tools.tests.target_fixtures import SAMPLE_HARNESS_PROVIDES
+from tools.tests.target_fixtures import SAMPLE_HARNESS_PROVIDES, SAMPLE_ROOT
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).parent / "data" / "harness_read_case"
 HARNESSES = ("harness_fortran_cpu", "harness_cpp_gpu", "harness_fortran_cpu_mpi")
 NEW_OPERATIONS = ("read_case", "get_real", "get_int", "get_bool",
                   "get_array_r1", "get_array_r2", "get_array_r3", "get_array_r4")
-_HARNESS_DIR = ROOT / "spec" / "infrastructure" / "infra" / "harness"
+_HARNESS_DIR = SAMPLE_ROOT / "spec" / "infrastructure" / "infra" / "harness"
 
 
 def _tests_md(spec_id: str) -> str:

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from tools.tests.target_fixtures import SAMPLE_ROOT
 from tools.tests.yaml_fixtures import load_yaml_fixture
 from tools.validate_pipeline_semantics import (
     TEST_HISTORY_LINE,
@@ -26,7 +27,6 @@ from tools.validate_pipeline_semantics import (
     _parse_test_quantities_from_tests_md,
 )
 
-REPO = Path(__file__).resolve().parents[2]
 _SPEC_VERSION = re.compile(r"^- `spec_version`: `([^`]+)`", re.M)
 _REF_SPEC_VERSION = re.compile(r"^- `spec_ref\.spec_version`: `([^`]+)`", re.M)
 _TEST_PROFILE_VERSION = re.compile(r"^- `test_profile_version`: `([^`]+)`", re.M)
@@ -228,16 +228,16 @@ def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
 
 class SpecCorpusVersionTest(unittest.TestCase):
     def _entries(self) -> list[dict]:
-        doc = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())
+        doc = yaml.safe_load((SAMPLE_ROOT / "spec/registry/spec_catalog.yaml").read_text())
         return doc["specs"]
 
     def test_the_corpus_agrees(self) -> None:
         entries = self._entries()
         # the tests-reference sentence is read for every physics spec (not vacuous)
         cited = [e for e in entries if _TESTS_REFERENCE.search(
-            (REPO / e["controlled_spec_path"]).read_text(encoding="utf-8"))]
+            (SAMPLE_ROOT / e["controlled_spec_path"]).read_text(encoding="utf-8"))]
         self.assertGreaterEqual(len(cited), 15)
-        self.assertEqual(version_disagreements(entries, REPO), [])
+        self.assertEqual(version_disagreements(entries, SAMPLE_ROOT), [])
 
     def test_each_field_disagreement_is_reported(self) -> None:
         """Drive the rule on a synthetic copy where each field in turn disagrees."""
@@ -267,7 +267,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
 
     def test_no_tests_md_names_profile_selection_on_a_node_adopting_no_profile(self) -> None:
-        self.assertEqual(profile_selection_on_non_adopters(self._entries(), REPO), [])
+        self.assertEqual(profile_selection_on_non_adopters(self._entries(), SAMPLE_ROOT), [])
 
     def test_the_profile_selection_rule_is_driven_both_ways(self) -> None:
         """Synthetic: the corpus answer is empty, so drive a refusal and an acceptance."""
@@ -292,9 +292,9 @@ class SpecCorpusVersionTest(unittest.TestCase):
         # the rule reads a perf paragraph in each harness spec (not vacuous)
         read = [e for e in entries if any(
             p.startswith(_SELF_TEST_PARAGRAPH) and _WRITE_PERF in p for p in
-            (REPO / e["controlled_spec_path"]).read_text(encoding="utf-8").split("\n"))]
+            (SAMPLE_ROOT / e["controlled_spec_path"]).read_text(encoding="utf-8").split("\n"))]
         self.assertGreaterEqual(len(read), 3)
-        self.assertEqual(harness_perf_values_unfixed(entries, REPO), [])
+        self.assertEqual(harness_perf_values_unfixed(entries, SAMPLE_ROOT), [])
 
     def test_the_perf_values_rule_is_driven_both_ways(self) -> None:
         """Synthetic: the statements and the citation pass; each missing, misplaced or
@@ -348,7 +348,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
         # a tests.md of every kind that has one: the four harnesses and the 21 physics nodes
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 4)
         self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 25)
-        self.assertEqual(suites_unmigrated(entries, REPO), [])
+        self.assertEqual(suites_unmigrated(entries, SAMPLE_ROOT), [])
 
     def test_each_physics_node_has_a_transcription(self) -> None:
         """Issue #589 PR-3: `data/drive_ir/pr3_evidence/ir/` holds one hand-written IR per physics
@@ -379,7 +379,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("swr_build_ir", evidence / "build_ir.py")
         build_ir = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(build_ir)
-        tests_md = (REPO / "spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md"
+        tests_md = (SAMPLE_ROOT / "spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md"
                     ).read_text(encoding="utf-8").splitlines()
         lines = [ln for ln in build_ir.band_tables(build_ir.load_bands()) if ln]
         self.assertGreater(len(lines), 20)
@@ -413,7 +413,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
         scalar bounds of 5-5's bullets (the pairs, the symmetry residuals, the decay band, the
         extrema) are not compared: nothing checks them against the IR but the bench's run."""
         build_ir = self._subcycled_build_ir()
-        root = REPO / "spec/problem/dynamics/shallow_water"
+        root = SAMPLE_ROOT / "spec/problem/dynamics/shallow_water"
 
         def rows(path: Path) -> dict[str, list[str]]:
             out: dict[str, list[str]] = {}
@@ -479,7 +479,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
             (ir_dir / "ir_meta.json").write_text(json.dumps({
                 "attempt_count": 1, "verification_status": "pass",
                 "last_fail_reason": None, "debug_mode": False, "context_isolated": True}))
-            self.assertEqual(validate_compile_ir_dir(REPO, ir_dir), [])
+            self.assertEqual(validate_compile_ir_dir(SAMPLE_ROOT, ir_dir), [])
 
     def test_each_declared_axis_set_distributes_a_pass_case(self) -> None:
         """Issue #610 (B6, §10 approval (a)): for every bench IR whose `distribute:` line
@@ -492,7 +492,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
         from tools.runner_ir import distribute_plan, drive_distribute_axes
         evidence = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
         launchers = {}
-        for path in sorted((REPO / "spec/targets").glob("*.yaml")):
+        for path in sorted((SAMPLE_ROOT / "spec/targets").glob("*.yaml")):
             execution = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get(
                 "execution") or {}
             if execution.get("ranks"):

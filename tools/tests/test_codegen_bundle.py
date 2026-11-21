@@ -26,7 +26,7 @@ from tools import target_profile as tp
 from tools import workflow_conductor as wc
 from tools.backends import registry as backend_registry
 from tools.tests.llm_samples import sample_config_with as _cfg
-from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
+from tools.tests.target_fixtures import SAMPLE_ROOT, TARGET_ID as _TARGET_ID
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
@@ -36,12 +36,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _target_harness(target_id: str) -> str:
     """The harness node key the checked-in target names, read from the catalog, so that a
     version bump of a sample harness edits no test (issue #690)."""
-    return tp.harness_node_key_for_target(REPO_ROOT, tp.load_target_profile(REPO_ROOT, target_id))
+    return tp.harness_node_key_for_target(SAMPLE_ROOT, tp.load_target_profile(SAMPLE_ROOT, target_id))
 
 
 def _target_provides(target_id: str) -> frozenset[str]:
     """The capability set the checked-in target implies for its harness (issue #690)."""
-    return tp.harness_capabilities(tp.load_target_profile(REPO_ROOT, target_id))
+    return tp.harness_capabilities(tp.load_target_profile(SAMPLE_ROOT, target_id))
 
 
 def _manifest_doc() -> dict:
@@ -267,7 +267,7 @@ class CapabilityNegotiationTest(unittest.TestCase):
         # bound storage was negotiated by — is neither in the vocabulary nor provided by a harness,
         # and a bundle still asking for it is told so at the schema's next layer.
         self.assertNotIn("state_registration", cb.CAPABILITY_VOCABULARY)
-        for target_id in tp.list_target_ids(REPO_ROOT):
+        for target_id in tp.list_target_ids(SAMPLE_ROOT):
             with self.subTest(target=target_id):
                 self.assertFalse([t for t in _target_provides(target_id)
                                   if t.startswith("state_registration")])
@@ -280,7 +280,7 @@ class CapabilityNegotiationTest(unittest.TestCase):
         # takes as a harness's capability set; each of its sets is one some checked-in target
         # implies (issue #690), so the example cannot illustrate a set no target derives.
         example = cb.load_harness_capabilities_schema()["examples"][0]
-        derivable = {_target_provides(tid) for tid in tp.list_target_ids(REPO_ROOT)}
+        derivable = {_target_provides(tid) for tid in tp.list_target_ids(SAMPLE_ROOT)}
         self.assertTrue(example["manifests"])
         for manifest in example["manifests"]:
             with self.subTest(node_key=manifest["node_key"]):
@@ -1490,7 +1490,7 @@ class HarnessManifestValidatorTest(unittest.TestCase):
     input."""
 
     def test_every_checked_in_target_derives_a_valid_document(self) -> None:
-        for target_id in tp.list_target_ids(REPO_ROOT):
+        for target_id in tp.list_target_ids(SAMPLE_ROOT):
             with self.subTest(target=target_id):
                 self.assertEqual(cb.harness_capability_manifest_violations(
                     cb.harness_capability_manifest_document_for(
@@ -2308,7 +2308,7 @@ class ContractPlumbingTest(unittest.TestCase):
     def test_node_key_pattern_accepts_every_catalogued_node(self) -> None:
         # The pattern is a module constant; the catalog is the ground truth it must not
         # drift from (a false reject here fails a real node closed).
-        catalog = (Path(__file__).resolve().parents[2] / "spec" / "registry"
+        catalog = (SAMPLE_ROOT / "spec" / "registry"
                    / "spec_catalog.yaml").read_text(encoding="utf-8")
         kinds = re.findall(r"- spec_kind:\s*(\S+)\s*\n\s*spec_id:\s*(\S+)\s*\n\s*spec_version:\s*(\S+)",
                            catalog)
@@ -2323,7 +2323,7 @@ class ContractPlumbingTest(unittest.TestCase):
         # version, so a harness version bump edits no framework file. What a bump can still
         # break is the profile's `version_constraint` against the catalog: each checked-in
         # target's harness must resolve, and the document derived for it must validate.
-        target_ids = tp.list_target_ids(REPO_ROOT)
+        target_ids = tp.list_target_ids(SAMPLE_ROOT)
         self.assertTrue(target_ids)
         for target_id in target_ids:
             with self.subTest(target=target_id):
@@ -2967,7 +2967,7 @@ class PureContractLayersTests(unittest.TestCase):
                 _read_toolchain=lambda refs: {"language": "fortran"},
                 _runner_basename=lambda refs: "bx_runner.f90",
                 _build_leaf_bundle_graph=lambda refs, d: None,
-                target=tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi"))
+                target=tp.load_target_profile(SAMPLE_ROOT, "fortran_cpu_mpi"))
             holder._leaf_bundle_violation_inputs = (
                 lambda refs: wc.Conductor._leaf_bundle_violation_inputs(holder, refs))
             refs = SimpleNamespace(ir_ref=ir_ref, node_key=self._NK, spec_id="bx")

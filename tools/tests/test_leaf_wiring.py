@@ -38,7 +38,7 @@ from tools.orchestration_runtime import (
 from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.orchestration_fixtures import netns_socket_dir
-from tools.tests.target_fixtures import TARGET_ID
+from tools.tests.target_fixtures import SAMPLE_ROOT, TARGET_ID
 from tools.tests.target_fixtures import composed_pure_template
 from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
@@ -1466,9 +1466,11 @@ class PureRenderTests(unittest.TestCase):
         # made that recipe a complete command. READ: same, nothing assigned. Issue #534 PR-J4-d
         # renamed the module the recipe imports (`tools.leaf_contract`). READ: same. Issue #643
         # PR-4 dropped the clause naming `stale_dependency_ir` as a gate-side backstop (no gate
-        # emits it now). READ: same, nothing assigned.
+        # emits it now). READ: same, nothing assigned. Issue #705 PR-2 named the directory the
+        # recipe starts in and its `--repo-root` (the sample is a Project under `sample/`).
+        # READ: same, nothing assigned.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #f21f81a19857"),
+         " #7add9bf74c78"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
@@ -3370,7 +3372,7 @@ class LanguageFragmentCompositionTests(unittest.TestCase):
         markers were made to carry (the `.f90` runner, `associate`, `!$omp`, `intent(out)` in the
         gate-checked classes) reaches them."""
         from tools import target_profile as tp
-        cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
+        cuda = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         for key in self._KEYS:
             with self.subTest(template=key):
                 composed = composed_pure_template(key, cuda)
@@ -3586,7 +3588,7 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         from types import SimpleNamespace
         from tools.tests.target_fixtures import FORTRAN_CPU
         from tools import target_profile as tp
-        cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
+        cuda = tp.load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         for profile in (FORTRAN_CPU, cuda):
             holder = SimpleNamespace(target=profile)
             self.assertEqual(wc.Conductor._leaf_parallel(holder, "generate"),

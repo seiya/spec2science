@@ -47,6 +47,8 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the spec documents and the `workspace/` State.
+PROJECT = REPO / "sample"
 sys.path.insert(0, str(HERE))
 
 from tools import capture_store  # noqa: E402
@@ -64,7 +66,7 @@ def check(ok: bool, what: str) -> None:
 
 def _cmd(target: str, config: Path, out: Path, restart: Path | None) -> list[str]:
     cmd = [sys.executable, "tools/run_configuration.py", SPEC, "--target", target,
-           "--config", str(config), "--out", str(out)]
+           "--config", str(config), "--out", str(out), "--repo-root", str(PROJECT)]
     return cmd + (["--restart-from", str(restart)] if restart else [])
 
 

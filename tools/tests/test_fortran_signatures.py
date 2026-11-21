@@ -40,12 +40,12 @@ from tools.backends.language.fortran.signatures import (
 )
 from tools.backends.language.fortran.runner import (
     _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS, harness_interface_block)
-from tools.tests.target_fixtures import provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS_SPEC = (
-    REPO_ROOT
+    SAMPLE_ROOT
     / "spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md"
 )
 CONTROLLED_SPEC_DOC = REPO_ROOT / "docs/CONTROLLED_SPEC.md"
@@ -234,7 +234,7 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         with an `allocatable, intent(out)` REAL array argument (`__gather_r1..r4`'s `g`) and with
         procedures that take no argument. It round-trips, renders that argument allocatable, and
         begins with the single-process harness's block under its own names."""
-        md = (REPO_ROOT / "spec/infrastructure/infra/harness/harness_fortran_cpu_mpi"
+        md = (SAMPLE_ROOT / "spec/infrastructure/infra/harness/harness_fortran_cpu_mpi"
               / "controlled_spec.md").read_text(encoding="utf-8")
         m = _FENCED_BLOCK_RE.search(md.split("### 5.1", 1)[1])
         self.assertIsNotNone(m)
@@ -1520,8 +1520,8 @@ class NameCollisionTest(unittest.TestCase):
         publishing = ("component", "infrastructure")
         seen = []
         rendered_kinds: set[str] = set()
-        for cs in sorted((REPO_ROOT / "spec").rglob("controlled_spec.md")):
-            rel = cs.relative_to(REPO_ROOT)
+        for cs in sorted((SAMPLE_ROOT / "spec").rglob("controlled_spec.md")):
+            rel = cs.relative_to(SAMPLE_ROOT)
             body, err = _section51_fence_body(cs)
             if rel.parts[1] not in publishing:
                 continue
@@ -2117,7 +2117,7 @@ class HarnessTestsMdStatesTheThreadQueryTest(unittest.TestCase):
     sweep; what this pins is that the producer is told how not to, so the sweep is not paid for
     as a repair turn."""
 
-    TESTS_MD = (REPO_ROOT / "spec" / "infrastructure" / "infra" / "harness"
+    TESTS_MD = (SAMPLE_ROOT / "spec" / "infrastructure" / "infra" / "harness"
                 / "harness_fortran_cpu" / "tests.md")
 
     def _perf_judgment(self) -> str:

@@ -11,7 +11,7 @@ checkout's code, and read by the canary's own `problem`. Nothing is billed.
     python3 tools/tests/data/scheduler_slurm/measure_launcher.py none <site_id> <out_dir>
     python3 tools/tests/data/scheduler_slurm/measure_launcher.py slurm <out_dir>
 
-- `none` is V-e: the site `<site_id>` of `./sites.yaml`, a `scheduler: none` site reached by the
+- `none` is V-e: the site `<site_id>` of `sample/sites.yaml`, a `scheduler: none` site reached by the
   real ssh and scp. Two cases: 4 ranks, which must be accepted, and one rank more than the CPUs
   of the machine the site's login runs on (asked with `nproc --all` over ssh), which the
   launcher must refuse and the canary must report as a launch that did not complete.
@@ -41,6 +41,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
+#: The sample Project (issue #705 PR-2): its `sites.yaml` State and target profiles.
+PROJECT = REPO_ROOT / "sample"
 
 from tools import execution_sites as es
 from tools import remote_execution as rx
@@ -85,7 +87,7 @@ def _log(out: Path, record: dict) -> None:
 
 
 def none(site_id: str, out: Path) -> None:
-    config = es.load_sites(REPO_ROOT)
+    config = es.load_sites(PROJECT)
     site = config.sites[site_id]
     cpus = int(subprocess.run(["ssh", "-o", "BatchMode=yes", site.host, "nproc", "--all"],
                               capture_output=True, text=True, check=True,

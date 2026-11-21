@@ -157,10 +157,12 @@ RETIRED_NAMES: dict[str, str] = {
 
 #: The roots read, and the suffixes read under each. `docs/` is what a reader is shown, `spec/`
 #: what a reader and (inlined) a leaf are shown, `tools/prompt_templates/` what a leaf is shown.
+#: `sample/spec/` is the sample Project's `spec` tree since issue #705 PR-2 (the checkout's `spec/`
+#: holds the framework's schemas alone), read for the same reason as `spec/`.
 #: Python sources are not read: the CLI help is checked through `--help` below, and a validator
 #: message is pinned by its own row. `TODO.md` is outside on purpose: its job is to name the next
 #: open drift.
-_RETIRED_NAME_ROOTS: tuple[str, ...] = ("docs", "spec", "tools/prompt_templates")
+_RETIRED_NAME_ROOTS: tuple[str, ...] = ("docs", "spec", "sample/spec", "tools/prompt_templates")
 _RETIRED_NAME_SUFFIXES: tuple[str, ...] = (".md", ".yaml", ".json", ".txt")
 #: A dated record of the tree at one commit (issue #643's inventory at `ec2ddda3`). It quotes code
 #: identifiers and test names verbatim, some of which still carry a retired token, and it is not
@@ -225,7 +227,7 @@ class RetiredArtifactNameTest(unittest.TestCase):
             planted: set[str] = set()
             # Spelled out rather than read from the module constants: a family generated from
             # the constant shrinks with it, and dropping a root, a suffix or a name would pass.
-            for top in ("docs", "spec", "tools/prompt_templates"):
+            for top in ("docs", "spec", "sample/spec", "tools/prompt_templates"):
                 for suffix in (".md", ".yaml", ".json", ".txt"):
                     for index, name in enumerate((
                             "dependency.resolved.yaml", "case.resolved.yaml", "/generate/<",

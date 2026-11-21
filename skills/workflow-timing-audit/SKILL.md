@@ -128,15 +128,23 @@ transcript").
 ## Procedure
 
 ### Step 1 — run the analyzer
+The three scripts find the State they read by walking up from the working directory to the nearest
+directory that holds `workspace/orchestrations`: the Project root (`docs/GLOSSARY.md` §14). Start
+them inside the Project whose runs you audit — `sample/` for this repository's sample nodes, where
+the commands below are written from there. From the framework checkout's root they find none of
+the sample's runs. A claude leaf's transcript of a run recorded before the State moved under
+`sample/` (a pre-PR-J4-b leaf, which had no lineage home) sits under the slug of the checkout
+root, not of `sample/`: pass `--project-dir ~/.claude/projects/<slug of the checkout root>` for
+such a run, or its leaves read as `LLM*` with no token figures.
 ```bash
 # auto-pick the most recent orch_* directory
-python3 skills/workflow-timing-audit/scripts/analyze_timing.py
+python3 ../skills/workflow-timing-audit/scripts/analyze_timing.py
 
 # or target a specific orchestration
-python3 skills/workflow-timing-audit/scripts/analyze_timing.py orch_YYYYMMDDTHHMMSSZ_xxxxxxxx
+python3 ../skills/workflow-timing-audit/scripts/analyze_timing.py orch_YYYYMMDDTHHMMSSZ_xxxxxxxx
 
 # machine-readable
-python3 skills/workflow-timing-audit/scripts/analyze_timing.py <orch_id> --json
+python3 ../skills/workflow-timing-audit/scripts/analyze_timing.py <orch_id> --json
 ```
 If transcripts live elsewhere, pass `--project-dir <dir>`; it is read for every row, workshop rows included, in place of the per-run-id resolution.
 
@@ -148,7 +156,7 @@ figure. A codex workshop leaf's are there too, and the script finds no stream to
 spent is in the run's own `launches/` artifacts. For those, run
 
 ```bash
-python3 skills/workflow-timing-audit/scripts/leaf_token_report.py <orch_id | orchestration_dir> [substep ...]
+python3 ../skills/workflow-timing-audit/scripts/leaf_token_report.py <orch_id | orchestration_dir> [substep ...]
 ```
 
 One row per persisted leaf stream, in run order: prompt / reasoning / output tokens, the answer
@@ -213,10 +221,10 @@ the first launch passed, which is a different lever (contract clarity, exemplar 
 a first launch costs (leaf internals, prompt size). Report the two separately:
 
 ```bash
-python3 skills/workflow-timing-audit/scripts/attempt_cost_report.py --since <ISO> --until <ISO> [--node <node_key> ...] [--json]
+python3 ../skills/workflow-timing-audit/scripts/attempt_cost_report.py --since <ISO> --until <ISO> [--node <node_key> ...] [--json]
 ```
 
-It reads the in-repo `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` and
+It reads the `usage` rows of every `workspace*/orchestrations/*/agent_runs.jsonl` under the Project root and
 prints, for the rows in the window: the retry share of `output_tokens` / `total_tokens` /
 `cost_usd`, the first-launch median `output_tokens` per `step.substep`, and the retry cost
 attributed to the failure that sent the run back (for example

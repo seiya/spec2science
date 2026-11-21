@@ -51,6 +51,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the spec documents and the `workspace/` State.
+PROJECT = REPO / "sample"
 
 from tools import capture_store  # noqa: E402
 
@@ -92,7 +94,8 @@ SUBJECTS: dict[str, dict[str, Any]] = {
 
 def tool(spec_ref: str, config: Path, out: Path, restart: Path | None = None) -> int:
     cmd = [sys.executable, str(REPO / "tools" / "run_configuration.py"), spec_ref,
-           "--target", "fortran_cpu", "--config", str(config), "--out", str(out)]
+           "--target", "fortran_cpu", "--config", str(config), "--out", str(out),
+           "--repo-root", str(PROJECT)]
     if restart is not None:
         cmd += ["--restart-from", str(restart)]
     r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
@@ -160,7 +163,7 @@ def record(out: Path) -> dict[str, Any]:
 
 
 def certified_snaps(rec: dict[str, Any]) -> Path:
-    pipe = REPO / rec["pipeline_ref"]
+    pipe = PROJECT / rec["pipeline_ref"]
     run_id = rec["validate_run_id"]
     node = rec["node_key"].replace("/", "__").replace("@", "__")
     print(f"    certified (the tool's selection): {rec['pipeline_ref']} run {run_id}, "

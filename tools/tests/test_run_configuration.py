@@ -33,6 +33,7 @@ from tools import capture_store
 from tools import run_configuration as rc
 from tools.backends.language.fortran import runner as f_runner
 from tools.tests.orchestration_fixtures import certify_node
+from tools.tests.target_fixtures import SAMPLE_ROOT
 from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, run_fortran
 
 NODE = "component/drv_toy@0.1.0"
@@ -387,7 +388,7 @@ class RunConfigurationTest(unittest.TestCase):
                 self.assertIn(f"built at site {shown}", why)
         # a launcher target
         from tools.target_profile import load_target_profile
-        install_target_profile(self.repo, load_target_profile(rc.REPO_ROOT, "fortran_cpu_mpi"))
+        install_target_profile(self.repo, load_target_profile(SAMPLE_ROOT, "fortran_cpu_mpi"))
         with self.assertRaises(rc.ConfigurationRefused) as ctx:
             rc.run_configuration(self.repo, SPEC_REF, "fortran_cpu_mpi",
                                  self.config({"base_case": "m0"}), self.tmp / "mpi")
@@ -818,7 +819,7 @@ class RunConfigurationTest(unittest.TestCase):
         site that executes the device class runs a device target (the default local site
         does not)."""
         from tools.target_profile import load_target_profile
-        gpu = load_target_profile(rc.REPO_ROOT, "cpp_gpu")
+        gpu = load_target_profile(SAMPLE_ROOT, "cpp_gpu")
         ir, _ = _Built.get("loop")
         refs = certify_node(self.repo, "orch_seed", NODE, ir_text=yaml.safe_dump(ir),
                             exe_bytes=b"#!/bin/sh\n" + FINAL, ir_id="drv-toy_20260101_001",

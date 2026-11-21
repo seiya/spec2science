@@ -302,6 +302,20 @@ class LeafTokenReportTests(unittest.TestCase):
         self.assertEqual(leaf_token_report.resolve("orch_xyz", start=str(deep)),
                          str(root / "workspace" / "orchestrations" / "orch_xyz"))
 
+    def test_an_id_resolves_in_a_project_nested_under_the_checkout(self):
+        # Issue #705 PR-2: the sample is a Project nested in the framework checkout, so `.git`
+        # sits above the State. Resolving from inside the Project finds the Project's State, not
+        # a `workspace/orchestrations` beside the checkout's `.git`.
+        checkout = self.orch / "checkout"
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / "workspace" / "orchestrations").mkdir(parents=True)
+        project = checkout / "sample"
+        (project / "workspace" / "orchestrations" / "orch_xyz").mkdir(parents=True)
+        deep = project / "spec" / "problem"
+        deep.mkdir(parents=True)
+        self.assertEqual(leaf_token_report.resolve("orch_xyz", start=str(deep)),
+                         str(project / "workspace" / "orchestrations" / "orch_xyz"))
+
 
 if __name__ == "__main__":
     unittest.main()

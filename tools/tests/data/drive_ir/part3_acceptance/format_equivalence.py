@@ -49,6 +49,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the `workspace/` State.
+PROJECT = REPO / "sample"
 
 from tools import capture_store  # noqa: E402
 from tools import primary_evidence as pe  # noqa: E402
@@ -69,9 +71,9 @@ def _sources(meta: Path) -> tuple[list[Path], Path, Path, Path]:
     model, the node's model and its driver, as the Build's stamp binds them."""
     d = _stamp(meta)
     bindings = d["dependency_check"]["closure_bindings"]
-    harness = [REPO / b["model_source_ref"] for b in bindings
+    harness = [PROJECT / b["model_source_ref"] for b in bindings
                if b["node_key"].startswith("infrastructure/")]
-    deps = [REPO / b["model_source_ref"] for b in bindings
+    deps = [PROJECT / b["model_source_ref"] for b in bindings
             if not b["node_key"].startswith("infrastructure/")]
     src = meta.parents[2] / "source" / d["source_source_id"] / "src"
     return deps, harness[0], src / f"{NODE}_model.f90", src / f"{NODE}_runner.f90"
@@ -185,7 +187,7 @@ def main() -> int:
     # generate key binds (`binary_meta.source_ir_id` is no longer written, issue #643 PR-5).
     source_meta = _stamp(args.binary_meta.parents[2] / "source" / stamp["source_source_id"]
                          / "source_meta.json")
-    ir_root = REPO / "workspace" / "ir" / stamp["node_key"].replace("/", "__").replace("@", "__")
+    ir_root = PROJECT / "workspace" / "ir" / stamp["node_key"].replace("/", "__").replace("@", "__")
     ir_path = next(m.parent for m in sorted(ir_root.glob("*/ir_meta.json"))
                    if _stamp(m).get("output_hash") == source_meta["derivation_inputs"]["ir"]
                    ) / "spec.ir.yaml"

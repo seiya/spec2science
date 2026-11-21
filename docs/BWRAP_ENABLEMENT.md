@@ -41,10 +41,12 @@ Pick a small leaf component and run through `validate` so every phase — includ
 high-risk **Build** — executes under bwrap:
 
 ```
-! python3 tools/run_workflow.py \
+! cd sample && python3 ../tools/run_workflow.py \
     spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2 \
     validate --target fortran_cpu
 ```
+
+The node is one of the sample Project's, so the run starts in `sample/`, its Project root.
 
 bwrap enforcement is unconditional, so the conductor wraps every leaf in
 `render_bwrap_command` with no extra flags. (The `!` prefix runs it in this session so
@@ -64,7 +66,7 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 | The leaf ran in its network namespace | every CLI leaf's `launches/<arid>.response.json` has `sandbox_network: "namespace"` and a `sandbox_command` carrying `--unshare-net`, `--unshare-pid`, `--ro-bind <socket dir> /run/spec2science/net` and, after the head's `--`, the relay `/usr/bin/python3 -I /run/spec2science/net/relay.py`; the orchestration's `net_routes.jsonl` holds an `allowed` row for the family's API host and no refused row the leaf needed to finish its turn ([issue #534](https://github.com/seiya/spec2science/issues/534) step 4) |
 | **Build output landed where the phase declares it** | the **Build phase passed** — `compile_project` wrote the objects and module artifacts to the per-run object dir and the exe to `binary/<binary_id>/bin/` with no EROFS. `Build` is a DETERMINISTIC substep in the conductor's own process, so no sandbox is involved in that write; what this row is still for is that the output-directory overrides resolve to the right places. It read `no unauthorized_write_violation` until [issue #171](https://github.com/seiya/spec2science/issues/171) PR-2 deleted the terminal write audit that produced that marker. |
 
-`python3 tools/audit_orchestration.py --orchestration-id <orchestration_id>` summarizes
+`python3 ../tools/audit_orchestration.py --orchestration-id <orchestration_id>`, from `sample/` as the run above, summarizes
 per-run cost, status and the `violations/` records for a quick read
 (`skills/workflow-audit/SKILL.md`).
 

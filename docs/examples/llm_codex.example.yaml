@@ -3,7 +3,7 @@
 # Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
 # `--llm-config`:
 #
-#     cp docs/examples/llm_codex.example.yaml llm.yaml
+#     cp ../docs/examples/llm_codex.example.yaml llm.yaml    # from the sample Project, sample/
 #
 # CHECK `model:` BEFORE THE FIRST RUN. Unlike Claude, Codex has no unpinned alias to resolve —
 # every launch must carry an explicit slug, and the generic `codex` alias is rejected precisely

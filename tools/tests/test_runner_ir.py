@@ -19,6 +19,7 @@ from tools.tests.test_driver_render import (_lst_entry, list_record_ir, lst_init
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
 from tools.tests.yaml_fixtures import load_yaml_fixture
+from tools.tests.target_fixtures import SAMPLE_ROOT
 
 
 def _swe2d() -> dict:
@@ -644,7 +645,7 @@ class DistributedDriverPlanTests(unittest.TestCase):
     the grids its table lists, the table, and the per-entry facts `driver_plan` carries."""
 
     def test_distribute_grids_is_the_certified_grid_then_the_sweep_then_the_singleton(self) -> None:
-        mpi = yaml.safe_load((_DRIVE_DIR.parents[3] / "spec/targets/fortran_cpu_mpi.yaml")
+        mpi = yaml.safe_load((SAMPLE_ROOT / "spec/targets/fortran_cpu_mpi.yaml")
                              .read_text())
         self.assertEqual(r.distribute_grids(mpi), _GRIDS + ((1, 1),))
         # `(ranks, 1)` when no grid is imposed, the singleton when no count is either (the

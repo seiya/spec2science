@@ -42,10 +42,13 @@ The deterministic `Compile.static` and `Generate.gate` substeps route a violatio
 
 The host prerequisites — the CLI tools, the Python packages, the target `spec`'s toolchain and `static lint` tool, the sandbox runtime, and the provider credentials — are one list in [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-1, which also carries the SUPPORTED VERSION RANGE of the `static lint` tool (a build outside it is refused at launch, because the rule set the `Generate.gate` applies is measured against that range), pointers to the backend documents that carry the install lines, and the reason code each absence is refused with. Every one of them is refused before the first `LLM` leaf is launched. This paragraph used to be a second list, and it was the longer of the two while the one an operator setting up a machine reads was the shorter (issue #109).
 
-Create the leaf-`LLM` configuration once. It selects the provider, model, and reasoning effort of each `LLM` leaf, and is the only thing that says what a leaf launches: no flag overrides its contents, and `--llm-config` only selects which file is read. It is gitignored.
+A run reads one Project: the tree of `spec` nodes, target profiles and catalog that `--repo-root` names, default the working directory (`docs/GLOSSARY.md` §14). This repository's own `spec` nodes are the sample Project under `sample/`; the run commands below start in it, and name the framework's tools by their path from there; the suite (§Tests) runs from the checkout root. A Project elsewhere has the same shape with the framework checkout's path in place of `..`.
+
+Create the leaf-`LLM` configuration once, in the Project root. It selects the provider, model, and reasoning effort of each `LLM` leaf, and is the only thing that says what a leaf launches: no flag overrides its contents, and `--llm-config` only selects which file is read. It is gitignored.
 
 ```bash
-cp docs/examples/llm_claude.example.yaml llm.yaml
+cd sample
+cp ../docs/examples/llm_claude.example.yaml llm.yaml
 ```
 
 Every `LLM` leaf is a billed provider call. One node spends at least five of them per full `Compile` → `Validate` pass — more when a phase re-rolls — a `--with-deps` closure spends them per node, and a leaf that dies on a provider quota terminalizes the run unless `--wait-usage-reset` is passed.
@@ -53,13 +56,13 @@ Every `LLM` leaf is a billed provider call. One node spends at least five of the
 Start a run:
 
 ```bash
-python3 tools/run_workflow.py <spec_ref> <until_phase> --target <target_id> [--llm-config <path>]
+python3 ../tools/run_workflow.py <spec_ref> <until_phase> --target <target_id> [--llm-config <path>]
 
 # the dependency closure of one problem node, then the node itself
-python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1d_linear validate --with-deps --target fortran_cpu
+python3 ../tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1d_linear validate --with-deps --target fortran_cpu
 ```
 
-`<spec_ref>` is the `spec` directory of the target node and `<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. `python3 tools/run_workflow.py --help` is canonical for the full option set (`docs/CLI_REFERENCE.md` §Information-acquisition policy); the options a first run needs are:
+`<spec_ref>` is the `spec` directory of the target node, relative to the Project root, and `<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. `python3 ../tools/run_workflow.py --help` is canonical for the full option set (`docs/CLI_REFERENCE.md` §Information-acquisition policy); the options a first run needs are:
 
 | option | effect |
 |---|---|
@@ -79,7 +82,7 @@ The conductor calls the build-runtime library `tools/build_runtime.py` in-proces
 
 ## Artifacts
 
-Trial artifacts are confined to `workspace/`, and a write outside it fails the phase. `docs/GLOSSARY.md` defines the identifiers below (`node_key_safe`, `ir_id`, `pipeline_id`, `source_id`, `binary_id`, `run_id`).
+Trial artifacts are confined to `workspace/` under the Project root (`sample/workspace/` for the sample), and a write outside it fails the phase. `docs/GLOSSARY.md` defines the identifiers below (`node_key_safe`, `ir_id`, `pipeline_id`, `source_id`, `binary_id`, `run_id`).
 
 ```text
 workspace/ir/<node_key_safe>/<ir_id>/                        spec.ir.yaml, ir_meta.json, dependency_graph.json
@@ -90,7 +93,7 @@ workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/ lineage.json
 workspace/orchestrations/<orchestration_id>/                 orchestration_meta.json, agent_graph.json, agent_runs.jsonl
 ```
 
-`Validate` emits `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
+`Validate` emits `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under the Project's `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
 
 The driver prints the run's event stream on stdout (`--stdout-format human`, or `jsonl` for a caller that parses it) and mirrors it to `workspace/orchestrations/<orchestration_id>/run_logs/`. A run's terminal state is `orchestration_meta.json#status`; the node's physics judgment, including its dependencies, is `aggregate_verdict.json`.
 
@@ -98,12 +101,15 @@ The driver prints the run's event stream on stdout (`--stdout-format human`, or 
 
 ```text
 docs/         workflow contracts, phase specifications, runbook, glossary
-spec/         source specs (problem / component / profile / infrastructure) and the registry
+spec/schema/  the framework's schemas (the IR's shape expressions, the target profile, the codegen bundle)
 skills/       execution procedures (SKILL.md) for the flows an operator runs
 tools/        workflow driver, conductor, orchestration runtime, gates, validators, tests
 .claude/      the operator's own interactive session: settings, and the development skills
-releases/     the component registry, and the promoted official artifacts of the Promote flow (none yet)
-workspace/    trial artifacts
+sample/       the sample Project (docs/GLOSSARY.md §14):
+  spec/         source specs (problem / component / profile / infrastructure / libraries),
+                the target profiles and the registry
+  releases/     the component registry, and the promoted official artifacts of the Promote flow (none yet)
+  workspace/    trial artifacts (State: untracked, with llm.yaml and sites.yaml)
 ```
 
 ## In-tree specifications
@@ -115,11 +121,11 @@ workspace/    trial artifacts
 | `profile` | `dynamics_advdiff_profile_1d_upwind_center2_euler1`, `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, `dynamics_shallow_water_profile_2d_channel_p0_rk4`, `dynamics_shallow_water_profile_2d_channel_p1_rk4` |
 | `infrastructure` | `harness_fortran_cpu`, `harness_cpp_gpu`, `harness_fortran_cpu_mpi`, `harness_fortran_cpu_netcdf` |
 
-`spec/registry/spec_catalog.yaml` is the registry of record for placement and state.
+They are the sample Project's, under `sample/spec/`. `sample/spec/registry/spec_catalog.yaml` is the registry of record for placement and state.
 
 ## Tests
 
-Full suite (the default):
+From the framework checkout's root. Full suite (the default):
 
 ```bash
 python3 -m pytest tools/tests/ -q
