@@ -89,9 +89,12 @@ from tools.primary_evidence import (  # noqa: E402
 from tools.workflow_conductor import Conductor  # noqa: E402
 
 #: The measurement directory left for the SCALE Project with its nodes (issue #705 PR-3): name
-#: that Project's copy in `KESSLER_MEASUREMENT` (its `docs/design/kessler_measurement`).
-COMPARE = Path(os.environ.get("KESSLER_MEASUREMENT")
-               or REPO / "docs" / "design" / "kessler_measurement") / "compare.py"
+#: that Project's copy in `KESSLER_MEASUREMENT` (its `docs/design/kessler_measurement`); the
+#: script stops naming the variable when it is unset.
+if not os.environ.get("KESSLER_MEASUREMENT"):
+    raise SystemExit("set KESSLER_MEASUREMENT to the SCALE Project's "
+                     "docs/design/kessler_measurement (it left this repository, issue #705)")
+COMPARE = Path(os.environ["KESSLER_MEASUREMENT"]) / "compare.py"
 sys.path.insert(0, str(COMPARE.parent))
 import compare as offline  # noqa: E402
 
