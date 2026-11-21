@@ -542,7 +542,10 @@ def axis_list_restatements(root: Path) -> list[str]:
     offenders: list[str] = []
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root).as_posix()
-        if rel.startswith((".git/", "workspace", "docs/design/")):
+        # A run's State at any depth (`sample/workspace/` since issue #705 PR-2) is not a
+        # document.
+        if (rel.startswith((".git/", "docs/design/"))
+                or any(part.startswith("workspace") for part in path.relative_to(root).parts[:-1])):
             continue
         if path.resolve() == canonical:
             continue

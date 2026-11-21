@@ -752,7 +752,12 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             if path.suffix not in (".py", ".md", ".yaml", ".json", ".ini"):
                 continue
             rel = str(path.relative_to(_REPO_ROOT))
-            if rel.startswith((".git/", "workspace")) or rel in _CITATION_SOURCES:
+            # A run's State is not vocabulary, at whatever depth it sits: since issue #705
+            # PR-2 the sample's is `sample/workspace/`, and a deleted test's name recorded in
+            # two of its files would hide a dangling citation.
+            if (rel.startswith(".git/") or rel in _CITATION_SOURCES
+                    or any(part.startswith("workspace")
+                           for part in path.relative_to(_REPO_ROOT).parts[:-1])):
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
