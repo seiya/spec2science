@@ -1497,6 +1497,33 @@ class OracleExecuteTest(unittest.TestCase):
                          [("first", [], None), ("default", ["c_alpha"], "O-default"),
                           ("alt", ["c_beta"], "O-alt")])
 
+    def test_a_long_unevaluable_detail_keeps_its_verdict_at_the_tail(self) -> None:
+        """The comparison's `error` reaches 400 characters (`_shape_state_agreement` clips it
+        there); the message puts it first and the verdict and remedy last, so the run's failure
+        summary, which keeps the last 400 characters, still holds them."""
+        import tools.workflow_conductor as wc
+        long_error = "capture file " + "x" * 380 + ".json is absent"
+        self.assertGreaterEqual(len(long_error), 400)
+        real = wc.Conductor._shape_state_agreement
+        calls: list[str] = []
+
+        def agreement(ir, reference_dir, label, *a, **k):
+            # The oracle's comparison alone; the execution shapes compare as they do.
+            if label != "oracle":
+                return real(ir, reference_dir, label, *a, **k)
+            calls.append(label)
+            return {"status": "unevaluable", "error": long_error}
+
+        with mock.patch.object(wc.Conductor, "_shape_state_agreement",
+                               staticmethod(agreement)):
+            result, _seen = self.execute()
+        self.assertEqual(calls, ["oracle"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertGreater(len(result.stderr), 400)
+        summary = self.summary(result)
+        for needle in (oracle.UNEVALUABLE, "fix the adapter", "--resume"):
+            self.assertIn(needle, summary)
+
     def test_an_unevaluable_comparison_is_fail_closed(self) -> None:
         # The oracle's capture of c_beta is unreadable: the comparison cannot evaluate it.
         result, _seen = self.execute(oracle_broken=("c_beta",))
