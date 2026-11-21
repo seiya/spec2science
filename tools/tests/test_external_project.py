@@ -205,10 +205,10 @@ class OperatorToolRootTests(unittest.TestCase):
 
         source = types.SimpleNamespace(meta={"spec_ref": _HARNESS, "source_dependency_ref": ""})
         with mock.patch.object(rw, "_runtime_command", side_effect=runtime), \
-                mock.patch.object(jr, "finish_replay_orchestration"):
-            with self.assertRaises(_Stop):
-                jr.create_replay_orchestration(self.proj, source,
-                                               load_llm_config(self.proj / "llm.yaml"), {})
+                mock.patch.object(jr, "finish_replay_orchestration"), \
+                self.assertRaises(_Stop):
+            jr.create_replay_orchestration(self.proj, source,
+                                           load_llm_config(self.proj / "llm.yaml"), {})
         metas = list((self.proj / "workspace" / "orchestrations").glob("*/orchestration_meta.json"))
         self.assertEqual(len(metas), 1, metas)
 
