@@ -2257,6 +2257,11 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(pe.main(["--ir", str(ir), "--run", str(node / "run" / "r1")]), 0)
                 self.assertEqual(pe.main(["--ir", str(ir), "--run", str(node / "run" / "r1"),
                                           "--target", "scratch_cpu"]), 0)
+                # ... and the run's own Project wins over a `--repo-root` that names another
+                # (the framework checkout, which declares no `scratch_cpu`)
+                self.assertEqual(pe.main(["--ir", str(ir), "--run", str(node / "run" / "r1"),
+                                          "--target", "scratch_cpu",
+                                          "--repo-root", str(_SAMPLE_PROJECT)]), 0)
                 # outside a pipeline tree, `--repo-root` names it
                 self.assertEqual(pe.main(["--ir", str(ir), "--run", str(run.root),
                                           "--target", "scratch_cpu", "--repo-root", str(proj)]), 0)
