@@ -460,13 +460,15 @@ class BwrapLineageProfileTests(unittest.TestCase):
             orch = "orch_alias_fw"
             _ensure_orchestration_audit_dirs(repo, orch)
             _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
-            build = lambda arid: build_lineage_bwrap_profile(  # noqa: E731
-                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
-                backend_command="python3", backend_type="claude",
-                backend_ro_extra=[str(alias)], **kwargs)
-            with mock.patch.object(ort, "FRAMEWORK_ROOT", fw):
-                with self.assertRaises(ValueError) as caught:
-                    build("arid_alias_1")
+            def build(arid: str) -> dict:
+                return build_lineage_bwrap_profile(
+                    repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                    backend_command="python3", backend_type="claude",
+                    backend_ro_extra=[str(alias)], **kwargs)
+
+            with mock.patch.object(ort, "FRAMEWORK_ROOT", fw), \
+                    self.assertRaises(ValueError) as caught:
+                build("arid_alias_1")
             self.assertIn(str(fw), str(caught.exception))
             with mock.patch.object(ort, "FRAMEWORK_ROOT", home / "elsewhere"):
                 build("arid_alias_2")
