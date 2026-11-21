@@ -40,7 +40,7 @@ from tools.backends.language.fortran.signatures import (
 )
 from tools.backends.language.fortran.runner import (
     _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS, harness_interface_block)
-from tools.tests.target_fixtures import SAMPLE_ROOT, provides_for
+from tools.tests.target_fixtures import SAMPLE_ROOT, SCALE_FIXTURE_ROOT, provides_for
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1520,8 +1520,11 @@ class NameCollisionTest(unittest.TestCase):
         publishing = ("component", "infrastructure")
         seen = []
         rendered_kinds: set[str] = set()
-        for cs in sorted((SAMPLE_ROOT / "spec").rglob("controlled_spec.md")):
-            rel = cs.relative_to(SAMPLE_ROOT)
+        # the sample's and the SCALE fixture's (issue #705 PR-3), whose saturation operation
+        # name is the corpus's only one at the 63-character identifier limit
+        for root, cs in sorted((root, cs) for root in (SAMPLE_ROOT, SCALE_FIXTURE_ROOT)
+                               for cs in (root / "spec").rglob("controlled_spec.md")):
+            rel = cs.relative_to(root)
             body, err = _section51_fence_body(cs)
             if rel.parts[1] not in publishing:
                 continue
