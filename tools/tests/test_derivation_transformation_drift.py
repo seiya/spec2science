@@ -2697,9 +2697,9 @@ PINNED_VERDICT: dict[str, str] = {
     # against main 5cc1099c's: that row and no other.) The digest `verdict-20` shipped with at
     # 5cc1099c:
     "verdict-20@5cc1099c": "14827cb21fd16d0de0fd717337390d8f9e6b1f28b8244ad07ea0dcc50d995b31",
-    # verdict-20 re-pinned in place by issue #709 F-1, for the `only_cases` parameter of
-    # execute-22's 031178f0 entry: absent, as every verdict caller leaves it, the evaluation is
-    # unchanged. (Measured by diffing `verdict_tuple()` against main 031178f0's: that row and
+    # verdict-20 re-pinned in place by issue #709 F-1, for the `only_cases` keyword that
+    # `tools/primary_evidence.py` `evaluate_primary_predicates` gains (execute-22's 031178f0
+    # entry): absent, as every verdict caller leaves it, the evaluation is unchanged. (Measured by diffing `verdict_tuple()` against main 031178f0's: that row and
     # no other.) The digest `verdict-20` shipped with at 031178f0:
     "verdict-20@031178f0": "61a8787977b0e2584ce638fd79c327271a361e3c0ba7459a2738b22f46a57cd7",
     "verdict-20": "d395c605b0f7c4b816e31853f6e8ef454aafe0920825ac0763e6faebf092dff7",
