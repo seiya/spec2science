@@ -5,7 +5,7 @@
 # Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
 # `--llm-config`:
 #
-#     cp docs/examples/llm_openai_compatible.example.yaml llm.yaml
+#     cp ../docs/examples/llm_openai_compatible.example.yaml llm.yaml    # from the sample Project, sample/
 #
 # WHY EVERY LEAF. Every LLM leaf is a WORKSHOP leaf (issue #534), and on an HTTP provider the
 # HOST runs its tool-use loop (issue #534 PR-J3-b): it declares five file tools (`read_file`,

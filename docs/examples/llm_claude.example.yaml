@@ -3,7 +3,7 @@
 # This is the sample to copy to `./llm.yaml` — the operator-owned file `run_workflow.py` loads
 # when nobody passes `--llm-config`:
 #
-#     cp docs/examples/llm_claude.example.yaml llm.yaml
+#     cp ../docs/examples/llm_claude.example.yaml llm.yaml    # from the sample Project, sample/
 #
 # `tools/tests/test_llm_config.py` asserts it loads and `tools/tests/test_workflow_conductor.py`
 # asserts the leaf argv it produces, so it cannot drift silently the way an untested YAML file in
