@@ -41,10 +41,12 @@ Pick a small leaf component and run through `validate` so every phase — includ
 high-risk **Build** — executes under bwrap:
 
 ```
-! python3 tools/run_workflow.py \
+! cd sample && python3 ../tools/run_workflow.py \
     spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2 \
     validate --target fortran_cpu
 ```
+
+The node is one of the sample Project's, so the run starts in `sample/`, its Project root.
 
 bwrap enforcement is unconditional, so the conductor wraps every leaf in
 `render_bwrap_command` with no extra flags. (The `!` prefix runs it in this session so
