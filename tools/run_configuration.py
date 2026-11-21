@@ -853,7 +853,8 @@ def main(argv: list[str] | None = None) -> int:
                          "for the same configuration: continue from it")
     ap.add_argument("--timeout-sec", type=float, default=None,
                     help="kill the run after this many seconds (default: no bound)")
-    ap.add_argument("--repo-root", type=Path, default=REPO_ROOT, help=argparse.SUPPRESS)
+    ap.add_argument("--repo-root", type=Path, default=Path("."),
+                    help="the Project root (default: the working directory)")
     a = ap.parse_args(argv)
     if a.timeout_sec is not None and not (math.isfinite(a.timeout_sec) and a.timeout_sec > 0):
         ap.error("--timeout-sec must be a positive number")

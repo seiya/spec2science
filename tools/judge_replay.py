@@ -394,7 +394,8 @@ def create_replay_orchestration(repo_root: Path, source: SourceLaunch, llm_confi
     env = dict(os.environ)
     env["SPEC2SCIENCE_WORKFLOW_MODE"] = "1"
     env["SPEC2SCIENCE_WORKFLOW_EXEC_MODE"] = workflow_mode
-    env["PYTHONPATH"] = str(repo_root) + (
+    # The framework root, not the Project's (issue #705): see `run_workflow.py`'s base env.
+    env["PYTHONPATH"] = str(REPO_ROOT) + (
         f":{env['PYTHONPATH']}" if env.get("PYTHONPATH") else "")
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env["SPEC2SCIENCE_ORCHESTRATION_ID"] = oid
@@ -955,7 +956,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", default=None)
     parser.add_argument("--check", action="store_true",
                         help="answer the launch gates without launching")
-    parser.add_argument("--repo-root", default=str(REPO_ROOT))
+    parser.add_argument("--repo-root", default=".",
+                        help="the Project root (default: the working directory)")
     return parser
 
 

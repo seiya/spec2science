@@ -29,6 +29,7 @@ from unittest import mock
 import tools.workflow_conductor as wc
 from tools.backends import registry
 from tools.execution_sites import Site
+from tools.framework_root import framework_tool
 from tools.host_execution import LOCAL_SITE, launch_shape, serial_execution_env
 from tools.primary_evidence import PrimaryEvidenceError
 from tools.tests.llm_samples import sample_config_with as _cfg
@@ -135,7 +136,7 @@ def _real_gate_free_run(real):
     """`subprocess.run` with the post-execute gate answered 0 and every other call real."""
 
     def run(cmd, *args, **kwargs):
-        if isinstance(cmd, list) and "tools/validate_pipeline_semantics.py" in cmd:
+        if isinstance(cmd, list) and framework_tool("validate_pipeline_semantics.py") in cmd:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return real(cmd, *args, **kwargs)
 

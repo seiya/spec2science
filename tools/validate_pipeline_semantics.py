@@ -13,8 +13,6 @@ import threading
 
 import yaml
 from collections import OrderedDict
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -237,20 +235,12 @@ CROSS_TARGET_JUDGMENT_PHRASE = "The cross-target judgment is applied"
 #: The line of a `tests.md` test definition that lists the judgments the test makes (issue #582,
 #: `docs/TESTS.md` §Description format): one line in the definition, opening with the key.
 TEST_QUANTITIES_LINE = re.compile(r"^[-*]?\s*`?quantities`?\s*:\s*(.*)$")
-# Bundled schema lives next to this validator; used as the canonical fallback
-# when no target repo_root is in scope (tests, ad-hoc invocation) and as the
-# default canonical reference for the validator's pinned rules.
+# The canonical `shape_expr` schema is the FRAMEWORK's file, beside this validator. A Project
+# holds no copy of it (issue #705): one run reads one Project, and the rules an IR is judged by
+# are the framework's, so a validator never judges a tree by a copy the tree's author can edit.
 _BUNDLED_SHAPE_EXPR_SCHEMA_PATH = (
     Path(__file__).resolve().parent.parent
     / "spec" / "schema" / "ir" / "shape_expr.schema.json"
-)
-# Active repo_root for schema resolution. Set by main() via --repo-root and by
-# stage-level entry points (validate, validate_compile_stage, ...). When set, the
-# target repo's spec/schema/... is preferred over the validator bundle, so a
-# repo with diverged shape_expr rules is validated against ITS rules rather
-# than the validator-installation's bundled copy.
-_active_repo_root_for_schema: ContextVar["Path | None"] = ContextVar(
-    "_active_repo_root_for_schema", default=None
 )
 # Strip outer brackets/parens to expose the comma-separated body. The
 # inner grammar (what each dim token may look like) is owned entirely by
@@ -259,62 +249,15 @@ _active_repo_root_for_schema: ContextVar["Path | None"] = ContextVar(
 _SHAPE_EXPR_DIM_SPLIT = re.compile(r"^[\[\(]\s*(.+?)\s*[\]\)]$")
 
 
-@contextmanager
-def _pinned_repo_root_for_schema(repo_root: "Path | None") -> Iterator[None]:
-    """Scope `_active_repo_root_for_schema` to `repo_root` for the duration of
-    the with-block, then reset to the previous value via the captured token.
+def _resolve_shape_expr_schema_path() -> Path:
+    """The canonical shape_expr.schema.json: the framework's copy, always.
 
-    Use this at every public validator entrypoint that accepts a `repo_root`
-    so schema resolution is bound to the caller's intent rather than ambient
-    process-global state. Without scoped reset, consecutive in-process calls
-    against different repo roots would leak the first repo's context into
-    subsequent validations.
-    """
-    token = _active_repo_root_for_schema.set(repo_root)
-    try:
-        yield
-    finally:
-        _active_repo_root_for_schema.reset(token)
-
-
-def _resolve_shape_expr_schema_path(repo_root: "Path | None" = None) -> Path:
-    """Resolve the canonical shape_expr.schema.json for the active validation.
-
-    Resolution rules (fail-closed when scope is in effect):
-      - If `repo_root` is provided OR `_active_repo_root_for_schema` is set,
-        the validation has a target repo in scope. Require the target's
-        `<repo_root>/spec/schema/ir/shape_expr.schema.json`. If it is
-        missing, raise `RuntimeError` instead of silently falling back to
-        the validator bundle — the caller (CLI main) converts this into a
-        structured `pipeline semantic validation: FAIL` violation. Falling
-        back here would let partial deploys, bad rebases, or repo-specific
-        rule changes validate against the wrong rule set.
-      - If neither is set (library / ad-hoc / unit-test invocation with no
-        target repo), the validator-bundled schema is used. This covers
-        `_parse_shape_expr` calls that originate from tests or other tools
-        importing the validator without a target repo.
-
-    Explicit `repo_root` takes priority over the active context when both
-    are set (caller intent wins).
-    """
-    chosen: Path | None = None
-    if repo_root is not None:
-        chosen = repo_root
-    else:
-        active = _active_repo_root_for_schema.get()
-        if active is not None:
-            chosen = active
-    if chosen is not None:
-        candidate = chosen / "spec" / "schema" / "ir" / "shape_expr.schema.json"
-        if not candidate.is_file():
-            raise RuntimeError(
-                f"shape_expr schema not found at {candidate}. "
-                "Canonical source: spec/schema/ir/shape_expr.schema.json. "
-                "When a repo_root is in scope (--repo-root or active context), "
-                "the target repo must ship this schema; the validator bundle is "
-                "not used as a silent fallback."
-            )
-        return candidate
+    Until issue #705 a target `repo_root` in scope had to ship its own copy, and the bundled one
+    was refused as a fallback, so that a tree whose copy differed was not judged by the
+    validator's. With the schema a framework file there is one copy, and that state cannot
+    exist. A missing or malformed copy still fails closed: `_load_shape_expr_patterns_cached`
+    raises, and the CLI turns it into a structured violation; `run_workflow.py` loads it once
+    before `init` (`missing_canonical_schema`)."""
     return _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
 
 
@@ -479,9 +422,8 @@ _load_shape_expr_patterns_cached.cache_clear = (  # type: ignore[attr-defined]
 
 
 def _get_shape_expr_patterns(
-    repo_root: "Path | None" = None,
 ) -> tuple[tuple[re.Pattern[str], ...], tuple[re.Pattern[str], ...]]:
-    schema_path = _resolve_shape_expr_schema_path(repo_root)
+    schema_path = _resolve_shape_expr_schema_path()
     return _load_shape_expr_patterns_cached(str(schema_path))
 AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 
@@ -5804,8 +5746,7 @@ def validate_compile_stage(
     workspace_root: str,
     ir_ref: str,
 ) -> list[str]:
-    with _pinned_repo_root_for_schema(repo_root):
-        return _validate_compile_stage_impl(repo_root, workspace_root, ir_ref)
+    return _validate_compile_stage_impl(repo_root, workspace_root, ir_ref)
 
 
 def _validate_compile_stage_impl(
@@ -5826,10 +5767,8 @@ def validate_compile_ir_dir(repo_root: Path, ir_dir: Path) -> list[str]:
     `validate_compile_stage` on `<ir_ref>`. The validators read `tests.md` and the controlled
     spec through the IR's `meta.source_refs`, which this function does NOT confine: its caller
     passes only an IR whose refs the producer's contract (`Conductor.
-    _leaf_ir_document_violations`) has pinned to the node's own spec documents. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
-    `ContextVar`), so a call on a wrapper handler thread does not disturb the main thread's."""
-    with _pinned_repo_root_for_schema(repo_root):
-        return _validate_compile_ir_dir_impl(repo_root, Path(ir_dir))
+    _leaf_ir_document_violations`) has pinned to the node's own spec documents."""
+    return _validate_compile_ir_dir_impl(repo_root, Path(ir_dir))
 
 
 def _validate_compile_ir_dir_impl(repo_root: Path, ir_dir: Path) -> list[str]:
@@ -8085,10 +8024,9 @@ def validate_post_generate_stage(
     pipeline_ref: str,
     source_id: str | None,
 ) -> list[str]:
-    with _pinned_repo_root_for_schema(repo_root):
-        return _validate_post_generate_stage_impl(
-            repo_root, workspace_root, pipeline_ref, source_id
-        )
+    return _validate_post_generate_stage_impl(
+        repo_root, workspace_root, pipeline_ref, source_id
+    )
 
 
 def _validate_post_generate_stage_impl(
@@ -8127,10 +8065,9 @@ def validate_post_build_stage(
     pipeline_ref: str,
     source_id: str | None,
 ) -> list[str]:
-    with _pinned_repo_root_for_schema(repo_root):
-        return _validate_post_build_stage_impl(
-            repo_root, workspace_root, pipeline_ref, source_id
-        )
+    return _validate_post_build_stage_impl(
+        repo_root, workspace_root, pipeline_ref, source_id
+    )
 
 
 def _validate_post_build_stage_impl(
@@ -8166,17 +8103,16 @@ def validate(
     current_orchestration_id: str | None = None,
     require_verdict: bool = True,
 ) -> list[str]:
-    with _pinned_repo_root_for_schema(repo_root):
-        return _validate_impl(
-            repo_root,
-            workspace_root,
-            pipeline_roots,
-            require_llm_review,
-            require_orchestration,
-            run_ids,
-            current_orchestration_id,
-            require_verdict,
-        )
+    return _validate_impl(
+        repo_root,
+        workspace_root,
+        pipeline_roots,
+        require_llm_review,
+        require_orchestration,
+        run_ids,
+        current_orchestration_id,
+        require_verdict,
+    )
 
 
 def _validate_impl(
@@ -8508,17 +8444,11 @@ def main(argv: list[str] | None = None) -> int:
 
     repo_root = Path(args.repo_root).resolve()
 
-    # Pin the active repo_root for the duration of this main() call only,
-    # then reset via the captured token. Without scoped reset, a long-lived
-    # process (or repeated in-process main() calls in tests / batch tooling)
-    # would leak the first repo's context into later validations against a
-    # different repo_root, producing order-dependent schema-resolution bugs.
-    with _pinned_repo_root_for_schema(repo_root):
-        return _main_dispatch(args, repo_root)
+    return _main_dispatch(args, repo_root)
 
 
 def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
-    # Wrap stage validators so a broken canonical schema (missing repo-local
+    # Wrap stage validators so a broken canonical schema (missing framework
     # shape_expr.schema.json, malformed JSON, invalid regex, etc.) produces a
     # structured "pipeline semantic validation: FAIL" line with the offending
     # path instead of an opaque traceback. Orchestration gates rely on the

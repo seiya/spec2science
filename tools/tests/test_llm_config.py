@@ -29,6 +29,7 @@ from unittest import mock
 import yaml
 from pathlib import Path
 
+from tools.framework_root import FRAMEWORK_ROOT
 from tools import llm_config as lc
 from tools import orchestration_runtime as ort
 from tools import workflow_conductor as wc
@@ -350,12 +351,14 @@ class DefaultConfigPathTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn(str(Path(tmp) / "llm.yaml"), message)
         for name in lc.SAMPLE_CONFIG_NAMES:
-            # ANCHORED to the run's root on BOTH sides. `--repo-root` need not be the shell's
-            # working directory, and a relative `cp` pasted from elsewhere copies between two
-            # directories the run is not using — leaving the default still missing and the
-            # next run failing with this very message again.
+            # ANCHORED on BOTH sides: the source to the FRAMEWORK's copy (the samples are
+            # framework files, which a Project does not hold — issue #705), the destination to
+            # the run's root. `--repo-root` need not be the shell's working directory, and a
+            # relative `cp` pasted from elsewhere copies between two directories the run is
+            # not using — leaving the default still missing and the next run failing with this
+            # very message again.
             self.assertIn(
-                shlex.join(["cp", str(Path(tmp) / "docs" / "examples" / name),
+                shlex.join(["cp", str(FRAMEWORK_ROOT / "docs" / "examples" / name),
                             str(Path(tmp) / "llm.yaml")]),
                 message)
             self.assertTrue((SAMPLE_DIR / name).exists(), msg=name)
@@ -383,7 +386,9 @@ class DefaultConfigPathTests(unittest.TestCase):
             argv = shlex.split(line.strip())
             self.assertEqual(len(argv), 3, msg=line)          # cp SRC DST, not cp + fragments
             self.assertEqual(Path(argv[2]), root / "llm.yaml", msg=line)
-            self.assertEqual(Path(argv[1]).parent, root / "docs" / "examples", msg=line)
+            self.assertEqual(Path(argv[1]).parent, FRAMEWORK_ROOT / "docs" / "examples",
+                             msg=line)
+            self.assertTrue(Path(argv[1]).is_file(), msg=line)
 
 
 

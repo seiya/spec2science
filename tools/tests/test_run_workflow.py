@@ -23,7 +23,8 @@ from tools import orchestration_runtime
 from tools import llm_config as lc
 from tools import run_workflow
 from tools import target_profile as tp
-from tools.validate_pipeline_semantics import _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
+from tools import validate_pipeline_semantics as vps
+from tools.framework_root import FRAMEWORK_ROOT
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP_RW
@@ -57,19 +58,6 @@ def _recorded_sample_pin(repo_root: Path, backend: str = "claude") -> str:
     to the real file."""
     return run_workflow._repo_relative(
         str(SAMPLE_DIR / f"llm_{backend}.example.yaml"), repo_root)
-
-
-def _seed_shape_expr_schema_into(repo_root: Path) -> None:
-    """Copy the validator-bundled shape_expr.schema.json into a tmp repo so
-    `run_workflow.main()`'s startup assertion (canonical schema must exist
-    at <repo_root>/spec/schema/ir/shape_expr.schema.json) passes for tests
-    that exercise normal main() flows. Tests that intentionally exercise the
-    missing-schema path must NOT call this helper."""
-    target = repo_root / "spec" / "schema" / "ir" / "shape_expr.schema.json"
-    if target.is_file():
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(_BUNDLED_SHAPE_EXPR_SCHEMA_PATH.read_bytes())
 
 
 _CLAIM_ROOT_TMPDIR: tempfile.TemporaryDirectory | None = None
@@ -114,7 +102,6 @@ def _seed_launch_repo(repo_root: Path) -> list[str]:
     """The least a scratch `repo_root` needs for `main` to reach the launch's target resolution
     (and the host probes after it), and the argv prefix that points `main` at it."""
     _seed_default_llm_config_into(repo_root)
-    _seed_shape_expr_schema_into(repo_root)
     (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
     (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
     (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
@@ -168,7 +155,6 @@ class RunWorkflowTests(unittest.TestCase):
         went the same way with issue #433: their writer had no caller."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_vio"
             (orch_root / "violations").mkdir(parents=True, exist_ok=True)
             (orch_root / "orchestration_meta.json").write_text(
@@ -294,7 +280,6 @@ class RunWorkflowTests(unittest.TestCase):
     def test_discover_source_dependency_ref_from_file_spec_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             spec_dir = repo_root / "spec" / "problem"
             spec_dir.mkdir(parents=True, exist_ok=True)
             (spec_dir / "test.md").write_text("spec\n", encoding="utf-8")
@@ -306,7 +291,6 @@ class RunWorkflowTests(unittest.TestCase):
     def test_discover_source_dependency_ref_from_directory_spec_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             spec_dir = repo_root / "spec" / "problem"
             spec_dir.mkdir(parents=True, exist_ok=True)
             (spec_dir / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
@@ -317,7 +301,6 @@ class RunWorkflowTests(unittest.TestCase):
     def test_discover_source_dependency_ref_from_spec_root_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             spec_dir = repo_root / "spec"
             spec_dir.mkdir(parents=True, exist_ok=True)
             (spec_dir / "task.md").write_text("spec\n", encoding="utf-8")
@@ -329,7 +312,6 @@ class RunWorkflowTests(unittest.TestCase):
     def test_discover_source_dependency_ref_rejects_missing_deps_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             spec_dir = repo_root / "spec" / "problem"
             spec_dir.mkdir(parents=True, exist_ok=True)
             (spec_dir / "test.md").write_text("spec\n", encoding="utf-8")
@@ -663,7 +645,6 @@ class RunWorkflowTests(unittest.TestCase):
         )
 
     def _seed_spec_tree(self, repo_root: Path) -> None:
-        _seed_shape_expr_schema_into(repo_root)
         (repo_root / "tools").mkdir(parents=True, exist_ok=True)
         (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -1460,7 +1441,6 @@ class RunWorkflowTests(unittest.TestCase):
         # default deps.yaml next to the spec is absent/moved.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -1514,7 +1494,6 @@ class RunWorkflowTests(unittest.TestCase):
         # (possibly non-default) dependency must still be reused, not rediscovered.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -3750,7 +3729,6 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             # Full diamond (catalog + deps) so the real closure resolver runs.
@@ -3877,7 +3855,6 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -3964,11 +3941,12 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            # Build a minimal valid spec so we reach the schema guard.
+            # Build a minimal valid spec so we reach the schema guard. The scratch Project holds
+            # no schema (it is the framework's, issue #705) and no target profile, so the guard
+            # loads the framework's copy and the run stops at the next guard, the profile.
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
             (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
-            # Deliberately omit the canonical schema so the guard fires.
             run_workflow_path = (
                 Path(__file__).resolve().parent.parent / "run_workflow.py"
             )
@@ -4004,29 +3982,31 @@ class RunWorkflowTests(unittest.TestCase):
             proc.returncode, 2,
             f"expected exit 2 (structured fail); stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
         )
-        # Must emit structured JSON identifying the schema gap.
+        # Must emit structured JSON: past the schema guard, at the target-profile guard.
         last_line = proc.stdout.strip().splitlines()[-1]
         payload = json.loads(last_line)
         self.assertEqual(payload["status"], "fail")
-        self.assertEqual(payload["reason"], "missing_canonical_schema")
-        self.assertIn("shape_expr.schema.json", payload["missing_path"])
+        self.assertEqual(payload["reason"], "no_target_profile")
 
     def test_main_fails_fast_when_canonical_schema_missing(self) -> None:
         """Regression: tools/run_workflow.py must abort BEFORE init/preflight
-        if `<repo_root>/spec/schema/ir/shape_expr.schema.json` is missing,
-        because validate_pipeline_semantics is now fail-closed under repo
-        scope and would otherwise collapse every downstream phase gate with
+        if the framework's `spec/schema/ir/shape_expr.schema.json` is missing,
+        because validate_pipeline_semantics is fail-closed on it and would
+        otherwise collapse every downstream phase gate with
         `schema_load_failed` after orchestration state has already been
-        mutated. Emits structured `missing_canonical_schema` JSON on stdout."""
+        mutated. Emits structured `missing_canonical_schema` JSON on stdout.
+        The schema is the framework's file (issue #705), so the row moves the
+        framework's copy to a path that does not exist."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            # Deliberately do NOT seed the schema (this test exercises absence).
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
             (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+            absent = repo_root / "framework" / "spec" / "schema" / "ir" / "shape_expr.schema.json"
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with redirect_stdout(buf), mock.patch.object(
+                    vps, "_BUNDLED_SHAPE_EXPR_SCHEMA_PATH", absent):
                 code = run_workflow.main(
                     [
                         "spec/problem/test.md",
@@ -4044,6 +4024,7 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(payload["status"], "fail")
         self.assertEqual(payload["reason"], "missing_canonical_schema")
         self.assertIn("spec/schema/ir/shape_expr.schema.json", payload["missing_path"])
+        self.assertIn("shape_expr schema not found", payload["detail"])
         # Critical: orchestration state must NOT have been created — the
         # check must run before init().
         self.assertFalse(
@@ -4060,9 +4041,9 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            schema_dir = repo_root / "spec" / "schema" / "ir"
+            # The framework's schema (issue #705) EXISTS as a file but has malformed JSON.
+            schema_dir = repo_root / "framework" / "spec" / "schema" / "ir"
             schema_dir.mkdir(parents=True)
-            # Schema EXISTS as a file but has malformed JSON.
             (schema_dir / "shape_expr.schema.json").write_text(
                 "{ this is not json", encoding="utf-8"
             )
@@ -4070,7 +4051,9 @@ class RunWorkflowTests(unittest.TestCase):
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
             (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with redirect_stdout(buf), mock.patch.object(
+                    vps, "_BUNDLED_SHAPE_EXPR_SCHEMA_PATH",
+                    schema_dir / "shape_expr.schema.json"):
                 code = run_workflow.main(
                     [
                         "spec/problem/test.md",
@@ -4102,7 +4085,6 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_fails_when_spec_ref_does_not_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             # Seeded so the run reaches the spec check: without a default configuration it
             # would stop earlier, at `llm_config_default_missing`, and this test would pass
             # for a reason that has nothing to do with the spec.
@@ -4143,7 +4125,6 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -4188,7 +4169,6 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -4238,7 +4218,6 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -4284,7 +4263,6 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_default_llm_config_into(repo_root)
-            _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -4338,7 +4316,6 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_fails_when_dependency_ref_cannot_be_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             # As above: the dependency check runs AFTER configuration resolution, so without
             # this the assertions below are satisfied by `llm_config_default_missing` and the
             # check they name could be deleted outright with the test still green.
@@ -5077,7 +5054,6 @@ class DependencyClosureTests(unittest.TestCase):
         every rejection left the whole suite green."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
@@ -5100,7 +5076,6 @@ class DependencyClosureTests(unittest.TestCase):
         gate looked at whichever orchestration the operator named — which may be a dependency."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_target", "spec/problem/a",
@@ -5120,7 +5095,6 @@ class DependencyClosureTests(unittest.TestCase):
         """The control: the gate must not refuse the run it is meant to allow."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
@@ -5138,7 +5112,6 @@ class DependencyClosureTests(unittest.TestCase):
         leave every dependency unresumable (`llm_config_legacy_flags_removed`)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _, cfg = self._closure_config(repo_root, model=None)
             rc, captured, _ = self._drive_closure_raw(
@@ -5852,7 +5825,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -5997,7 +5969,6 @@ class DependencyClosureTests(unittest.TestCase):
             return verdicts.get(spec_ref)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             with mock.patch.object(run_workflow, "_library_verdict", fake_verdict):
                 return self._drive_closure_raw(repo_root, resume=False,
@@ -6055,7 +6026,6 @@ class DependencyClosureTests(unittest.TestCase):
     def test_fresh_closure_records_closure_id_on_every_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             captured = self._drive_closure_capture(
                 repo_root, resume=False, prior_orch_by_spec=None)
@@ -6073,7 +6043,6 @@ class DependencyClosureTests(unittest.TestCase):
     def test_closure_resume_reuses_prior_orch_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             self._seed_prior_member(repo_root, "orch_c_prev", "spec/component/c")
             captured = self._drive_closure_capture(
@@ -6096,7 +6065,6 @@ class DependencyClosureTests(unittest.TestCase):
         # node relies on its written invocation, not this arg.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             self._seed_prior_member(repo_root, "orch_c_prev", "spec/component/c")
             captured = self._drive_closure_capture(
@@ -6111,7 +6079,6 @@ class DependencyClosureTests(unittest.TestCase):
     def test_closure_resume_target_resume_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             # target orchestration already exists AND is this closure's prior target
             # run (matching spec_ref AND invocation.closure_id) → target is warm-resumed.
@@ -6137,7 +6104,6 @@ class DependencyClosureTests(unittest.TestCase):
         # than silently resume under the pure-only dispatch.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             self._seed_prior_member(repo_root, "orch_c_prev", "spec/component/c",
                                     executor="legacy")
@@ -6155,7 +6121,6 @@ class DependencyClosureTests(unittest.TestCase):
         # also fail-close, mirroring the per-dependency gate.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             target_meta = (repo_root / "workspace" / "orchestrations"
                            / "orch_target" / "orchestration_meta.json")
@@ -6179,7 +6144,6 @@ class DependencyClosureTests(unittest.TestCase):
         # the unrelated run's checkpoint.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             target_meta = (repo_root / "workspace" / "orchestrations"
                            / "orch_target" / "orchestration_meta.json")
@@ -6204,7 +6168,6 @@ class DependencyClosureTests(unittest.TestCase):
         # checkpoint. Guards spec-match-only false positive.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             target_meta = (repo_root / "workspace" / "orchestrations"
                            / "orch_target" / "orchestration_meta.json")
@@ -6227,7 +6190,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6292,7 +6254,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6336,7 +6297,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6388,7 +6348,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
             keys: list[str] = []
@@ -6466,7 +6425,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6547,7 +6505,6 @@ class DependencyClosureTests(unittest.TestCase):
         import tools.orchestration_runtime as ort
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
             self._seed_certified_node(repo_root, "component", "c", "0.1.0",
@@ -6605,7 +6562,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.tests.orchestration_fixtures import certify_node, ensure_spec_entry
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6674,7 +6630,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6718,7 +6673,6 @@ class DependencyClosureTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _load_spec_catalog.cache_clear()
 
@@ -6819,7 +6773,6 @@ class DependencyClosureTests(unittest.TestCase):
         # orchestration claim has to be taken before its guard runs, not after.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             self._seed_prior_member(
                 repo_root, "orch_c_prev", "spec/component/c", status="running")
@@ -6844,7 +6797,6 @@ class DependencyClosureTests(unittest.TestCase):
         `orch_claim_held=target_resume`), so the whole target run is unserialized."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             # `_drive_closure_raw` drives the diamond with `target_orchestration_id`
             # "orch_target" / `target_spec_ref` "spec/problem/a", so THAT is the claim a
@@ -6873,7 +6825,6 @@ class DependencyClosureTests(unittest.TestCase):
         was never told about."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             for oid, spec in (("orch_c_abandoned", "spec/component/c"),
                               ("orch_a_abandoned", "spec/problem/a")):
@@ -6900,7 +6851,6 @@ class ParallelClosureTests(unittest.TestCase):
 
     def _seed(self, repo_root: Path) -> None:
         _seed_default_llm_config_into(repo_root)
-        _seed_shape_expr_schema_into(repo_root)
         (repo_root / "tools").mkdir(parents=True, exist_ok=True)
         (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
         DependencyClosureTests._seed_diamond(self, repo_root)
@@ -7290,7 +7240,8 @@ class ParallelClosureTests(unittest.TestCase):
             orchestration_id="orch_c", resume=False, target_orchestration_id="ORCHT",
             target_spec_ref="spec/problem/a", until_phase="Validate", llm_config=cfg,
             workflow_mode="dev", status="running", run_conductor=False, wait_usage_reset=True)
-        self.assertEqual(cold[1], "/r/tools/run_workflow.py")
+        # The framework's script, never one under the Project root (issue #705).
+        self.assertEqual(cold[1], str(FRAMEWORK_ROOT / "tools" / "run_workflow.py"))
         self.assertEqual(cold[2:4], ["spec/component/c", "Validate"])
         for flag, value in (("--llm-config", str(cfg.path)), ("--mode", "dev"),
                             ("--repo-root", "/r"), ("--orchestration-id", "orch_c"),
@@ -8149,7 +8100,6 @@ class StdoutFormatTests(unittest.TestCase):
     run_logs always-full-jsonl contract."""
 
     def _seed(self, repo_root: Path) -> None:
-        _seed_shape_expr_schema_into(repo_root)
         (repo_root / "tools").mkdir(parents=True, exist_ok=True)
         (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -8709,17 +8659,15 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
     `_run_node`, which has not run. Human rendering here is therefore lossless."""
 
     def _seed(self, repo_root: Path) -> None:
-        """An operator's checkout: samples in the tree, spec + canonical schema present.
-        Deliberately WITHOUT `./llm.yaml` — that absence is the headline failure."""
-        _seed_shape_expr_schema_into(repo_root)
+        """An operator's Project: a spec, and an unrelated `tools/` directory. The samples are
+        the FRAMEWORK's (issue #705), so the Project holds none and the remedy's `cp` lines
+        must name the framework's copies. Deliberately WITHOUT `./llm.yaml` — that absence
+        is the headline failure."""
         for d in ("tools", "workspace", "spec/problem"):
             (repo_root / d).mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
         (repo_root / "spec" / "problem" / "deps.yaml").write_text(
             "nodes: []\n", encoding="utf-8")
-        (repo_root / "docs" / "examples").mkdir(parents=True, exist_ok=True)
-        for name in lc.SAMPLE_CONFIG_NAMES:
-            shutil.copy(SAMPLE_DIR / name, repo_root / "docs" / "examples" / name)
 
     def _main(self, argv: list[str]) -> tuple[int, str]:
         out = io.StringIO()
@@ -8755,11 +8703,11 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # The remedy is multi-line and every offered `cp` is present — asserted at BOTH ends
         # of the message, so a future re-truncation (head OR tail) cannot pass this test.
         self.assertIn("\n", out)
-        first_cp = (f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+        first_cp = (f"cp {FRAMEWORK_ROOT / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
                     f"{repo_root / 'llm.yaml'}")
-        second_cp = (f"cp {repo_root / 'docs' / 'examples' / 'llm_codex.example.yaml'} "
+        second_cp = (f"cp {FRAMEWORK_ROOT / 'docs' / 'examples' / 'llm_codex.example.yaml'} "
                      f"{repo_root / 'llm.yaml'}")
-        last_cp = (f"cp {repo_root / 'docs' / 'examples' / lc.SAMPLE_CONFIG_NAMES[-1]} "
+        last_cp = (f"cp {FRAMEWORK_ROOT / 'docs' / 'examples' / lc.SAMPLE_CONFIG_NAMES[-1]} "
                    f"{repo_root / 'llm.yaml'}")
         self.assertIn(first_cp, out)
         self.assertIn(second_cp, out)
@@ -8810,7 +8758,7 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "invalid_startup_input")
         self.assertIn("llm_config_default_missing", payload["detail"])
         self.assertIn(
-            f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+            f"cp {FRAMEWORK_ROOT / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
             f"{repo_root / 'llm.yaml'}", payload["detail"])
         self.assertIn("\n", payload["detail"])
 
@@ -9283,7 +9231,6 @@ class DriverLifecycleContractTests(unittest.TestCase):
         repo = Path(run_workflow.__file__).parent.parent
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
-            _seed_shape_expr_schema_into(scratch)
             (scratch / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (scratch / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
             (scratch / "spec" / "problem" / "deps.yaml").write_text(
@@ -9293,22 +9240,30 @@ class DriverLifecycleContractTests(unittest.TestCase):
             # The real script resolves the target in the scratch tree (issue #284).
             _write_catalog(scratch, [])
             _seed_target_profile_into(scratch)
-            # A runtime stub that parks: the driver then sits in `subprocess.run`
-            # inside `_run_node`, i.e. inside the try the interrupt clause guards.
-            (scratch / "tools").mkdir(exist_ok=True)
-            (scratch / "tools" / "orchestration_runtime.py").write_text(
-                "import pathlib, time\n"
-                "pathlib.Path(__file__).parent.parent.joinpath('entered.marker')"
-                ".write_text('x')\n"
-                "time.sleep(300)\n",
+            # A runtime that parks: the driver then sits in `subprocess.run` inside
+            # `_run_node`, i.e. inside the try the interrupt clause guards. The child is the
+            # FRAMEWORK's `tools/orchestration_runtime.py` (issue #705), started as
+            # `python3 <path>`, so the stub is the `python3` the driver's PATH finds first: it
+            # parks on that script and hands every other argv to the real interpreter.
+            marker = scratch / "entered.marker"
+            stub_bin = scratch / "stub_bin"
+            stub_bin.mkdir()
+            (stub_bin / "python3").write_text(
+                f"#!{sys.executable}\n"
+                "import os, pathlib, sys, time\n"
+                "if len(sys.argv) > 1 and sys.argv[1].endswith('/tools/orchestration_runtime.py'):\n"
+                f"    pathlib.Path({str(marker)!r}).write_text('x')\n"
+                "    time.sleep(300)\n"
+                f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n",
                 encoding="utf-8",
             )
-            marker = scratch / "entered.marker"
+            (stub_bin / "python3").chmod(0o755)
+            env = {**os.environ, "PATH": f"{stub_bin}:{os.environ.get('PATH', '')}"}
             proc = subprocess.Popen(
                 [sys.executable, str(repo / "tools" / "run_workflow.py"),
                  "spec/problem/test.md", "compile", "--repo-root", str(scratch),
                  "--no-run-conductor", "--stdout-format", "jsonl"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
                 start_new_session=True,  # so the parked grandchild can be reaped
             )
             try:
@@ -9344,7 +9299,6 @@ class LlmConfigStartupTests(unittest.TestCase):
     REPO = Path(__file__).resolve().parent.parent.parent
 
     def _seed(self, repo_root: Path) -> None:
-        _seed_shape_expr_schema_into(repo_root)
         for d in ("tools", "workspace", "spec/problem"):
             (repo_root / d).mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
@@ -9483,7 +9437,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertIn("llm_config_default_missing", detail)
             self.assertIn(str(repo_root / "llm.yaml"), detail)
             self.assertIn(
-                f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+                f"cp {FRAMEWORK_ROOT / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
                 f"{repo_root / 'llm.yaml'}", detail)
 
     def test_a_copied_sample_and_the_named_sample_are_the_same_run(self) -> None:

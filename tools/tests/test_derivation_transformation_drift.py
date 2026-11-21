@@ -1901,7 +1901,14 @@ PINNED_BUILD: dict[str, str] = {
     # head.
     # The digest `build-5` shipped with at 7e2dcde0:
     "build-5@7e2dcde0": "a7196261eecea15f0a2a7617048e9c12534f38192900908cc40ac8c308a436e9",
-    "build-5": "71d70ae3463509fc80fbcdd4ac4f5b8076fdddd32655f16dd3c3191037afbd11",
+    # build-5 re-pinned in place by issue #705 PR-1: `Conductor._build_inproc` starts the
+    # post-build validator by its path under the framework root (`framework_tool`) instead of a
+    # path relative to the Project root, which is the same file in a checkout that is both.
+    # The validator, its arguments and its working directory are unchanged, and so is every
+    # build command and record. (Measured by diffing `build_tuple()` against main 5cc1099c's:
+    # that row and no other.) The digest `build-5` shipped with at 5cc1099c:
+    "build-5@5cc1099c": "71d70ae3463509fc80fbcdd4ac4f5b8076fdddd32655f16dd3c3191037afbd11",
+    "build-5": "62fbe08dc647337f070e00e53f8ebf67803604ac0bbf3bc2b2ae358aab91bfc1",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2387,7 +2394,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # the evidence above was re-taken at the branch head.
     # The digest `execute-22` shipped with at 7e2dcde0:
     "execute-22@7e2dcde0": "6d8a0ad19dc63a7a64217e8af1b2b85dcb1cc4b040e50dfbfed7aa7fefcc2d95",
-    "execute-22": "8aa5466068a4e4be8fa78d5551da022c46351900e0d7cef649dcc1a640926b4e",
+    # execute-22 re-pinned in place by issue #705 PR-1: `Conductor._execute_inproc` starts the
+    # post-execute validator by its path under the framework root, and `tools/primary_evidence.py`
+    # gains `--repo-root` in its `main()` — the profile of `--target` is read from the Project
+    # that holds the run instead of the tool's own checkout. No function the host evaluates
+    # predicates with changes, and nothing under `tools/` or `skills/` calls `main()`.
+    # (Measured by diffing `execute_tuple()` against main 5cc1099c's: those two rows and no
+    # other.) The digest `execute-22` shipped with at 5cc1099c:
+    "execute-22@5cc1099c": "8aa5466068a4e4be8fa78d5551da022c46351900e0d7cef649dcc1a640926b4e",
+    "execute-22": "7e150ed5cbf2529e81dda1a6299d66ab14d3aa2762d21edd1b075867f78b78ce",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2660,7 +2675,12 @@ PINNED_VERDICT: dict[str, str] = {
     # `_execute_inproc` does after the oracle comparison. The document written is byte-identical.
     # The digest `verdict-20` shipped with at 0260f5ba:
     "verdict-20@0260f5ba": "46376f99b2c95312f68a779650ba33d6d4ec20f98502e254bd7f4f7db791e0be",
-    "verdict-20": "14827cb21fd16d0de0fd717337390d8f9e6b1f28b8244ad07ea0dcc50d995b31",
+    # verdict-20 re-pinned in place by issue #705 PR-1, for the `tools/primary_evidence.py`
+    # `main()` change of execute-22's 5cc1099c entry. (Measured by diffing `verdict_tuple()`
+    # against main 5cc1099c's: that row and no other.) The digest `verdict-20` shipped with at
+    # 5cc1099c:
+    "verdict-20@5cc1099c": "14827cb21fd16d0de0fd717337390d8f9e6b1f28b8244ad07ea0dcc50d995b31",
+    "verdict-20": "61a8787977b0e2584ce638fd79c327271a361e3c0ba7459a2738b22f46a57cd7",
 }
 
 

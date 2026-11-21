@@ -101,6 +101,12 @@ def _mixed_ir(primary: list[dict] | None, coordinates: list[dict] | None,
                variables=list(MIXED_VARIABLES) if variables is None else variables)
 
 
+
+#: The Project whose `spec/targets/` holds the profiles a run outside a pipeline tree is read
+#: against (`--repo-root`, issue #705): the sample Project, which is this checkout until it
+#: moves to its own directory.
+_SAMPLE_PROJECT = Path(__file__).resolve().parents[2]
+
 class _RunDir:
     """A run node directory with the two captures of every case written in the runner's
     JSON shape (leading index outermost)."""
@@ -2199,11 +2205,11 @@ class CliTest(unittest.TestCase):
         run.write_state("a", h, h * 0.5)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_dir / "spec.ir.yaml"),
-                                      "--run", str(run.root), "--target", "fortran_cpu"]), 1)
+                                      "--run", str(run.root), "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT)]), 1)
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([{**HMIN, "expr": "final.h["}])))
         with contextlib.redirect_stdout(out):
             self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root),
-                                      "--target", "fortran_cpu"]), 2)
+                                      "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT)]), 2)
         # round 4: an unreadable IR (a YAML list, malformed YAML, a missing file) and a run
         # directory without captures are exit 2 with a JSON error, never the exit code of
         # "a predicate is unsatisfied" and never a traceback
@@ -2212,15 +2218,54 @@ class CliTest(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root),
-                                          "--target", "fortran_cpu"]), 2)
+                                          "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT)]), 2)
             self.assertIn("error", json.loads(out.getvalue()))
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_ir([MASS, HMIN])))
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_dir / "missing.yaml"),
-                                      "--run", str(run.root), "--target", "fortran_cpu"]), 2)
+                                      "--run", str(run.root), "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT)]), 2)
             self.assertEqual(pe.main(["--ir", str(ir_dir), "--run", str(run.root / "nope"),
-                                      "--target", "fortran_cpu"]), 2)
+                                      "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT)]), 2)
 
+
+    def test_the_profile_is_read_from_the_project_that_holds_the_run(self) -> None:
+        """Issue #705: the Project is the directory above the run's `workspace/pipelines`
+        segment, and a run outside a pipeline tree names its Project with `--repo-root`, which
+        has no default. The scratch Project declares a target the framework checkout does not,
+        so a read of the tool's own checkout (the old default) is exit 2."""
+        import shutil
+
+        import yaml
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        h = _field()
+        run.write_state("a", h, h)
+        run.write_state("b", h, h)
+        ir = run.root / "spec.ir.yaml"
+        ir.write_text(yaml.safe_dump(_ir([MASS, HMIN])))
+        with tempfile.TemporaryDirectory() as t:
+            proj = Path(t) / "proj"
+            profile = (_SAMPLE_PROJECT / "spec" / "targets" / "fortran_cpu.yaml").read_text()
+            (proj / "spec" / "targets").mkdir(parents=True)
+            (proj / "spec" / "targets" / "scratch_cpu.yaml").write_text(
+                profile.replace("target_id: fortran_cpu", "target_id: scratch_cpu"))
+            self.assertFalse((_SAMPLE_PROJECT / "spec" / "targets" / "scratch_cpu.yaml").exists())
+            node = proj / "workspace" / "pipelines" / "component__x__0.1.0" / "scratch_cpu" / "x_1"
+            shutil.copytree(run.root / "raw", node / "run" / "r1" / "raw")
+            with contextlib.redirect_stdout(io.StringIO()):
+                # under the pipeline tree: the Project is read off the path, no option needed
+                self.assertEqual(pe.main(["--ir", str(ir), "--run", str(node / "run" / "r1")]), 0)
+                self.assertEqual(pe.main(["--ir", str(ir), "--run", str(node / "run" / "r1"),
+                                          "--target", "scratch_cpu"]), 0)
+                # outside a pipeline tree, `--repo-root` names it
+                self.assertEqual(pe.main(["--ir", str(ir), "--run", str(run.root),
+                                          "--target", "scratch_cpu", "--repo-root", str(proj)]), 0)
+            # ... and without it the run is refused, naming the option
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(pe.main(["--ir", str(ir), "--run", str(run.root),
+                                          "--target", "scratch_cpu"]), 2)
+            self.assertIn("--repo-root", json.loads(out.getvalue())["error"])
 
 # ------------------------------------------------------------------ cross-target (issue #324)
 
@@ -2517,7 +2562,7 @@ class CrossTargetCliTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                          "--target", "fortran_cpu",
+                          "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT),
                           # a label that is no target profile: it only names the comparand
                           "--comparand", f"gpu={runs['gpu'].root}"])
         self.assertEqual(rc, 0)
@@ -2525,14 +2570,14 @@ class CrossTargetCliTest(unittest.TestCase):
         self.assertEqual([c["target_id"] for c in cross["comparands"]], ["gpu"])
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                                      "--target", "fortran_cpu"]), 0)
+                                      "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT)]), 0)
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                                      "--target", "fortran_cpu",
+                                      "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT),
                                       "--comparand", "gpu"]), 2)
         runs["gpu"].write_state("a", _field(), _field() * 2)
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
-                                      "--target", "fortran_cpu",
+                                      "--target", "fortran_cpu", "--repo-root", str(_SAMPLE_PROJECT),
                                       "--comparand", f"gpu={runs['gpu'].root}"]), 1)
 
 

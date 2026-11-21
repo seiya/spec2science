@@ -52,6 +52,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
 from tools.execution_sites import SitesConfig
+from tools.framework_root import FRAMEWORK_ROOT, framework_tool
 from tools.host_execution import LOCAL_SITE
 from tools.llm_config import (
     LlmConfig,
@@ -550,7 +551,7 @@ def _build_invocation_record(
 
 
 def _runtime_command(repo_root: Path, env: dict[str, str], args: list[str]) -> RuntimeResult:
-    command = ["python3", "tools/orchestration_runtime.py", *args]
+    command = ["python3", framework_tool("orchestration_runtime.py"), *args]
     completed = subprocess.run(
         command,
         cwd=repo_root,
@@ -2253,8 +2254,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Leaf-LLM configuration file (YAML): which provider/model runs each phase and "
             "substep. Relative paths resolve against --repo-root. Defaults to ./llm.yaml, "
-            "which is yours to create: `cp docs/examples/llm_claude.example.yaml llm.yaml` "
-            "(codex / openai_compatible / anthropic_api samples sit beside it). See "
+            "which is yours to create: `cp <framework>/docs/examples/llm_claude.example.yaml "
+            "llm.yaml`, where <framework> is the checkout this script is in "
+            f"({FRAMEWORK_ROOT}) (codex / openai_compatible / anthropic_api samples sit beside "
+            "it). See "
             "docs/ORCHESTRATION.md 'Leaf LLM configuration' for the resolution order, the "
             "provider capability matrix, and the named rejection rules."
         ),
@@ -2933,9 +2936,10 @@ def _run_main(
             _emit_unlogged_event(rejection, args.stdout_format)
             return 2
 
-    # Startup assertion: validate_pipeline_semantics now fail-closes when the
-    # active repo_root's `spec/schema/ir/shape_expr.schema.json` is missing,
-    # malformed, contains an invalid regex, or fails the structural classifier.
+    # Startup assertion: validate_pipeline_semantics fail-closes when the
+    # framework's `spec/schema/ir/shape_expr.schema.json` is missing,
+    # malformed, contains an invalid regex, or fails the structural classifier
+    # (the schema is the framework's file, never the Project's: issue #705).
     # We must surface ALL of those failure modes here BEFORE any orchestration
     # state mutation (init/preflight/launches/...), otherwise the run would
     # create `workspace/tmp/<arid>/` and orchestration_meta.json only to
@@ -2945,17 +2949,22 @@ def _run_main(
     # Reuse the validator's actual schema loader so the check exercises the
     # same code path as the gate it is guarding — `is_file()` alone would
     # miss malformed JSON, invalid regex, and structural-classifier failures.
-    required_schema = repo_root / "spec" / "schema" / "ir" / "shape_expr.schema.json"
+    #
+    # Kept on a measurement (issue #705, X7): without it a damaged copy is not found before
+    # `Compile.generate`'s first leaf turn has started, which is billed.
+    required_schema = FRAMEWORK_ROOT / "spec" / "schema" / "ir" / "shape_expr.schema.json"
     try:
         from tools.validate_pipeline_semantics import (
             _get_shape_expr_patterns,
             _load_shape_expr_patterns_cached,
+            _resolve_shape_expr_schema_path,
         )
+        required_schema = _resolve_shape_expr_schema_path()
         _load_shape_expr_patterns_cached.cache_clear()
-        _get_shape_expr_patterns(repo_root=repo_root)
+        _get_shape_expr_patterns()
     except (RuntimeError, ModuleNotFoundError) as exc:
         try:
-            missing_path_rel = str(required_schema.relative_to(repo_root))
+            missing_path_rel = str(required_schema.relative_to(FRAMEWORK_ROOT))
         except ValueError:
             missing_path_rel = str(required_schema)
         _emit_unlogged_event(
@@ -3113,7 +3122,9 @@ def _run_main(
     # resuming the prior leaf's session with context intact, instead of a cold restart —
     # avoiding the cold-start re-read cost. `restart` repairs stay cold (anchoring avoidance).
     # The conductor falls back to a cold launch if the producer session transcript is gone.
-    base_env["PYTHONPATH"] = str(repo_root) + (
+    # The FRAMEWORK root, not the Project's: a child imports `tools.*` from the framework, and a
+    # Project that holds a directory named `tools/` would otherwise shadow it (issue #705).
+    base_env["PYTHONPATH"] = str(FRAMEWORK_ROOT) + (
         f":{base_env['PYTHONPATH']}" if base_env.get("PYTHONPATH") else ""
     )
     # Prevent Python from writing *.pyc / __pycache__ bytecode under tools/.
@@ -5239,7 +5250,7 @@ def _closure_member_argv(
     orchestration alone (its spec, phase, mode and leaf-LLM configuration are recovered
     from the record, as any `--resume` recovers them; passing the configuration would only
     be announced and ignored); a cold member is given everything the driver was."""
-    argv = [sys.executable, str(repo_root / "tools" / "run_workflow.py")]
+    argv = [sys.executable, framework_tool("run_workflow.py")]
     if resume:
         argv += ["--resume"]
     else:

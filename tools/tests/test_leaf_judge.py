@@ -35,6 +35,7 @@ import tools.raw_evidence_excerpt as rex
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+from tools.tests.framework_fixture import FRAMEWORK_DOCUMENTS, scratch_framework_root
 from tools.tests.llm_samples import sample_config as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_leaf_producer import (
@@ -48,10 +49,9 @@ _NODE = "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0"
 _SPEC_ID = "dynamics_advdiff_flux_1d_upwind_center2"
 _SPEC_PATH = f"spec/component/dynamics/advection_diffusion/{_SPEC_ID}"
 
-_REAL_REPO = Path(__file__).resolve().parents[2]
-
-#: The one repository document the judge's context reads, staged by COPYING the real file so
-#: the slicer runs against the anchors production reads rather than a stand-in's.
+#: The one framework document the judge's context reads, under `FRAMEWORK_ROOT` (issue #705); a
+#: row that alters it does so in `scratch_framework_root`'s copy of the real file, so the slicer
+#: runs against the anchors production reads rather than a stand-in's.
 _RUNNER_OUTPUT_CONTRACT = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 
 
@@ -86,11 +86,6 @@ def _ir() -> dict:
 def _write_run_node(repo: Path, *, bundle: bool = False) -> wc.NodeRefs:
     """Stage what a `validate.judge` finds on disk: the spec's tests, the lowered IR, the
     build and source metas, and a completed run node with its raw evidence."""
-    src = _REAL_REPO / _RUNNER_OUTPUT_CONTRACT
-    dst = repo / _RUNNER_OUTPUT_CONTRACT
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
-
     spec_dir = repo / _SPEC_PATH
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "tests.md").write_text(
@@ -248,10 +243,13 @@ class PureJudgeContextTests(_Fixture):
         Each read fails with its own `OSError`, which names the file (the `pure_{key}_missing`
         labels went in issue #643)."""
         c = self.conductor()
+        # A framework document is read under FRAMEWORK_ROOT (issue #705), so it is moved inside
+        # a scratch framework root; every other path of the table is the Project's.
+        fw = scratch_framework_root(self)
         for key, rel in sorted(c._leaf_judge_document_refs(self.refs).items()):
             if key == "raw_evidence_excerpt_document":
                 continue  # a directory, and its absence is a FACT the excerpt reports
-            path = self.repo / rel
+            path = (fw if rel in FRAMEWORK_DOCUMENTS else self.repo) / rel
             moved = path.with_suffix(path.suffix + ".moved")
             path.rename(moved)
             with self.subTest(document=key):
@@ -292,7 +290,7 @@ class PureJudgeContextTests(_Fixture):
         self.assertIn("pure_io_contract_document_unreadable", str(caught.exception))
 
     def test_an_unsliceable_runner_output_contract_raises(self) -> None:
-        (self.repo / _RUNNER_OUTPUT_CONTRACT).write_text(
+        (scratch_framework_root(self) / _RUNNER_OUTPUT_CONTRACT).write_text(
             "# Runner output contract\n\nno numbered sections here\n", encoding="utf-8")
         with self.assertRaises(ValueError) as caught:
             self.conductor()._build_leaf_judge_context(self.refs)

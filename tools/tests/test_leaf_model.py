@@ -40,6 +40,7 @@ from typing import ClassVar
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.framework_root import FRAMEWORK_ROOT
 from tools.tests import llm_samples
 from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.orchestration_fixtures import netns_socket_dir, network_block
@@ -1001,13 +1002,13 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
         return out
 
     def test_no_inlined_document_names_the_deleted_transport(self) -> None:
-        repo_root = Path(ort.__file__).resolve().parents[1]
+        # The inlined documents are the framework's, read under FRAMEWORK_ROOT (issue #705).
         documents = self._inlined_documents()
         self.assertTrue(documents, "no inlined document derived; this scans nothing")
         for rel in sorted(documents):
             with self.subTest(document=rel):
                 offending = self._offending_lines(
-                    (repo_root / rel).read_text(encoding="utf-8"))
+                    (FRAMEWORK_ROOT / rel).read_text(encoding="utf-8"))
                 self.assertEqual(
                     [], offending,
                     f"{rel} is handed to a leaf as its input and still describes machinery this "
@@ -1036,8 +1037,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
                 ctx = builder(refs)
                 inlined_text = "\n".join(str(v) for v in ctx.values())
                 for rel in derived:
-                    body = (Path(ort.__file__).resolve().parents[1] / rel).read_text(
-                        encoding="utf-8")
+                    body = (FRAMEWORK_ROOT / rel).read_text(encoding="utf-8")
                     marker = body.splitlines()[0]
                     if marker and marker in inlined_text:
                         break
