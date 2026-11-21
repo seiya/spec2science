@@ -410,6 +410,31 @@ class BwrapLineageProfileTests(unittest.TestCase):
                 self.assertIn(str(fw), tmpfs)
                 self.assertIn(str(repo), tmpfs)
 
+    def test_an_install_root_aliasing_the_framework_checkout_is_refused(self) -> None:
+        """Issue #705: the alias refusal runs for the framework root as for the Project root.
+        A `$HOME` child symlinked onto the framework checkout would bind it at a path neither
+        tmpfs covers. Control: the same install root is accepted while the framework root is
+        another directory."""
+        with tempfile.TemporaryDirectory() as t:
+            home = Path(t).resolve()
+            fw, repo, alias = home / "fw", home / "proj", home / "cli_home"
+            (fw / "tools").mkdir(parents=True)
+            repo.mkdir()
+            alias.symlink_to(fw)
+            orch = "orch_alias_fw"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
+            build = lambda arid: build_lineage_bwrap_profile(  # noqa: E731
+                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                backend_command="python3", backend_type="claude",
+                backend_ro_extra=[str(alias)], **kwargs)
+            with mock.patch.object(ort, "FRAMEWORK_ROOT", fw):
+                with self.assertRaises(ValueError) as caught:
+                    build("arid_alias_1")
+            self.assertIn(str(fw), str(caught.exception))
+            with mock.patch.object(ort, "FRAMEWORK_ROOT", home / "elsewhere"):
+                build("arid_alias_2")
+
     def test_the_leaf_namespace_has_no_route_out_and_reaches_only_its_routes(self) -> None:
         """Issue #534 step 4, under real bwrap with the rendered profile and the real relay.
 

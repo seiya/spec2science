@@ -13,14 +13,18 @@ that root (the plan's E3 and X4).
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.framework_root import FRAMEWORK_ROOT
 from tools.target_profile import list_target_ids, load_target_profile
@@ -138,6 +142,75 @@ class ExternalProjectTests(unittest.TestCase):
             cwd=self.proj, env=self._env(), capture_output=True, text=True, timeout=120,
             check=False)
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
+
+class OperatorToolRootTests(unittest.TestCase):
+    """The operator tools read the Project they are pointed at, by default the working
+    directory, never the tool's own checkout (issue #705)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.proj = make_external_project(Path(tmp.name).resolve() / "proj")
+        cwd = os.getcwd()
+        os.chdir(self.proj)
+        self.addCleanup(os.chdir, cwd)
+
+    def test_run_configuration_defaults_to_the_working_directory(self) -> None:
+        from tools import run_configuration as rc
+        seen = []
+
+        def refuse(root, *_args):
+            seen.append(Path(root))
+            raise rc.ConfigurationRefused("stop")
+
+        with mock.patch.object(rc, "run_configuration", side_effect=refuse), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(rc.main(["spec/x", "--target", "fortran_cpu", "--config", "c.yaml",
+                                      "--out", "out"]), rc.EXIT_REFUSED)
+        self.assertEqual([p.resolve() for p in seen], [self.proj])
+
+    def test_judge_replay_defaults_to_the_working_directory(self) -> None:
+        from tools import judge_replay as jr
+        args = jr.build_parser().parse_args(["orch", "arid", "--llm-config", "x.yaml"])
+        self.assertEqual(Path(args.repo_root).resolve(), self.proj)
+
+    def test_site_smoke_reads_the_sites_file_of_its_project(self) -> None:
+        from tools import site_smoke
+        (self.proj / "sites.yaml").write_text(":\n- not a mapping\n", encoding="utf-8")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = site_smoke.main(["box"])
+        self.assertEqual(code, 2)
+        self.assertIn("sites.yaml refused", err.getvalue())
+        self.assertIn(str(self.proj), err.getvalue())
+
+    def test_judge_replays_init_child_imports_the_framework_not_the_project(self) -> None:
+        """The replay's `init` is a real child started with the Project as its working
+        directory; the Project's own `tools/` package raises on import, so a `PYTHONPATH` that
+        named the Project root would fail the child."""
+        from tools import judge_replay as jr
+        from tools import run_workflow as rw
+        from tools.llm_config import load_llm_config
+
+        real = rw._runtime_command
+
+        class _Stop(Exception):
+            pass
+
+        def runtime(repo_root, env, args):
+            if args[0] != "init":
+                raise _Stop(args[0])
+            return real(repo_root, env, args)
+
+        source = types.SimpleNamespace(meta={"spec_ref": _HARNESS, "source_dependency_ref": ""})
+        with mock.patch.object(rw, "_runtime_command", side_effect=runtime), \
+                mock.patch.object(jr, "finish_replay_orchestration"):
+            with self.assertRaises(_Stop):
+                jr.create_replay_orchestration(self.proj, source,
+                                               load_llm_config(self.proj / "llm.yaml"), {})
+        metas = list((self.proj / "workspace" / "orchestrations").glob("*/orchestration_meta.json"))
+        self.assertEqual(len(metas), 1, metas)
 
 
 if __name__ == "__main__":
