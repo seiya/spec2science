@@ -10,7 +10,9 @@ compare` reads.
 builds (README §Operations); `--work` is a scratch directory this script fills (the oracle runs,
 the mutant builds and their runs) and never a directory of the checkout. Needs the certified
 pipelines of billed run R-O (`PIPELINES` below; main `e27b6b1c`), whose `bin_oracle/` binaries
-it runs, and `gfortran` and `make` for the mutants.
+it runs, and `gfortran` and `make` for the mutants. The measurement directory and the two nodes
+are the SCALE Project's since issue #705 PR-3: set `KESSLER_MEASUREMENT=<that Project>/docs/design/
+kessler_measurement`, and read every `docs/design/kessler_measurement/` path here as that copy.
 
 Table 1. For each node, per (compared case, variable): the effective absolute tolerance each
 comparison applies to the captured variable.
@@ -82,7 +84,10 @@ from tools.primary_evidence import (  # noqa: E402
 )
 from tools.workflow_conductor import Conductor  # noqa: E402
 
-COMPARE = REPO / "docs" / "design" / "kessler_measurement" / "compare.py"
+#: The measurement directory left for the SCALE Project with its nodes (issue #705 PR-3): name
+#: that Project's copy in `KESSLER_MEASUREMENT` (its `docs/design/kessler_measurement`).
+COMPARE = Path(os.environ.get("KESSLER_MEASUREMENT")
+               or REPO / "docs" / "design" / "kessler_measurement") / "compare.py"
 sys.path.insert(0, str(COMPARE.parent))
 import compare as offline  # noqa: E402
 
