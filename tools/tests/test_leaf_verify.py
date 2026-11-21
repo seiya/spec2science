@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +26,8 @@ import tools.workflow_conductor as wc
 #: `phase_required_outputs("generate")` since issue #289 (R4-b PR-3).
 from tools.backends import registry as _bb_registry  # noqa: E402
 from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
+from tools.framework_root import FRAMEWORK_ROOT as REAL_FRAMEWORK_ROOT
+from tools.tests.framework_fixture import FRAMEWORK_DOCUMENTS, scratch_framework_root
 _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
 from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
@@ -61,19 +62,20 @@ def _verdict(status: str = "pass", *, severity: str | None = None,
             "findings": findings or [{"summary": "mass is not conserved"}]}
 
 
-# The real document the reviewer context slices, copied into each fixture repo. Deliberately the
-# REAL document and not a synthetic stand-in: every reviewer-loop test below renders the live
+# The real document the reviewer context slices, read under `FRAMEWORK_ROOT` (issue #705: a
+# scratch Project holds no framework file). Deliberately the REAL document and not a synthetic
+# stand-in: every reviewer-loop test below renders the live
 # slice, so a reorganization the slicer cannot cut turns this whole file red — the early warning
 # that a billed run would otherwise be the first to give. `SeverityRubricSlicerTests` covers the
 # helper's own contract on synthetic text.
-_REAL_PHASE_02 = (Path(wc.__file__).resolve().parents[1]
-                  / "docs" / "workflow" / "phases" / "phase_02_generate.md")
+_PHASE_02 = "docs/workflow/phases/phase_02_generate.md"
+_REAL_PHASE_02 = REAL_FRAMEWORK_ROOT / _PHASE_02
 
 
-def _verify_node(repo: Path, *, stage_phase_02: bool = True) -> wc.NodeRefs:
-    """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
-    and — unless `stage_phase_02` is False — the repository's phase_02 contract staged where
-    `_build_leaf_verify_context` reads it."""
+def _verify_node(repo: Path) -> wc.NodeRefs:
+    """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input).
+    The phase_02 contract `_build_leaf_verify_context` slices is the framework's, read under
+    `FRAMEWORK_ROOT`; a row that breaks it uses `scratch_framework_root` (issue #705)."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -81,10 +83,6 @@ def _verify_node(repo: Path, *, stage_phase_02: bool = True) -> wc.NodeRefs:
     (repo / refs.spec_path).mkdir(parents=True, exist_ok=True)
     (repo / refs.spec_path / "controlled_spec.md").write_text(
         "# §5.1 interface\nconserves mass.\n", encoding="utf-8")
-    if stage_phase_02:
-        dest = repo / "docs" / "workflow" / "phases" / "phase_02_generate.md"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(_REAL_PHASE_02, dest)
     return refs
 
 
@@ -232,7 +230,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            path = repo / "docs" / "workflow" / "phases" / "phase_02_generate.md"
+            path = scratch_framework_root(self) / _PHASE_02
             real = path.read_text(encoding="utf-8")
             heading = "#### Severity of a finding (`issue_severity`)\n"
             self.assertEqual(real.count(heading), 1)
@@ -348,7 +346,8 @@ class PureVerifyContextTests(unittest.TestCase):
         # file (the `pure_severity_rubric_document_missing` label went in issue #643).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = _verify_node(repo, stage_phase_02=False)
+            refs = _verify_node(repo)
+            (scratch_framework_root(self) / _PHASE_02).unlink()
             with self.assertRaises(OSError) as cm:
                 _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("phase_02_generate.md", str(cm.exception))
@@ -358,7 +357,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_bytes(
+            (scratch_framework_root(self) / _PHASE_02).write_bytes(
                 b"#### Severity of a finding\n\xff\xfe\n## On-failure behavior\n")
             with self.assertRaises(UnicodeDecodeError):
                 _conductor(repo)._build_leaf_verify_context(refs)
@@ -373,7 +372,7 @@ class PureVerifyContextTests(unittest.TestCase):
             refs = _verify_node(repo)
             real = _REAL_PHASE_02.read_text(encoding="utf-8")
             self.assertIn("\n## On-failure behavior\n", real)
-            (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_text(
+            (scratch_framework_root(self) / _PHASE_02).write_text(
                 real.replace("\n## On-failure behavior\n", "\n## Retry policy\n"),
                 encoding="utf-8")
             with self.assertRaises(ValueError) as cm:
@@ -512,7 +511,10 @@ class PureVerifySubstepTests(unittest.TestCase):
     def _run(self, envelopes, *, cls=None, stage_phase_02=True, llm_config=None, unlink=None):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
-        refs = _verify_node(repo, stage_phase_02=stage_phase_02)
+        refs = _verify_node(repo)
+        if not stage_phase_02:
+            # The framework's phase_02 is absent: removed from a scratch framework root.
+            (scratch_framework_root(self) / _PHASE_02).unlink()
         if unlink is not None:
             # A repo-relative path, computed from the node's refs, removed after staging.
             (repo / unlink(refs)).unlink()
@@ -1824,10 +1826,6 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
     green, which is exactly the "the predicate has a test, the call site does not" shape.
     """
 
-    #: The two repository documents the reviewer context reads.
-    _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
-                  "docs/workflow/phases/phase_02_generate.md")
-
     def setUp(self) -> None:
         from tools.tests.test_leaf_producer import (
             _write_harness_node, _harness_bundle, _HARNESS_SPEC_ID)
@@ -1836,11 +1834,9 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.repo = Path(self._tmp.name)
-        real_root = Path(wc.__file__).resolve().parents[1]
-        for rel in self._REPO_DOCS:
-            dest = self.repo / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(real_root / rel, dest)
+        # The context's two framework documents (the runner-output contract, phase_02) are read
+        # under FRAMEWORK_ROOT (issue #705); a scratch copy, so a row can remove one.
+        self.fw = scratch_framework_root(self)
         self.refs = _write_harness_node(self.repo)
         src = self.repo / self.refs.source_dir()
         src.mkdir(parents=True, exist_ok=True)
@@ -1881,7 +1877,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         }
         for rel, reason in cases.items():
             with self.subTest(document=rel):
-                target = self.repo / rel
+                target = (self.fw if rel in FRAMEWORK_DOCUMENTS else self.repo) / rel
                 body = target.read_text(encoding="utf-8")
                 target.unlink()
                 try:
@@ -1892,7 +1888,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                     target.write_text(body, encoding="utf-8")
         # ...and a rubric whose anchors moved is a DIFFERENT failure (the slicer's), not a
         # blank slot.
-        phase_doc = self.repo / "docs/workflow/phases/phase_02_generate.md"
+        phase_doc = self.fw / _PHASE_02
         body = phase_doc.read_text(encoding="utf-8")
         phase_doc.write_text(body.replace("#### Severity of a finding", "#### Grading"),
                              encoding="utf-8")

@@ -30,6 +30,7 @@ import yaml
 
 try:
     from tools import leaf_netns
+    from tools.framework_root import FRAMEWORK_ROOT
     from tools.backends import registry as backend_registry
     from tools.prompt_fragments import parse_fragments
     from tools.operator_private_root import (
@@ -77,6 +78,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
     from tools import leaf_netns
+    from tools.framework_root import FRAMEWORK_ROOT
     from tools.backends import registry as backend_registry
     from tools.prompt_fragments import parse_fragments
     from tools.operator_private_root import (
@@ -6385,8 +6387,10 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
     "USER": "identity the CLI and git may read; kept from the pre-allowlist set.",
     "LOGNAME": "the USER pair; kept from the pre-allowlist set.",
     "PYTHONPATH": (
-        "`run_workflow.py` prepends repo_root so a leaf's `python3 tools/...` and the "
-        "hook modules import THIS checkout rather than an installed copy."
+        "`run_workflow.py` prepends the framework root (`tools/framework_root.py`; it was "
+        "the repository root before issue #705) so a child's `tools.*` imports resolve to "
+        "THIS checkout rather than an installed copy or a Project's own `tools/` directory. "
+        "The leaf's sandbox holds no path it names."
     ),
     "PYTHONDONTWRITEBYTECODE": (
         "keeps a grandchild python from writing __pycache__ under tools/ (issue #5; the "
@@ -6744,6 +6748,29 @@ def _fs_identity(physical: Path, table: Sequence[tuple[str, str, str]]) -> tuple
     return best
 
 
+def sandbox_hidden_roots(repo_root: str | Path) -> list[str]:
+    """The roots a leaf sandbox and a wrapper run hide with an empty tmpfs (issue #705): the
+    Project root `repo_root`, as spelled, and the framework root `FRAMEWORK_ROOT` when it is
+    another directory. The defended content sits under both — the `spec` nodes and every run's
+    artifacts under the Project, the deterministic gates' implementation (and, with the sample
+    Project nested in the framework checkout, the sample's State) under the framework — so a
+    leaf that reads either aims at the checker, or reads certified sources, instead of doing
+    its task: issue #227's two gains, measured open for the framework root with two distinct
+    roots (issue #705, X1).
+
+    Each root is treated as the single checkout was: the alias refusal runs for each, and its
+    tmpfs is emitted after every read-only bind of the system directories and install roots and
+    before every bind-back and read-write bind. No order between the two tmpfs is required
+    (measured under real bwrap in either order, nested and disjoint); outer first is only a
+    stable spelling."""
+    project = str(repo_root)
+    roots = [project]
+    framework = str(FRAMEWORK_ROOT)
+    if Path(framework).resolve() != Path(project).resolve():
+        roots.append(framework)
+    return sorted(roots, key=lambda r: (len(Path(r).parts), r))
+
+
 def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
                                      system_ro: Sequence[str] = ()) -> None:
     """Refuse a read-only bind through which the checkout is reachable under ANOTHER path.
@@ -7019,7 +7046,8 @@ def build_lineage_bwrap_profile(
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
     system_ro = _runtime_ro_bind_paths()
-    _refuse_backend_ro_alias_of_repo(repo_root, backend_ro, system_ro)
+    for hidden in sandbox_hidden_roots(repo_root):
+        _refuse_backend_ro_alias_of_repo(Path(hidden), backend_ro, system_ro)
     if backend_rw_override is not None:
         backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
@@ -7290,7 +7318,11 @@ def render_bwrap_command(
     # (`runtime_ro_bind_paths` is the two concatenated) and refuses a root that is, holds, or
     # lies inside the checkout by inode and by the mount table — keyed on where the checkout
     # would APPEAR in the sandbox, so the one place the tmpfs covers is the one place accepted.
-    cmd.extend(["--tmpfs", repo_root])
+    #
+    # Since issue #705 the framework root is hidden the same way when it is not the Project
+    # root (`sandbox_hidden_roots`): the gates under its `tools/` are the gain named above.
+    for hidden in sandbox_hidden_roots(repo_root):
+        cmd.extend(["--tmpfs", hidden])
     # Writable runtime binds (backend config/credential home) — emitted AFTER the tmpfs
     # at repo_root. A home INSIDE repo_root is
     # refused by `_resolve_backend_rw_binds`, and for a home outside it the order is
@@ -7393,10 +7425,18 @@ def wrapper_toolchain_ro_roots(executables: Sequence[str],
     the system binds already cover are dropped. An executable `PATH` does not hold contributes
     nothing: the run then fails as it would on the host, inside the sandbox; so does a program
     under any other directory of the checkout (`_bindable_checkout_root`), whose root is
-    dropped rather than refused."""
+    dropped rather than refused.
+
+    Since issue #705 "the checkout" is each of the two roots a run hides
+    (`sandbox_hidden_roots`): the Project root and the framework root. A program under either
+    takes that root's rule, and under both (a Project nested in the framework checkout) the rule
+    of the innermost root that holds it. Keyed on the Project root alone, a linter in the
+    framework checkout's virtualenv would bind the whole framework checkout (the home-install
+    rule's answer), which the framework tmpfs then covers, and the linter would not start."""
     home = (os.environ.get("HOME") or "").strip()
     system = [Path(p) for p in _runtime_ro_bind_paths()]
-    repo = Path(repo_root).resolve() if repo_root is not None else None
+    checkouts = ([] if repo_root is None
+                 else [Path(r).resolve() for r in sandbox_hidden_roots(Path(repo_root).resolve())])
     roots: set[str] = set()
     for name in executables:
         found = shutil.which(name)
@@ -7405,7 +7445,9 @@ def wrapper_toolchain_ro_roots(executables: Sequence[str],
         for candidate in (Path(found), Path(os.path.realpath(found))):
             normal = Path(os.path.normpath(candidate))
             inside_home = bool(home) and normal.is_relative_to(Path(os.path.normpath(home)))
-            if repo is not None and normal.is_relative_to(repo) and normal != repo:
+            holders = [c for c in checkouts if normal.is_relative_to(c) and normal != c]
+            if holders:
+                repo = max(holders, key=lambda c: len(c.parts))
                 root = repo / normal.relative_to(repo).parts[0]
                 if not _bindable_checkout_root(root, repo):
                     # Bound by no run: the program is then absent inside it, which fails the
@@ -7463,7 +7505,13 @@ def render_wrapper_sandbox_prefix(
     at or under it would mount the checkout back over the tmpfs; one covering it would expose
     all of it); an install root inside the checkout other than one of its virtualenv
     directories; an install root that aliases the checkout
-    (`_refuse_backend_ro_alias_of_repo`)."""
+    (`_refuse_backend_ro_alias_of_repo`).
+
+    "The checkout" is each root `sandbox_hidden_roots` names (issue #705): the tmpfs, the
+    virtualenv bind-back and the alias refusal apply to the Project root and to the framework
+    root alike. The containment refusal of `rw_binds` and `ro_binds` stays keyed on the
+    Project root, the root the run writes under; a bind inside the framework checkout is
+    mounted after both tmpfs and shows only itself."""
     resolved_repo = repo_root.resolve()
 
     def _checked(paths: Sequence[Path], kind: str) -> list[str]:
@@ -7482,12 +7530,18 @@ def render_wrapper_sandbox_prefix(
     ro = _checked(ro_binds, "ro")
     project = str(Path(project_dir).resolve())
     system_ro = _runtime_ro_bind_paths()
+    # The two roots a run hides (issue #705): the Project root and the framework root. An
+    # install root under either is that root's virtualenv directory or refused, judged against
+    # the innermost root that holds it, as `wrapper_toolchain_ro_roots` chose it.
+    hidden = [Path(r) for r in sandbox_hidden_roots(resolved_repo)]
     toolchain: list[str] = []
     in_checkout: list[str] = []
     for raw in toolchain_ro_roots:
         root = Path(os.path.normpath(str(raw)))
-        if root.is_relative_to(resolved_repo) and root != resolved_repo:
-            if not _bindable_checkout_root(root, resolved_repo):
+        holders = [h for h in hidden if root.is_relative_to(h) and root != h]
+        if holders:
+            holder = max(holders, key=lambda h: len(h.parts))
+            if not _bindable_checkout_root(root, holder):
                 raise ValueError(
                     f"wrapper install root {str(raw)!r} lies in the checkout and is not one of "
                     f"its virtualenv directories {sorted(WRAPPER_CHECKOUT_TOOL_DIRS)}; a "
@@ -7495,7 +7549,8 @@ def render_wrapper_sandbox_prefix(
             in_checkout.append(str(root))
         else:
             toolchain.append(str(raw))
-    _refuse_backend_ro_alias_of_repo(repo_root, toolchain, system_ro)
+    for root in hidden:
+        _refuse_backend_ro_alias_of_repo(root, toolchain, system_ro)
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -7514,7 +7569,8 @@ def render_wrapper_sandbox_prefix(
     ]
     for item in system_ro + toolchain:
         cmd.extend(["--ro-bind", item, item])
-    cmd.extend(["--tmpfs", str(resolved_repo)])
+    for root in hidden:
+        cmd.extend(["--tmpfs", str(root)])
     for item in in_checkout:
         cmd.extend(["--ro-bind", item, item])
     for item in rw:
@@ -12065,7 +12121,10 @@ def init_orchestration(
             if isinstance(existing_run_id, str) and existing_run_id.strip():
                 orchestration_agent_run_id = existing_run_id.strip()
     if "repo_revision" not in meta:
-        repo_revision = _capture_repo_revision(repo_root)
+        # The FRAMEWORK's commit — the code that ran — not the Project's (issue #705;
+        # `docs/GLOSSARY.md`): every reader means that commit, and a Project's spec files are
+        # identified in every derivation key by their hash.
+        repo_revision = _capture_repo_revision(FRAMEWORK_ROOT)
         if repo_revision:
             meta["repo_revision"] = repo_revision
     # Reproduction/provenance record: raw command + resolved params (+ closure

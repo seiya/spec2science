@@ -24933,7 +24933,6 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         from tools.tests.test_validate_pipeline_semantics import (
             _FIXTURE_IR_REL,
             _create_minimal_execution_tree,
-            _seed_shape_expr_schema_into,
         )
 
         refs = wc.NodeRefs(target_id=_TARGET_ID,
@@ -24945,7 +24944,6 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            _seed_shape_expr_schema_into(repo)
             _create_minimal_execution_tree(
                 repo,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -24967,7 +24965,6 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         from tools.tests.test_validate_pipeline_semantics import (
             _FIXTURE_IR_REL,
             _create_minimal_execution_tree,
-            _seed_shape_expr_schema_into,
         )
 
         refs = wc.NodeRefs(target_id=_TARGET_ID,
@@ -24985,7 +24982,6 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            _seed_shape_expr_schema_into(repo)
             _create_minimal_execution_tree(
                 repo,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",

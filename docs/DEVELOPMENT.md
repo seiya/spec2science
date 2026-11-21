@@ -73,14 +73,16 @@ Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the
 ## Configuration layers
 ONE session reads configuration from this checkout: the operator's own interactive one, which loads the DEV layer. A workflow leaf loads nothing from this checkout, and a claude leaf no settings file from the operator's `~/.claude` either (`--restricted`; [issue #453](https://github.com/seiya/spec2science/issues/453)). Two sessions used to, and the layers were kept disjoint down to the hook entrypoint (issue #102); Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)) removed the second one — its `pure-function leaf` launched under `--safe-mode` with no tools, which disabled every customization a layer could carry (CLAUDE.md, skills, hooks, MCP servers) and left no tool call for a hook to judge, so the LEAF rows (`leaf_config/`, `tools/hooks/cli.py`) are deleted rather than disjoint. The `workshop leaf` that replaced it ([issue #534](https://github.com/seiya/spec2science/issues/534); every leaf since PR-J4-b) drops `--safe-mode` and holds file tools and, on a producing substep, the wrapper's MCP tools, and it loads nothing from this checkout: the checkout path is an empty tmpfs in its sandbox, its config home is a private per-lineage directory, and `--restricted` keeps out every instruction file the CLI would discover (`docs/ORCHESTRATION.md` §workshop leaf). No hook layer returns with it. `.mcp.json`, the operator session's server definition for the build-runtime MCP server, was deleted with the MCP protocol layer in [issue #444](https://github.com/seiya/spec2science/issues/444): the conductor calls the build-runtime library (`docs/BUILD_RUNTIME.md`) in-process. `docs/HOOKS.md` is canonical for what the DEV layer does.
 
+The DEV layer is this checkout's, the framework's. The run inputs are the State of the Project a run reads: they sit under the root `--repo-root` names, which is this checkout's root when the Project is this checkout and another directory otherwise (`docs/GLOSSARY.md` §14).
+
 | file | layer | read by | tracked |
 |---|---|---|---|
 | `.codex/hooks.json` | DEV | an operator's own interactive codex session, as the project hook layer | yes |
 | `.claude/settings.json` | DEV | an operator's own interactive session | yes |
 | `.claude/settings.local.json` | DEV | the same session, per operator | no |
 | `.claude/skills/` | DEV | the same session | yes |
-| `llm.yaml` | run input | the driver, to decide what each leaf launches | no |
-| `sites.yaml` | run input | the driver, to decide where each target's `Build` and `Validate.execute` run (`docs/ORCHESTRATION.md` §Execution sites) | no |
+| `llm.yaml` | run input (State, under the Project root) | the driver, to decide what each leaf launches | no |
+| `sites.yaml` | run input (State, under the Project root) | the driver, to decide where each target's `Build` and `Validate.execute` run (`docs/ORCHESTRATION.md` §Execution sites) | no |
 | the operator's own CLI configuration directories | personal | the operator's own session, the CLI's authentication, and a claude leaf's CLI (its credential store, `~/.claude.json` and session transcripts; the settings files are ignored under `--restricted`, and an `env` block in the global config (`~/.claude.json`, or the legacy `~/.claude/.config.json`) is refused by preflight, [issue #453](https://github.com/seiya/spec2science/issues/453)) | out of tree |
 | `~/.spec2science/` | runtime state | the host, per orchestration | out of tree |
 

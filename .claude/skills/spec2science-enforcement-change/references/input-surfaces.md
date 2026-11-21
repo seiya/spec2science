@@ -276,7 +276,8 @@ The rule is in SKILL.md; this is what it cost. PR #228 replaced a claude-only li
 The read-only leaf profile hid `workspace/`, the `workspace_*/` archives and `releases/` with
 tmpfs overlays at the checkout's own path (since issue #227 it is one empty tmpfs over the whole
 checkout, at that same path, so `tools/` is on the hidden side too and the exemption below holds
-for the same reason), and a bound `$HOME` child is exactly the place a
+for the same reason; since issue #705 there is one at each of the Project root and the framework
+root, each with its own alias refusal), and a bound `$HOME` child is exactly the place a
 second name for the checkout can sit. Round 0's own sweep and the round-1 reviewers saw none of
 this; round 1's security axis found the first name and every later round found the next, each
 INSIDE the previous round's fix:

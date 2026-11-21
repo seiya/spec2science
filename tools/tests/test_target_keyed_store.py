@@ -469,11 +469,9 @@ class EveryStageRefusesAnUnresolvableTargetTests(unittest.TestCase):
         import tools.validate_pipeline_semantics as vps
         from tools.tests.test_validate_pipeline_semantics import (
             _create_minimal_execution_tree,
-            _seed_shape_expr_schema_into,
         )
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            _seed_shape_expr_schema_into(repo)
             _create_minimal_execution_tree(
                 repo, dep_spec_id="dep_a",
                 model_text="module shallow_water2d_model\nend module shallow_water2d_model\n",

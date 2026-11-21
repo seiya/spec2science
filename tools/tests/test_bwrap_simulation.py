@@ -370,6 +370,109 @@ class BwrapLineageProfileTests(unittest.TestCase):
             self.assertTrue((repo / "workspace" / "tmp" / arid / "scratch.txt").is_file())
             self.assertTrue((Path(profile["tmp_dir"]) / "scratch.txt").is_file())
 
+    def test_with_two_roots_neither_is_readable_through_an_ancestor_install_root(self) -> None:
+        """Issue #705: the Project root and the framework root are two directories, and the
+        backend install root is an ancestor of both (a `$HOME` child holding the framework
+        checkout, the Project and the CLI). Without a tmpfs at the framework root the gate under
+        its `tools/` and a nested sample Project's State are read through that bind; the probe
+        reads both, the Project's own spec, and a control file beside them that MUST be readable
+        (so a dead install-root bind cannot pass the row). Both CLI families."""
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as t:
+                home = Path(t).resolve()
+                fw, repo = home / "fw", home / "proj"
+                planted = {"FW_TOOLS": fw / "tools" / "gate.py",
+                           "FW_SAMPLE_STATE": fw / "sample" / "workspace" / "model.f90",
+                           "PROJECT_SPEC": repo / "spec" / "x.yaml",
+                           "CONTROL": home / "other" / "visible.txt"}
+                for path in planted.values():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("x\n", encoding="utf-8")
+                orch, arid = f"orch_two_{backend}", f"arid_two_{backend}"
+                _ensure_orchestration_audit_dirs(repo, orch)
+                _iso, kwargs = _prepared_lineage(self, repo, orch, backend)
+                with mock.patch.object(ort, "FRAMEWORK_ROOT", fw):
+                    profile = build_lineage_bwrap_profile(
+                        repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                        backend_command="python3", backend_type=backend,
+                        backend_ro_extra=[str(home)], **kwargs)
+                    cmd = render_bwrap_command(profile=profile, command_argv=[
+                        "python3", "-c",
+                        "import pathlib\n" + "".join(
+                            (f"print({tag!r} + ':' + ('READABLE' if pathlib.Path({str(path)!r})"
+                             f".exists() else 'HIDDEN'), flush=True)\n")
+                            for tag, path in planted.items())])
+                out = _bwrap_stdout(cmd)
+                self.assertIn("CONTROL:READABLE", out, out)
+                for tag in ("FW_TOOLS", "FW_SAMPLE_STATE", "PROJECT_SPEC"):
+                    self.assertIn(f"{tag}:HIDDEN", out, out)
+                tmpfs = [cmd[k + 1] for k, a in enumerate(cmd) if a == "--tmpfs"]
+                self.assertIn(str(fw), tmpfs)
+                self.assertIn(str(repo), tmpfs)
+
+    def test_a_project_nested_in_the_framework_keeps_its_scratch_and_hides_the_rest(self) -> None:
+        """Issue #705, the `sample/` layout: the Project is a directory of the framework
+        checkout. Both tmpfs come before the leaf's scratch binds, so the scratch root under the
+        Project (the leaf's `TMPDIR`) stays writable while the framework's `tools/` and the
+        Project's own spec are hidden. Both CLI families."""
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as t:
+                fw = Path(t).resolve() / "fw"
+                repo = fw / "sample"
+                for path in (fw / "tools" / "gate.py", repo / "spec" / "x.yaml"):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("x\n", encoding="utf-8")
+                orch, arid = f"orch_nest_{backend}", f"arid_nest_{backend}"
+                _ensure_orchestration_audit_dirs(repo, orch)
+                _iso, kwargs = _prepared_lineage(self, repo, orch, backend)
+                probe = textwrap.dedent(f"""
+                    import os, pathlib
+                    for tag, p in (("FW_TOOLS", {str(fw / "tools" / "gate.py")!r}),
+                                   ("PROJECT_SPEC", {str(repo / "spec" / "x.yaml")!r})):
+                        print(tag + ":" + ("READABLE" if pathlib.Path(p).exists() else "HIDDEN"),
+                              flush=True)
+                    t = pathlib.Path(os.environ["TMPDIR"]) / "probe.txt"
+                    t.write_text("x")
+                    print("TMPDIR:WRITABLE", flush=True)
+                """)
+                with mock.patch.object(ort, "FRAMEWORK_ROOT", fw):
+                    profile = build_lineage_bwrap_profile(
+                        repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                        backend_command="python3", backend_type=backend, **kwargs)
+                    cmd = render_bwrap_command(profile=profile,
+                                               command_argv=["python3", "-c", probe])
+                out = _bwrap_stdout(cmd)
+                self.assertIn("FW_TOOLS:HIDDEN", out, out)
+                self.assertIn("PROJECT_SPEC:HIDDEN", out, out)
+                self.assertIn("TMPDIR:WRITABLE", out, out)
+
+    def test_an_install_root_aliasing_the_framework_checkout_is_refused(self) -> None:
+        """Issue #705: the alias refusal runs for the framework root as for the Project root.
+        A `$HOME` child symlinked onto the framework checkout would bind it at a path neither
+        tmpfs covers. Control: the same install root is accepted while the framework root is
+        another directory."""
+        with tempfile.TemporaryDirectory() as t:
+            home = Path(t).resolve()
+            fw, repo, alias = home / "fw", home / "proj", home / "cli_home"
+            (fw / "tools").mkdir(parents=True)
+            repo.mkdir()
+            alias.symlink_to(fw)
+            orch = "orch_alias_fw"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
+            def build(arid: str) -> dict:
+                return build_lineage_bwrap_profile(
+                    repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                    backend_command="python3", backend_type="claude",
+                    backend_ro_extra=[str(alias)], **kwargs)
+
+            with mock.patch.object(ort, "FRAMEWORK_ROOT", fw), \
+                    self.assertRaises(ValueError) as caught:
+                build("arid_alias_1")
+            self.assertIn(str(fw), str(caught.exception))
+            with mock.patch.object(ort, "FRAMEWORK_ROOT", home / "elsewhere"):
+                build("arid_alias_2")
+
     def test_the_leaf_namespace_has_no_route_out_and_reaches_only_its_routes(self) -> None:
         """Issue #534 step 4, under real bwrap with the rendered profile and the real relay.
 
@@ -1728,6 +1831,48 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         })
         self.assertIn("LINTTOOL_RAN", result["stdout"], result)
         self.assertIn("TOOLS_HIDDEN", result["stdout"], result)
+
+    def test_with_two_roots_a_framework_virtualenv_tool_starts_and_the_rest_is_absent(self) -> None:
+        """Issue #705: the Project is not the framework checkout, and the linter is installed in
+        the FRAMEWORK checkout's virtualenv, under `$HOME`. Keyed on the Project root alone the
+        home-install rule bound the whole framework checkout read-only into the run (measured,
+        the plan's X1); now its virtualenv is bound back over the framework tmpfs and nothing
+        else of it is in the run."""
+        from tools.build_runtime import tool_run_program
+        from tools.orchestration_runtime import (
+            render_wrapper_sandbox_prefix,
+            wrapper_toolchain_ro_roots,
+        )
+
+        home = Path(self._tmp.name).resolve() / "home2"
+        fw, repo = home / "fw", home / "proj"
+        exe = fw / ".venv" / "bin" / "linttool"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("#!/bin/sh\necho LINTTOOL_RAN\n")
+        exe.chmod(0o755)
+        for rel in ("tools/gate.py", "sample/workspace/model.f90"):
+            (fw / rel).parent.mkdir(parents=True, exist_ok=True)
+            (fw / rel).write_text("x")
+        repo.mkdir()
+        env = dict(self.ctx.base_env) | {"PATH": f"{exe.parent}:/usr/bin:/bin"}
+        with mock.patch.object(ort, "FRAMEWORK_ROOT", fw), \
+                mock.patch.dict(os.environ, {"PATH": env["PATH"], "HOME": str(home)}):
+            roots = wrapper_toolchain_ro_roots(["linttool"], repo)
+            prefix = render_wrapper_sandbox_prefix(
+                repo_root=repo, project_dir=self.paths.tree, rw_binds=[self.paths.tree],
+                toolchain_ro_roots=roots, env=env)
+        self.assertEqual(roots, [str(fw / ".venv")])
+        result = tool_run_program({
+            "project_dir": str(self.paths.tree),
+            "command": ["sh", "-c",
+                        (f"linttool; test -e {fw / 'tools' / 'gate.py'} || echo TOOLS_HIDDEN; "
+                         f"test -e {fw / 'sample' / 'workspace' / 'model.f90'} "
+                         "|| echo SAMPLE_HIDDEN")],
+            "env": env, "timeout_sec": 30, "sandbox_argv_prefix": prefix,
+        })
+        self.assertIn("LINTTOOL_RAN", result["stdout"], result)
+        self.assertIn("TOOLS_HIDDEN", result["stdout"], result)
+        self.assertIn("SAMPLE_HIDDEN", result["stdout"], result)
 
     def test_a_timeout_stops_every_process_of_the_run(self) -> None:
         """A background descendant of a wrapper run dies with it. Under `--new-session` alone a

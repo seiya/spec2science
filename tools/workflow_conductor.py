@@ -52,6 +52,7 @@ import yaml
 from tools import capture_store, usage_reset
 from tools.backends import registry as backend_registry
 from tools.execution_sites import Site
+from tools.framework_root import FRAMEWORK_ROOT, framework_tool
 from tools.host_execution import KERNEL_TRACE_ARTIFACT
 from tools.target_profile import (
     TargetProfile,
@@ -4127,7 +4128,7 @@ class Conductor:
             # clean dispatch-time error ("requires --reply-text or --reply-from-stdin").
             input = ""
         proc = subprocess.run(
-            ["python3", "tools/orchestration_runtime.py", *args],
+            ["python3", framework_tool("orchestration_runtime.py"), *args],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False,
             input=input,
         )
@@ -4139,7 +4140,7 @@ class Conductor:
 
     def new_agent_run_id(self) -> str:
         proc = subprocess.run(
-            ["python3", "tools/new_agent_run_id.py"],
+            ["python3", framework_tool("new_agent_run_id.py")],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False,
         )
         if proc.returncode != 0:
@@ -6460,7 +6461,7 @@ class Conductor:
         from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
         ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
         tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
-        contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
+        contract_path = FRAMEWORK_ROOT / RUNNER_OUTPUT_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -6822,8 +6823,19 @@ class Conductor:
         live route to them; that is why the generate builders read them here too, issue #467.)"""
         return self._leaf_repo_document(rel, name)
 
-    def _leaf_repo_document(self, rel: str, name: str) -> str:
+    def _leaf_framework_document(self, rel: str, name: str) -> str:
+        """A FRAMEWORK document (a phase contract, an example under `docs/examples/`) inlined
+        verbatim, read under `FRAMEWORK_ROOT` rather than the Project root, with
+        `_leaf_repo_document`'s disposition (issue #705): the Project holds nothing of the
+        framework, so the same `rel` read through `self.repo_root` names a file a Project
+        outside the checkout does not have."""
+        return self._leaf_repo_document(rel, name, root=FRAMEWORK_ROOT)
+
+    def _leaf_repo_document(self, rel: str, name: str, *, root: Path | None = None) -> str:
         """A repository document inlined VERBATIM into a pure context, or RAISE.
+
+        `rel` is read under the Project root unless `root` names another
+        (`_leaf_framework_document` passes the framework's).
 
         Every read of the compile context comes through here or through `_leaf_node_document`,
         which delegates to it — so this is the ONE disposition, and the sentence that used to
@@ -6841,7 +6853,7 @@ class Conductor:
         `OSError` because a decode error is a `ValueError`, not an `OSError`. A file that
         reads as whitespace only (a truncated write) raises too, under the same name, because
         the launch validator refuses it exactly as it refuses `""` (issue #467)."""
-        path = self.repo_root / rel
+        path = (self.repo_root if root is None else root) / rel
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -6953,11 +6965,11 @@ class Conductor:
             "dependency_graph_document": self._leaf_repo_document(
                 f"{refs.ir_ref}/dependency_graph.json", "dependency_graph"),
             "profile_spec_document": self._leaf_profile_spec_document(refs),
-            "phase_contract_document": self._leaf_repo_document(
+            "phase_contract_document": self._leaf_framework_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
-            "ir_algorithm_example_document": self._leaf_repo_document(
+            "ir_algorithm_example_document": self._leaf_framework_document(
                 "docs/examples/spec_ir_algorithm_section.example.yaml", "ir_algorithm_example"),
-            "ir_algorithm_2d_example_document": self._leaf_repo_document(
+            "ir_algorithm_2d_example_document": self._leaf_framework_document(
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
                 "ir_algorithm_2d_example"),
         }
@@ -6984,11 +6996,11 @@ class Conductor:
                 f"{refs.ir_ref}/spec.ir.yaml", "ir"),
             "dependency_surface_document": self._leaf_node_document(
                 f"{refs.ir_ref}/dependency_surface.json", "dependency_surface"),
-            "phase_contract_document": self._leaf_repo_document(
+            "phase_contract_document": self._leaf_framework_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
-            "ir_algorithm_example_document": self._leaf_repo_document(
+            "ir_algorithm_example_document": self._leaf_framework_document(
                 "docs/examples/spec_ir_algorithm_section.example.yaml", "ir_algorithm_example"),
-            "ir_algorithm_2d_example_document": self._leaf_repo_document(
+            "ir_algorithm_2d_example_document": self._leaf_framework_document(
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
                 "ir_algorithm_2d_example"),
         }
@@ -9125,7 +9137,7 @@ class Conductor:
         The phase-doc path is taken from `WORKFLOW_PHASE_DOC_BY_STEP` rather than restated here,
         so the reviewer reads the same document the phase contract names."""
         from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
-        phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
+        phase_doc_path = FRAMEWORK_ROOT / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
         severity_rubric = _generate_verify_severity_rubric_section(
             phase_doc_path.read_text(encoding="utf-8"))
         return {
@@ -9155,8 +9167,8 @@ class Conductor:
         than by the reviewer's recollection of it."""
         from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-        contract_text = (self.repo_root / RUNNER_OUTPUT_CONTRACT_REF).read_text(encoding="utf-8")
-        phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
+        contract_text = (FRAMEWORK_ROOT / RUNNER_OUTPUT_CONTRACT_REF).read_text(encoding="utf-8")
+        phase_doc_path = FRAMEWORK_ROOT / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
         severity_rubric = _generate_verify_severity_rubric_section(
             phase_doc_path.read_text(encoding="utf-8"))
         return {
@@ -9184,6 +9196,11 @@ class Conductor:
         ("trial_meta_document", "trial_meta.json"),
         ("quality_check_document", "quality_check.json"),
     )
+
+    #: The keys of `_leaf_judge_document_refs` whose path is the FRAMEWORK's, read under
+    #: `FRAMEWORK_ROOT`; every other key names a Project path (issue #705).
+    _LEAF_JUDGE_FRAMEWORK_DOCUMENTS: ClassVar[frozenset[str]] = frozenset(
+        {"runner_output_contract_document"})
 
     def _leaf_judge_document_refs(self, refs: NodeRefs) -> dict[str, str]:
         """Each inlined judge document, mapped to the repository path it was inlined FROM.
@@ -9249,7 +9266,11 @@ class Conductor:
         paths = self._leaf_judge_document_refs(refs)
 
         def _read(key: str) -> str:
-            return (self.repo_root / paths[key]).read_text(encoding="utf-8")
+            # The runner-output contract is the framework's document; every other path of the
+            # table is the Project's (a spec file or a run artifact) — issue #705.
+            root = (FRAMEWORK_ROOT if key in self._LEAF_JUDGE_FRAMEWORK_DOCUMENTS
+                    else self.repo_root)
+            return (root / paths[key]).read_text(encoding="utf-8")
 
         runner_output_contract = _runner_output_contract_sections(
             _read("runner_output_contract_document"))
@@ -11623,7 +11644,7 @@ class Conductor:
         # so a gate failure on an otherwise-built binary still fails the substep.
         if ok:
             gate = subprocess.run(
-                ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_build",
+                ["python3", framework_tool("validate_pipeline_semantics.py"), "--stage", "post_build",
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
             # NO terminal-exit-code branch here, unlike the post_generate / post_execute /
@@ -12591,7 +12612,7 @@ class Conductor:
 
         # workspace_root first (global layout/scope), then post_generate (src/io_contract).
         ws = subprocess.run(
-            ["python3", "tools/validate_workspace_root.py"],
+            ["python3", framework_tool("validate_workspace_root.py")],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
         if ws.returncode != 0:
             status = "fail"
@@ -12600,7 +12621,7 @@ class Conductor:
             stderr = "[workspace_root gate fail]\n" + ws.stdout + ws.stderr
         else:
             pg = subprocess.run(
-                ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_generate",
+                ["python3", framework_tool("validate_pipeline_semantics.py"), "--stage", "post_generate",
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
             if pg.returncode != 0:
@@ -12676,8 +12697,8 @@ class Conductor:
         # workspace_root (global layout) -> --stage compile (well-formedness + structural IR
         # invariants). The first failing gate short-circuits.
         gates = [
-            (["python3", "tools/validate_workspace_root.py"], "workspace_root"),
-            (["python3", "tools/validate_pipeline_semantics.py", "--stage", "compile",
+            (["python3", framework_tool("validate_workspace_root.py")], "workspace_root"),
+            (["python3", framework_tool("validate_pipeline_semantics.py"), "--stage", "compile",
               "--ir-ref", ir_ref], "compile_stage"),
         ]
         for cmd, label in gates:
@@ -14063,7 +14084,7 @@ class Conductor:
         # so it needs no separate well-formedness gate ahead of it (issue #180). It does not read
         # quality_check.json, which the conductor wrote above and decides (issues #643, #674).
         gate = subprocess.run(
-            ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_execute",
+            ["python3", framework_tool("validate_pipeline_semantics.py"), "--stage", "post_execute",
              "--pipeline-root", refs.pipeline_ref, "--run-id", refs.run_id or ""],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
         # An IR whose tests or predicates the host cannot evaluate at all (`_shape_verdict` None
@@ -15623,7 +15644,7 @@ class Conductor:
             })
             return {"returncode": 0, "stdout": "",
                     "stderr": f"[post_judge aggregate blocked] {agg.get('blocked_reason')}"}
-        cmd = ["python3", "tools/validate_pipeline_semantics.py", "--stage", "pre_judge",
+        cmd = ["python3", framework_tool("validate_pipeline_semantics.py"), "--stage", "pre_judge",
                "--orchestration-id", self.orchestration_id,
                "--pipeline-root", refs.pipeline_ref, "--run-id", str(refs.run_id)]
         try:

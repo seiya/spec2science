@@ -26,7 +26,6 @@ from tools.backends.language.fortran import structure as fortran_structure
 from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
-    _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
     NodeExecution,
     _node_executions,
     _required_raw_evidence,
@@ -199,21 +198,16 @@ def _structured_ir_module_parameters_from_fortran(fortran_block: str) -> list[di
     return parse_signatures_from_fortran(fortran_block)["module_parameters"]
 
 
-def _seed_shape_expr_schema_into(repo_root: Path) -> None:
-    """Copy the validator-bundled shape_expr.schema.json into a test's tmp
-    repo so the public validate_*() entrypoints (which fail-closed when a
-    repo_root is in scope without a target schema) work under realistic
-    fixtures. Tests that intentionally exercise the missing-schema path
-    must NOT call this helper.
-
-    Idempotent — safe to invoke after `repo_root` is created and before
-    any validate_*() call. Uses bytes copy so canonical-source equivalence
-    is preserved (no JSON re-serialization drift)."""
-    target = repo_root / "spec" / "schema" / "ir" / "shape_expr.schema.json"
-    if target.is_file():
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(_BUNDLED_SHAPE_EXPR_SCHEMA_PATH.read_bytes())
+def _patch_schema_location(root: Path) -> unittest.mock._patch:
+    """Start a patch that points the validator's framework `shape_expr` schema location at
+    `<root>/spec/schema/ir/shape_expr.schema.json`, for a row that exercises the loader on a
+    scratch schema. The caller stops it."""
+    patcher = unittest.mock.patch.object(
+        vps, "_BUNDLED_SHAPE_EXPR_SCHEMA_PATH",
+        root / "spec" / "schema" / "ir" / "shape_expr.schema.json",
+    )
+    patcher.start()
+    return patcher
 
 
 #: A real checkout keeps the operator-authored spec tree and the IR tree in DIFFERENT subtrees,
@@ -1201,7 +1195,6 @@ class PipelineHarnessDagTests(unittest.TestCase):
                "end program shallow_water2d_runner\n")
 
     def _violations(self, repo_root: Path) -> list[str]:
-        _seed_shape_expr_schema_into(repo_root)
         _create_minimal_execution_tree(
             repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
             model_text=self._MODEL, runner_text=self._RUNNER,
@@ -1238,7 +1231,6 @@ class ValidatePipelineSemanticsTests(unittest.TestCase):
     def test_ignores_empty_execution_node_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -1414,7 +1406,6 @@ end program shallow_water2d_runner
 
     def _post_execute_tree(self, repo_root: Path) -> Path:
         """The shared tree, whose run node is otherwise clean of the artifact gates below."""
-        _seed_shape_expr_schema_into(repo_root)
         _create_minimal_execution_tree(
             repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
             model_text=("module shallow_water2d_model\n"
@@ -1544,7 +1535,6 @@ end program shallow_water2d_runner
     def test_detects_dependency_dummy_and_runner_output_and_missing_case_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 implicit none
 contains
@@ -1579,7 +1569,6 @@ end program shallow_water2d_runner
     def test_passes_with_dependency_use_and_case_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -1617,7 +1606,6 @@ end program shallow_water2d_runner
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -1696,7 +1684,6 @@ end program shallow_water2d_runner
             with self.subTest(source_source_id=bad_id):
                 with tempfile.TemporaryDirectory() as tmp:
                     repo_root = Path(tmp)
-                    _seed_shape_expr_schema_into(repo_root)
                     model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -1757,7 +1744,6 @@ end program shallow_water2d_runner
         import os
         import time
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
         )
@@ -1777,7 +1763,7 @@ end program shallow_water2d_runner
                 encoding="utf-8",
             )
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo_root)
+            token = _patch_schema_location(repo_root)
             try:
                 ok_int_initial, _, _ = _parse_shape_expr("[3]")
                 ok_id_initial, _, _ = _parse_shape_expr("[nx]")
@@ -1810,11 +1796,11 @@ end program shallow_water2d_runner
                     "[nx] must now pass; cache must invalidate on mtime change",
                 )
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
 
     def test_shape_expr_schema_loader_accepts_identifier_only_repo_local_grammar(self) -> None:
-        """Regression: a repo-local schema that legitimately allows ONLY
+        """Regression: a schema that legitimately allows ONLY
         symbolic dim tokens (no integer literals) must NOT be rejected as
         'malformed'. Previously the loader's classifier only tried integer
         probes (`[1]`, `(1)`) and treated any branch failing those probes
@@ -1827,7 +1813,6 @@ end program shallow_water2d_runner
           (b) richer probe set (`[a]`, `[Nx]`, etc.) → probe-classifies
               identifier-only schemas correctly without explicit metadata."""
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
         )
@@ -1846,7 +1831,7 @@ end program shallow_water2d_runner
             }
             (sd / "shape_expr.schema.json").write_text(json.dumps(schema), encoding="utf-8")
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo_root)
+            token = _patch_schema_location(repo_root)
             try:
                 ok, dims, _ = _parse_shape_expr("[nx]")
                 self.assertTrue(ok, "id-only schema must accept [nx] via probe matrix")
@@ -1854,7 +1839,7 @@ end program shallow_water2d_runner
                 ok_int, _, _ = _parse_shape_expr("[3]")
                 self.assertFalse(ok_int, "id-only schema must reject [3] (regex disallows)")
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
         # (b) Explicit x-shape-form: regex matches NEITHER probe (requires
         # 2+ char identifier) but author asserts it is list-form.
@@ -1873,14 +1858,14 @@ end program shallow_water2d_runner
             }
             (sd / "shape_expr.schema.json").write_text(json.dumps(schema), encoding="utf-8")
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo_root)
+            token = _patch_schema_location(repo_root)
             try:
                 ok_two, _, _ = _parse_shape_expr("[nx]")
                 self.assertTrue(ok_two, "explicit x-shape-form list accepts 2+ char id [nx]")
                 ok_one, _, _ = _parse_shape_expr("[a]")
                 self.assertFalse(ok_one, "exotic 2+-char regex correctly rejects single-char [a]")
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
         # (c) Negative regression: unclassifiable branch (no metadata, no
         # probe match) still raises RuntimeError with a hint to use
@@ -1897,13 +1882,13 @@ end program shallow_water2d_runner
             }
             (sd / "shape_expr.schema.json").write_text(json.dumps(broken), encoding="utf-8")
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo_root)
+            token = _patch_schema_location(repo_root)
             try:
                 with self.assertRaises(RuntimeError) as ctx:
                     _parse_shape_expr("[3]")
                 self.assertIn("x-shape-form", str(ctx.exception))
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
 
     def test_shape_expr_schema_loader_rejects_structural_malformations(self) -> None:
@@ -1913,7 +1898,6 @@ end program shallow_water2d_runner
         `RuntimeError`; an opaque traceback would defeat the structured
         FAIL output that orchestration gates parse for recovery."""
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
         )
@@ -1933,7 +1917,7 @@ end program shallow_water2d_runner
                 sd.mkdir(parents=True)
                 (sd / "shape_expr.schema.json").write_text(content, encoding="utf-8")
                 _load_shape_expr_patterns_cached.cache_clear()
-                token = _active_repo_root_for_schema.set(repo)
+                token = _patch_schema_location(repo)
                 try:
                     with self.assertRaises(RuntimeError) as ctx:
                         _parse_shape_expr("[3]")
@@ -1948,25 +1932,24 @@ end program shallow_water2d_runner
                         f"case {label!r}: expected RuntimeError, got {type(exc).__name__}: {exc}"
                     )
                 finally:
-                    _active_repo_root_for_schema.reset(token)
+                    token.stop()
                     _load_shape_expr_patterns_cached.cache_clear()
 
     def test_parser_grammar_is_schema_driven_no_hardcoded_dim_token_limit(self) -> None:
         """Regression: dim-token grammar must be owned by the active schema's
         list-form regex, NOT shadowed by a hardcoded post-check. Previously
         the parser re-validated each dim token against `_SHAPE_EXPR_DIM_TOKEN`
-        (`[0-9]+|[A-Za-z_][A-Za-z0-9_]*`), so a repo-local schema that
+        (`[0-9]+|[A-Za-z_][A-Za-z0-9_]*`), so a schema that
         legitimately accepts e.g. arithmetic-like dim tokens (`n+1`) would be
         rejected by the parser AFTER the regex matched — a drift hazard.
 
         With the schema fully driving grammar:
           - bundled schema (strict grammar) still rejects function-call etc.
             via its own regex.
-          - a repo-local schema that allows arithmetic dim tokens accepts
+          - a schema that allows arithmetic dim tokens accepts
             them and `_shape_matches_expr` treats them as bindable
             identifiers (case-sensitive)."""
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
             _shape_matches_expr,
@@ -1977,7 +1960,7 @@ end program shallow_water2d_runner
         for expr in ("[vector(3)]", "[matrix(3,3)]", "[3, vector(2)]", "vector(3)", "tensor"):
             ok, _, _ = _parse_shape_expr(expr)
             self.assertFalse(ok, f"bundled schema must reject {expr!r} via its own regex")
-        # Repo-local schema with extended dim-token grammar must work.
+        # A schema with an extended dim-token grammar, at the patched location, must work.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             sd = repo / "spec" / "schema" / "ir"
@@ -1992,10 +1975,10 @@ end program shallow_water2d_runner
             }
             (sd / "shape_expr.schema.json").write_text(json.dumps(schema), encoding="utf-8")
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo)
+            token = _patch_schema_location(repo)
             try:
                 ok, dims, _ = _parse_shape_expr("[n+1]")
-                self.assertTrue(ok, "repo-local extended schema must accept [n+1]")
+                self.assertTrue(ok, "an extended schema must accept [n+1]")
                 self.assertEqual(dims, ["n+1"])
                 ok, dims, _ = _parse_shape_expr("[3,n+1,m-2]")
                 self.assertTrue(ok)
@@ -2004,7 +1987,7 @@ end program shallow_water2d_runner
                 self.assertTrue(_shape_matches_expr("[n+1,n+1]", [4, 4]))
                 self.assertFalse(_shape_matches_expr("[n+1,n+1]", [4, 5]))
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
 
     def test_shape_expr_schema_loader_classifies_branches_structurally(self) -> None:
@@ -2014,7 +1997,6 @@ end program shallow_water2d_runner
         regexes do not accept any canonical probe must be rejected with a
         clear error so operators do not ship broken patterns."""
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
         )
@@ -2033,14 +2015,14 @@ end program shallow_water2d_runner
                 json.dumps(schema, ensure_ascii=False), encoding="utf-8"
             )
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo_root)
+            token = _patch_schema_location(repo_root)
             try:
                 ok_scalar, _, err_scalar = _parse_shape_expr("scalar")
                 self.assertTrue(ok_scalar, f"localized scalar branch should match: {err_scalar}")
                 ok_list, _, err_list = _parse_shape_expr("[3]")
                 self.assertTrue(ok_list, f"localized list branch should match: {err_list}")
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
         # Case B: branch with a regex that matches NEITHER probe is a
         # malformed schema. Must raise a clear RuntimeError naming the
@@ -2057,7 +2039,7 @@ end program shallow_water2d_runner
             }
             (sd / "shape_expr.schema.json").write_text(json.dumps(broken), encoding="utf-8")
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(repo_root)
+            token = _patch_schema_location(repo_root)
             try:
                 with self.assertRaises(RuntimeError) as ctx:
                     _parse_shape_expr("[3]")
@@ -2066,7 +2048,7 @@ end program shallow_water2d_runner
                 self.assertIn("XXXXXX", msg)
                 self.assertIn("x-shape-form", msg)
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
 
     def test_shape_expr_identifiers_are_case_sensitive(self) -> None:
@@ -2135,7 +2117,6 @@ end program shallow_water2d_runner
     def test_ignores_aux_model_file_for_dependency_usage_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2175,7 +2156,6 @@ end module aux_model
     def test_detects_dependency_dag_incomplete_for_target_pipeline_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2288,7 +2268,6 @@ end program shallow_water2d_runner
         # validation scope, but it IS built in its own pipeline -> no DAG-incomplete violation.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -2314,7 +2293,6 @@ end program shallow_water2d_runner
         for dep_target, want_flagged in ((second, False), (_TARGET_ID, True)):
             with self.subTest(dep_target=dep_target), tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
-                _seed_shape_expr_schema_into(repo_root)
                 _create_minimal_execution_tree(
                     repo_root,
                     dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -2346,7 +2324,6 @@ end program shallow_water2d_runner
         # relaxation must NOT excuse it (a genuinely-missing dependency still fails).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -2400,7 +2377,6 @@ end program shallow_water2d_runner
     def test_detects_invalid_perf_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2439,7 +2415,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_fortran_f0_perf_serialization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2477,7 +2452,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_fortran_l1_boolean_serialization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2516,7 +2490,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_serialization_with_keyword_fmt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2567,7 +2540,6 @@ end program shallow_water2d_runner
     def test_detects_f0_after_scale_factor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2607,7 +2579,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_serialization_across_continuation_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2649,7 +2620,6 @@ end program shallow_water2d_runner
     def test_read_with_write_named_variable_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2696,7 +2666,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_serialization_via_labeled_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2737,7 +2706,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_serialization_via_named_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2778,7 +2746,6 @@ end program shallow_water2d_runner
     def test_embedded_string_in_format_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2823,7 +2790,6 @@ end program shallow_water2d_runner
     def test_real_descriptor_alongside_embedded_string_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2863,7 +2829,6 @@ end program shallow_water2d_runner
     def test_reassigned_format_var_uses_reaching_definition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2913,7 +2878,6 @@ end program shallow_water2d_runner
     def test_reassigned_format_var_flags_unsafe_reaching_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -2956,7 +2920,6 @@ end program shallow_water2d_runner
     def test_noop_reassignment_does_not_bypass_unsafe_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3000,7 +2963,6 @@ end program shallow_water2d_runner
     def test_format_label_scoped_to_program_unit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3054,7 +3016,6 @@ end program shallow_water2d_runner
     def test_detects_host_associated_named_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3102,7 +3063,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_format_in_semicolon_statement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3143,7 +3103,6 @@ end program shallow_water2d_runner
     def test_detects_concatenated_named_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3184,7 +3143,6 @@ end program shallow_water2d_runner
     def test_detects_concatenated_inline_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3224,7 +3182,6 @@ end program shallow_water2d_runner
     def test_same_line_assignment_after_write_does_not_reach(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3269,7 +3226,6 @@ end program shallow_water2d_runner
     def test_same_line_unsafe_assignment_before_write_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3310,7 +3266,6 @@ end program shallow_water2d_runner
     def test_formatted_stdout_debug_write_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3358,7 +3313,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_format_in_multiname_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3399,7 +3353,6 @@ end program shallow_water2d_runner
     def test_detects_unsafe_format_with_blanks_in_descriptor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3439,7 +3392,6 @@ end program shallow_water2d_runner
     def test_detects_metric_only_scalar_kernel_for_2d_problem(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3481,7 +3433,6 @@ end program shallow_water2d_runner
     def test_requires_algorithm_state_contract_for_2d_problem(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3537,7 +3488,6 @@ end program shallow_water2d_runner
         # undefined-binding provenance check.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -3654,7 +3604,6 @@ end program shallow_water2d_runner
     def test_detects_makefile_missing_fortran_module_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             dep_spec_id = "dynamics_shallow_water_flux_2d_rusanov_p0"
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
@@ -3722,7 +3671,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # missing prerequisite (regression guard against the false positive).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             dep_spec_id = "dynamics_shallow_water_flux_2d_rusanov_p0"
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
@@ -3794,7 +3742,6 @@ $(RUNNER_OBJ): shallow_water2d_runner.f90 $(MODEL_OBJ) | $(OBJDIR)
         # the dependency is genuinely absent and must still be flagged.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             dep_spec_id = "dynamics_shallow_water_flux_2d_rusanov_p0"
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
@@ -3861,7 +3808,6 @@ MODEL_OBJ = $(OBJDIR)/shallow_water2d_model.o
     def test_detects_missing_llm_semantic_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3908,7 +3854,6 @@ end program shallow_water2d_runner
         # literal ever changes in the gate, this test forces the docs to be updated too.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -3954,7 +3899,6 @@ end program shallow_water2d_runner
     def test_detects_dependency_call_outputs_not_used_in_out_dataflow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7364,7 +7308,6 @@ end module m
     def test_state_snapshots_can_be_optional_by_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7431,7 +7374,6 @@ end program shallow_water2d_runner
     def test_detects_invalid_io_contract_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7472,7 +7414,6 @@ end program shallow_water2d_runner
     def test_validates_tests_md_and_per_test_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7566,7 +7507,6 @@ end program shallow_water2d_runner
     def test_requires_raw_variables_when_snapshot_required_and_evidence_is_non_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7671,7 +7611,6 @@ end program shallow_water2d_runner
     def test_detects_snapshot_shape_mismatch_against_io_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7725,7 +7664,6 @@ end program shallow_water2d_runner
     def test_detects_missing_orchestration_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7761,7 +7699,6 @@ end program shallow_water2d_runner
     def test_passes_with_orchestration_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7800,7 +7737,6 @@ end program shallow_water2d_runner
         re-read of it went with issue #643.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -7821,7 +7757,6 @@ end program shallow_water2d_runner
     def test_detects_missing_launch_prompt_ref_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7876,7 +7811,6 @@ end program shallow_water2d_runner
     def test_detects_missing_child_agent_identifier_in_launch_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7925,7 +7859,6 @@ end program shallow_water2d_runner
     def test_detects_mismatched_agent_session_id_against_launch_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -7983,7 +7916,6 @@ end program shallow_water2d_runner
     def test_detects_uninformative_agent_summary_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8032,7 +7964,6 @@ end program shallow_water2d_runner
     def test_detects_sequential_placeholder_session_and_context_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8094,7 +8025,6 @@ end program shallow_water2d_runner
     def test_accepts_algorithm_contract_yaml_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8172,7 +8102,6 @@ end program shallow_water2d_runner
     def test_detects_invalid_raw_artifact_vocabulary_in_io_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8239,7 +8168,6 @@ end program shallow_water2d_runner
         def _violations(required: bool) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
-                _seed_shape_expr_schema_into(repo_root)
                 _create_minimal_execution_tree(
                     repo_root,
                     dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -8329,7 +8257,6 @@ end program shallow_water2d_runner
         def _violations(value: object) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
-                _seed_shape_expr_schema_into(repo_root)
                 _create_minimal_execution_tree(
                     repo_root,
                     dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -8398,7 +8325,6 @@ end program shallow_water2d_runner
         def _violations(initial: object, min_samples: int) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
-                _seed_shape_expr_schema_into(repo_root)
                 _create_minimal_execution_tree(
                     repo_root,
                     dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -8461,7 +8387,6 @@ end program shallow_water2d_runner
     def test_detects_snapshot_output_shape_mismatch_inside_io_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8541,7 +8466,6 @@ end program shallow_water2d_runner
         for spelling in ("raw/state_snapshots", "raw/State_Snapshots", "RAW\\state_snapshots", " raw/state_snapshots "):
             with self.subTest(spelling=spelling), tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
-                _seed_shape_expr_schema_into(repo_root)
                 _create_minimal_execution_tree(
                     repo_root,
                     dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -8595,7 +8519,6 @@ end program shallow_water2d_runner
         `test_detects_snapshot_output_shape_mismatch_inside_io_contract` above."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8662,7 +8585,6 @@ end program shallow_water2d_runner
         non-scalar `time_shape_expr` (e.g. "[1]") is rejected at the compile io_contract
         gate so the IR regenerates to scalar instead of failing post_execute."""
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _validate_io_contract_file,
         )
 
@@ -8696,31 +8618,26 @@ end program shallow_water2d_runner
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            token = _active_repo_root_for_schema.set(repo_root)
-            try:
-                bad_path = repo_root / "bad_contract.json"
-                _write_json(bad_path, _contract("[1]"))
-                bad_violations: list[str] = []
-                _validate_io_contract_file(repo_root, bad_path, bad_violations)
-                self.assertTrue(
-                    any(
-                        "time_shape_expr" in v and 'must be "scalar"' in v
-                        for v in bad_violations
-                    ),
-                    f"expected a scalar violation, got: {bad_violations}",
-                )
+            bad_path = repo_root / "bad_contract.json"
+            _write_json(bad_path, _contract("[1]"))
+            bad_violations: list[str] = []
+            _validate_io_contract_file(repo_root, bad_path, bad_violations)
+            self.assertTrue(
+                any(
+                    "time_shape_expr" in v and 'must be "scalar"' in v
+                    for v in bad_violations
+                ),
+                f"expected a scalar violation, got: {bad_violations}",
+            )
 
-                good_path = repo_root / "good_contract.json"
-                _write_json(good_path, _contract("scalar"))
-                good_violations: list[str] = []
-                _validate_io_contract_file(repo_root, good_path, good_violations)
-                self.assertFalse(
-                    any("time_shape_expr" in v and "scalar" in v for v in good_violations),
-                    f"scalar must not be flagged, got: {good_violations}",
-                )
-            finally:
-                _active_repo_root_for_schema.reset(token)
+            good_path = repo_root / "good_contract.json"
+            _write_json(good_path, _contract("scalar"))
+            good_violations: list[str] = []
+            _validate_io_contract_file(repo_root, good_path, good_violations)
+            self.assertFalse(
+                any("time_shape_expr" in v and "scalar" in v for v in good_violations),
+                f"scalar must not be flagged, got: {good_violations}",
+            )
 
     def test_a_top_level_raw_requirements_copy_does_not_hide_the_nested_block(self) -> None:
         """Issue #662: `Compile.static` reads `io_contract.raw_requirements`, the block the
@@ -8731,7 +8648,6 @@ end program shallow_water2d_runner
         defective one could come from somewhere else."""
         import copy
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _validate_io_contract_file,
         )
 
@@ -8758,25 +8674,20 @@ end program shallow_water2d_runner
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            token = _active_repo_root_for_schema.set(repo_root)
-            try:
-                path = repo_root / "spec.ir.yaml"
-                path.write_text(yaml.safe_dump(valid), encoding="utf-8")
-                clean: list[str] = []
-                _validate_io_contract_file(repo_root, path, clean)
-                self.assertEqual(clean, [])
-                self.assertEqual(len(findings(defective)), 1)
-                self.assertEqual(findings(masked), findings(defective))
-                # A top-level block with no nested one is not read: the document has none.
-                top_only = copy.deepcopy(valid)
-                top_only["raw_requirements"] = top_only["io_contract"].pop("raw_requirements")
-                path.write_text(yaml.safe_dump(top_only), encoding="utf-8")
-                found: list[str] = []
-                _validate_io_contract_file(repo_root, path, found)
-                self.assertTrue(any("raw_requirements must be object" in v for v in found), found)
-            finally:
-                _active_repo_root_for_schema.reset(token)
+            path = repo_root / "spec.ir.yaml"
+            path.write_text(yaml.safe_dump(valid), encoding="utf-8")
+            clean: list[str] = []
+            _validate_io_contract_file(repo_root, path, clean)
+            self.assertEqual(clean, [])
+            self.assertEqual(len(findings(defective)), 1)
+            self.assertEqual(findings(masked), findings(defective))
+            # A top-level block with no nested one is not read: the document has none.
+            top_only = copy.deepcopy(valid)
+            top_only["raw_requirements"] = top_only["io_contract"].pop("raw_requirements")
+            path.write_text(yaml.safe_dump(top_only), encoding="utf-8")
+            found: list[str] = []
+            _validate_io_contract_file(repo_root, path, found)
+            self.assertTrue(any("raw_requirements must be object" in v for v in found), found)
 
     def test_runner_source_name_must_match_spec_id(self) -> None:
         """B2 (cosmetic): a runner whose basename is not `<spec_id>_runner.f90` is
@@ -8868,7 +8779,6 @@ end program shallow_water2d_runner
         left as debris by a crashed run. ``live_substep_arid`` models the validate substep that
         runs the gate while it is still executing: its `agent_runs.jsonl` row is not appended
         yet (its `agent_graph` edge is), and the validate `step_result.json` is not written."""
-        _seed_shape_expr_schema_into(repo_root)
         model_text = """module shallow_water2d_model
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
@@ -8996,7 +8906,6 @@ end program shallow_water2d_runner
         # `infrastructure` node's ids, which no render precondition reads.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -9108,7 +9017,6 @@ end program shallow_water2d_runner
             cs = repo_root / MOCK_SPEC_DIR / "controlled_spec.md"
             cs.parent.mkdir(parents=True, exist_ok=True)
             cs.write_text(_mock_controlled_spec(step_args), encoding="utf-8")
-        _seed_shape_expr_schema_into(repo_root)
         if plant_tests_md:
             self._plant_tests_md(repo_root)
         self._with_result_quantity_in_tests_md(repo_root, closed)
@@ -9181,7 +9089,6 @@ end program shallow_water2d_runner
         """Run the full compile stage over a multidimensional problem node whose algorithm
         carries `state_contract`, so the node_key-conditioned gate is exercised through the
         real wiring (`_plan_dependency_node_key` -> `_validate_algorithm_contract_file`)."""
-        _seed_shape_expr_schema_into(repo_root)
         self._plant_tests_md(repo_root)
         _create_minimal_execution_tree(
             repo_root,
@@ -9895,7 +9802,6 @@ end program shallow_water2d_runner
         # be a violation, not a silent fall-back to the IR's own `tests[]` ids.
         with tempfile.TemporaryDirectory() as tmp:
             io = self._io_contract_with_predicates()
-            _seed_shape_expr_schema_into(Path(tmp))
             _create_minimal_execution_tree(
                 Path(tmp), dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
                 model_text="module m\nend module m\n", runner_text="program r\nend program r\n",
@@ -10396,7 +10302,6 @@ end program shallow_water2d_runner
     def test_validate_post_generate_stage_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             dep_model_text = """module dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
 contains
@@ -10466,7 +10371,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         block from <ir>/spec.ir.yaml instead of crashing with IsADirectoryError."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             dep_model_text = """module dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
 contains
@@ -10597,7 +10501,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # target's harness, captures no grid.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
                 model_text="module m\nimplicit none\nend module m\n",
@@ -10719,7 +10622,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
     def test_validate_post_build_stage_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             dep_model_text = """module dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
 contains
@@ -10786,7 +10688,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         the offending path so operators can repair it."""
         from tools.validate_pipeline_semantics import (
             _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
         )
@@ -10798,7 +10699,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 "{ this is not json", encoding="utf-8"
             )
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(broken_root)
+            token = _patch_schema_location(broken_root)
             try:
                 with self.assertRaises(RuntimeError) as ctx:
                     _parse_shape_expr("[3]")
@@ -10807,7 +10708,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 self.assertIn("malformed JSON", msg)
                 self.assertIn(str(broken_root / "spec" / "schema" / "ir" / "shape_expr.schema.json"), msg)
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
         # Bundled schema continues to work after the cache reset.
         ok, _, _ = _parse_shape_expr("[3]")
@@ -10815,14 +10716,11 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # Sanity: the bundled path resolution is still valid.
         self.assertTrue(_BUNDLED_SHAPE_EXPR_SCHEMA_PATH.is_file())
 
-    def test_shape_expr_schema_resolves_from_active_repo_root(self) -> None:
-        """Regression: the active repo_root's spec/schema/ir/shape_expr.schema.json
-        is the canonical source — its rules apply, and missing the schema while
-        a repo_root is in scope must FAIL CLOSED rather than silently falling
-        back to the validator-bundled copy. Bundled fallback is reserved for
-        ad-hoc / library-style invocation with no target repo in scope."""
+    def test_shape_expr_rules_come_from_the_schema_file(self) -> None:
+        """Regression: the schema file at the validator's schema location is the
+        canonical source — its rules apply, and a missing file FAILS CLOSED rather
+        than falling back to built-in rules."""
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             _parse_shape_expr,
         )
@@ -10846,7 +10744,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             )
 
             _load_shape_expr_patterns_cached.cache_clear()
-            token = _active_repo_root_for_schema.set(strict_root)
+            token = _patch_schema_location(strict_root)
             try:
                 # Identifier dim now rejected (target schema is integer-only).
                 ok_id, _, _ = _parse_shape_expr("[nx]")
@@ -10858,13 +10756,11 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 ok_paren, _, _ = _parse_shape_expr("(d1, d2)")
                 self.assertFalse(ok_paren, "paren form absent from strict schema should be rejected")
             finally:
-                _active_repo_root_for_schema.reset(token)
+                token.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
 
-            # Target with no schema while in scope must FAIL CLOSED — no silent
-            # bundled fallback once a repo_root is pinned, otherwise version
-            # skew between target and validator-bundle goes undetected.
-            token2 = _active_repo_root_for_schema.set(no_schema_root)
+            # A missing schema file FAILS CLOSED, naming the path it was read from.
+            token2 = _patch_schema_location(no_schema_root)
             try:
                 with self.assertRaises(RuntimeError) as ctx:
                     _parse_shape_expr("[3]")
@@ -10875,138 +10771,13 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                     msg,
                 )
             finally:
-                _active_repo_root_for_schema.reset(token2)
+                token2.stop()
                 _load_shape_expr_patterns_cached.cache_clear()
 
-            # When NO repo_root is in scope (library / ad-hoc / unit-test
-            # invocation), bundled fallback IS used. This keeps test and
-            # importer paths working without forcing every caller to provide
-            # a target repo.
+            # Unpatched, the framework's bundled schema applies again.
             ok_bundled, _, _ = _parse_shape_expr("[nx]")
-            self.assertTrue(ok_bundled, "bundled schema applies when no repo_root is in scope")
+            self.assertTrue(ok_bundled, "the bundled schema applies when its location is unpatched")
             _load_shape_expr_patterns_cached.cache_clear()
-
-    def test_validate_compile_stage_fails_closed_when_target_repo_lacks_schema(self) -> None:
-        """Regression: public validate_*() entrypoints must bind the active
-        repo_root context themselves so a target repo without
-        spec/schema/ir/shape_expr.schema.json fails closed. Previously the
-        context was set only by CLI main(), so library callers silently fell
-        back to the validator-bundled schema, defeating the fail-closed
-        protection against version skew between target and validator-bundle."""
-        from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
-            _load_shape_expr_patterns_cached,
-            validate_compile_stage,
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            # Deliberately do NOT seed the schema (this test exercises the
-            # missing-schema path). Build minimal plan artifacts so the
-            # validator reaches shape_expr parsing.
-            plan_dir = repo_root / "workspace" / "ir" / "x" / "p1"
-            plan_dir.mkdir(parents=True)
-            algo = {
-                "algorithm_id": "alg",
-                "execution_mode": "sequence",
-                "steps": [],
-                "ordering": [],
-                "control_condition": "",
-                "iteration_contract": {},
-                "update_semantics": {},
-                "temporaries": [{"name": "t", "shape_expr": "[3]"}],
-                "derived_field_rules": [],
-                "invariants": ["x"],
-                "splitting_policy": {"kind": "none"},
-            }
-            (plan_dir / "spec.ir.yaml").write_text(
-                yaml.safe_dump(algo), encoding="utf-8"
-            )
-            _load_shape_expr_patterns_cached.cache_clear()
-            # Pre-condition: no leaked context from prior tests.
-            self.assertIsNone(_active_repo_root_for_schema.get())
-            # Direct library-style call must fail closed.
-            with self.assertRaises(RuntimeError) as ctx:
-                validate_compile_stage(repo_root, "workspace", "workspace/ir/x/p1")
-            msg = str(ctx.exception)
-            self.assertIn("shape_expr schema not found", msg)
-            self.assertIn(
-                str(repo_root / "spec" / "schema" / "ir" / "shape_expr.schema.json"),
-                msg,
-            )
-            # Post-condition: validate_compile_stage MUST reset the context so
-            # subsequent in-process calls don't see the failed repo's root.
-            self.assertIsNone(
-                _active_repo_root_for_schema.get(),
-                "validate_compile_stage must reset the active context after returning/raising",
-            )
-            _load_shape_expr_patterns_cached.cache_clear()
-
-    def test_consecutive_main_calls_do_not_leak_repo_root_context(self) -> None:
-        """Regression: main() must scope `_active_repo_root_for_schema` to its
-        own invocation. A long-lived process or batch tooling that invokes
-        main() against repo A then repo B must NOT carry repo A's context
-        into repo B's resolution. The leak is process-local and order-
-        dependent, which makes it expensive to diagnose without a guard test."""
-        import io
-        from contextlib import redirect_stdout
-        from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
-            _load_shape_expr_patterns_cached,
-            main,
-        )
-
-        def _build_repo(tmp: str) -> Path:
-            repo = Path(tmp)
-            sd = repo / "spec" / "schema" / "ir"
-            sd.mkdir(parents=True)
-            (sd / "shape_expr.schema.json").write_bytes(
-                _BUNDLED_SHAPE_EXPR_SCHEMA_PATH.read_bytes()
-            )
-            plan_dir = repo / "workspace" / "ir" / "x" / "p1"
-            plan_dir.mkdir(parents=True)
-            (plan_dir / "spec.ir.yaml").write_text(
-                yaml.safe_dump(
-                    {
-                        "algorithm_id": "a",
-                        "execution_mode": "sequence",
-                        "steps": [],
-                        "ordering": [],
-                        "control_condition": "",
-                        "iteration_contract": {},
-                        "update_semantics": {},
-                        "temporaries": [{"name": "t", "shape_expr": "[3]"}],
-                        "derived_field_rules": [],
-                        "invariants": ["x"],
-                        "splitting_policy": {"kind": "none"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            return repo
-
-        _load_shape_expr_patterns_cached.cache_clear()
-        # Pre-condition baseline.
-        baseline = _active_repo_root_for_schema.get()
-        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
-            repo_a = _build_repo(tmp_a)
-            repo_b = _build_repo(tmp_b)
-            for repo in (repo_a, repo_b):
-                buf = io.StringIO()
-                with redirect_stdout(buf):
-                    main(
-                        [
-                            "--repo-root", str(repo),
-                            "--stage", "compile",
-                            "--ir-ref", "workspace/ir/x/p1",
-                        ]
-                    )
-                # After each main() call the context must be reset.
-                self.assertEqual(
-                    _active_repo_root_for_schema.get(),
-                    baseline,
-                    f"main() against {repo} leaked context "
-                    f"(active={_active_repo_root_for_schema.get()!r}, expected={baseline!r})",
-                )
 
     def test_cli_emits_structured_fail_on_broken_schema(self) -> None:
         """Regression: a broken canonical schema (missing or malformed) must
@@ -11016,7 +10787,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         import io
         from contextlib import redirect_stdout
         from tools.validate_pipeline_semantics import (
-            _active_repo_root_for_schema,
             _load_shape_expr_patterns_cached,
             main,
         )
@@ -11047,22 +10817,18 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 yaml.safe_dump(algo), encoding="utf-8"
             )
             _load_shape_expr_patterns_cached.cache_clear()
-            # Reset any leaked context from earlier tests.
-            try:
-                prev = _active_repo_root_for_schema.get()
-            except LookupError:
-                prev = None
-            _active_repo_root_for_schema.set(None)
             buf = io.StringIO()
             try:
-                with redirect_stdout(buf):
+                with redirect_stdout(buf), unittest.mock.patch.object(
+                    vps, "_BUNDLED_SHAPE_EXPR_SCHEMA_PATH",
+                    schema_dir / "shape_expr.schema.json",
+                ):
                     rc = main([
                         "--repo-root", str(broken_root),
                         "--stage", "compile",
                         "--ir-ref", "workspace/ir/x/p1",
                     ])
             finally:
-                _active_repo_root_for_schema.set(prev)
                 _load_shape_expr_patterns_cached.cache_clear()
             output = buf.getvalue()
         self.assertEqual(rc, 1, f"expected exit code 1, got {rc}; output: {output!r}")
@@ -11388,7 +11154,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         }
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             contract_path = repo_root / "spec.ir.yaml"
             contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
             violations: list[str] = []
@@ -11477,7 +11242,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             with self.subTest(multidim_node_key=node_key):
                 with tempfile.TemporaryDirectory() as tmp:
                     repo_root = Path(tmp)
-                    _seed_shape_expr_schema_into(repo_root)
                     contract_path = repo_root / "spec.ir.yaml"
                     contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
                     violations: list[str] = []
@@ -11555,7 +11319,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         }
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             contract_path = repo_root / "spec.ir.yaml"
             contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
             violations: list[str] = []
@@ -11611,7 +11374,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 }
                 with tempfile.TemporaryDirectory() as tmp:
                     repo_root = Path(tmp)
-                    _seed_shape_expr_schema_into(repo_root)
                     contract_path = repo_root / "spec.ir.yaml"
                     contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
                     violations: list[str] = []
@@ -11658,7 +11420,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         }
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             contract_path = repo_root / "spec.ir.yaml"
             contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
             violations: list[str] = []
@@ -17472,7 +17233,6 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         `infrastructure`, and it wrote its final capture, without `step`, and an empty series."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -18409,7 +18169,6 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
         # operations violation is present (this is the wiring check, not an isolation check).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -20985,7 +20744,6 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             del contract[key]
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             contract_path = repo_root / "spec.ir.yaml"
             contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
             violations: list[str] = []
@@ -21409,7 +21167,6 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         contract["iteration_contract"] = dict(self._LOOP_CONTRACT)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             contract_path = repo_root / "spec.ir.yaml"
             contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
             violations: list[str] = []
@@ -21908,7 +21665,6 @@ class LocalOperationLoweringGateTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
             _create_minimal_execution_tree(
                 repo_root,
                 dep_spec_id=dep_spec_id,
@@ -22383,7 +22139,6 @@ class IrFixtureShapeTests(unittest.TestCase):
     """
 
     def _fixture_ir(self, repo_root: Path) -> dict:
-        _seed_shape_expr_schema_into(repo_root)
         _create_minimal_execution_tree(
             repo_root,
             dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -22902,7 +22657,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     _NODE = "problem/shallow_water2d@0.3.0"
 
     def _build_tree(self, repo_root: Path) -> None:
-        _seed_shape_expr_schema_into(repo_root)
         model_text = (
             "module shallow_water2d_model\n"
             "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
@@ -23432,7 +23186,6 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
-        _seed_shape_expr_schema_into(tmp)
         _write_json(ir_dir / "spec.ir.yaml", {
             "meta": {"spec_kind": spec_kind, "spec_id": "advx"},
             "impl_defaults": {
@@ -23675,7 +23428,6 @@ class ValidatorExitCodeTests(unittest.TestCase):
         ir_ref = "workspace/ir/x"
         ir_dir = tmp / ir_ref
         ir_dir.mkdir(parents=True)
-        _seed_shape_expr_schema_into(tmp)
         (tmp / "cs.md").write_text(
             "## 5. Public API\nprose.\n"
             + InfrastructureGeneratedSignatureGateTests._FENCE
@@ -23744,7 +23496,6 @@ class ValidatorExitCodeTests(unittest.TestCase):
         → a warm `compile.generate`), never the terminal type."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            _seed_shape_expr_schema_into(tmp)
             _, ir_ref = self._seed_io_contract_ir(tmp, evidence_ref="raw/execution_trace.json")
             violations = vps.validate_compile_stage(tmp, "workspace", ir_ref)
         hits = [v for v in violations if "names no raw-evidence artifact" in v]
@@ -23756,7 +23507,6 @@ class ValidatorExitCodeTests(unittest.TestCase):
         finding is the drifted source's."""
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            _seed_shape_expr_schema_into(tmp)
             pipeline_dir, _ = self._seed_io_contract_ir(
                 tmp, evidence_ref="perf.json", source=self._DRIFTED_SOURCE)
             proc = self._run_cli(tmp, pipeline_dir)
@@ -23892,7 +23642,6 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
 
     def _tree(self, tmp: str) -> Path:
         repo_root = Path(tmp)
-        _seed_shape_expr_schema_into(repo_root)
         _create_minimal_execution_tree(
             repo_root,
             dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -24859,7 +24608,6 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
         with tempfile.TemporaryDirectory() as t:
             repo = Path(t)
-            _seed_shape_expr_schema_into(repo)
             _create_minimal_execution_tree(
                 repo, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
                 model_text="module m\nimplicit none\nend module m\n",
@@ -24977,8 +24725,7 @@ class CompileIrDirTests(unittest.TestCase):
     """`validate_compile_ir_dir` (issue #534 step 2): the `Compile.static` body over a directory
     the caller names, which a `compile.generate` workshop lineage's `check_ir` runs on a scratch
     copy of the leaf's IR under its lineage home. MC1 of the step-2 plan: the same findings the
-    gate gives for the same IR, from a wrapper handler THREAD, while the main thread holds its
-    own schema pin."""
+    gate gives for the same IR, from a wrapper handler THREAD."""
 
     def test_a_scratch_copy_gives_the_gate_s_findings_from_another_thread(self) -> None:
         import shutil
@@ -24993,40 +24740,14 @@ class CompileIrDirTests(unittest.TestCase):
             scratch = Path(other) / "check"
             shutil.copytree(repo / refs.ir_ref, scratch)
             found: list = []
-            pinned = threading.Event()
-            release = threading.Event()
-
-            def main_pin() -> None:
-                with vps._pinned_repo_root_for_schema(Path(other)):
-                    pinned.set()
-                    release.wait(10)
-
-            holder = threading.Thread(target=main_pin)
-            holder.start()
-            self.assertTrue(pinned.wait(10))
-            entered: list = []
-            real_pin = vps._pinned_repo_root_for_schema
-
-            def recording_pin(root):
-                entered.append((threading.current_thread() is not threading.main_thread(),
-                                Path(root)))
-                return real_pin(root)
 
             def work() -> None:
-                with unittest.mock.patch.object(vps, "_pinned_repo_root_for_schema",
-                                                recording_pin):
-                    found.append(vps.validate_compile_ir_dir(repo, scratch))
+                found.append(vps.validate_compile_ir_dir(repo, scratch))
 
             worker = threading.Thread(target=work)
             worker.start()
             worker.join(60)
-            release.set()
-            holder.join(10)
             (result,) = found
-            # The function enters the schema pin itself, with the repository it judges under:
-            # the pin is a per-thread `ContextVar`, so the holder above cannot observe it, and
-            # this is what does.
-            self.assertEqual(entered, [(True, repo)])
             norm = (lambda xs, d: [x.replace(str(d), "<ir>") for x in xs])
             self.assertEqual(norm(result, scratch),
                              norm(gate, (repo / refs.ir_ref).resolve()))
@@ -25385,7 +25106,6 @@ def _seed_drive_repo(repo: Path, ir: dict, which: str, *, tests_md: str | None =
     entries; `_OMIT` — no catalog file), the conductor-authored dependency sidecar and
     `ir_meta.json`. Returns the IR directory, holding ``ir``."""
     repo_real = Path(__file__).resolve().parents[2]
-    _seed_shape_expr_schema_into(repo)
     local = _DRIVE_FIXTURES[which][1]
     refs = ir["meta"]["source_refs"]
     for key in ("controlled_spec", "tests", "deps"):
@@ -27015,7 +26735,6 @@ class HostInvariantRaiseTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         repo_root = Path(tmp.name)
-        _seed_shape_expr_schema_into(repo_root)
         _create_minimal_execution_tree(
             repo_root,
             dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",

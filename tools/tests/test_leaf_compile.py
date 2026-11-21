@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -32,6 +31,8 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as backend_registry
+from tools.framework_root import FRAMEWORK_ROOT as REAL_FRAMEWORK_ROOT
+from tools.tests.framework_fixture import FRAMEWORK_DOCUMENTS, scratch_framework_root
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_leaf_producer import (
     _envelope,
@@ -50,26 +51,6 @@ _PROBLEM_NODE = "problem/shallow_water2d@0.4.0"
 _PROBLEM_SPEC_ID = "shallow_water2d"
 _PROBLEM_SPEC_PATH = "spec/problem/dynamics/shallow_water/shallow_water2d"
 
-#: The repository documents `_build_leaf_compile_context` reads. Staged into the fixture repo by
-#: COPYING the real files, so the presence checks run against what production reads rather than
-#: against a stand-in a test author chose.
-_REPO_DOCUMENTS = (
-    "docs/examples/spec_ir_algorithm_section.example.yaml",
-    "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-)
-
-_REAL_REPO = Path(__file__).resolve().parents[2]
-
-
-def _stage_repo_documents(repo: Path) -> None:
-    refs = list(_REPO_DOCUMENTS) + [ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"]]
-    for rel in refs:
-        src = _REAL_REPO / rel
-        dst = repo / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dst)
-
-
 def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = False,
                         stage_ir: bool = False) -> wc.NodeRefs:
     """Stage what a Compile phase finds on disk: the spec's three documents, a catalog entry,
@@ -79,7 +60,6 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
     rendered runner: at `compile.generate` time neither exists, and a fixture that provided them
     would let a context builder read an artifact production cannot have.
     """
-    _stage_repo_documents(repo)
     node = _NODE if kind == "component" else _PROBLEM_NODE
     spec_id = _SPEC_ID if kind == "component" else _PROBLEM_SPEC_ID
     spec_path = _SPEC_PATH if kind == "component" else _PROBLEM_SPEC_PATH
@@ -366,7 +346,11 @@ class PureCompileContextTests(_Fixture):
                 with self.subTest(builder=substep, key=key):
                     _write_compile_node(self.repo, kind=self.KIND, stage_ir=True)
                     rel = template.format(spec=self.refs.spec_path, ir=self.refs.ir_ref)
-                    (self.repo / rel).unlink()
+                    # A framework document is read under FRAMEWORK_ROOT (issue #705), so it is
+                    # removed from a scratch framework root; every other file from the Project.
+                    root = (scratch_framework_root(self) if rel in FRAMEWORK_DOCUMENTS
+                            else self.repo)
+                    (root / rel).unlink()
                     with self.assertRaises(RuntimeError) as caught:
                         builder(self.refs)
                     message = str(caught.exception)
@@ -466,8 +450,9 @@ class PureCompileContextTests(_Fixture):
              "pure_dependency_graph_document_missing"),
         ):
             with self.subTest(document=rel):
-                _stage_repo_documents(self.repo)
-                (self.repo / rel).unlink()
+                root = (scratch_framework_root(self) if rel in FRAMEWORK_DOCUMENTS
+                        else self.repo)
+                (root / rel).unlink()
                 c = self.conductor(_envelope(_doc()))
                 events: list = []
                 c.emit = (  # type: ignore[assignment]
@@ -562,6 +547,103 @@ class PureCompileContextTests(_Fixture):
                 for phrase in self._V3_PHRASES:
                     self.assertIn(phrase, bullets[0])
                 self.assertNotRegex(doc, self._STALE)
+
+
+class FrameworkDocumentsAreReadFromTheFrameworkRootTests(unittest.TestCase):
+    """Issue #705: every framework document a leaf context inlines is read under
+    `FRAMEWORK_ROOT`, never under the Project root.
+
+    Each builder runs against a scratch Project that holds NO framework file and an unrelated
+    `tools/` directory (so a read that resolved the framework as `<repo_root>/tools/..` finds
+    nothing either), with `FRAMEWORK_ROOT` NOT patched. Each framework-document slot must then
+    equal what the builder makes of the REAL framework file's text. A builder that went back to
+    reading through the Project root raises here instead (the Project has no `docs/`)."""
+
+    def _project(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        (repo / "tools").mkdir()
+        (repo / "tools" / "unrelated.py").write_text("# not the framework\n", encoding="utf-8")
+        return repo
+
+    def _assert_no_framework_file(self, repo: Path) -> None:
+        for rel in FRAMEWORK_DOCUMENTS:
+            self.assertFalse((repo / rel).exists(), f"the scratch Project holds {rel}")
+        self.assertFalse((repo / "docs").exists(), "the scratch Project holds a docs/ tree")
+
+    def test_each_builder_inlines_the_real_framework_documents(self) -> None:
+        from tools.tests.test_leaf_judge import _write_run_node
+        from tools.tests.test_leaf_producer import (
+            _conductor,
+            _harness_bundle,
+            _write_harness_node,
+        )
+        from tools.tests.test_leaf_verify import _reviewer_conductor, _verify_node
+
+        self.assertEqual(wc.FRAMEWORK_ROOT, REAL_FRAMEWORK_ROOT,
+                         "FRAMEWORK_ROOT is patched; this row must read the real one")
+
+        def real(rel: str) -> str:
+            return (REAL_FRAMEWORK_ROOT / rel).read_text(encoding="utf-8")
+
+        phase_01 = real(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"])
+        phase_02 = real(ort.WORKFLOW_PHASE_DOC_BY_STEP["generate"])
+        contract = real(ort.RUNNER_OUTPUT_CONTRACT_REF)
+        rubric = wc._generate_verify_severity_rubric_section(phase_02)
+        compile_slots = {
+            "phase_contract_document": phase_01,
+            "ir_algorithm_example_document":
+                real("docs/examples/spec_ir_algorithm_section.example.yaml"),
+            "ir_algorithm_2d_example_document":
+                real("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml"),
+        }
+
+        # Compile.generate and Compile.verify.
+        repo = self._project()
+        refs = _write_compile_node(repo, stage_ir=True)
+        self._assert_no_framework_file(repo)
+        c = _workshop_conductor(repo)
+        for name, builder in (("compile.generate", c._build_leaf_compile_context),
+                              ("compile.verify", c._build_leaf_compile_verify_context)):
+            ctx = builder(refs)
+            for key, text in compile_slots.items():
+                with self.subTest(builder=name, slot=key):
+                    self.assertEqual(ctx[key], text)
+
+        # Generate.generate and Generate.verify on the harness shape.
+        repo = self._project()
+        refs = _write_harness_node(repo)
+        src = repo / refs.source_dir()
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "codegen_bundle.json").write_text(json.dumps(_harness_bundle()), encoding="utf-8")
+        self._assert_no_framework_file(repo)
+        c = _conductor(repo)
+        with_binding = c._runner_output_contract_with_binding(contract)
+        ctx = c._build_leaf_harness_context(refs)
+        with self.subTest(builder="generate.generate (harness)"):
+            self.assertEqual(ctx["runner_output_contract_document"], with_binding)
+        ctx = c._build_leaf_harness_verify_context(refs)
+        with self.subTest(builder="generate.verify (harness)"):
+            self.assertEqual(ctx["runner_output_contract_document"], with_binding)
+            self.assertEqual(ctx["severity_rubric_document"], rubric)
+
+        # Generate.verify on the m3c shape.
+        repo = self._project()
+        refs = _verify_node(repo)
+        self._assert_no_framework_file(repo)
+        ctx = _conductor(repo)._build_leaf_verify_context(refs)
+        with self.subTest(builder="generate.verify"):
+            self.assertEqual(ctx["severity_rubric_document"], rubric)
+
+        # Validate.judge.
+        repo = self._project()
+        refs = _write_run_node(repo)
+        self._assert_no_framework_file(repo)
+        ctx = _reviewer_conductor(repo, ["{}"])._build_leaf_judge_context(refs)
+        with self.subTest(builder="validate.judge"):
+            self.assertEqual(ctx["runner_output_contract_document"],
+                             wc._runner_output_contract_sections(contract))
 
 
 class PureCompileProfileContextTests(_Fixture):

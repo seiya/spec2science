@@ -5333,7 +5333,29 @@ def main(argv: list[str] | None = None) -> int:
                              "cross-target predicates (repeatable; the host's own selection is "
                              "orchestration_runtime.resolve_comparands, read by "
                              "orchestration_runtime.cross_target_agreement)")
+    parser.add_argument("--repo-root", type=Path, default=None, metavar="PROJECT_ROOT",
+                        help="the Project whose spec/targets/ holds the profile of a run that "
+                             "lies outside a pipeline tree. A run under "
+                             "<project>/workspace/pipelines/ is read against that <project>; "
+                             "no default, because any default reads a profile of the same name "
+                             "from another Project")
     args = parser.parse_args(argv)
+
+    def project_of(run: Path) -> Path:
+        """The Project whose profile describes ``run`` (issue #705): the directory above the
+        `workspace/pipelines` segment of a run under a pipeline tree — the coordinate
+        `pipeline_target_id` reads the target from — else `--repo-root`, else a refusal."""
+        from tools.target_profile import PIPELINES_ROOT
+        parts = Path(run).resolve().parts
+        head = tuple(PIPELINES_ROOT.split("/"))
+        for i in range(1, len(parts) - len(head)):
+            if parts[i:i + len(head)] == head:
+                return Path(*parts[:i])
+        if args.repo_root is None:
+            raise PrimaryEvidenceError(
+                f"{run}: not under a pipeline tree, so the Project whose target profile it was "
+                "written by is unknown; pass --repo-root <project>")
+        return args.repo_root
 
     def written_as(target_id: str | None, run: Path) -> str:
         """The output format of the target that wrote ``run``: the target `--target` names
@@ -5345,8 +5367,7 @@ def main(argv: list[str] | None = None) -> int:
         if not target_id:
             return DEFAULT_OUTPUT_FORMAT
         try:
-            return load_target_profile(Path(__file__).resolve().parents[1],
-                                       target_id).output_format
+            return load_target_profile(project_of(run), target_id).output_format
         except TargetProfileError as exc:
             raise PrimaryEvidenceError(f"target {target_id!r}: {exc}") from None
 

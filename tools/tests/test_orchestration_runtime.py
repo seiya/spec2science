@@ -2319,6 +2319,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self._git(repo_root, "commit", "-m", "seed")
         return self._git(repo_root, "rev-parse", "HEAD")
 
+    def _init_with_framework_at(self, repo_root: Path, framework_root: Path) -> None:
+        """`init` with `FRAMEWORK_ROOT` patched: `repo_revision` is the FRAMEWORK's commit
+        (issue #705), so the scratch git repository below plays the framework checkout."""
+        with mock.patch.object(ort, "FRAMEWORK_ROOT", framework_root):
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+
     def test_init_records_repo_revision_commit_and_dirty_in_git_repo(self) -> None:
         """A run under a git checkout records the HEAD SHA and clean/dirty state
         so its artifacts can be traced back to the exact source that produced them."""
@@ -2326,7 +2332,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             repo_root = Path(tmp)
             head = self._seed_git_repo(repo_root)
 
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            self._init_with_framework_at(repo_root, repo_root)
             rev = self._read_meta_dict(repo_root, "orch_001").get("repo_revision")
             self.assertEqual(rev, {"commit": head, "dirty": False})
 
@@ -2339,7 +2345,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             # Modify a tracked source file so the working tree is genuinely dirty.
             (repo_root / "seed.txt").write_text("seed modified\n", encoding="utf-8")
 
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            self._init_with_framework_at(repo_root, repo_root)
             rev = self._read_meta_dict(repo_root, "orch_001").get("repo_revision")
             self.assertEqual(rev, {"commit": head, "dirty": True})
 
@@ -2350,7 +2356,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             first_head = self._seed_git_repo(repo_root)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            self._init_with_framework_at(repo_root, repo_root)
 
             # Advance HEAD, then re-init the same orchestration.
             (repo_root / "seed.txt").write_text("seed v2\n", encoding="utf-8")
@@ -2358,17 +2364,35 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             second_head = self._git(repo_root, "rev-parse", "HEAD")
             self.assertNotEqual(first_head, second_head)
 
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            self._init_with_framework_at(repo_root, repo_root)
             rev = self._read_meta_dict(repo_root, "orch_001").get("repo_revision")
             self.assertEqual(rev, {"commit": first_head, "dirty": False})
 
     def test_init_omits_repo_revision_outside_git_checkout(self) -> None:
-        """A non-git run directory yields no revision so absent stays
+        """A framework root that is not a git checkout yields no revision so absent stays
         distinguishable from clean/dirty."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            self._init_with_framework_at(repo_root, repo_root)
             self.assertNotIn("repo_revision", self._read_meta_dict(repo_root, "orch_001"))
+
+    def test_init_records_the_framework_commit_not_the_projects(self) -> None:
+        """Issue #705: with the Project and the framework in two git checkouts, the run
+        records the framework's commit (the code that ran), never the Project's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            framework, project = Path(tmp) / "fw", Path(tmp) / "proj"
+            framework.mkdir()
+            project.mkdir()
+            framework_head = self._seed_git_repo(framework)
+            self._seed_git_repo(project)
+            (project / "seed.txt").write_text("project v2\n", encoding="utf-8")
+            self._git(project, "commit", "-am", "project")
+            project_head = self._git(project, "rev-parse", "HEAD")
+            (project / "seed.txt").write_text("project edit\n", encoding="utf-8")
+            self.assertNotEqual(framework_head, project_head)
+            self._init_with_framework_at(project, framework)
+            rev = self._read_meta_dict(project, "orch_001").get("repo_revision")
+            self.assertEqual(rev, {"commit": framework_head, "dirty": False})
 
     def test_capture_repo_revision_dirty_none_when_status_fails(self) -> None:
         """HEAD resolvable but status failing records the commit with dirty=None
@@ -26362,6 +26386,11 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         self.bin.mkdir(parents=True)
         self.env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TMPDIR": "/tmp",
                     "LANG": "C.UTF-8"}
+        # The single-root case: the Project root IS the framework root (a run of the sample in
+        # its own checkout). The two-root case is `TwoRootWrapperSandboxTests` (issue #705).
+        patcher = mock.patch.object(ort, "FRAMEWORK_ROOT", self.repo.resolve())
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -26479,6 +26508,131 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         self.assertEqual(roots, [str(prefix)])
 
 
+
+
+class TwoRootWrapperSandboxTests(unittest.TestCase):
+    """Issue #705: a wrapper run hides the Project root AND the framework root. Keyed on the
+    Project root alone, a tool kept anywhere in a framework checkout under `$HOME` took the
+    home-install rule and bound the WHOLE framework checkout read-only — the gates under
+    `tools/` and a nested sample Project's State — into the run of a leaf-authored program
+    (measured, the plan's X1). The rows run without bwrap; `test_bwrap_simulation.py` holds the
+    mounts under real bwrap."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name).resolve()
+        self.fw = self.home / "fw"
+        self.proj = self.home / "proj"
+        self.nested = self.fw / "sample"
+        for d in (self.fw / "tools", self.proj, self.nested / "workspace"):
+            d.mkdir(parents=True)
+        self.tree = self.home / "work"
+        self.tree.mkdir()
+        patcher = mock.patch.object(ort, "FRAMEWORK_ROOT", self.fw)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _tool(self, where: Path, name: str) -> Path:
+        exe = where / name
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        exe.chmod(0o755)
+        return exe
+
+    def _roots(self, exe: Path, project: Path) -> list[str]:
+        with mock.patch.dict(os.environ, {"PATH": f"{exe.parent}:/usr/bin:/bin",
+                                          "HOME": str(self.home)}):
+            return ort.wrapper_toolchain_ro_roots([exe.name], project)
+
+    def test_the_toolchain_roots_follow_the_innermost_hidden_root(self) -> None:
+        fw_venv = self._tool(self.fw / ".venv" / "bin", "fwlint")
+        fw_other = self._tool(self.fw / "tools" / "bin", "fwgate")
+        nested_venv = self._tool(self.nested / ".venv" / "bin", "samplelint")
+        cases = [
+            # (tool, Project root, expected roots)
+            (fw_venv, self.proj, [str(self.fw / ".venv")]),
+            (fw_venv, self.nested, [str(self.fw / ".venv")]),
+            (fw_venv, self.fw, [str(self.fw / ".venv")]),
+            (fw_other, self.proj, []),
+            (fw_other, self.nested, []),
+            (fw_other, self.fw, []),
+            (nested_venv, self.nested, [str(self.nested / ".venv")]),
+            # Judged against the framework root, `sample/` is not a virtualenv directory.
+            (nested_venv, self.proj, []),
+        ]
+        for exe, project, expected in cases:
+            with self.subTest(tool=str(exe.relative_to(self.home)),
+                              project=str(project.relative_to(self.home))):
+                self.assertEqual(self._roots(exe, project), expected)
+
+    def _render(self, project: Path, **over) -> list[str]:
+        kwargs = {"repo_root": project, "project_dir": self.tree, "rw_binds": [self.tree],
+                  "env": {"PATH": "/usr/bin:/bin"}}
+        kwargs.update(over)
+        return ort.render_wrapper_sandbox_prefix(**kwargs)
+
+    def test_both_roots_get_a_tmpfs_between_the_ro_binds_and_the_bind_backs(self) -> None:
+        fw_venv = self.fw / ".venv"
+        (fw_venv / "bin").mkdir(parents=True)
+        opt = self.home / "opt" / "mpi"
+        opt.mkdir(parents=True)
+        for project in (self.proj, self.nested):
+            with self.subTest(project=str(project.relative_to(self.home))):
+                cmd = self._render(project, toolchain_ro_roots=[str(opt), str(fw_venv)])
+                tmpfs_at = [cmd[k + 1] for k, a in enumerate(cmd) if a == "--tmpfs"]
+                self.assertEqual(sorted(tmpfs_at), sorted(["/tmp", str(self.fw), str(project)]))
+                tmpfs_idx = [k for k, a in enumerate(cmd)
+                             if a == "--tmpfs" and cmd[k + 1] != "/tmp"]
+                ro = [k for k, a in enumerate(cmd) if a == "--ro-bind"]
+                opt_bind = cmd.index(str(opt)) - 1
+                venv_bind = cmd.index(str(fw_venv)) - 1
+                tree_bind = cmd.index(str(self.tree)) - 1
+                self.assertIn(opt_bind, ro)
+                self.assertEqual(cmd[venv_bind], "--ro-bind")
+                self.assertEqual(cmd[tree_bind], "--bind")
+                for t in tmpfs_idx:
+                    self.assertLess(opt_bind, t, "an install root bound after a tmpfs shows it")
+                    self.assertLess(t, venv_bind, "the bind-back must follow both tmpfs")
+                    self.assertLess(t, tree_bind)
+                self.assertNotIn(str(self.fw / "tools"), cmd)
+
+    def test_an_install_root_inside_the_framework_checkout_is_refused(self) -> None:
+        (self.fw / "tools" / "bin").mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, "lies in the checkout"):
+            self._render(self.proj, toolchain_ro_roots=[str(self.fw / "tools")])
+
+    def test_an_install_root_that_aliases_the_framework_checkout_is_refused(self) -> None:
+        alias = self.home / "alias"
+        alias.symlink_to(self.fw)
+        with self.assertRaises(ValueError) as caught:
+            self._render(self.proj, toolchain_ro_roots=[str(alias)])
+        self.assertIn(str(self.fw), str(caught.exception))
+
+    def test_a_nested_projects_own_virtualenv_is_bound_back(self) -> None:
+        """The Project nested in the framework checkout (the `sample/` layout): its own
+        virtualenv is judged against the INNERMOST root that holds it, the Project, and bound
+        back after both tmpfs; judged against the framework root it would be refused as a part
+        of the checkout that is not one of its virtualenv directories."""
+        venv = self.nested / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        cmd = self._render(self.nested, toolchain_ro_roots=[str(venv)])
+        bind = cmd.index(str(venv)) - 1
+        self.assertEqual(cmd[bind], "--ro-bind")
+        for root in (self.fw, self.nested):
+            self.assertLess(cmd.index(str(root)), bind)
+
+    def test_an_install_root_that_aliases_the_project_is_refused_with_two_roots(self) -> None:
+        alias = self.home / "proj_alias"
+        alias.symlink_to(self.proj)
+        with self.assertRaises(ValueError) as caught:
+            self._render(self.proj, toolchain_ro_roots=[str(alias)])
+        self.assertIn(str(self.proj), str(caught.exception))
+
+    def test_the_hidden_roots_are_one_root_when_the_project_is_the_framework(self) -> None:
+        self.assertEqual(ort.sandbox_hidden_roots(self.fw), [str(self.fw)])
+        self.assertEqual(sorted(ort.sandbox_hidden_roots(self.proj)),
+                         sorted([str(self.proj), str(self.fw)]))
 
 class LeafNetnsPreflightTests(unittest.TestCase):
     """Issue #534 step 4: preflight's two network-namespace rows, run for real (bwrap and the

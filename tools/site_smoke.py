@@ -48,7 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     which = ap.add_mutually_exclusive_group(required=True)
     which.add_argument("site_id", nargs="?", help="a site id in sites.yaml")
     which.add_argument("--target", help="use the site sites.yaml maps this target to")
-    ap.add_argument("--sites", help="site configuration (default ./sites.yaml)")
+    ap.add_argument("--sites", help="site configuration (default <repo-root>/sites.yaml)")
+    ap.add_argument("--repo-root", type=Path, default=Path("."),
+                    help="the Project root (default: the working directory)")
     ap.add_argument("--cmd", default="echo OK; hostname",
                     help="shell command run at the site with sh -c (default: %(default)r)")
     ap.add_argument("--timeout", type=int, default=60, help="command timeout in seconds")
@@ -63,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        config = load_sites(REPO_ROOT, path=args.sites)
+        config = load_sites(args.repo_root.resolve(), path=args.sites)
     except SitesConfigError as exc:
         print(f"sites.yaml refused: {exc}", file=sys.stderr)
         return 2

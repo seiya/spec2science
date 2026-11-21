@@ -598,7 +598,8 @@ recipes are in `references/input-surfaces.md`:
   thing; this asks what else the thing is CALLED. `render_bwrap_command` hid the artifact trees
   with tmpfs overlays at the checkout's path (one tmpfs over the WHOLE checkout since issue
   #227, at the same path — the rule is unchanged, and what a second name now exposes is `tools/`
-  as well), and issue #226 widened the read-only bind of the
+  as well; since issue #705 one tmpfs at each of the Project root and the framework root, and the
+  alias refusal runs for each), and issue #226 widened the read-only bind of the
   backend CLI's install root from `bin/` to the whole `$HOME` child — so any second name for the
   checkout inside that root exposed the producer's `dialogs/` to a VERIFY leaf with nothing
   overlaid. Five review rounds found five names of the same class, one per round, each fixed by

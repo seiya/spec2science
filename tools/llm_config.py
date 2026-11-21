@@ -1142,9 +1142,11 @@ def resolve_default_config_path(repo_root: str | Path) -> Path:
     # wherever it is pasted — hence also `shlex.quote`: an absolute path is the operator's, and
     # a root containing a space splits into extra arguments that `cp` either rejects or, worse,
     # acts on.
-    root = Path(repo_root)
+    # The samples are the FRAMEWORK's files, so their source is the framework root, never
+    # the Project's (issue #705); the destination is the Project's default path.
+    from tools.framework_root import FRAMEWORK_ROOT
     samples = "\n  ".join(
-        shlex.join(["cp", str(root / SAMPLE_CONFIG_DIR / name), str(path)])
+        shlex.join(["cp", str(FRAMEWORK_ROOT / SAMPLE_CONFIG_DIR / name), str(path)])
         for name in SAMPLE_CONFIG_NAMES)
     # No `where=`: `LlmConfigError.__str__` appends " (at <where>)", which would land on the
     # LAST line of the `cp` list above and render as part of a command the operator is being

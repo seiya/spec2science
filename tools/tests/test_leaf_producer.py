@@ -31,6 +31,7 @@ import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools import usage_reset
+from tools.tests.framework_fixture import scratch_framework_root
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.private_root_fixture import (
     refuse_provider_probes_for_module,
@@ -2754,18 +2755,11 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
     production (workshop) loop: launch request -> the leaf's tree -> acceptance -> host writes.
     What the m3c producer tests do for their shape, for this one."""
 
-    _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
-                  "docs/workflow/phases/phase_02_generate.md")
-
     def setUp(self) -> None:
-        import shutil
+        # The harness contexts' framework documents are read under FRAMEWORK_ROOT (issue
+        # #705), so the scratch Project carries none of them.
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name)
-        real_root = Path(wc.__file__).resolve().parents[1]
-        for rel in self._REPO_DOCS:
-            dest = self.repo / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(real_root / rel, dest)
         self.refs = _write_harness_node(self.repo)
         self.c = _workshop_conductor(self.repo)
 
@@ -2839,21 +2833,12 @@ class PureHarnessShapeTests(unittest.TestCase):
     """The host side of the second bundle shape: what the leaf is shown, what it is judged
     against, and what the assembly declares as host glue."""
 
-    #: The repository documents the harness contexts inline. Copied into the fixture repo the
-    #: way `test_leaf_verify` seeds the phase contract: the builders read them off
-    #: `repo_root`, so the fixture's throwaway root has to carry them.
-    _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
-                  "docs/workflow/phases/phase_02_generate.md")
-
     def setUp(self) -> None:
-        import shutil
+        # The framework documents the harness contexts inline (the runner-output contract,
+        # phase_02) are read under FRAMEWORK_ROOT (issue #705): the scratch Project carries
+        # none, and a row that breaks one uses `scratch_framework_root`.
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name)
-        real_root = Path(wc.__file__).resolve().parents[1]
-        for rel in self._REPO_DOCS:
-            dest = self.repo / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(real_root / rel, dest)
         self.refs = _write_harness_node(self.repo)
         # The reviewer's context reads the producer's bundle, and an absent one RAISES since
         # issue #467, so the fixture stages it the way `PureHarnessVerifyWiringTests` does.
@@ -3066,7 +3051,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         makes fail_closed the correct terminus, and the caller turns this into
         `pure_context_assembly_failed` with no leaf spawned. Degrading to `""` would defer the
         refusal one frame into `record_launch` and abort the conductor instead."""
-        (self.repo / "docs/workflow/RUNNER_OUTPUT_CONTRACT.md").unlink()
+        (scratch_framework_root(self) / "docs/workflow/RUNNER_OUTPUT_CONTRACT.md").unlink()
         with self.assertRaises(RuntimeError) as caught:
             self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_runner_output_contract_document_missing", str(caught.exception))
