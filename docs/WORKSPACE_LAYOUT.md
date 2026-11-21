@@ -12,6 +12,8 @@ Related canonical sources:
 
 ## Overall structure
 
+`workspace/` sits under the Project root, the root `--repo-root` names, beside the run's `llm.yaml` and `sites.yaml`; the three are a Project's State, which its `.gitignore` lists (`docs/GLOSSARY.md` §14; `docs/SPEC.md` §Large-scale spec operation design, requirement 2, for what else a Project root holds). `workspace/` may not be a symbolic link (`tools/validate_workspace_root.py`). Every `workspace/...` path below is relative to the Project root.
+
 ```
 workspace/
 ├── orchestrations/
