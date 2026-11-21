@@ -60,7 +60,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 9. Do not extract and complete a requirement, judgment rule, or input/output contract not defined in `docs/`, `spec/`, or the relevant trial's artifacts from the implementation under `tools/`, verification scripts, test code, or validator code.
 10. Workflow execution must execute each phase (`Compile` / `Generate` / `Validate`) with the `LLM`. `Build` is a deterministic process and is executed by the conductor's in-process call to the build-runtime library's `compile_project` (`docs/BUILD_RUNTIME.md`).
 11. For workflow execution, a script that proxies multiple phases at once must not be newly generated or executed. Phase execution allows only the conductor launching each leaf (`docs/ORCHESTRATION.md`).
-12. The storage root for workflow artifacts allows only `workspace/`. If `workspace/` does not exist, create it directly under the repository root.
+12. The storage root for workflow artifacts allows only `workspace/`. If `workspace/` does not exist, create it directly under the Project root (`docs/GLOSSARY.md` §14).
 13. During workflow execution, the artifacts under `workspace/ir` and `workspace/pipelines` of the target `DAG` must not be deleted.
 14. `quality check` uses the comparison of each execution shape's host verdict over its own captures as the canonical source, and must not finalize pass/fail by `stdout` diff alone.
 15. The artifact reference paths of `lineage.json` and `trial_meta.json` must be recorded relative to `workspace/`.

@@ -1325,7 +1325,8 @@ def _render_markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"`{result.get('orchestration_root')}` is not a directory. Every count below "
             "is zero because nothing was read, NOT because nothing is wrong. Two causes: "
-            "`--repo-root` does not name the checkout (it defaults to the CURRENT "
+            "`--repo-root` does not name the Project root that holds the run's State "
+            "(`sample` for the sample nodes; it defaults to the CURRENT "
             "DIRECTORY, so this is what running the command from elsewhere looks like), "
             "or the orchestration id is wrong."
         )
@@ -1432,7 +1433,7 @@ def main() -> None:
     parser.add_argument(
         "--repo-root",
         default=".",
-        help="Repository root (default: current directory)",
+        help="Project root whose workspace/ holds the orchestration (default: current directory)",
     )
     args = parser.parse_args()
 
