@@ -315,7 +315,8 @@ capture there. Measured then over `workspace/ir/*/*/spec.ir.yaml`, five problem 
 a continuation case, so the stop was reachable. (Issue #709 F-1 later left continuation cases out
 of the comparison, `tools/oracle.py` `compared_cases`, so a continuation no longer stops it; the
 stop remains only for a node whose every case under a cross-target predicate is a continuation,
-where nothing is compared. The remedy rule below is what this episode is kept for.) The round-1 fix gave the stop a remedy "by cause". That remedy read: "apply no
+where nothing is compared. The remedy rule below is what this episode is kept for.) The round-1
+fix gave the stop a remedy "by cause". That remedy read: "apply no
 cross-target judgment to a test of a continuation case (the spec), or remove the declaration".
 The first half clears the refusal. It also removes the comparison between two declared targets
 in that case, which the judgment exists for and which has nothing to do with the oracle. Under
