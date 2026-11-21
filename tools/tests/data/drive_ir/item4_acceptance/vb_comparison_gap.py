@@ -74,6 +74,10 @@ REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
 #: The sample Project (issue #705 PR-2): the spec documents and the `workspace/` State.
 PROJECT = REPO / "sample"
+#: Where the two nodes' `spec` files are read (their oracle declarations and `tests.md`): they left
+#: the sample by issue #705 PR-3, and the suite's fixture holds them at the bytes R-O certified.
+#: R-O's State (its pipelines and IRs) stays the sample's, read through `PROJECT`.
+SPEC_ROOT = REPO / "tools" / "tests" / "data" / "scale_project"
 
 from tools import capture_store  # noqa: E402
 from tools import oracle as oracle_mod  # noqa: E402
@@ -163,7 +167,7 @@ def run_cases(binary: Path, ir_spec: Path, cases: list[str], run_dir: Path) -> N
 
 def oracle_captures(node: Node, work: Path) -> Path:
     """The oracle's captures of every compared case, merged as `_compare_with_oracle` does."""
-    oracle = oracle_mod.load(PROJECT, node.spec_ref, "fortran")
+    oracle = oracle_mod.load(SPEC_ROOT, node.spec_ref, "fortran")
     plan = oracle_mod.case_plan(node.ir, oracle)
     root = work / node.name / "oracle"
     if root.exists():
@@ -224,7 +228,7 @@ def offline_tolerance(suite: dict, case: dict, var: str, got: dict, ref: dict) -
 
 
 def table1(node: Node, merged: Path) -> list[dict]:
-    suite = offline.load_suite(PROJECT / node.spec_ref / "tests.md", node.name)
+    suite = offline.load_suite(SPEC_ROOT / node.spec_ref / "tests.md", node.name)
     reads = workflow_reads(node.ir)
     rows = []
     for case in suite["cases"]:
