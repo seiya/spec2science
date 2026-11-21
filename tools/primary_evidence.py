@@ -3470,9 +3470,10 @@ def _unbound_extent(token: str, entries: list[DriveEntry], inputs: Any,
     """One `shape_expr` token of a state array no entry running this case binds (review round
     2, R2-2 / R2-3), each name resolved under ANY entry's binding of a rank-0 dummy of that name
     (``entries``: every entry of the node), evaluated against this case's inputs; a name no entry
-    binds as a rank-0 dummy resolves as this case's scalar `derived.<name>`, which a dummy
-    shadows as on the bound path (`_extent`) — the extent of an operation only other cases run,
-    which no rank-0 dummy carries (issue #709 F-1b). A name neither source resolves, or that two
+    binds as a rank-0 dummy resolves as this case's scalar `derived.<name>`, which a rank-0
+    dummy of any entry shadows — the extent of an operation only other cases run, which no
+    rank-0 dummy carries (issue #709 F-1b). Unlike the bound path (`_extent`), an array dummy of
+    the name does not refuse the `derived` value here: the array is host data in this case. A name neither source resolves, or that two
     entries bind to different values in this case, is refused."""
     def name_value(name: str) -> int:
         values: dict[str, int] = {}

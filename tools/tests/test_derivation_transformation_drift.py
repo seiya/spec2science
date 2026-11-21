@@ -1008,7 +1008,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # admitted is admitted with the same case payloads. Measured as well: over the 113 `drive`
     # IRs of `sample/workspace/ir/`, the SCALE Project's `workspace/ir/` and `ir/`, and the
     # pr3_evidence fixtures, `drive_violations` and `evaluate_case_inputs` are equal at main
-    # 3a60cdbe and here except on the one IR main refused (`dynamics_flux_xyz_3d_cd4`, gate (c)
+    # 3a60cdbe and at this change except on the one IR main refused (`dynamics_flux_xyz_3d_cd4`, gate (c)
     # refusals -> 0). So no certified Compile is invalid, and a bump would re-derive every
     # node's Compile for a rule each satisfies. (Measured by diffing `compile_documents_tuple()`
     # against main 3a60cdbe's: the `phase_contract_document` row alone.) The digest
@@ -2443,7 +2443,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # diffing `execute_tuple()` against main 3a60cdbe's: that row and no other.) The digest
     # `execute-22` shipped with at 3a60cdbe:
     "execute-22@3a60cdbe": "daf2e8b51c121f33adce87ab6a8d55c112c5592a36d5429962863ede9abab4ea",
-    "execute-22": "2728b0951e94adff907a91fe72aaa58c1a0338ddc4c28ab0112e76d1e5425457",
+    "execute-22": "ca86ccd2ed12cd0bae952ad28b13a00fce1c02092f5e9ae78a9b86f554350da2",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2732,7 +2732,7 @@ PINNED_VERDICT: dict[str, str] = {
     # admitted, so no verdict record moves. (Measured by diffing `verdict_tuple()` against main 3a60cdbe's:
     # that row and no other.) The digest `verdict-20` shipped with at 3a60cdbe:
     "verdict-20@3a60cdbe": "d395c605b0f7c4b816e31853f6e8ef454aafe0920825ac0763e6faebf092dff7",
-    "verdict-20": "54e394292aff30ce3fce35abe480d6ed12c330ef2f6f563a22e3383bd6939c30",
+    "verdict-20": "38e69d17c1e95f973b5a95c9862e61956b045f1adf6823f5903f2d2041098004",
 }
 
 
