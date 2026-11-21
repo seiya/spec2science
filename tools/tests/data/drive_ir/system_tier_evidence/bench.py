@@ -22,7 +22,7 @@ the patch file (default `mutants.yaml`, written against the hand-written model;
 patch does not apply is reported `NOT APPLICABLE` rather than stopping the table; it, and a
 mutant that does not build, is NOT MEASURED, and the run exits 1 when any mutant is.
 
-1. (`--gate`) `validate_compile_ir_dir` with the repository as root: Compile.static's gates,
+1. (`--gate`) `validate_compile_ir_dir` with the sample Project as root: Compile.static's gates,
    including the `quantities` / `expected_outcome` / `history` / `distribute` lines against the
    real `tests.md`.
 2. Render the Fortran driver, compile the closure and the model, run every case in ONE process
@@ -68,6 +68,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the spec documents, catalog and the `workspace/` State.
+PROJECT = REPO / "sample"
 sys.path.insert(0, str(HERE))
 
 from tools.tests.target_fixtures import provides_for
@@ -182,13 +184,13 @@ def p4b_shape(ir: dict[str, Any], like: dict[str, Any] | None = None) -> dict[st
 def catalog_version(sid: str) -> str:
     if sid in AT:
         return AT[sid]
-    cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+    cat = yaml.safe_load((PROJECT / "spec/registry/spec_catalog.yaml").read_text())["specs"]
     return next(e["spec_version"] for e in cat if e["spec_id"] == sid)
 
 
 def certified_source(kind: str, sid: str) -> Path:
     version = catalog_version(sid)
-    hits = sorted(glob.glob(str(REPO / f"workspace/pipelines/{kind}__{sid}__{version}/fortran_cpu/"
+    hits = sorted(glob.glob(str(PROJECT / f"workspace/pipelines/{kind}__{sid}__{version}/fortran_cpu/"
                                 f"*/source/src_*/src/{sid}_model.f90")))
     if not hits:
         raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version} (a node the catalog moved before it was certified there: pass --at <spec_id>@<version> with a certified version)")
@@ -200,7 +202,7 @@ def passed_pipeline(node: str) -> Path:
     """The latest `fortran_cpu` pipeline of `node` whose recorded run's aggregate verdict is
     `pass`: a pipeline's `lineage.json` is written before its run, so the latest directory alone
     can be an attempt that failed later."""
-    for lineage in reversed(sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/"
+    for lineage in reversed(sorted(glob.glob(str(PROJECT / f"workspace/pipelines/{node}/"
                                                  f"fortran_cpu/*/lineage.json")))):
         pipe = Path(lineage).parent
         run_id = json.loads(Path(lineage).read_text()).get("run_id")
@@ -217,7 +219,7 @@ def certified_pipeline() -> Path:
 
 def certified_ir() -> dict[str, Any]:
     lineage = json.loads((certified_pipeline() / "lineage.json").read_text())
-    path = REPO / lineage["ir_ref"] / "spec.ir.yaml"
+    path = PROJECT / lineage["ir_ref"] / "spec.ir.yaml"
     print(f"certified IR: {path.relative_to(REPO)} (in the P4b drive shape, `p4b_shape`)",
           flush=True)
     return p4b_shape(yaml.safe_load(path.read_text()),
@@ -246,7 +248,7 @@ def gate(ir: dict[str, Any]) -> list[str]:
         (d / "ir_meta.json").write_text(json.dumps({
             "attempt_count": 1, "verification_status": "pass", "last_fail_reason": None,
             "debug_mode": False, "context_isolated": True}))
-        return vps.validate_compile_ir_dir(REPO, d)
+        return vps.validate_compile_ir_dir(PROJECT, d)
 
 
 def _indent(block: str, n: int) -> str:

@@ -4,7 +4,7 @@
 GENERATED `harness_fortran_cpu_netcdf@0.1.0` model R3 certified (orchestration
 `orch_20261117T055417Z_ab3bf7d6`), in place of the hand model.
 
-  PYTHONPATH=. python3 <this file> --model <workspace/pipelines/.../src/harness_fortran_cpu_netcdf_model.f90>
+  PYTHONPATH=. python3 <this file> --model <sample/workspace/pipelines/.../src/harness_fortran_cpu_netcdf_model.f90>
 
 Every row of the bench class runs, with the generated model in place of the hand model, except
 the two that edit the model's text:

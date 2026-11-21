@@ -66,6 +66,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the catalog and the `workspace/` State.
+PROJECT = REPO / "sample"
 
 from tools import capture_store  # noqa: E402
 
@@ -81,7 +83,7 @@ AT: dict[str, str] = {}
 def node_dir(kind: str, sid: str) -> str:
     version = AT.get(sid)
     if version is None:
-        cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        cat = yaml.safe_load((PROJECT / "spec/registry/spec_catalog.yaml").read_text())["specs"]
         version = next(e["spec_version"] for e in cat if e["spec_id"] == sid)
     return f"{kind}__{sid}__{version}"
 
@@ -89,7 +91,7 @@ def node_dir(kind: str, sid: str) -> str:
 def latest_pipeline(node: str) -> Path:
     """The latest `fortran_cpu` pipeline of `node` whose recorded run's aggregate verdict is
     `pass` (a pipeline's `lineage.json` is written before its run)."""
-    for pipe in reversed(sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/fortran_cpu/*/")))):
+    for pipe in reversed(sorted(glob.glob(str(PROJECT / f"workspace/pipelines/{node}/fortran_cpu/*/")))):
         pipe = Path(pipe)
         lineage = pipe / "lineage.json"
         if not lineage.is_file():
@@ -112,7 +114,7 @@ def run_of(pipe: Path, node: str, run_id: str | None = None) -> tuple[Path, Path
         raise SystemExit(f"{node}: run {run} is absent under {pipe.relative_to(REPO)}")
     snaps = run_dir / node / "raw" / "state_snapshots"
     print(f"{node}: pipeline {pipe.relative_to(REPO)}, run {run}, ir {lineage['ir_ref']}")
-    return snaps, REPO / lineage["ir_ref"]
+    return snaps, PROJECT / lineage["ir_ref"]
 
 
 def load_text(paths: Path | list[Path]) -> Any:
@@ -269,7 +271,7 @@ def main() -> int:
                 if d["node_key"].replace("/", "__").replace("@", "__") == m_node]
     if len(resolved) != 1:
         raise SystemExit(f"the composite's lineage resolves {len(resolved)} pipelines of {m_node}")
-    m_snaps, m_ir = run_of(REPO / resolved[0]["pipeline_ref"], m_node, resolved[0]["run_id"])
+    m_snaps, m_ir = run_of(PROJECT / resolved[0]["pipeline_ref"], m_node, resolved[0]["run_id"])
     findings: list[str] = []
     for c_case, m_case in pairs:
         findings += compare_pair(c_snaps, c_ir, c_case, m_snaps, m_ir, m_case)

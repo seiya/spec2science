@@ -2,7 +2,7 @@
 
 Usage:
     python3 tools/tests/data/conductor_launch_requests/redact_launch_request.py \
-        workspace/orchestrations/<oid>/launches/<arid>.request.json
+        sample/workspace/orchestrations/<oid>/launches/<arid>.request.json
 
 Writes `<step>_<substep>.request.json` (`<step>_step` for a step-level request;
 `<step>_<substep>.workshop.request.json` for a `workshop leaf`'s, issue #534) beside this
@@ -30,6 +30,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[3]
+#: The sample Project (issue #705 PR-2): the `workspace/` State the recorded request is read from.
+PROJECT = REPO_ROOT / "sample"
 
 
 def placeholder(value: object) -> str:
@@ -40,7 +42,7 @@ def placeholder(value: object) -> str:
 
 def redact(req: dict, source: Path | None = None, shown_as: Path | None = None) -> dict:
     """`source` is READ (as given); `shown_as`, when passed, is the path RECORDED in the stamp
-    (the CLI passes the repository-relative spelling). Keeping the two apart is what makes the
+    (the CLI passes the Project-relative spelling). Keeping the two apart is what makes the
     stamp describe the file that was hashed whatever the working directory is."""
     out = dict(req)
     if source is not None:
@@ -68,7 +70,7 @@ def main(argv: list[str]) -> int:
         name += ".workshop"
     dest = HERE / f"{name}.request.json"
     resolved = source.resolve()
-    shown = resolved.relative_to(REPO_ROOT) if resolved.is_relative_to(REPO_ROOT) else source
+    shown = resolved.relative_to(PROJECT) if resolved.is_relative_to(PROJECT) else source
     redacted = redact(req, source=source, shown_as=shown)
     dest.write_text(json.dumps(redacted, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(dest)

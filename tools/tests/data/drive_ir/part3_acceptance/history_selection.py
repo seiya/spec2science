@@ -35,6 +35,8 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 sys.path.insert(0, str(REPO))
+#: The sample Project (issue #705 PR-2): the spec documents and the `workspace/` State.
+PROJECT = REPO / "sample"
 sys.path.insert(0, str(HERE))
 
 from tools import capture_store  # noqa: E402
@@ -68,7 +70,8 @@ def run(config: dict, out: Path) -> int:
     cfg = out.with_suffix(".yaml")
     cfg.write_text(yaml.safe_dump(config), encoding="utf-8")
     return subprocess.run([sys.executable, "tools/run_configuration.py", SPEC, "--target",
-                           "fortran_cpu", "--config", str(cfg), "--out", str(out)],
+                           "fortran_cpu", "--config", str(cfg), "--out", str(out),
+                           "--repo-root", str(PROJECT)],
                           cwd=REPO, capture_output=True, text=True).returncode
 
 
