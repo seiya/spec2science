@@ -348,7 +348,7 @@ def main(argv=None):
                         help="count only this node_key (repeatable); compare two windows over "
                         "the same node set")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--root", help="checkout root (default: found from the cwd)")
+    parser.add_argument("--root", help="Project root (default: found from the cwd)")
     args = parser.parse_args(argv)
     report = analyze(load_rows(args.root or repo_root(), args.since, args.until,
                                set(args.node) if args.node else None))
