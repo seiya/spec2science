@@ -1000,7 +1000,20 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # main 7a9af525's: the `phase_contract_document` row alone.) The digest `compile-docs-38`
     # shipped with at 7a9af525:
     "compile-docs-38@7a9af525": "443705f57de79df0fa9679bc97f4494fe8518ee834ebc24cdff52c4eb25d8433",
-    "compile-docs-38": "7f8365c96cc429ae5dc78a91e0ebcc210d3a1a95ef4e70a4cef5f47bfd18aa03",
+    # compile-docs-38 re-pinned in place by issue #709 F-1b: `phase_01_compile.md`'s `drive`
+    # block says a `shape_expr` token of an array no entry running the case binds also resolves
+    # as the case's scalar `derived` value of that name (and is refused when it disagrees with a
+    # rank-0 dummy), as gate (c) now resolves it. The rule admits more; every IR the previous
+    # text admitted is still admitted, with the same case payloads: over the 113 `drive` IRs
+    # of `sample/workspace/ir/`, `~/scale-spec/workspace/ir/`, `~/scale-spec/ir/` and the
+    # pr3_evidence fixtures, `drive_violations` and `evaluate_case_inputs` are equal at main
+    # 3a60cdbe and here except on the one IR main refused (`dynamics_flux_xyz_3d_cd4`, gate (c)
+    # refusals -> 0), so no certified Compile is invalid and a bump would re-derive every
+    # node's Compile for a rule each satisfies. (Measured by diffing `compile_documents_tuple()`
+    # against main 3a60cdbe's: the `phase_contract_document` row alone.) The digest
+    # `compile-docs-38` shipped with at 3a60cdbe:
+    "compile-docs-38@3a60cdbe": "7f8365c96cc429ae5dc78a91e0ebcc210d3a1a95ef4e70a4cef5f47bfd18aa03",
+    "compile-docs-38": "3d165612f0ac1fe2bdeb50bfe97d4d1598a2efa4861074e636042b0ff9bc14c1",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -2419,7 +2432,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # (Measured by diffing `execute_tuple()` against main 031178f0's: those four rows and no
     # other.) The digest `execute-22` shipped with at 031178f0:
     "execute-22@031178f0": "7e150ed5cbf2529e81dda1a6299d66ab14d3aa2762d21edd1b075867f78b78ce",
-    "execute-22": "daf2e8b51c121f33adce87ab6a8d55c112c5592a36d5429962863ede9abab4ea",
+    # execute-22 re-pinned in place by issue #709 F-1b: `tools/primary_evidence.py`
+    # `_unbound_extent` (gate (c), and the extent of a state no entry running the case binds in
+    # `evaluate_case_inputs`) also resolves a `shape_expr` token as the case's scalar `derived`
+    # value and refuses one that disagrees with a rank-0 dummy. Not bumped: on an IR the previous
+    # rule admitted the case payloads are unchanged (the measurement at compile-docs-38's
+    # 3a60cdbe entry), so no case file and no run of a certified node moves; an IR only the new
+    # rule admits was refused at Compile before and has no certified output. (Measured by
+    # diffing `execute_tuple()` against main 3a60cdbe's: that row and no other.) The digest
+    # `execute-22` shipped with at 3a60cdbe:
+    "execute-22@3a60cdbe": "daf2e8b51c121f33adce87ab6a8d55c112c5592a36d5429962863ede9abab4ea",
+    "execute-22": "90eb34adaebf5b80ba82a8ca1c51fe9225e95fcf1a874649ca610b01c97461fd",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2702,7 +2725,13 @@ PINNED_VERDICT: dict[str, str] = {
     # entry): absent, as every verdict caller leaves it, the evaluation is unchanged. (Measured by diffing `verdict_tuple()` against main 031178f0's: that row and
     # no other.) The digest `verdict-20` shipped with at 031178f0:
     "verdict-20@031178f0": "61a8787977b0e2584ce638fd79c327271a361e3c0ba7459a2738b22f46a57cd7",
-    "verdict-20": "d395c605b0f7c4b816e31853f6e8ef454aafe0920825ac0763e6faebf092dff7",
+    # verdict-20 re-pinned in place by issue #709 F-1b, for the `tools/primary_evidence.py`
+    # `_unbound_extent` change of execute-22's 3a60cdbe entry: the case values the verdict
+    # evaluates predicates under (`_evaluate_cases`) are unchanged on every IR the previous rule
+    # admitted, so no verdict record moves. (Measured by diffing `verdict_tuple()` against main 3a60cdbe's:
+    # that row and no other.) The digest `verdict-20` shipped with at 3a60cdbe:
+    "verdict-20@3a60cdbe": "d395c605b0f7c4b816e31853f6e8ef454aafe0920825ac0763e6faebf092dff7",
+    "verdict-20": "18cfd3f1277e46864cce6190ef34f797758a517f554e1ac22ea12b64f50dfbb2",
 }
 
 

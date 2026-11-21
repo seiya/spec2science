@@ -3469,24 +3469,28 @@ def _unbound_extent(token: str, entries: list[DriveEntry], inputs: Any,
                     derived: dict[str, Any], what: str) -> int:
     """One `shape_expr` token of a state array no entry running this case binds (review round
     2, R2-2 / R2-3), each name resolved under ANY entry's binding of a rank-0 dummy of that name
-    (``entries``: every entry of the node), evaluated against this case's inputs. A name no
-    entry binds as a rank-0 dummy, or that two entries bind to different values in this case,
-    is refused."""
+    (``entries``: every entry of the node) and as this case's scalar `derived.<name>`, as a bound
+    `shape_expr` token resolves one (`_extent`) — the extent of an operation only other cases
+    run, which no rank-0 dummy carries (issue #709 F-1b) — evaluated against this case's inputs.
+    A name neither source resolves, or that two of them give different values in this case, is
+    refused."""
     def name_value(name: str) -> int:
         values: dict[str, int] = {}
         for entry in entries:
             dummy = entry.dummy(name)
             if dummy is not None and _dummy_rank(dummy) == 0:
                 values[entry.loc] = _rank0_extent(entry, name, token, inputs, derived, what)
+        if name in derived and np.ndim(derived[name]) == 0:
+            values[f"derived.{name}"] = _integral(float(derived[name]), f"{what}: derived.{name}")
         if not values:
             raise PrimaryEvidenceError(
                 f"{what}: shape_expr token {token!r} names {name!r}, which no drive entry "
-                "binds as a rank-0 dummy, so the extent of an array no entry running this case "
-                "binds is unknown")
+                "binds as a rank-0 dummy and no scalar derived value of this case names, so "
+                "the extent of an array no entry running this case binds is unknown")
         if len(set(values.values())) > 1:
             raise PrimaryEvidenceError(
                 f"{what}: shape_expr token {token!r} names {name!r}, which the drive entries "
-                f"bind to different values in this case ({values})")
+                f"and the derived values give different values in this case ({values})")
         return next(iter(values.values()))
 
     return _extent_by(token, name_value, what)

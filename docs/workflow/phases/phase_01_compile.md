@@ -364,8 +364,8 @@ drive:
   # DRIVER of one case is rendered to: every schema variable is a
   # state the driver allocates to the extents its bound dummies' §5.1
   # `dims` give (an array no entry running the case binds: its `shape_expr`, each token resolved through
-  # ANY entry's rank-0 dummy of that name against this case's inputs — none, or two that disagree, is
-  # refused) and fills from `initial_state` (a logical state, a `calls` or `record` state of a procedure binding, and every variable `init` writes
+  # ANY entry's rank-0 dummy of that name and the case's scalar `derived` value of that name, against
+  # this case's inputs — none, or two that disagree, is refused) and fills from `initial_state` (a logical state, a `calls` or `record` state of a procedure binding, and every variable `init` writes
   # start at 0); it calls `init` once, captures `initial/`, calls `step` once (no `loop`) or up to `loop.n_step`
   # times, and captures the final state (a continuation case: `restart` in the `case` block). A refusal is a `false` result, never a stop: a false `init`
   # refuses the case (both captures still written); on a `loop` node a step is COMMITTED only on a true
