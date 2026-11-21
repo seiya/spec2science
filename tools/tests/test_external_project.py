@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -124,15 +125,35 @@ class ExternalProjectTests(unittest.TestCase):
                          ort._load_spec_catalog(str(FRAMEWORK_ROOT)))
 
     def _env(self) -> dict[str, str]:
-        # No PYTHONPATH of the operator's: each tool's own bootstrap, and the one the host
-        # composes for its children, are all that reach the framework's package.
-        return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        # The suite's own environment, PYTHONPATH included: it may carry the site-packages the
+        # children need (CI's shape puts the user site there). It never names the Project, so
+        # only the PYTHONPATH the host composes could bring the Project's `tools/` in.
+        env = dict(os.environ)
+        self.assertNotIn(str(self.proj), env.get("PYTHONPATH", ""))
+        return env
 
     def test_a_start_reaches_init_and_the_workspace_validator_accepts_its_state(self) -> None:
         """`run_workflow.py` started from the Project by the framework's path: past the startup
         load of the framework's schema, `init` runs as a real child with the Project as its
         working directory, and `validate_workspace_root.py` — another real child — accepts the
-        State it wrote. `--no-run-conductor` stops before any leaf."""
+        State it wrote. `--no-run-conductor` stops before any leaf. The leaf CLI is a
+        stand-in outside the Project that answers preflight's two probes, so the row needs no
+        installed CLI."""
+        stub = self.proj.parent / "standin_cli"
+        stub.write_text(
+            "#!/bin/sh\n"
+            'for a in "$@"; do [ "$a" = "--version" ] && { echo "0.0.0 (stand-in)"; exit 0; }; done\n'
+            'if [ "$#" -eq 1 ] && [ "$1" = "-p" ]; then\n'
+            '  echo "Error: Input must be provided either through stdin or as a prompt argument'
+            ' when using --print" >&2; exit 1\n'
+            "fi\n"
+            "exit 3\n", encoding="utf-8")
+        stub.chmod(0o755)
+        config = self.proj / "llm.yaml"
+        config.write_text(re.sub(r"^(\s*)provider: claude_cli\s*$",
+                                 lambda m: f"{m.group(0)}\n{m.group(1)}command: {stub}",
+                                 config.read_text(encoding="utf-8"), flags=re.MULTILINE),
+                          encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, str(FRAMEWORK_ROOT / "tools" / "run_workflow.py"), _HARNESS,
              "compile", "--target", "fortran_cpu", "--orchestration-id", "orch_external",
