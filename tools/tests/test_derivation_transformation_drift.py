@@ -1908,7 +1908,13 @@ PINNED_BUILD: dict[str, str] = {
     # build command and record. (Measured by diffing `build_tuple()` against main 5cc1099c's:
     # that row and no other.) The digest `build-5` shipped with at 5cc1099c:
     "build-5@5cc1099c": "71d70ae3463509fc80fbcdd4ac4f5b8076fdddd32655f16dd3c3191037afbd11",
-    "build-5": "62fbe08dc647337f070e00e53f8ebf67803604ac0bbf3bc2b2ae358aab91bfc1",
+    # build-5 re-pinned in place by issue #709 F-1: `tools/oracle.py` `compared_cases` leaves
+    # continuation cases out of the oracle comparison. `Build` reads the declaration's builds
+    # and libraries alone, which are unchanged; the case plan is read by `Validate.execute`.
+    # (Measured by diffing `build_tuple()` against main 031178f0's: that row and no other.)
+    # The digest `build-5` shipped with at 031178f0:
+    "build-5@031178f0": "62fbe08dc647337f070e00e53f8ebf67803604ac0bbf3bc2b2ae358aab91bfc1",
+    "build-5": "da468f721bcbed1929c591ecb61c0f8d061e6c4c03186dc2cc5670d49fafd6e3",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2402,7 +2408,18 @@ PINNED_EXECUTE: dict[str, str] = {
     # (Measured by diffing `execute_tuple()` against main 5cc1099c's: those two rows and no
     # other.) The digest `execute-22` shipped with at 5cc1099c:
     "execute-22@5cc1099c": "8aa5466068a4e4be8fa78d5551da022c46351900e0d7cef649dcc1a640926b4e",
-    "execute-22": "7e150ed5cbf2529e81dda1a6299d66ab14d3aa2762d21edd1b075867f78b78ce",
+    # execute-22 re-pinned in place by issue #709 F-1: the oracle comparison leaves continuation
+    # cases out (`tools/oracle.py` `compared_cases`; `Conductor._compare_with_oracle` runs the
+    # plan's cases and compares in them alone through `Conductor._shape_state_agreement`'s
+    # `cases`, which `tools/primary_evidence.py` `evaluate_primary_predicates` takes as
+    # `only_cases`). Not bumped, as `ORACLE_USE_VERSION` is not (see its comment):
+    # no node that certified under `ORACLE_USE_VERSION = 3` compared a continuation case (such a
+    # node stopped `oracle_unevaluable` on every run), and for every other node the cases run
+    # and compared are unchanged, so no certified output changes meaning.
+    # (Measured by diffing `execute_tuple()` against main 031178f0's: those four rows and no
+    # other.) The digest `execute-22` shipped with at 031178f0:
+    "execute-22@031178f0": "7e150ed5cbf2529e81dda1a6299d66ab14d3aa2762d21edd1b075867f78b78ce",
+    "execute-22": "daf2e8b51c121f33adce87ab6a8d55c112c5592a36d5429962863ede9abab4ea",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2680,7 +2697,12 @@ PINNED_VERDICT: dict[str, str] = {
     # against main 5cc1099c's: that row and no other.) The digest `verdict-20` shipped with at
     # 5cc1099c:
     "verdict-20@5cc1099c": "14827cb21fd16d0de0fd717337390d8f9e6b1f28b8244ad07ea0dcc50d995b31",
-    "verdict-20": "61a8787977b0e2584ce638fd79c327271a361e3c0ba7459a2738b22f46a57cd7",
+    # verdict-20 re-pinned in place by issue #709 F-1, for the `only_cases` keyword that
+    # `tools/primary_evidence.py` `evaluate_primary_predicates` gains (execute-22's 031178f0
+    # entry): absent, as every verdict caller leaves it, the evaluation is unchanged. (Measured by diffing `verdict_tuple()` against main 031178f0's: that row and
+    # no other.) The digest `verdict-20` shipped with at 031178f0:
+    "verdict-20@031178f0": "61a8787977b0e2584ce638fd79c327271a361e3c0ba7459a2738b22f46a57cd7",
+    "verdict-20": "d395c605b0f7c4b816e31853f6e8ef454aafe0920825ac0763e6faebf092dff7",
 }
 
 

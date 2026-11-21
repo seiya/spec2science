@@ -185,6 +185,18 @@ class CasePlanTest(_OracleFixture):
         # An IR without a cross-target predicate compares nothing.
         self.assertEqual(oracle.case_plan(_ir(), self.oracle), {"default": [], "alt": []})
 
+    def test_a_continuation_case_is_no_compared_case(self) -> None:
+        """Issue #709 F-1: a case that carries a `restart` key is left out, and a build that
+        names one (`alt` names c2) is accepted and is given nothing."""
+        ir = _ir(_cross(["c1", "c2", "c3"]))
+        ir["case"]["test_case_set"][1]["restart"] = {"from": "c1", "step": 2}
+        self.assertEqual(oracle.compared_cases(ir), ["c1", "c3"])
+        self.assertEqual(oracle.case_plan(ir, self.oracle),
+                         {"default": ["c1", "c3"], "alt": []})
+        # A malformed `restart` is still no base case: the first pass never runs it.
+        ir["case"]["test_case_set"][1]["restart"] = "c1"
+        self.assertEqual(oracle.compared_cases(ir), ["c1", "c3"])
+
     def test_a_compared_case_no_build_takes_is_refused(self) -> None:
         self.write_oracle(_VALID.replace("libraries: [foo]",
                                          "libraries: [foo]\n    cases: [c1]"))
@@ -1485,25 +1497,31 @@ class OracleExecuteTest(unittest.TestCase):
                          [("first", [], None), ("default", ["c_alpha"], "O-default"),
                           ("alt", ["c_beta"], "O-alt")])
 
-    def test_a_long_continuation_refusal_keeps_its_verdict_at_the_tail(self) -> None:
-        """The unevaluable detail (here the list of 29 continuation cases) comes before the
-        verdict line, so the summary keeps the reason and the remedy."""
+    def test_a_long_unevaluable_detail_keeps_its_verdict_at_the_tail(self) -> None:
+        """The comparison's `error` reaches 400 characters (`_shape_state_agreement` clips it
+        there); the message puts it first and the verdict and remedy last, so the run's failure
+        summary, which keeps the last 400 characters, still holds them."""
         import tools.workflow_conductor as wc
-        cases = self._LONG
-        real = wc.Conductor._compare_with_oracle
+        long_error = "capture file " + "x" * 380 + ".json is absent"
+        self.assertGreaterEqual(len(long_error), 400)
+        real = wc.Conductor._shape_state_agreement
+        calls: list[str] = []
 
-        def compare(self_, *a, **k):
-            with mock.patch("tools.primary_evidence.continuation_cases",
-                            lambda ir_: {c: object() for c in cases[1:]}):
-                return real(self_, *a, **k)
+        def agreement(ir, reference_dir, label, *a, **k):
+            # The oracle's comparison alone; the execution shapes compare as they do.
+            if label != "oracle":
+                return real(ir, reference_dir, label, *a, **k)
+            calls.append(label)
+            return {"status": "unevaluable", "error": long_error}
 
-        alt = _EXEC_ORACLE.replace("cases: [c_beta]", f"cases: [{cases[0]}]")
-        with mock.patch.object(wc.Conductor, "_compare_with_oracle", compare):
-            result, _seen = self.execute(ir=_exec_ir(cases), cases=cases, oracle_text=alt)
+        with mock.patch.object(wc.Conductor, "_shape_state_agreement",
+                               staticmethod(agreement)):
+            result, _seen = self.execute()
+        self.assertEqual(calls, ["oracle"])
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertGreater(len(result.stderr), 400)
         summary = self.summary(result)
-        for needle in (oracle.UNEVALUABLE, "remove the declaration", "--resume"):
+        for needle in (oracle.UNEVALUABLE, "fix the adapter", "--resume"):
             self.assertIn(needle, summary)
 
     def test_an_unevaluable_comparison_is_fail_closed(self) -> None:
@@ -1526,30 +1544,112 @@ class OracleExecuteTest(unittest.TestCase):
         self.assertEqual(len(seen["oracle_runs"]), 2)
         self.assertIsNone(self.read(oracle.CHECK_RECORD))
 
-    def test_a_continuation_case_has_no_oracle_capture_and_is_named(self) -> None:
-        # The oracle runs no second pass: a compared continuation case is not handed to it,
-        # and the refusal names it.
-        # The run itself is driven as a node without continuations; the oracle comparison alone
-        # is told c_beta is one.
+    #: `_EXEC_IR` with a third case, c_gamma, under both predicates: the cross-target one
+    #: compares it. `execute_continuation` makes it a continuation of c_alpha.
+    _CONT_IR = (_EXEC_IR + _EXEC_CROSS).replace(
+        "    - case_id: c_beta\n", "    - case_id: c_beta\n    - case_id: c_gamma\n").replace(
+        "[c_alpha, c_beta]", "[c_alpha, c_beta, c_gamma]")
+
+    def execute_continuation(self, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
+        """`execute` over `_CONT_IR`'s three cases, with c_gamma a continuation of c_alpha in
+        the IR the oracle comparison receives: the run is driven as a node without
+        continuations (its second pass needs a rendered driver), and its captures of c_gamma
+        are in the reference as a second pass leaves them. `seen["compared_ir"]` is that IR."""
+        import copy
+
         import tools.workflow_conductor as wc
         real = wc.Conductor._compare_with_oracle
+        got: dict[str, Any] = {}
 
-        def compare(self_, *a, **k):
-            with mock.patch("tools.primary_evidence.continuation_cases",
-                            lambda ir_: {"c_beta": object()}):
-                return real(self_, *a, **k)
+        def compare(self_, refs_, arid, ir_, *a, **k):
+            ir_ = copy.deepcopy(ir_)
+            for case in ir_["case"]["test_case_set"]:
+                if case["case_id"] == "c_gamma":
+                    case["restart"] = {"from": "c_alpha", "step": 1}
+            got["ir"] = ir_
+            return real(self_, refs_, arid, ir_, *a, **k)
 
+        kwargs.setdefault("ir", self._CONT_IR)
         with mock.patch.object(wc.Conductor, "_compare_with_oracle", compare):
-            result, seen = self.execute()
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]], [["c_alpha"]])
-        self.assertIn("continuation cases ['c_beta']", result.stderr)
-        # The remedy removes the declaration; it never asks for the spec's judgment to go,
-        # which also compares two declared targets.
-        self.assertIn("remove the declaration", self.summary(result))
-        self.assertNotIn("cross-target judgment", self.summary(result))
-        self.assertNotIn("fix the adapter", self.summary(result).lower())
+            result, seen = self.execute(cases=("c_alpha", "c_beta", "c_gamma"), **kwargs)
+        seen["compared_ir"] = got.get("ir")
+        return result, seen
+
+    def test_a_continuation_case_is_left_out_of_the_oracle_comparison(self) -> None:
+        """Issue #709 F-1: the oracle runs the compared cases that are not continuation cases,
+        the comparison reads those alone, and the record lists what ran. The run captured
+        c_gamma, and the oracle never runs or is asked for it. A second cross-target
+        predicate scoped to c_gamma alone is absent from the comparison's records."""
+        alone = ('    - {test_id: t_alpha, quantity: cross, target_cases: [c_alpha, c_beta, '
+                 'c_gamma], case: c_gamma,\n'
+                 '       expr: "maxabs(final.v - comparand.final.v)", op: le, value: 1.0e-12}\n')
+        result, seen = self.execute_continuation(ir=self._CONT_IR + alone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(oracle.compared_cases(seen["compared_ir"]), ["c_alpha", "c_beta"])
+        self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]],
+                         [["c_alpha"], ["c_beta"]])
+        check = self.read(oracle.CHECK_RECORD)
+        assert check is not None
+        self.assertEqual(check["status"], "agree")
+        self.assertEqual([(b["id"], b["cases"]) for b in check["builds"]],
+                         [("default", ["c_alpha"]), ("alt", ["c_beta"])])
+        self.assertEqual(check["comparison"]["records_count"], 1)
+        self.assertEqual(self.read("verdict.json")["self_verdict"], "pass")
+
+    def test_the_base_of_a_continuation_still_decides_the_comparison(self) -> None:
+        """The base is compared: an oracle that disagrees on c_alpha alone (the default
+        build) is `disagree` on c_alpha, whatever c_gamma would have read."""
+        result, _seen = self.execute_continuation(oracle_value={"default": 1e-6})
+        check = self.read(oracle.CHECK_RECORD)
+        assert check is not None, result.stderr
+        self.assertEqual(check["status"], "disagree")
+        self.assertEqual([(f["case"], f["quantity"]) for f in check["comparison"]["failures"]],
+                         [("c_alpha", "cross")])
+
+    def test_a_build_that_names_the_continuation_case_changes_nothing(self) -> None:
+        text = _EXEC_ORACLE.replace("cases: [c_beta]", "cases: [c_beta, c_gamma]")
+        result, seen = self.execute_continuation(oracle_text=text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]],
+                         [["c_alpha"], ["c_beta"]])
+        check = self.read(oracle.CHECK_RECORD)
+        assert check is not None
+        self.assertEqual([(b["id"], b["cases"]) for b in check["builds"]],
+                         [("default", ["c_alpha"]), ("alt", ["c_beta"])])
+        self.assertEqual(check["status"], "agree")
+
+    def test_every_case_of_a_build_with_several_is_compared(self) -> None:
+        """The comparison reads every case of every build (`compared`), not one per build: the
+        default build takes c_alpha and c_delta, and its unreadable capture of the second is
+        `unevaluable`, never `agree`."""
+        cases = ("c_alpha", "c_beta", "c_delta")
+        result, seen = self.execute(ir=_exec_ir(cases), cases=cases,
+                                    oracle_broken=("c_delta",))
+        self.assertEqual([r["command"][3:] for r in seen["oracle_runs"]],
+                         [["c_alpha", "c_delta"], ["c_beta"]])
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(oracle.UNEVALUABLE, self.summary(result))
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+
+    def test_a_node_whose_every_compared_case_is_a_continuation_is_unevaluable(self) -> None:
+        """Nothing is compared, so nothing agrees: the oracle does not run, the comparison
+        stops `oracle_unevaluable`, and the remedy removes the declaration and never the
+        spec's judgment, which also compares two declared targets."""
+        ir = self._CONT_IR.replace(
+            'quantity: cross, target_cases: [c_alpha, c_beta, c_gamma], per_case: true',
+            'quantity: cross, target_cases: [c_alpha, c_beta, c_gamma], case: c_gamma')
+        self.assertIn("case: c_gamma", ir)
+        result, seen = self.execute_continuation(ir=ir)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(seen["oracle_runs"], [])
+        summary = self.summary(result)
+        for needle in (oracle.UNEVALUABLE, "remove the declaration", "--resume"):
+            self.assertIn(needle, summary)
+        self.assertIn("continuation case", result.stderr)
+        self.assertNotIn("cross-target judgment", summary)
+        self.assertNotIn("fix the adapter", summary.lower())
+        self.assertIsNone(self.read(oracle.CHECK_RECORD))
+        self.assertIsNone(self.read("verdict.json"))
 
     def test_an_oracle_on_an_ir_with_no_cross_target_predicate_is_fail_closed(self) -> None:
         result, seen = self.execute(ir=_EXEC_IR)

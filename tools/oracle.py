@@ -36,7 +36,10 @@ ORACLE_DECLARATION_VERSION = 1
 #: declared and read, nothing built or compared (issue #680 PR-1); 2 = `Build` builds it
 #: (PR-2); 3 = `Validate.execute` runs it and compares it with the run (PR-3). A Build or
 #: Validate certified under an earlier use is not one that built (or compared) the oracle, so
-#: the member moves, for nodes that declare an oracle alone.
+#: the member moves, for nodes that declare an oracle alone. Issue #709 F-1 left continuation
+#: cases out of the comparison (`compared_cases`) and kept `use` at 3: under 3 a node that
+#: compared a continuation case stopped `oracle_unevaluable` on every run, so no such node
+#: certified, and for every other node the comparison is unchanged.
 ORACLE_USE_VERSION = 3
 #: The directory under a node's spec directory that holds the declaration and the adapter.
 ORACLE_DIR = "oracle"
@@ -202,15 +205,22 @@ def _builds(repo_root: str | Path, value: Any, language: str) -> tuple[OracleBui
 
 
 def compared_cases(ir: dict[str, Any]) -> list[str]:
-    """The cases the IR's cross-target predicates compare a comparand in, in the order of the
-    IR's `test_case_set`: the scope of every cross-target predicate (`per_case` over its
-    `target_cases`, or its one `case`). A predicate whose scope does not parse contributes
-    none: the Compile gate refuses it, and the comparison reports it."""
+    """The cases the IR's cross-target predicates compare a comparand in that are not
+    continuation cases, in the order of the IR's `test_case_set`: the scope of every
+    cross-target predicate (`per_case` over its `target_cases`, or its one `case`), less every
+    case that carries a `restart` key (`primary_evidence.is_continuation`). A predicate whose
+    scope does not parse contributes none: the Compile gate refuses it, and the comparison
+    reports it.
+
+    A continuation case is left out because the oracle runs no second pass (issue #709): the
+    run's restart test already holds the continuation's final state equal to its base's inside
+    the run, the oracle runs only after the run's own tests pass, and the base is compared."""
     from tools.primary_evidence import (
         PrimaryEvidenceError,
         _cases_by_id,
         _predicate_scope,
         cross_target_predicates,
+        is_continuation,
     )
     scoped: set[str] = set()
     for index, pred in enumerate(cross_target_predicates(ir)):
@@ -218,12 +228,14 @@ def compared_cases(ir: dict[str, Any]) -> list[str]:
             scoped.update(_predicate_scope(pred, f"predicates[{index}]")[1])
         except (PrimaryEvidenceError, KeyError, TypeError, AttributeError):
             continue
-    return [case_id for case_id in _cases_by_id(ir) if case_id in scoped]
+    return [case_id for case_id, case in _cases_by_id(ir).items()
+            if case_id in scoped and not is_continuation(case)]
 
 
 def case_plan(ir: dict[str, Any], oracle: Oracle) -> dict[str, list[str]]:
     """`{build_id: [case_id, ...]}` over every build, in declared order: each compared case
     (`compared_cases`) goes to the build that names it, else to the one build without `cases`.
+    A build that names a continuation case is accepted, and the case goes to no build.
     `OracleDeclarationError` for a named case the IR does not hold, a case named twice, and a
     compared case no build takes."""
     from tools.primary_evidence import _cases_by_id

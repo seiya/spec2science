@@ -30,8 +30,9 @@ an oracle adapter that reads the library's module files can stand in as the mode
 
 `--flag=<flag>` (repeatable) appends a compiler flag to every compile and the link, e.g. another
 optimisation level. `--compared-only` runs only the cases an oracle is compared on
-(`tools/oracle.py` `compared_cases`) and judges only the tests whose cases are all among them: an
-oracle has no input guard, so the original cannot run a refused case (issue #680).
+(`tools/oracle.py` `compared_cases`) and the continuations of those cases, and judges only the
+tests whose cases are all among them, the restart test included: an oracle has no input guard, so
+the original cannot run a refused case (issue #680).
 """
 from __future__ import annotations
 
@@ -193,6 +194,10 @@ def main() -> int:
     if a.compared_only:
         from tools.oracle import compared_cases
         only = set(compared_cases(ir))
+        # The continuations of those cases: the second pass runs every continuation anyway,
+        # and the restart test (base and continuation) is judged on the original too (issue
+        # #709 F-1 left continuations out of `compared_cases`).
+        only |= {cid for cid, (base, _k) in pe.continuation_cases(ir).items() if base in only}
     try:
         run(ir, Path(a.model).resolve(), [Path(d).resolve() for d in a.dep], base, a.mutate,
             libraries(a.library), a.flag, only)

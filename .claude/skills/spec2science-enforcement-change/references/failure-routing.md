@@ -309,10 +309,14 @@ PR also added an `oracle_build_failed` entry naming that file.
 
 ## A remedy that weakens another check (2026-11-19, issue #680 PR-3)
 
-`Conductor._compare_with_oracle` stops as `oracle_unevaluable` when a cross-target predicate
-reads a continuation case: the oracle runs no second pass, so it has no capture there. Measured
-over `workspace/ir/*/*/spec.ir.yaml`, five problem families compare a continuation case, so this
-stop is reachable. The round-1 fix gave the stop a remedy "by cause". That remedy read: "apply no
+At issue #680 PR-3, `Conductor._compare_with_oracle` stopped as `oracle_unevaluable` when a
+cross-target predicate read a continuation case: the oracle runs no second pass, so it has no
+capture there. Measured then over `workspace/ir/*/*/spec.ir.yaml`, five problem families compared
+a continuation case, so the stop was reachable. (Issue #709 F-1 later left continuation cases out
+of the comparison, `tools/oracle.py` `compared_cases`, so a continuation no longer stops it; the
+stop remains only for a node whose every case under a cross-target predicate is a continuation,
+where nothing is compared. The remedy rule below is what this episode is kept for.) The round-1
+fix gave the stop a remedy "by cause". That remedy read: "apply no
 cross-target judgment to a test of a continuation case (the spec), or remove the declaration".
 The first half clears the refusal. It also removes the comparison between two declared targets
 in that case, which the judgment exists for and which has nothing to do with the oracle. Under
