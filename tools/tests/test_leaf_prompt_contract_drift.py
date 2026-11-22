@@ -1218,7 +1218,7 @@ PINNED: dict[str, str] = {
     # leaf-106 (issue #713 F-1): the `mpi` producer fragment states the halo exchange of rank 1
     # to 3: a rank-3 array whose third axis is not partitioned is exchanged whole, one call per
     # grid dimension, and a rank-4 array one slice of its fourth axis at a time over it.
-    "leaf-106": "23625ae43c9a4404a1d9824582961ab669906f2c075ec1732a8072f6465e5459",
+    "leaf-106": "a37ea64a4c430163900d558591573c80ebb116773492838b648baf4356c504e6",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
