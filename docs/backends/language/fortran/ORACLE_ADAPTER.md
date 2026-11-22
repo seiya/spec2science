@@ -52,17 +52,19 @@ the setups before the existing code and its finalize procedures after it, and th
 up from the state the finalizes left (a finalize that deallocates without a check stops the
 program when it runs before the first setup). The
 Stage 1 nodes of [issue #709](https://github.com/seiya/spec2science/issues/709) in the SCALE
-Project are the example (`docs/design/dyn_fvm_measurement/README.md` §Adapter notes, which lists
-the setups in the order the existing code calls them and the finalizes); there a run finalized
-and set up again halfway was bit-identical to the uninterrupted one. A setup that reads a
+Project are the example: the `oracle/adapter.f90` of `dynamics_dry_heve_rk4_3d_cd4` calls ten
+setups in the order the existing code calls them, the step, and five finalizes. Its measurement
+(`docs/design/dyn_fvm_measurement/README.md` §Adapter notes) found a run finalized and set up
+again halfway bit-identical to the uninterrupted one. A setup that reads a
 namelist reads it from a unit the adapter opens: an empty scratch file keeps every default. A
 setup that rewinds the existing code's configuration unit needs that unit open, even where the
 boundary stubbed the module that holds it.
 
-A value the existing code reads from a module variable, which its own setup would assign
-(constants a setup reads from a namelist, extents and index ranges of a grid module), is
-assigned by the adapter from the case's arguments before each call, and that setup is not
-called. List every such variable the code path reads: one left unassigned keeps its default
+A value the cases vary that the existing code reads from a module variable its own setup would
+assign (constants a setup reads from a namelist, extents and index ranges of a grid module) is
+assigned by the adapter from the case's arguments before each call, in place of that setup;
+where the cases do not vary them, the setup may assign them once, as the microphysics adapters'
+`setup_once` calls `CONST_setup`. List every such variable the code path reads: one left unassigned keeps its default
 and need not stop the program (on the Stage 1 short step, two index bounds left unassigned
 returned zero horizontal momenta). One library then serves cases with different values.
 
