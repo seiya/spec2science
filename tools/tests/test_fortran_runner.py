@@ -2171,7 +2171,8 @@ class DistributedHarnessBoundTest(unittest.TestCase):
                  *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS)
         width = max(map(len, names))
         self.assertEqual(sorted({n for n in names if len(n) == width}),
-                         ["capture_array_r4", "exchange_halo_r1", "exchange_halo_r2"])
+                         ["capture_array_r4", "exchange_halo_r1", "exchange_halo_r2",
+                          "exchange_halo_r3"])
         limit = fortran_runner.bundle.IDENTIFIER_MAX
         fits = "h" * (limit - width - 2)
         fortran_runner._check_identifier_lengths("bx", fits)
@@ -2392,7 +2393,8 @@ class HarnessPinTableTest(unittest.TestCase):
                   + "contains\n" + iface[cut:] + f"end module {DIST_HARNESS}_model\n")
         assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, sigs, source,
             harness_provides=provides_for(DIST_HARNESS))
-        for dropped in ("__gather_r2", "__init", "__partition", "__reduce_max"):
+        for dropped in ("__gather_r2", "__init", "__partition", "__reduce_max",
+                        "__exchange_halo_r3"):
             with self.subTest(dropped=dropped):
                 bad = [e for e in sigs if not e["symbol"].endswith(dropped)]
                 with self.assertRaises(RenderError) as cm:

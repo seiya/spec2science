@@ -35,6 +35,7 @@ module harness_fortran_cpu_mpi_model
   public :: harness_fortran_cpu_mpi__grid_dims, harness_fortran_cpu_mpi__grid_coord
   public :: harness_fortran_cpu_mpi__partition
   public :: harness_fortran_cpu_mpi__exchange_halo_r1, harness_fortran_cpu_mpi__exchange_halo_r2
+  public :: harness_fortran_cpu_mpi__exchange_halo_r3
   public :: harness_fortran_cpu_mpi__gather_r1, harness_fortran_cpu_mpi__gather_r2
   public :: harness_fortran_cpu_mpi__gather_r3, harness_fortran_cpu_mpi__gather_r4
   public :: harness_fortran_cpu_mpi__reduce_sum, harness_fortran_cpu_mpi__reduce_max
@@ -735,6 +736,73 @@ contains
       end if
     end if
   end subroutine harness_fortran_cpu_mpi__exchange_halo_r2
+
+  ! The rank-3 exchange (issue #713): the rank-2 one's contract with two other axes, every
+  ! position of both carried (their ghost positions included), so two successive calls along the
+  ! two grid dimensions fill the corners.
+  subroutine harness_fortran_cpu_mpi__exchange_halo_r3(a, axis, dim, ng, periodic)
+    real(dp), intent(inout) :: a(:, :, :)
+    integer, intent(in) :: axis
+    integer, intent(in) :: dim
+    integer, intent(in) :: ng
+    logical, intent(in) :: periodic
+    real(dp), allocatable :: sbuf(:), rbuf(:)
+    integer :: nloc, cnt, left, right, s(3)
+
+    if (axis < 1 .or. axis > 3) error stop 'harness_fortran_cpu_mpi__exchange_halo_r3: bad axis'
+    if (dim /= 1 .and. dim /= 2) error stop 'harness_fortran_cpu_mpi__exchange_halo_r3: bad dim'
+    if (ng < 0) error stop 'harness_fortran_cpu_mpi__exchange_halo_r3: ng < 0'
+    nloc = size(a, axis) - 2 * ng
+    if (ng > nloc) error stop 'harness_fortran_cpu_mpi__exchange_halo_r3: ng > owned count'
+    if (ng == 0) return
+    call line_neighbours(dim, periodic, left, right)
+    s = shape(a)
+    s(axis) = ng
+    cnt = product(s)
+    allocate(sbuf(cnt), rbuf(cnt))
+    ! leading ghosts <- last ng owned cells of the lower neighbour, every other-axis position
+    select case (axis)
+    case (1)
+      sbuf = reshape(a(nloc + 1:nloc + ng, :, :), [cnt])
+    case (2)
+      sbuf = reshape(a(:, nloc + 1:nloc + ng, :), [cnt])
+    case (3)
+      sbuf = reshape(a(:, :, nloc + 1:nloc + ng), [cnt])
+    end select
+    call MPI_Sendrecv(sbuf, cnt, MPI_DOUBLE_PRECISION, right, 301, rbuf, cnt, &
+      MPI_DOUBLE_PRECISION, left, 301, MPI_COMM_WORLD, MPI_STATUS_IGNORE)
+    if (left /= MPI_PROC_NULL) then
+      select case (axis)
+      case (1)
+        a(1:ng, :, :) = reshape(rbuf, s)
+      case (2)
+        a(:, 1:ng, :) = reshape(rbuf, s)
+      case (3)
+        a(:, :, 1:ng) = reshape(rbuf, s)
+      end select
+    end if
+    ! trailing ghosts <- first ng owned cells of the upper neighbour
+    select case (axis)
+    case (1)
+      sbuf = reshape(a(ng + 1:2 * ng, :, :), [cnt])
+    case (2)
+      sbuf = reshape(a(:, ng + 1:2 * ng, :), [cnt])
+    case (3)
+      sbuf = reshape(a(:, :, ng + 1:2 * ng), [cnt])
+    end select
+    call MPI_Sendrecv(sbuf, cnt, MPI_DOUBLE_PRECISION, left, 302, rbuf, cnt, &
+      MPI_DOUBLE_PRECISION, right, 302, MPI_COMM_WORLD, MPI_STATUS_IGNORE)
+    if (right /= MPI_PROC_NULL) then
+      select case (axis)
+      case (1)
+        a(ng + nloc + 1:nloc + 2 * ng, :, :) = reshape(rbuf, s)
+      case (2)
+        a(:, ng + nloc + 1:nloc + 2 * ng, :) = reshape(rbuf, s)
+      case (3)
+        a(:, :, ng + nloc + 1:nloc + 2 * ng) = reshape(rbuf, s)
+      end select
+    end if
+  end subroutine harness_fortran_cpu_mpi__exchange_halo_r3
 
   ! ---------------------------------------------------------------- gather
   subroutine harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, &

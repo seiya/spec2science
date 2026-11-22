@@ -151,10 +151,13 @@ _DISTRIBUTED_RUNNER_OPS = ("init", "finalize", "comm_rank", "comm_size", "grid_d
 #: runtime and the gather are the capture's, the writers and emitters are the runner's alone
 #: (Z6) — a physics source that reached them could write its own evidence — and the partition is
 #: the driver's (issue #610, B13: the driver hands each call its block, so a kernel that
-#: partitioned again would distribute an already distributed block).
+#: partitioned again would distribute an already distributed block). The halo exchange is
+#: published for arrays of rank 1 to 3 (`_r3` since issue #713, under `distributed_state@2`: the
+#: harness pin refuses a harness without it, so the token needs no new generation); an array of
+#: rank 4 is exchanged one slice of an unpartitioned axis at a time over the rank-3 one.
 PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
     "comm_rank", "comm_size", "grid_dims", "grid_coord", "exchange_halo_r1",
-    "exchange_halo_r2",
+    "exchange_halo_r2", "exchange_halo_r3",
     "reduce_sum", "reduce_max", "reduce_min", "reduce_sum_int",
 )
 
@@ -287,8 +290,9 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
-    # The distributed operations are bounded with the plumbing: `exchange_halo_r1` is as long as
-    # the longest plumbing name (`capture_array_r4`), and a consumer's model calls it.
+    # The distributed operations are bounded with the plumbing: the halo exchanges
+    # (`exchange_halo_r1` .. `_r3`) are as long as the longest plumbing name (`capture_array_r4`),
+    # and a consumer's model calls them.
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS, *_DISTRIBUTED_RUNNER_OPS,
                 *PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
         name = _hname(harness_spec_id, sym)
@@ -1641,6 +1645,14 @@ subroutine HARNESS__exchange_halo_r2(a, axis, dim, ng, periodic)
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
 end subroutine HARNESS__exchange_halo_r2
+
+subroutine HARNESS__exchange_halo_r3(a, axis, dim, ng, periodic)
+  real(dp), intent(inout) :: a(:,:,:)
+  integer, intent(in) :: axis
+  integer, intent(in) :: dim
+  integer, intent(in) :: ng
+  logical, intent(in) :: periodic
+end subroutine HARNESS__exchange_halo_r3
 
 subroutine HARNESS__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:)

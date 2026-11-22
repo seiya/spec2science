@@ -1582,7 +1582,17 @@ PINNED_RENDER: dict[str, str] = {
     # the evidence above was re-taken at the branch head.
     # The digest `render-22` shipped with at 7e2dcde0:
     "render-22@7e2dcde0": "738169315b6c7d8ec4886ee5d42454e5660839003c6b01ae6f8082bd84a37a4f",
-    "render-22": "5c4d72f947cbb00dfa60257547c3e582ef02f7bbca2d4dd2c7c5d73eb59ae1f2",
+    # The digest `render-22` shipped with at d476c7b8:
+    "render-22@d476c7b8": "5c4d72f947cbb00dfa60257547c3e582ef02f7bbca2d4dd2c7c5d73eb59ae1f2",
+    # render-22 re-pinned in place by issue #713 F-1: the Fortran backend's distributed-state
+    # block gains `exchange_halo_r3` and `PHYSICS_CALLABLE_DISTRIBUTED_OPS` lists it
+    # (`fortran/runner.py`). No rendered byte depends on the block's text; the pin compares it
+    # with a certified harness, and the `use` list a physics source may name grows by one.
+    # (V-b, measured before the commit: the 349 (IR, target) pairs — 81 IR files of the
+    # sample's and the SCALE Project's `workspace/ir/`, on each target of their Project — that
+    # render a runner on main render the same text on this branch.) Within F-1 the digest moved once more, for a comment of `runner.py`
+    # (review round 2).
+    "render-22": "4f2fb9fe170d9f7f8e2e1d01cdc2357c0aa7d7433d2e0f5269d36d77bac5b0df",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

@@ -2808,7 +2808,7 @@ class ProcedureGateTest(unittest.TestCase):
 # variables of the reading state, `__parse_cases` in the form that keeps the spec path, and
 # `__read_case` with its getters) and the capture operations written by hand (issue #644 P4a):
 # `0.5.0`'s surface by hand, held to the real `0.5.0` §5.1 by
-# `assert_harness_pin` below. Five hand-written models, each with the IR its builder returns and the
+# `assert_harness_pin` below; and the rank-3 halo exchange of `0.7.0` by hand (issue #713). Five hand-written models, each with the IR its builder returns and the
 # `tests.md` line gate (o) holds that IR to.
 
 MPI_DATA = DATA / "mpi"
@@ -3896,6 +3896,116 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(len(statement), expected, statement)
                 self.assertEqual(end - first + 1, 1 if expected <= 88 else 2,
                                  lines[first:end + 1])
+
+    @staticmethod
+    def _rank3_exchange_model(layout: str) -> str:
+        """Model (2) with its ghost-extended temporary carried as one level of a rank-3 work
+        array, exchanged whole by the harness's `exchange_halo_r3` (issue #713): `levels first`
+        holds `w(2, 0:nx + 1, 0:ny + 1)` (the partitioned axes at positions 2 and 3, SCALE's
+        `(KA, IA, JA)`), `levels last` `w(0:nx + 1, 0:ny + 1, 2)` (positions 1 and 2). The
+        second level is twice the first and the step reads `(w1 + w2 / 2) / 2`, so a level the
+        exchange leaves wrong shows; the stencil reads one corner, so the second exchange must
+        carry the ghosts the first one filled."""
+        H = MPI_HARNESS
+        base = (MPI_DATA / "fx_prob_model.f90").read_text()
+        lv = {"levels first": ("2, ", "", "{k}, :, :", 2, 3),
+              "levels last": ("", ", 2", ":, :, {k}", 1, 2)}[layout]
+        pre, post, sect, ax1, ax2 = lv
+        w1, w2 = sect.format(k=1), sect.format(k=2)
+        edits = (
+            (f"  use {H}_model, only: {H}__exchange_halo_r2\n",
+             f"  use {H}_model, only: {H}__exchange_halo_r3\n"),
+            ("    real(dp) :: he(0:nx + 1, 0:ny + 1)\n",
+             ("    real(dp) :: he(0:nx + 1, 0:ny + 1)\n"
+              f"    real(dp) :: w({pre}0:nx + 1, 0:ny + 1{post})\n")),
+            ((f"    call {H}__exchange_halo_r2(he, 1, 1, 1, .true.)\n"
+              f"    call {H}__exchange_halo_r2(he, 2, 2, 1, .false.)\n"),
+             (f"    w({w1}) = he\n    w({w2}) = 2.0_dp * he\n"
+              f"    call {H}__exchange_halo_r3(w, {ax1}, 1, 1, .true.)\n"
+              f"    call {H}__exchange_halo_r3(w, {ax2}, 2, 1, .false.)\n"
+              f"    he = 0.5_dp * (w({w1}) + 0.5_dp * w({w2}))\n")),
+            ("          + 0.5_dp * he(i, j + 1) - 4.5_dp * he(i, j))\n",
+             ("          + 0.5_dp * he(i, j + 1) + 0.25_dp * he(i - 1, j - 1) "
+              "- 4.75_dp * he(i, j))\n")))
+        for old, new in edits:
+            assert base.count(old) == 1, old
+            base = base.replace(old, new)
+        return base
+
+    #: Seeded defects of the fixture harness's rank-3 exchange, each an edit inside that
+    #: subroutine alone: (label, old, new, what the singleton does under it — `stops` (a
+    #: non-zero exit), `differs` (rc 0, other captures) or `kept` (the unedited harness's
+    #: captures)). A `kept` defect is one only a grid of several ranks can see, and its row
+    #: requires that grid, so the seed observes the exchange between ranks.
+    _R3_HARNESS_DEFECTS: tuple[tuple[str, str, str, str], ...] = (
+        ("the owned count read along the wrong axis (stops the run)",
+         "    nloc = size(a, axis) - 2 * ng\n",
+         "    nloc = size(a, 1 + mod(axis, 3)) - 2 * ng\n", "stops"),
+        ("the unpartitioned axis carried in reverse",
+         "      sbuf = reshape(a(:, nloc + 1:nloc + ng, :), [cnt])\n",
+         "      sbuf = reshape(a(size(a, 1):1:-1, nloc + 1:nloc + ng, :), [cnt])\n", "differs"),
+        ("the wrong grid dimension", "    call line_neighbours(dim, periodic, left, right)\n",
+         "    call line_neighbours(3 - dim, periodic, left, right)\n", "kept"),
+        ("the trailing ghosts one cell off",
+         "      a(:, ng + nloc + 1:nloc + 2 * ng, :) = reshape(rbuf, s)\n",
+         "      a(:, nloc + ng:nloc + 2 * ng - 1, :) = reshape(rbuf, s)\n", "differs"),
+        # The second exchange sends the first one's lower ghost column as zeros: the corner a
+        # stencil reads across a block edge along y, and nothing else.
+        ("the second exchange does not carry the first's ghosts",
+         "      sbuf = reshape(a(:, :, nloc + 1:nloc + ng), [cnt])\n",
+         ("      sbuf = reshape(a(:, :, nloc + 1:nloc + ng), [cnt])\n"
+          "      sbuf(1:size(a, 1)) = 0.0_dp\n"), "kept"),
+    )
+
+    def test_a_rank_3_work_array_exchanged_whole_equals_its_singleton_on_every_grid(
+            self) -> None:
+        """Issue #713: model (2) with a rank-3 work array exchanged by `exchange_halo_r3` along
+        both grid dimensions, the partitioned axes at positions 2 and 3 and at 1 and 2, writes
+        the singleton's captures on every grid of the sweep."""
+        cases = ["ny4", "ny8"]
+        for layout in ("levels first", "levels last"):
+            with self.subTest(layout=layout):
+                build = self._build(prob_ir(), model=self._rank3_exchange_model(layout))
+                single = build.run(SINGLETON, cases=cases)
+                self.assertEqual(single.rc, 0, single.stderr[-1000:])
+                reference = single.snapshots()
+                self.assertTrue(reference)
+                self.assertIsNone(self._first_disagreement(build, reference, cases=cases))
+
+    def test_each_seeded_defect_of_the_rank_3_exchange_fails_a_grid(self) -> None:
+        """Issue #713: each seeded defect of the fixture harness's `exchange_halo_r3` (the table
+        above) makes some shape of the sweep differ from the unedited harness's singleton under
+        the `levels first` model, in the way the table states for the singleton: the owned count
+        read along the wrong axis stops it; the reversed axis and the trailing ghosts one cell
+        off change its captures; the wrong grid dimension and the uncarried corner leave them as
+        they were, where nothing crosses a rank, and a grid of several ranks sees them."""
+        H = MPI_HARNESS
+        harness = (MPI_DATA / f"{H}_model.f90").read_text()
+        start = harness.index(f"  subroutine {H}__exchange_halo_r3(")
+        end = harness.index(f"  end subroutine {H}__exchange_halo_r3\n")
+        body = harness[start:end]
+        model = self._rank3_exchange_model("levels first")
+        cases = ["ny4", "ny8"]
+        good = self._build(prob_ir(), model=model).run(SINGLETON, cases=cases)
+        self.assertEqual(good.rc, 0, good.stderr[-1000:])
+        reference = good.snapshots()
+        for label, old, new, singleton in self._R3_HARNESS_DEFECTS:
+            with self.subTest(defect=label):
+                self.assertEqual(body.count(old), 1, old)
+                seeded = harness[:start] + body.replace(old, new) + harness[end:]
+                build = self._build(prob_ir(), model=model, harness_text=seeded)
+                single = build.run(SINGLETON, cases=cases)
+                if singleton == "stops":
+                    self.assertNotEqual(single.rc, 0)
+                    continue
+                self.assertEqual(single.rc, 0, single.stderr[-1000:])
+                if singleton == "differs":
+                    self.assertNotEqual(single.snapshots(), reference)
+                    continue
+                self.assertEqual(singleton, "kept")
+                self.assertEqual(single.snapshots(), reference)
+                self.assertIsNotNone(self._first_disagreement(
+                    build, reference, cases=cases, timeout=30))
 
     def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
         """Every cell is held by the same number of ranks on every shape the driver runs (a

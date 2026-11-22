@@ -52,10 +52,13 @@ distributes each case; the kernel decides none of it.
   own block (issue #512 PR-4a's closing run: components that partitioned inside their operations
   made the problem wrong on every grid with `p1 > 1`).
 - **A `problem`'s `__step` works on its block**, over ghost-extended temporaries of its own: it
-  exchanges them with `__exchange_halo_r1` / `__exchange_halo_r2` along every partitioned axis
-  before a stencil read crosses a block edge, with the spec's periodicity, along dimension 1 then
-  dimension 2 for a corner; it restores each wall side by global index (`block.<axis>.first` and
-  the case's count, carried by a `derived` entry) and leaves the other sides to the exchange.
+  exchanges them with `__exchange_halo_r<k>` (`k` the array's rank, 1 to 3) along every
+  partitioned axis before a stencil read crosses a block edge, with the spec's periodicity, along
+  dimension 1 then dimension 2 for a corner; a rank-3 array with one axis that is not partitioned,
+  at whatever position (`(ka, ia, ja)`), is exchanged whole, one call per grid dimension, and a
+  rank-4 array one slice of an unpartitioned axis at a time over the rank-3 exchange (issue
+  #713); it restores each wall side by global index (`block.<axis>.first` and the case's count,
+  carried by a `derived` entry) and leaves the other sides to the exchange.
 - A bundle declares `target_lowering_plan.state_residency: distributed` and
   `distributed_state@2` among its `capability_requirements` on both kinds.
 - **The harness is called from serial code** (issue #700). On a target whose value combines
@@ -78,7 +81,7 @@ over the cases a cross-target predicate targets; `_shape_state_agreement` answer
 | `Compile.static`, gate (n) | a `drive.distribute` block that is absent or malformed; an array whose layout does not derive from its `dims`; an axis input no rank-0 integer dummy binds; a ghost-laid `out` / `inout`; a rank-0 real / integer `out` of a one-call `step` on a node with axes; a record of a ghost-laid dummy | the IR: the Compile leaf's | `tools/primary_evidence.py` (`drive_violations`) |
 | `Compile.static`, gate (o) | a `drive.distribute` that differs from the `tests.md` line, member by member; a missing, doubled or malformed line | the line where the line is malformed or absent (the operator's), else the IR | `tools/validate_pipeline_semantics._distribute_line_violations` |
 | `Generate.gate` static check, the presence floor (`component` / `problem` only) | a model source that reaches the library directly: a `use` of `mpi` / `mpi_f08`, an `include` of `mpif.h`, a call of or reference to a name that starts with `mpi_`; on a `component`, a model source that names any harness operation | the model source | `tools/backends/parallel/mpi/directives.py` |
-| same | a plan whose `state_residency` is not `distributed`; a `problem` whose model sources have no statement (or one-line logical `if`) calling the target harness's `<harness>__exchange_halo_r1` / `_r2` by that name | the bundle, the model source | same |
+| same | a plan whose `state_residency` is not `distributed`; a `problem` whose model sources have no statement (or one-line logical `if`) calling the target harness's `<harness>__exchange_halo_r1` / `_r2` / `_r3` by that name | the bundle, the model source | same |
 | `Generate.gate` static check, the source-isolation gate | a physics `use` of the harness module without `only:`, or naming a harness name other than the distributed-state operations for a physics source (`__partition` is the driver's) | the model source | `tools/validate_pipeline_semantics._validate_model_source_isolation`, with the renderer's `physics_harness_uses` |
 | bundle acceptance | a `distributed` residency without `distributed_state@N` | the bundle | `tools/codegen_bundle.pure_bundle_contract_violation` |
 | the run | a grid the replication table does not list; an `init` scalar that is non-finite on a rank or unequal across the ranks (the driver); contributed blocks that do not tile the global array, or an exchange on a block under `ng` (the harness); a `SPEC2SCIENCE_PROCESS_GRID` that is malformed or does not multiply to the rank count (the harness's start); a gathered shape other than the IR's `shape_expr` (the post-execute snapshot gate) | the run record | the driver, the harness, `validate_pipeline_semantics` |
@@ -136,9 +139,12 @@ A plan that declines MPI exempts nothing: the driver distributes from the IR wha
   judge a face formula (`test_driver_render.DistributedDriverEndToEndTest` pins the silence).
 - **A `loop` component with a halo** would need an exchange between steps that neither the kernel
   (no harness name) nor the driver (no periodicity) owns; none exists.
-- **What a `problem` can exchange** is the harness's `exchange_halo_r1` / `_r2` (a rank-3 temporary
-  one component slice at a time), and the harness stops an exchange on a block under `ng`, so a
-  problem's `min_block` is at least its kernel's `ng`.
+- **What a `problem` can exchange** is the harness's `exchange_halo_r1` / `_r2` / `_r3` (a rank-4
+  array one slice of an unpartitioned axis at a time; issue #713 added `_r3` under
+  `distributed_state@2`), and the harness stops an exchange on a block under `ng`. A problem's
+  `min_block` is the smallest extent its own guard admits; a case whose halo is wider than that is
+  the `tests.md`'s to keep off blocks smaller than its halo, since no constant `min_block` can
+  follow a halo width that is a case input.
 - **A scalar `out` of a one-call `step`** on a node with axes is refused at `Compile.static`: a
   block-local scalar has no global meaning the driver can gather.
 - **A `record` of a `ghost`-laid dummy** is refused at `Compile.static`: only `cell` and `face`

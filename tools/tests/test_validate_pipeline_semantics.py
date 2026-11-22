@@ -20672,16 +20672,25 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                      # only the TARGET harness's exchanges, and only those it publishes
                      "    call dep_base__exchange_halo_r1(u, 1, 1, .true.)\n",
                      "    call harness_fortran_cpu__exchange_halo_r1(u, 1, 1, .true.)\n",
-                     "    call harness_fortran_cpu_mpi__exchange_halo_r3(u, 1, 1, .true.)\n"):
+                     "    call harness_fortran_cpu_mpi__exchange_halo_r4(u, 1, 1, .true.)\n",
+                     "    call harness_fortran_cpu_mpi__exchange_halo_r30(u, 1, 1, .true.)\n"):
             with self.subTest(call=call):
                 v = self._floor(no_call.replace("  end subroutine", f"{call}  end subroutine"))
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("no model source of this problem calls the harness's "
-                              "`harness_fortran_cpu_mpi__exchange_halo_r1` / `_r2`", v[0])
-        # The action of a one-line logical `if` is a call too, and either exchange counts.
+                              "`harness_fortran_cpu_mpi__exchange_halo_r1` / `_r2` / `_r3`", v[0])
+        # The action of a one-line logical `if` is a call too, and every exchange the harness
+        # publishes counts: each `exchange_halo_r<k>` a physics source may call (issue #713).
+        from tools.backends.language.fortran.runner import (
+            PHYSICS_CALLABLE_DISTRIBUTED_OPS,
+        )
+        exchanges = [op for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS
+                     if op.startswith("exchange_halo_r")]
+        self.assertEqual(exchanges, ["exchange_halo_r1", "exchange_halo_r2", "exchange_halo_r3"])
         for call in ("    if (n > 0) call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, "
                      ".true.)\n",
-                     "    call harness_fortran_cpu_mpi__exchange_halo_r2(a, 1, 1, 1, .true.)\n"):
+                     *(f"    call harness_fortran_cpu_mpi__{op}(a, 1, 1, 1, .true.)\n"
+                       for op in exchanges)):
             with self.subTest(call=call):
                 self.assertEqual(self._floor(no_call.replace(
                     "  end subroutine", f"{call}  end subroutine")), [])

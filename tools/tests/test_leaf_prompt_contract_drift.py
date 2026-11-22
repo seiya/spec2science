@@ -1215,6 +1215,11 @@ PINNED: dict[str, str] = {
     # is called from serial code, outside every threaded region (the harness's `0.6.0` asks the
     # runtime for the level under which only the initializing thread calls it).
     "leaf-105": "0a28922c7a46cfdb51de2d7ff110f803dbb6035801fe72c683e079c1fff1627c",
+    # leaf-106 (issue #713 F-1): the `mpi` producer fragment states the halo exchange of rank 1
+    # to 3: a rank-3 array with one axis that is not partitioned, at whatever position (as in
+    # `(ka, ia, ja)`), is exchanged whole, one call per grid dimension, and a rank-4 array one
+    # slice of an unpartitioned axis at a time over it.
+    "leaf-106": "a37ea64a4c430163900d558591573c80ebb116773492838b648baf4356c504e6",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
