@@ -88,8 +88,8 @@ Limits of the framework:
 - A discrete initial state the grammar does not express is a published `__init` judged over `initial.*`; the dt rule of such a node is pinned by the reviewer, not by a gate.
 - A capture-only verdict cannot see an out-of-bounds write; the `checked` execution shape does, on compilers that declare checked flags.
 
-Content of the current harness `spec` nodes, to be extended by `infrastructure` authoring. A Project extends its own harness with operations no generated code calls. What the host-rendered driver and a physics source call is the framework's interface block of each language backend (item 5), so the first item below is a framework change. Whether the workflow generates an extended harness is unverified:
-- Halo exchange exists for ranks 1 and 2, with the partitioned axis 1 or 2. SCALE arrays are `(KA,IA,JA[,QA])`.
+Content of the current harness `spec` nodes, to be extended by `infrastructure` authoring. A Project extends its own harness with operations no generated code calls. What the host-rendered driver and a physics source call is the framework's interface block of each language backend (item 5), so a change to the first item below is a framework change. Whether the workflow generates an extended harness is unverified:
+- Halo exchange exists for ranks 1 to 3, with the partitioned axis at any position (rank 3 since issue #713). SCALE arrays are `(KA,IA,JA[,QA])`: a rank-4 array is exchanged one slice of `QA` at a time.
 - One communicator and a two-dimensional process grid, with state gathered onto rank 0. Icosahedral grids, nesting and communicator splitting for bulk jobs are absent.
 - `harness_cpp_gpu` provides no `distributed_state`.
 
