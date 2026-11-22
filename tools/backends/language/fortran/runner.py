@@ -154,7 +154,7 @@ _DISTRIBUTED_RUNNER_OPS = ("init", "finalize", "comm_rank", "comm_size", "grid_d
 #: partitioned again would distribute an already distributed block). The halo exchange is
 #: published for arrays of rank 1 to 3 (`_r3` since issue #713, under `distributed_state@2`: the
 #: harness pin refuses a harness without it, so the token needs no new generation); an array of
-#: higher rank with a component axis is exchanged one component slice at a time.
+#: rank 4 is exchanged one slice of an unpartitioned axis at a time over the rank-3 one.
 PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
     "comm_rank", "comm_size", "grid_dims", "grid_coord", "exchange_halo_r1",
     "exchange_halo_r2", "exchange_halo_r3",

@@ -56,8 +56,9 @@ distributes each case; the kernel decides none of it.
   partitioned axis before a stencil read crosses a block edge, with the spec's periodicity, along
   dimension 1 then dimension 2 for a corner; a rank-3 array with one axis that is not partitioned,
   at whatever position (`(ka, ia, ja)`), is exchanged whole, one call per grid dimension, and a
-  rank-4 array one slice of an unpartitioned axis at a time over the rank-3 exchange (issue #713); it restores each wall side by global index (`block.<axis>.first` and
-  the case's count, carried by a `derived` entry) and leaves the other sides to the exchange.
+  rank-4 array one slice of an unpartitioned axis at a time over the rank-3 exchange (issue
+  #713); it restores each wall side by global index (`block.<axis>.first` and the case's count,
+  carried by a `derived` entry) and leaves the other sides to the exchange.
 - A bundle declares `target_lowering_plan.state_residency: distributed` and
   `distributed_state@2` among its `capability_requirements` on both kinds.
 - **The harness is called from serial code** (issue #700). On a target whose value combines
