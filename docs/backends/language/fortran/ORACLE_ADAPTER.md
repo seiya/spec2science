@@ -47,8 +47,10 @@ Existing code that reads its constants and switches from module state set by a `
 is set up by the adapter before it runs. Where the setup reads nothing the cases vary, it runs on
 the first call, once, behind a module-level flag (`setup_once` in both microphysics examples).
 Where the setup reads what the cases vary (extents, grid metrics, coefficients derived from
-them), it runs on every call: the cases of one oracle build run in one process, so the adapter
-calls the existing code's finalize procedures and then its setups again before each call. The
+them), it runs on every call: the cases of one oracle build run in one process, so the adapter calls
+the setups before the existing code and its finalize procedures after it, and the next call sets
+up from the state the finalizes left (a finalize that deallocates without a check stops the
+program when it runs before the first setup). The
 Stage 1 nodes of [issue #709](https://github.com/seiya/spec2science/issues/709) in the SCALE
 Project are the example (`docs/design/dyn_fvm_measurement/README.md` §Adapter notes, which lists
 the setups in the order the existing code calls them and the finalizes); there a run finalized
