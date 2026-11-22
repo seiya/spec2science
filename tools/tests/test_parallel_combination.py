@@ -128,7 +128,7 @@ class ProfileCombinationTests(unittest.TestCase):
         (reg / "spec_catalog.yaml").write_text(
             "catalog_version: 0.2.0\nupdated_at: 2026-11-20\nspecs:\n"
             "  - spec_kind: infrastructure\n    spec_id: harness_fortran_cpu_mpi\n"
-            "    spec_version: \"0.5.0\"\n    status: controlled_draft\n"
+            "    spec_version: \"0.7.0\"\n    status: controlled_draft\n"
             "    deps_path: spec/infrastructure/harness_fortran_cpu_mpi/deps.yaml\n",
             encoding="utf-8")
         ort._load_spec_catalog.cache_clear()

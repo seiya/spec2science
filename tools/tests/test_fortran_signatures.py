@@ -51,7 +51,7 @@ HARNESS_SPEC = (
 CONTROLLED_SPEC_DOC = REPO_ROOT / "docs/CONTROLLED_SPEC.md"
 
 
-#: The seventeen distributed-state operations of `harness_fortran_cpu_mpi@0.4.0` §3.3, as the Fortran
+#: The eighteen distributed-state operations of `harness_fortran_cpu_mpi@0.7.0` §3.3, as the Fortran
 #: backend renders its §5.1 block. Written out so that a change to any of them — a name, an
 #: argument's order, type, rank or intent, a result — is a visible edit here (issue #316, R4-c
 #: PR-3 round 2: eight such mutants of §5.1 survived the suite when only a count was pinned). The
@@ -102,6 +102,14 @@ subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, dim, ng, periodic)
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
 end subroutine harness_fortran_cpu_mpi__exchange_halo_r2
+
+subroutine harness_fortran_cpu_mpi__exchange_halo_r3(a, axis, dim, ng, periodic)
+  real(dp), intent(inout) :: a(:,:,:)
+  integer, intent(in) :: axis
+  integer, intent(in) :: dim
+  integer, intent(in) :: ng
+  logical, intent(in) :: periodic
+end subroutine harness_fortran_cpu_mpi__exchange_halo_r3
 
 subroutine harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:)
@@ -242,7 +250,7 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         self.assertIsNone(err, err)
         rendered = render_signatures_to_fortran(published)
         struct = self._assert_round_trip(rendered)
-        self.assertEqual(len(struct["procedures"]), 36)
+        self.assertEqual(len(struct["procedures"]), 37)
         self.assertEqual(len(struct["types"]), 1)
         for rank in (1, 2, 3, 4):
             dims = ",".join([":"] * rank)

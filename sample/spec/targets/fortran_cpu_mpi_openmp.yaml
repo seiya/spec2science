@@ -20,8 +20,9 @@
 # with the serial reference there. At most 12 CPUs in a shape (4 ranks of 3 threads).
 #
 # The harness is the one `fortran_cpu_mpi` names, from the version whose perf writer obtains the
-# thread count from the shared-memory runtime itself (`0.6.0`); the host's control file adds the
-# compiler's thread switch to every node of this target.
+# thread count from the shared-memory runtime itself (`0.6.0`) and that publishes the rank-3 halo
+# exchange (`0.7.0`, issue #713); the host's control file adds the compiler's thread switch to
+# every node of this target.
 target_profile_version: 1
 target_id: fortran_cpu_mpi_openmp
 hardware:
@@ -42,4 +43,4 @@ execution:
     threads_per_rank: [3]
 harness:
   infrastructure_id: harness_fortran_cpu_mpi
-  version_constraint: ">=0.6.0 <1.0.0"
+  version_constraint: ">=0.7.0 <1.0.0"

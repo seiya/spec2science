@@ -438,9 +438,13 @@ the operations and the published type the host-rendered runner calls, with `dp =
 own `<spec_id>__` names. The token names the block, not one harness version:
 [issue #589](https://github.com/seiya/spec2science/issues/589) extended it by `__read_case` and the
 typed getters, and [issue #644](https://github.com/seiya/spec2science/issues/644) replaced its
-emitters and snapshot writer by the capture operations, under the same token, because no physics
-bundle calls an operation of the block, the backend's pin is the mechanical enforcer of its text,
-and no consumer distinguishes a generation. Until
+emitters and snapshot writer by the capture operations, under the same token. **When a token
+needs a new generation**: when an operation a physics bundle calls changes its signature or its
+meaning, as `distributed_state@1` became `@2` (below). An operation added to a block, or a change
+to an operation no bundle calls, stays under the token: the backend's pin is the mechanical
+enforcer of the block's text and refuses a harness that does not publish it as it stands, and no
+consumer distinguishes a generation, because a bundle's requirement is compared with the set the
+framework derives from the target profile, never with what a harness publishes. Until
 [issue #582](https://github.com/seiya/spec2science/issues/582) the block also held the writers of
 two documents no runner writes now, and their types. Its performance-record writer, which no
 consuming node's bundle code calls (the host-rendered runner calls it, and so does the providing
@@ -467,7 +471,10 @@ capture.
 the distributed-state block a language backend pins after the `sync_single_case@1` block, which
 a harness on a launcher target publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
 process grid the host imposes and its queries, the block partition of a global index range over
-the ranks along one grid dimension, the halo exchange of an array along one grid dimension, the
+the ranks along one grid dimension, the halo exchange of an array of rank 1, 2 or 3 along one grid
+dimension (the rank-3 form added by [issue #713](https://github.com/seiya/spec2science/issues/713)
+under this generation, by the rule above: a physics source may call it, and the pin refuses a
+harness that does not publish it), the
 gather onto rank 0 of an array partitioned along up to two grid dimensions — which stops the
 program unless the contributed blocks tile the global array with neither overlap nor gap — and the
 global reductions. (`distributed_state@1`, [issue #316](https://github.com/seiya/spec2science/issues/316),
