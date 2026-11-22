@@ -44,9 +44,25 @@ An assignment converts a kind (`real(dp)` to the existing code's `real(RP)`); an
 ## 4. Setup and module state
 
 Existing code that reads its constants and switches from module state set by a `_setup` routine
-is set up on the first call, once, behind a module-level flag (`setup_once` in both examples). A
-setup that reads a namelist reads it from a unit the adapter opens: an empty scratch file keeps
-every default.
+is set up by the adapter before it runs. Where the setup reads nothing the cases vary, it runs on
+the first call, once, behind a module-level flag (`setup_once` in both microphysics examples).
+Where the setup reads what the cases vary (extents, grid metrics, coefficients derived from
+them), it runs on every call: the cases of one oracle build run in one process, so the adapter
+calls the existing code's finalize procedures and then its setups again before each call. The
+Stage 1 nodes of [issue #709](https://github.com/seiya/spec2science/issues/709) in the SCALE
+Project are the example (`docs/design/dyn_fvm_measurement/README.md` §Adapter notes, which lists
+the setups in the order the existing code calls them and the finalizes); there a run finalized
+and set up again halfway was bit-identical to the uninterrupted one. A setup that reads a
+namelist reads it from a unit the adapter opens: an empty scratch file keeps every default. A
+setup that rewinds the existing code's configuration unit needs that unit open, even where the
+boundary stubbed the module that holds it.
+
+A value the existing code reads from a module variable, which its own setup would assign
+(constants a setup reads from a namelist, extents and index ranges of a grid module), is
+assigned by the adapter from the case's arguments before each call, and that setup is not
+called. List every such variable the code path reads: one left unassigned keeps its default
+and need not stop the program (on the Stage 1 short step, two index bounds left unassigned
+returned zero horizontal momenta). One library then serves cases with different values.
 
 A constant the node takes as an argument and the existing code holds at compile time is not read
 by the adapter. A case whose constants differ goes to a second `builds:` entry of `oracle.yaml`,
