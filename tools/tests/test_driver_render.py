@@ -3933,27 +3933,28 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         return base
 
     #: Seeded defects of the fixture harness's rank-3 exchange, each an edit inside that
-    #: subroutine alone: (label, old, new, whether the singleton's captures stay the unedited
-    #: harness's). A defect that leaves the singleton alone is one only a grid of several ranks
-    #: can see; its row requires that too, so the seed observes the exchange between ranks.
-    _R3_HARNESS_DEFECTS: tuple[tuple[str, str, str, bool], ...] = (
+    #: subroutine alone: (label, old, new, what the singleton does under it — `stops` (a
+    #: non-zero exit), `differs` (rc 0, other captures) or `kept` (the unedited harness's
+    #: captures)). A `kept` defect is one only a grid of several ranks can see, and its row
+    #: requires that grid, so the seed observes the exchange between ranks.
+    _R3_HARNESS_DEFECTS: tuple[tuple[str, str, str, str], ...] = (
         ("the owned count read along the wrong axis (stops the run)",
          "    nloc = size(a, axis) - 2 * ng\n",
-         "    nloc = size(a, 1 + mod(axis, 3)) - 2 * ng\n", False),
+         "    nloc = size(a, 1 + mod(axis, 3)) - 2 * ng\n", "stops"),
         ("the unpartitioned axis carried in reverse",
          "      sbuf = reshape(a(:, nloc + 1:nloc + ng, :), [cnt])\n",
-         "      sbuf = reshape(a(size(a, 1):1:-1, nloc + 1:nloc + ng, :), [cnt])\n", False),
+         "      sbuf = reshape(a(size(a, 1):1:-1, nloc + 1:nloc + ng, :), [cnt])\n", "differs"),
         ("the wrong grid dimension", "    call line_neighbours(dim, periodic, left, right)\n",
-         "    call line_neighbours(3 - dim, periodic, left, right)\n", True),
+         "    call line_neighbours(3 - dim, periodic, left, right)\n", "kept"),
         ("the trailing ghosts one cell off",
          "      a(:, ng + nloc + 1:nloc + 2 * ng, :) = reshape(rbuf, s)\n",
-         "      a(:, nloc + ng:nloc + 2 * ng - 1, :) = reshape(rbuf, s)\n", False),
+         "      a(:, nloc + ng:nloc + 2 * ng - 1, :) = reshape(rbuf, s)\n", "differs"),
         # The second exchange sends the first one's lower ghost column as zeros: the corner a
         # stencil reads across a block edge along y, and nothing else.
         ("the second exchange does not carry the first's ghosts",
          "      sbuf = reshape(a(:, :, nloc + 1:nloc + ng), [cnt])\n",
          ("      sbuf = reshape(a(:, :, nloc + 1:nloc + ng), [cnt])\n"
-          "      sbuf(1:size(a, 1)) = 0.0_dp\n"), True),
+          "      sbuf(1:size(a, 1)) = 0.0_dp\n"), "kept"),
     )
 
     def test_a_rank_3_work_array_exchanged_whole_equals_its_singleton_on_every_grid(
@@ -3974,9 +3975,10 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
     def test_each_seeded_defect_of_the_rank_3_exchange_fails_a_grid(self) -> None:
         """Issue #713: each seeded defect of the fixture harness's `exchange_halo_r3` (the table
         above) makes some shape of the sweep differ from the unedited harness's singleton under
-        the `levels first` model. The wrong grid dimension and the uncarried corner leave the
-        singleton's captures as they were, where nothing crosses a rank, and are seen by a grid
-        of several ranks alone; the others are seen by the singleton too."""
+        the `levels first` model, in the way the table states for the singleton: the owned count
+        read along the wrong axis stops it; the reversed axis and the trailing ghosts one cell
+        off change its captures; the wrong grid dimension and the uncarried corner leave them as
+        they were, where nothing crosses a rank, and a grid of several ranks sees them."""
         H = MPI_HARNESS
         harness = (MPI_DATA / f"{H}_model.f90").read_text()
         start = harness.index(f"  subroutine {H}__exchange_halo_r3(")
@@ -3987,18 +3989,23 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         good = self._build(prob_ir(), model=model).run(SINGLETON, cases=cases)
         self.assertEqual(good.rc, 0, good.stderr[-1000:])
         reference = good.snapshots()
-        for label, old, new, singleton_kept in self._R3_HARNESS_DEFECTS:
+        for label, old, new, singleton in self._R3_HARNESS_DEFECTS:
             with self.subTest(defect=label):
                 self.assertEqual(body.count(old), 1, old)
                 seeded = harness[:start] + body.replace(old, new) + harness[end:]
                 build = self._build(prob_ir(), model=model, harness_text=seeded)
-                if singleton_kept:
-                    single = build.run(SINGLETON, cases=cases)
-                    self.assertEqual(single.rc, 0, single.stderr[-1000:])
-                    self.assertEqual(single.snapshots(), reference)
-                grids = MPI_GRIDS if singleton_kept else (SINGLETON, *MPI_GRIDS)
+                single = build.run(SINGLETON, cases=cases)
+                if singleton == "stops":
+                    self.assertNotEqual(single.rc, 0)
+                    continue
+                self.assertEqual(single.rc, 0, single.stderr[-1000:])
+                if singleton == "differs":
+                    self.assertNotEqual(single.snapshots(), reference)
+                    continue
+                self.assertEqual(singleton, "kept")
+                self.assertEqual(single.snapshots(), reference)
                 self.assertIsNotNone(self._first_disagreement(
-                    build, reference, grids=grids, cases=cases, timeout=30))
+                    build, reference, cases=cases, timeout=30))
 
     def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
         """Every cell is held by the same number of ranks on every shape the driver runs (a
