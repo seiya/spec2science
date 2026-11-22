@@ -440,10 +440,11 @@ own `<spec_id>__` names. The token names the block, not one harness version:
 typed getters, and [issue #644](https://github.com/seiya/spec2science/issues/644) replaced its
 emitters and snapshot writer by the capture operations, under the same token. **When a token
 needs a new generation**: when an operation a physics bundle calls changes its signature or its
-meaning, as `distributed_state@1` became `@2` (below). An operation added to a block, or a change
-to an operation no bundle calls, stays under the token: the backend's pin is the mechanical
-enforcer of the block's text and refuses a harness that does not publish it as it stands, and no
-consumer distinguishes a generation, because a bundle's requirement is compared with the set the
+meaning, as `distributed_state@1` became `@2` (below), so that the token a bundle records names
+the contract its calls were written against. An operation added to a block, or a change to an
+operation no bundle calls, leaves every call a recorded bundle makes as it was written, and stays
+under the token. Neither case is enforced by the token: the backend's pin refuses a harness that
+does not publish the block as it stands, and a bundle's requirement is compared with the set the
 framework derives from the target profile, never with what a harness publishes. Until
 [issue #582](https://github.com/seiya/spec2science/issues/582) the block also held the writers of
 two documents no runner writes now, and their types. Its performance-record writer, which no

@@ -1588,9 +1588,9 @@ PINNED_RENDER: dict[str, str] = {
     # block gains `exchange_halo_r3` and `PHYSICS_CALLABLE_DISTRIBUTED_OPS` lists it
     # (`fortran/runner.py`). No rendered byte depends on the block's text; the pin compares it
     # with a certified harness, and the `use` list a physics source may name grows by one.
-    # (V-b, measured before the commit: the 349 IRs of the sample's and the SCALE Project's
-    # `workspace/ir/` that render on main render the same runner text on this branch, on each of
-    # their targets.) Within F-1 the digest moved once more, for a comment of `runner.py`
+    # (V-b, measured before the commit: the 349 (IR, target) pairs — 81 IR files of the
+    # sample's and the SCALE Project's `workspace/ir/`, on each target of their Project — that
+    # render a runner on main render the same text on this branch.) Within F-1 the digest moved once more, for a comment of `runner.py`
     # (review round 2).
     "render-22": "4f2fb9fe170d9f7f8e2e1d01cdc2357c0aa7d7433d2e0f5269d36d77bac5b0df",
 }

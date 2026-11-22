@@ -416,7 +416,8 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # `case_id_len = 64`. The token names the block the backend pins, not one harness version:
 # issue #589 extended it by `__read_case` and the typed getters, and issue #644 replaced its
 # emitters and snapshot writer by the capture operations, under the same token, because no
-# physics bundle calls an operation of the block and no consumer distinguishes a generation. Its
+# physics bundle calls an operation of the block (a token gains a generation when an operation a
+# bundle calls changes its signature or meaning: `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`). Its
 # `__write_perf` takes no `threads_per_rank` argument where the harness obtains the count
 # itself: a single-process harness (issue #512), and a distributed one whose ranks may run
 # threads (issue #700); a device harness publishes the eight-argument writer instead. The
@@ -427,7 +428,8 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
 # `distributed_state@2` (issue #512; `@1` was issue #316's, R4-c, over one dimension) is the
 # distributed-state block the language backend pins after the `sync_single_case@1` block: the
 # rank queries, the process grid the host imposes and its queries, the block partition and the
-# halo exchange along one grid dimension, the gather onto rank 0 of an array partitioned along
+# halo exchange of a rank-1 to rank-3 array along one grid dimension (rank 3 added under this
+# generation by issue #713: an addition), the gather onto rank 0 of an array partitioned along
 # up to two grid dimensions with its tile check, and the global reductions, with the rule that
 # the writers are called on rank 0 only. A target provides it when its parallel backend declares
 # a `launcher`.

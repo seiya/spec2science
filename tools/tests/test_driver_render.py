@@ -2808,7 +2808,7 @@ class ProcedureGateTest(unittest.TestCase):
 # variables of the reading state, `__parse_cases` in the form that keeps the spec path, and
 # `__read_case` with its getters) and the capture operations written by hand (issue #644 P4a):
 # `0.5.0`'s surface by hand, held to the real `0.5.0` §5.1 by
-# `assert_harness_pin` below. Five hand-written models, each with the IR its builder returns and the
+# `assert_harness_pin` below; and the rank-3 halo exchange of `0.7.0` by hand (issue #713). Five hand-written models, each with the IR its builder returns and the
 # `tests.md` line gate (o) holds that IR to.
 
 MPI_DATA = DATA / "mpi"
