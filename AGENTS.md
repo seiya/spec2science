@@ -23,7 +23,7 @@ The assumptions every design, review, and triage decision in this repository res
 
 ## Canonical record placement
 - The canonical copy of a development record lives in this repository or on GitHub (an issue or a pull request). An operator's `~/` holds machine-local runtime state and personal credentials, and nothing a second person would need.
-- **A record that resides in `~/` — an agent's automatic memory, a scratch plan file, a session transcript — is a personal working aid, not a canonical record.** A fact that is permanently needed is not recorded until it has landed in this repository or on GitHub; land it before closing the work.
+- **A record that resides in `~/` — an agent's automatic memory, a scratch plan file, a session transcript — is a personal working aid, not a canonical record.** A fact that is permanently needed is not recorded until it has landed in this repository or on GitHub; land it before closing the work. Land the fact, not the file: a plan is never posted whole. Which of its parts land, and where, is `docs/DEVELOPMENT.md` §Record placement.
 - `docs/DEVELOPMENT.md` §Record placement is canonical for which destination each kind of record takes. Do not restate the map here.
 
 ## Pull request rules
