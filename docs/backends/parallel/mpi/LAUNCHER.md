@@ -171,13 +171,20 @@ this host's `mpif90 -show`, as its `compiler_version` is this host's: at a remot
 not name the installation the binary links against, and a change of the site's installation
 moves no key.
 
-**Verified on one node.** Open MPI 4.1.2 at a `none` site reached over ssh, and under Slurm
-20.02.5 with no task plugin, on one node. Over several nodes the launcher places the ranks over
-the allocation, and nothing more is built; what is not measured is whether the two variables
-the host sets in the launcher's environment — `SPEC2SCIENCE_PROCESS_GRID` and the thread
-variables — reach a rank on another node. Every rank's `__init` reads the grid from its own
-environment, and only rank 0's grid and team size reach `perf.json`, so `launch_match` and
-`thread_match` hold on rank 0's word.
+**Verified.** Open MPI 4.1.2 at a `none` site reached over ssh, and under Slurm 20.02.5 with no
+task plugin, on one node, through the workflow (issue #700, R-N and R-B). Over two nodes, outside
+the workflow (issue #713, Open MPI 4.1.6 under Slurm 24.05 at the SCALE Project's `rccscloud`):
+a print program started under the launch shape of each of the eight execution shapes of
+`fortran_cpu_mpi_openmp` read, on every rank of both nodes, `SPEC2SCIENCE_PROCESS_GRID` and the
+thread variables as the host set them, with the team size and the rank count of the shape (M-1);
+and a certified launcher model, built at the site from the workflow's sources, ran as four ranks
+of two threads over the two nodes, byte-identical to one process (M-3), the job directory at one
+path from both nodes. Only rank 0's grid and team size reach `perf.json`, so `launch_match` and
+`thread_match` hold on rank 0's word; M-1 is what read the others. M-3 first hung: the nodes
+carried a second IP interface (IP over InfiniBand) the TCP transport could not reach, and a
+`setup` line restricting the transport to the routable subnet
+(`OMPI_MCA_btl_tcp_if_include`, `OMPI_MCA_oob_tcp_if_include`) let it run. That is the site's
+environment, which no key holds; a print program exchanges no data and does not meet it.
 
 ## 5. Out of scope
 
