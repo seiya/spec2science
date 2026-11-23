@@ -1220,6 +1220,9 @@ PINNED: dict[str, str] = {
     # `(ka, ia, ja)`), is exchanged whole, one call per grid dimension, and a rank-4 array one
     # slice of an unpartitioned axis at a time over it.
     "leaf-106": "a37ea64a4c430163900d558591573c80ebb116773492838b648baf4356c504e6",
+    # leaf-107 (issue #716 F-1, decision O7): the `mpi` producer fragment no longer says the
+    # static check refuses a `problem` with no halo-exchange call by the harness name.
+    "leaf-107": "2ac7c239eb29560035955e0f002380f6a39cb2c08c6f7bdf33dcf9509ecd6fa4",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1316,6 +1319,9 @@ PINNED_READER: dict[str, str] = {
     # The digest `generate-verify-13` shipped with at 8d4419a9:
     "generate-verify-13@8d4419a9": "642a136dcaba042b1dfae6b2e526759861f878a18d95afab9b8ca9397240ae1d",
     "generate-verify-13": "486d45c3e79ad4c34cf00f59d8f607b1361379bffabf792abbe868800e482800",
+    # generate-verify-14 (issue #716 F-1, decision O7): the `mpi` reviewer fragment no longer
+    # lists a `problem` with no halo-exchange call among what the static check settled.
+    "generate-verify-14": "daedb8e713458b558a194aa4a458d6838a96c8df817da1f066276da153f1d294",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",

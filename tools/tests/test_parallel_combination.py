@@ -375,7 +375,8 @@ class PresenceFloorCombinationTests(unittest.TestCase):
                             for v in direct), direct)
         bare = self._OMP.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
-        self.assertTrue(any("exchange_halo_r1" in v for v in self._run(bare, {"model": "mpi"})))
+        # A problem that exchanges nothing is not refused (issue #716 F-1, decision O7).
+        self.assertEqual(self._run(bare, {"model": "mpi"}), [])
 
     def test_one_member_targets_are_unchanged(self) -> None:
         # The same source on an `openmp` target: a plan naming MPI is another model there, and

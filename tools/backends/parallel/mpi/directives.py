@@ -17,10 +17,11 @@ the stop uniform. What the floor asks of the leaf's MODEL sources is what stays 
   block, so an operation that partitions, exchanges, asks the grid or reduces inside itself
   distributes that block a second time;
 * the plan declares `state_residency: distributed` (one rule for both kinds on this target;
-  the bundle contract couples `distributed_state@2` to it);
-* on a `problem` node at least one model source calls the harness's halo exchange (of any rank
-  it publishes) by its harness name: a problem's step reads its neighbours' cells across a block
-  edge only through it.
+  the bundle contract couples `distributed_state@2` to it).
+
+A `problem` is not asked for a halo-exchange call (issue #716 F-1, decision O7): one call on any
+array satisfied that clause, the shape comparison refuses a missing exchange that changes a
+result, and a correct composite of columns calls none.
 
 A plan that declines MPI exempts nothing: the driver distributes from the IR whatever the plan's
 `parallelization` says, so a `problem` that declines and exchanges nothing fails the shape
@@ -63,18 +64,6 @@ _FORBIDDEN_STATEMENT_RE = re.compile(
 # (`x%mpi_count(1)` is the leaf's own component).
 _FORBIDDEN_REFERENCE_RE = re.compile(r"(?<![\w%])mpi_\w*\s*\(", re.IGNORECASE)
 
-
-
-def _exchange_call_re(harness_spec_id: str) -> re.Pattern[str]:
-    """A call of the target harness's halo exchange, by its harness name — the harness's own
-    prefix, and only the exchanges it publishes (`exchange_halo_r1` / `_r2` / `_r3`, the
-    Fortran backend's `PHYSICS_CALLABLE_DISTRIBUTED_OPS`; `_r3` since issue #713) — as a `call`
-    statement or the action of a one-line logical `if` (`if (n > 0) call h__exchange_halo_r1(…)`).
-    Round 3 of issue #316 PR-4's review found the prefix read as any identifier, so a leaf's own
-    `<spec_id>__exchange_halo_r1` counted."""
-    return re.compile(
-        rf"^(?:if\s*\(.*\)\s*)?call\s+{re.escape(harness_spec_id)}__exchange_halo_r[123]\b",
-        re.IGNORECASE)
 
 
 def _code_statements(text: str) -> list[tuple[str, str]]:
@@ -168,19 +157,6 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], plan: Any,
             "distributed case each rank's state is its block, so the plan declares "
             "\"state_residency\": \"distributed\" (with distributed_state@2 in "
             "capability_requirements)")
-    if node_kind == "problem" and harness_spec_id:
-        exchange = _exchange_call_re(harness_spec_id)
-        if not any(exchange.match(masked)
-                   for stmts in statements.values() for _raw, masked in stmts):
-            out.append(
-                f"{first}: the target profile resolves to MPI, and no model source of this "
-                f"problem calls the harness's `{harness_spec_id}__exchange_halo_r1` / `_r2` / "
-                "`_r3` by "
-                "that name: the host-rendered driver hands the step its rank's block, and a "
-                "stencil reads its neighbours' cells across the block's edge only through the "
-                "halo exchange (a statement "
-                f"`call {harness_spec_id}__exchange_halo_r2(...)`; a renamed alias is not "
-                "recognized)")
     return out
 
 
