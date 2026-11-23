@@ -18998,7 +18998,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # 118900->119050 in review round 3: the wrong-rank line's zero-extent exception.
         # Raised 119050->121000 (issue #716 F-1b): a coordinate's `rank` with the two-rank
         # idiom, grammar 8's `take`, and the lift of a coordinate beside an operand one rank
-        # above it. Measured 120835 with `wc -c`.
+        # above it. Measured 120835 with `wc -c` (120874 after review round 3).
         "docs/workflow/phases/phase_01_compile.md": 121000,
     }
 

@@ -2139,7 +2139,7 @@ class CompileContractCouplingTest(unittest.TestCase):
                       "`inputs.<path>`, so `count` is every case's extent and `c` is i + 1/2)",
                       coord[0])
         self.assertIn("write the comparison over the stacked variables", coord[0])
-        self.assertIn("`count` must equal the captured extent on that axis of the arrays of the "
+        self.assertIn("`count` must equal the captured extent on that axis of an array of the "
                       "coordinate's rank", coord[0])
         self.assertNotIn("separate variables", coord[0])   # round 1: unfollowable for a stacked output
         poly, on, off1, off2 = re.search(

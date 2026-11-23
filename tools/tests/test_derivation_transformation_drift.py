@@ -1038,7 +1038,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # main a72f9f3c's: the `phase_contract_document` row alone.) The digest `compile-docs-38`
     # shipped with at a72f9f3c:
     "compile-docs-38@a72f9f3c": "71fbf78f86c48463ba74ff2dda37191f087b6bcc35b25f72c81d64320e87cd54",
-    "compile-docs-38": "d007d53b7402c20e9365a3b73c79ea80051d0b656aa884b91b98e4f2f6622512",
+    "compile-docs-38": "47f3c200d4b13ae99ff83b20731d94136bab0b8d09c70004069a7021f4d772af",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
