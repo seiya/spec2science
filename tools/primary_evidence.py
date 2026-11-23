@@ -1058,7 +1058,7 @@ def coordinate_ranks(schema: dict[str, Any]) -> dict[str, int]:
             out[name] = default
             continue
         rank = spec["rank"]
-        if not isinstance(rank, int) or isinstance(rank, bool) or rank not in held:
+        if not isinstance(rank, int) or rank not in held:
             raise PrimaryEvidenceError(
                 f"coordinates[{name!r}].rank must be the rank of a snapshot variable "
                 f"(one of {held}); got {rank!r}")
