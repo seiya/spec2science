@@ -20470,10 +20470,11 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
     (`tools/backends/parallel/mpi/directives.py`) over the MODEL sources. `_run` reaches it
     through `_validate_parallel_presence_floor` on a pipeline whose TARGET's parallel backend is
     `mpi`; `_floor` asks the floor's own function. Since PR-B2 the host-rendered driver
-    distributes each case, so the floor keeps the direct-library and component rules, asks a
-    distributed residency of both kinds whatever the plan says, and asks a halo-exchange call of
-    a `problem` only; the checks-source rules went with the checks module (`partition` is the
-    driver's). The OpenMP rows above pin that the per-file directive floor is unchanged."""
+    distributes each case, so the floor keeps the direct-library and component rules and asks a
+    distributed residency of both kinds whatever the plan says; the checks-source rules went with
+    the checks module (`partition` is the driver's), and the halo-exchange call it asked of a
+    `problem` went in issue #716 F-1 (decision O7). The OpenMP rows above pin that the per-file
+    directive floor is unchanged."""
 
     _H = "harness_fortran_cpu_mpi"
     _DIST = {"precision": {}, "state_residency": "distributed",
@@ -20541,16 +20542,23 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(), [])
 
     def test_the_gate_hands_the_floor_the_model_sources_and_the_node_kind(self) -> None:
-        # Through the caller: the model's findings reach the list, and a stray file named as the
-        # retired checks module settles nothing — its exchange call does not stand for the
-        # model's, so the problem is refused on the model's path.
-        bare = self._BARE
-        v = self._run(model=bare, stray_checks=self._CHECKS)
+        # Through the caller: the model's findings reach the list on the model's path, beside a
+        # stray file named as the retired checks module; a problem model that exchanges nothing
+        # is not refused (issue #716 F-1).
+        self.assertEqual(self._run(model=self._BARE, stray_checks=self._CHECKS), [])
+        # The floor reads the model files the caller hands it, not every source of `src/`: the
+        # stray file names harness operations, which on a component would be a second finding
+        # (and the host-rendered runner, which sits there too, names them on every node).
+        v = self._run(model=self._BARE, stray_checks=self._CHECKS,
+                      node_key="component/dep_base@0.1.0")
+        self.assertEqual(v, [])
+        v = self._run(stray_checks=self._CHECKS, node_key="component/dep_base@0.1.0")
         self.assertEqual(len(v), 1, v)
-        self.assertIn("dep_base_model.f90", v[0])
-        self.assertIn("calls the harness's `harness_fortran_cpu_mpi__exchange_halo_r1`", v[0])
-        v = self._run(model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"))
+        self.assertIn("dep_base_model.f90: a component's published operations", v[0])
+        v = self._run(model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
+                      stray_checks=self._CHECKS)
         self.assertEqual(len(v), 1, v)
+        self.assertIn("dep_base_model.f90: ", v[0])
         self.assertIn("reaches the message-passing runtime only through the target's harness", v[0])
         # The node's kind is the caller's to pass: a component's model naming the harness.
         v = self._run(node_key="component/dep_base@0.1.0")
@@ -20560,6 +20568,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         v = self._run(plan=self._DECLINED)
         self.assertEqual(len(v), 1, v)
         self.assertIn("declares state_residency 'host'", v[0])
+        # ...on the model's path, like every finding of the floor.
+        self.assertRegex(v[0], r"^\S*/src/dep_base_model\.f90: ")
 
     def test_a_component_model_names_no_harness_operation(self) -> None:
         """Issue #512: the driver and every consumer call a component's operations on a rank's
@@ -20581,7 +20591,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 self.assertEqual(len(declined), 2, declined)
                 self.assertIn("a component's published operations", declined[0])
                 self.assertIn("declares state_residency 'host'", declined[1])
-        # A problem's model may name one; it is held to the exchange call instead.
+        # A problem's model may name one.
         self.assertEqual(self._floor(model=self._BARE.replace(
             "    u = u\n", "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n")),
             [])
@@ -20660,40 +20670,26 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                     self.assertEqual(len(v), 1, v)
                     self.assertIn("declares state_residency None", v[0])
 
-    def test_a_problem_with_no_halo_exchange_by_its_harness_name_is_refused(self) -> None:
-        """A problem's step reads its neighbours' cells across a block edge only through the halo
-        exchange: a model with none, or one only under another name, is refused. The partition
-        no longer counts (it is the driver's), and a component is not asked."""
+    def test_a_problem_is_not_asked_for_a_halo_exchange_call(self) -> None:
+        """Issue #716 F-1 (decision O7) deleted the clause that refused a `problem` whose model
+        sources hold no call of the harness's halo exchange by its name: one call on any array
+        satisfied it (`tools/backends/parallel/mpi/directives.py` states what refuses a missing
+        exchange instead), and a correct composite of columns calls none. Every spelling it used to refuse now passes on a
+        `problem`; a `component` that calls no harness operation passes as before."""
         no_call = self._MODEL.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
         for call in ("", "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n",
                      "    call exch(u, 1, 1, .true.)\n",
                      "    ! call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n",
-                     # only the TARGET harness's exchanges, and only those it publishes
                      "    call dep_base__exchange_halo_r1(u, 1, 1, .true.)\n",
                      "    call harness_fortran_cpu__exchange_halo_r1(u, 1, 1, .true.)\n",
                      "    call harness_fortran_cpu_mpi__exchange_halo_r4(u, 1, 1, .true.)\n",
                      "    call harness_fortran_cpu_mpi__exchange_halo_r30(u, 1, 1, .true.)\n"):
             with self.subTest(call=call):
-                v = self._floor(no_call.replace("  end subroutine", f"{call}  end subroutine"))
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("no model source of this problem calls the harness's "
-                              "`harness_fortran_cpu_mpi__exchange_halo_r1` / `_r2` / `_r3`", v[0])
-        # The action of a one-line logical `if` is a call too, and every exchange the harness
-        # publishes counts: each `exchange_halo_r<k>` a physics source may call (issue #713).
-        from tools.backends.language.fortran.runner import (
-            PHYSICS_CALLABLE_DISTRIBUTED_OPS,
-        )
-        exchanges = [op for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS
-                     if op.startswith("exchange_halo_r")]
-        self.assertEqual(exchanges, ["exchange_halo_r1", "exchange_halo_r2", "exchange_halo_r3"])
-        for call in ("    if (n > 0) call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, "
-                     ".true.)\n",
-                     *(f"    call harness_fortran_cpu_mpi__{op}(a, 1, 1, 1, .true.)\n"
-                       for op in exchanges)):
-            with self.subTest(call=call):
                 self.assertEqual(self._floor(no_call.replace(
                     "  end subroutine", f"{call}  end subroutine")), [])
+        self.assertEqual(self._floor(self._BARE), [])
+        self.assertEqual(self._run(model=self._BARE), [])
         self.assertEqual(self._floor(self._BARE, node_key="component/dep_base@0.1.0"), [])
 
     def test_the_floor_is_not_asked_of_an_infrastructure_node(self) -> None:
