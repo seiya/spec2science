@@ -9601,6 +9601,32 @@ end program shallow_water2d_runner
                     self.assertTrue(any(expected in x for x in v), v)
                     self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
 
+    def test_compile_gate_admits_a_coordinate_of_its_own_rank(self) -> None:
+        """Issue #716 F-1b through the real wiring: beside the stacked `[3,2,2]` capture the
+        same coordinate with `rank: 2` pairs with the rank-2 captures, and `take` brings the
+        stacked capture to rank 2 beside them; a `rank` no snapshot variable has is refused."""
+        coord = {"name": "row_center", "axis": 1, "count": "inputs.grid.ny",
+                 "length": "inputs.grid.ny", "placement": "cell_center", "rank": 2}
+        inputs = {"grid": {"ny": 2}, "constants": {"f0": 0.25, "df": 0.5}}
+        pred = self._primary_predicate(
+            bind={"f_rows": "inputs.constants.f0 + inputs.constants.df * (row_center - 0.5)"},
+            expr="max(maxabs(final.hu - f_rows * initial.hv), "
+                 "maxabs(final.hv + f_rows * take(final.U, 0, 1)))")
+        for rank, expected in ((2, None), (1, "rank must be the rank of a snapshot variable")):
+            with self.subTest(rank=rank), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates([pred])
+                schema = io["raw_requirements"]["required_evidence"][0]["schema"]
+                schema["coordinates"] = [{**coord, "rank": rank}]
+                schema["variables"].append({"name": "U", "shape_expr": "[3,2,2]"})
+                v = self._compile_with_io_contract(
+                    Path(tmp), io, case_inputs=inputs, extra_initial={"U": 0.0},
+                    step_args=({"name": "U", "rank": 3, "intent": "inout",
+                                "spec": {"type": "real", "kind": "dp"}},))
+                if expected is None:
+                    self.assertEqual(v, [])
+                else:
+                    self.assertTrue(any(expected in x for x in v), v)
+
     def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
         """D10 (c): a predicate over a SUBSET of its test's cases would judge the rest by
         nothing. Through the real wiring: the test ranges over c1 and c2, the predicate over c1
