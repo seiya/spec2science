@@ -25,8 +25,8 @@ result, and a correct composite of columns calls none.
 
 A plan that declines MPI exempts nothing: the driver distributes from the IR whatever the plan's
 `parallelization` says, so a `problem` that declines and whose missing exchange changes a result
-fails the shape comparison, and a `component` is held to the same rules either way. `lowering_plan_declines`
-stays the `parallel_directives` capability's interface, which the OpenMP and CUDA floors' callers
+fails the shape comparison, and a `component` is held to the same rules either way.
+`lowering_plan_declines` stays the `parallel_directives` capability's interface, which the OpenMP and CUDA floors' callers
 reach through the validator.
 
 It is a PRESENCE floor: whether a problem's exchange precedes every stencil read, with the spec's
