@@ -7040,10 +7040,9 @@ def _pl_positions(n: str) -> np.ndarray:
 
 
 class CoordinateRankTest(unittest.TestCase):
-    """Issue #716 F-1b: a coordinate's `rank`, and `take`. Rows numbered as the F-1b plan's
-    §8 (posted on issue #716)."""
+    """Issue #716 F-1b: a coordinate's `rank`, and `take`, on a state of `PL`'s shape."""
 
-    # ---- row 1: a state of two ranks evaluates
+    # ---- a state of two ranks evaluates
 
     def test_a_state_of_two_ranks_evaluates(self) -> None:
         out = pe.evaluate_case_inputs(_pl())["c"]
@@ -7060,7 +7059,7 @@ class CoordinateRankTest(unittest.TestCase):
         self.assertEqual(ref.shape, (PL_EXT["nz"], PL_EXT["nx"], PL_EXT["ny"]))
         self.assertEqual(_all_gates(_pl()), [])
 
-    # ---- row 2: the pin's two refusals, read on the same IR without `rank`
+    # ---- the pin's two refusals, read on the same IR without `rank`
 
     def test_without_rank_the_pin_refuses_it(self) -> None:
         ir = _pl()
@@ -7077,7 +7076,7 @@ class CoordinateRankTest(unittest.TestCase):
                                     r"fill the shape \[3, 6, 5\]"):
             pe.evaluate_case_inputs(ir)
 
-    # ---- row 3: the count check is per rank
+    # ---- the count check is per rank
 
     def test_the_count_check_reads_the_coordinates_rank(self) -> None:
         for name, count, rank in (("xi", "nye", 3), ("xq", "nx", 4)):
@@ -7091,7 +7090,7 @@ class CoordinateRankTest(unittest.TestCase):
                         rf"axis 1 of the snapshot variables of rank {rank}"):
                     pe.evaluate_case_inputs(ir)
 
-    # ---- row 4: `rank` is the rank of a snapshot variable; `axis` indexes it
+    # ---- `rank` is the rank of a snapshot variable; `axis` indexes it
 
     def test_rank_is_the_rank_of_a_snapshot_variable(self) -> None:
         for bad in (True, "3", 3.0, 2, 0, 5):
@@ -7117,7 +7116,7 @@ class CoordinateRankTest(unittest.TestCase):
         self.assertTrue(any("rank must be the rank of a snapshot variable" in v
                             for v in _all_gates(ir)))
 
-    # ---- row 5: static ranks, and the lift beside an operand one rank above
+    # ---- static ranks, and the lift beside an operand one rank above
 
     def _renv(self) -> pe.RankEnv:
         return pe.RankEnv(captures={"a": 3, "q": 4, "o": 3, "ok": 0, "t": 0, "step": 0},
@@ -7170,7 +7169,7 @@ class CoordinateRankTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"initial_state\.q: a value of shape"):
             pe.evaluate_case_inputs(ir)
 
-    # ---- rows 6 and 7: the expansion at predicate time
+    # ---- the expansion at predicate time
 
     def _env(self, final: dict, *, coordinates: list[dict] | None = None,
              variables: list[dict] | None = None, derived: dict | None = None) -> pe.CaseEnv:
@@ -7230,7 +7229,7 @@ class CoordinateRankTest(unittest.TestCase):
         self.assertEqual(np.shape(bare.derived["d"]), (1,))
         self.assertEqual(pe.evaluate(pe.parse_expr("sum(derived.d)"), bare), 3.0)
 
-    # ---- row 8: take
+    # ---- take
 
     def test_take(self) -> None:
         with self.assertRaises(pe.PrimaryEvidenceError):
