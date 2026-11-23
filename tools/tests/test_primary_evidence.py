@@ -2157,6 +2157,35 @@ class CompileContractCouplingTest(unittest.TestCase):
                   .group(1).split(",")]
         self.assertEqual(len(shifts), len(tokens))   # one shift per axis of the stacked state
         self.assertEqual((shifts[0], set(shifts[1:])), ("±1", {"0"}))
+        # issue #716 F-1b: the tracer mask a leaf transcribes into `initial_state` is the one the
+        # document states, evaluated over the host's cell-centre positions: 1 on tracer q only
+        mask = re.search(r"`(max\(0, 1 - abs\(iq - \(q \+ 0\.5\)\)\))` is 1 on tracer q and 0 "
+                         r"elsewhere", coord[0]).group(1)
+        iq = pe.coordinate_arrays(
+            {"variables": [{"name": "Q", "shape_expr": "[nx, nq]"}], "coordinates": [
+                {"name": "iq", "axis": 1, "count": "inputs.nq", "length": "inputs.nq",
+                 "placement": "cell_center"}]}, {"nq": 3}, lambda r: (2, 3))["iq"]
+        ienv = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={},
+                          coordinates={"iq": iq})
+        for q in range(3):
+            got = pe.evaluate(pe.parse_expr(mask.replace("q + 0.5", f"{q} + 0.5")), ienv)
+            self.assertEqual(got[0].tolist(), [1.0 if k == q else 0.0 for k in range(3)])
+        # `take`'s line: on history.<var> axis 0 is the sample axis, so a rank-4 variable's
+        # tracer axis is 4, and a negative index is refused
+        take_line = next(ln for ln in lines if "take(a, k, i)" in ln)
+        at = lines.index(take_line)
+        take_text = " ".join(ln.lstrip("# ").strip() for ln in lines[at:at + 5])
+        self.assertIn("on history.<var> axis 0 is the sample axis, so the tracer axis of a "
+                      "rank-4 variable is 4", take_text)
+        self.assertIn("a negative index or one at or past the extent is an evaluation error",
+                      take_text)
+        hq = np.zeros((2, 3, 4, 5, 6))
+        henv = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={}, coordinates={},
+                          history={"q": hq})
+        self.assertEqual(np.shape(pe.evaluate(pe.parse_expr("take(history.q, 4, 1)"), henv)),
+                         (2, 3, 4, 5))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "index -1 is outside"):
+            pe.evaluate(pe.parse_expr("take(history.q, 4, -1)"), henv)
         gate = [ln for ln in lines if ln.startswith("- **`io_contract.tests` and `io_contract.predicates`")]
         self.assertEqual(len(gate), 1)
         self.assertIn("every operand pair is at equal rank (a coordinate at its rank) "
@@ -7104,6 +7133,13 @@ class CoordinateRankTest(unittest.TestCase):
                       "equal rank; right-aligned broadcasting is not admitted); coordinate 'zq' "
                       "has rank 4 (its `rank`, by default the highest rank among the snapshot "
                       "variables)", "\n".join(_all_gates(bad)))
+        # the message names each coordinate's OWN rank, a rank-3 one included
+        low = _pl()
+        low["io_contract"]["predicates"][1]["expr"] = (
+            "maxabs(take(take(final.q, 3, 0), 0, 0) - zc)")
+        self.assertIn("operands of rank 2 and 3 (an operand must be a scalar or of equal rank; "
+                      "right-aligned broadcasting is not admitted); coordinate 'zc' has rank 3 ",
+                      "\n".join(_all_gates(low)))
         renv = self._renv()
         self.assertEqual(pe.expr_rank(pe.parse_expr("at('c').xi"), renv, {}), 3)
         self.assertEqual(pe.expr_rank(pe.parse_expr("at('c').xq"), renv, {}), 4)
