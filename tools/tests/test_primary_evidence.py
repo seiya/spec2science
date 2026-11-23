@@ -7064,7 +7064,7 @@ class CoordinateRankTest(unittest.TestCase):
     # ---- row 4: `rank` is the rank of a snapshot variable; `axis` indexes it
 
     def test_rank_is_the_rank_of_a_snapshot_variable(self) -> None:
-        for bad in (True, "3", 2, 0, 5):
+        for bad in (True, "3", 3.0, 2, 0, 5):
             with self.subTest(rank=bad):
                 schema = pe.snapshot_schema(_pl())
                 schema["coordinates"][0]["rank"] = bad
