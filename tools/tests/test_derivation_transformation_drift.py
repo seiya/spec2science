@@ -1022,9 +1022,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # variable, by default the highest rank), `take` (grammar 8), and the lift of a coordinate
     # beside an operand one rank above it. The edit widens what a valid IR is and changes no IR
     # it admitted: an IR without `rank` is shaped by the previous rule at every reader, by
-    # construction. Measured as well, at main a72f9f3c and at this change, over the 872 IR files
-    # of both Projects (every certified pipeline's IR, `workspace/ir/**`, the SCALE Project's
-    # `ir/`, and `tools/tests/data/drive_ir/`): the 10,738 files `write_case_inputs` writes are
+    # construction. Measured as well, at main a72f9f3c and at this change, over 872 YAML files
+    # (871 IRs and one run list under `drive_ir/part3_acceptance/`) of both Projects (every
+    # certified pipeline's IR, `workspace/ir/**`, the SCALE Project's `ir/`, and
+    # `tools/tests/data/drive_ir/`): the 10,738 files `write_case_inputs` writes are
     # byte-identical, and the `Compile` gate's violation lists (`drive_violations`,
     # `validate_primary_predicate_schema` under `predicate_schema_context`) are equal; no IR
     # carries a `rank` key or names `take`. It DEPARTS from the practice for a grammar function:
