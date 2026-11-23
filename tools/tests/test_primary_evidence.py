@@ -7078,7 +7078,8 @@ class CoordinateRankTest(unittest.TestCase):
         schema = pe.snapshot_schema(_pl())
         schema["coordinates"][0]["axis"] = 3
         with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    r"coordinates\['zc'\]\.axis must be an integer in \[0, 3\)"):
+                                    r"coordinates\['zc'\]\.axis must be an integer in \[0, 3\) "
+                                    r"\(the coordinate's rank\)"):
             pe.coordinate_arrays(schema, {"grid": dict(PL_EXT)})
         # the gate reports it once, against every case
         ir = _pl()
@@ -7174,11 +7175,15 @@ class CoordinateRankTest(unittest.TestCase):
         q = np.ones((*a.shape, PL_EXT["nq"]))
         o = np.ones((PL_EXT["nz"], PL_EXT["nx"], PL_EXT["ny"]))
         f = _pl_positions("nz")[:, None, None]
+        g = f[..., None]   # rank 4, the highest rank
         coords = [_pl_coord("zc", 0, "nz", 3)]
-        one = self._env({"a": a, "q": q}, coordinates=coords, derived={"f": f})
+        one = self._env({"a": a, "q": q}, coordinates=coords, derived={"f": f, "g": g})
         self.assertEqual(np.shape(one.derived["f"]), a.shape)
-        two = self._env({"a": a, "q": q, "o": o}, coordinates=coords, derived={"f": f})
+        self.assertEqual(np.shape(one.derived["g"]), q.shape)
+        # rank 3 has two captured shapes, rank 4 one: each rank is decided on its own
+        two = self._env({"a": a, "q": q, "o": o}, coordinates=coords, derived={"f": f, "g": g})
         self.assertEqual(np.shape(two.derived["f"]), f.shape)
+        self.assertEqual(np.shape(two.derived["g"]), q.shape)
         # review 1 H1: with no `rank` key, an array below the highest rank is left as it is,
         # so a rank-1 extent-1 array sums to its value beside a rank-1 capture of extent 4
         bare = self._env({"h": np.ones((4, 5)), "w": np.ones(4)}, coordinates=[],
