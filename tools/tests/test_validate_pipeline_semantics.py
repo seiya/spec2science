@@ -20546,6 +20546,15 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         # stray file named as the retired checks module; a problem model that exchanges nothing
         # is not refused (issue #716 F-1).
         self.assertEqual(self._run(model=self._BARE, stray_checks=self._CHECKS), [])
+        # The floor reads the model files the caller hands it, not every source of `src/`: the
+        # stray file names harness operations, which on a component would be a second finding
+        # (and the host-rendered runner, which sits there too, names them on every node).
+        v = self._run(model=self._BARE, stray_checks=self._CHECKS,
+                      node_key="component/dep_base@0.1.0")
+        self.assertEqual(v, [])
+        v = self._run(stray_checks=self._CHECKS, node_key="component/dep_base@0.1.0")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("dep_base_model.f90: a component's published operations", v[0])
         v = self._run(model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
                       stray_checks=self._CHECKS)
         self.assertEqual(len(v), 1, v)
@@ -20663,8 +20672,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         """Issue #716 F-1 (decision O7) deleted the clause that refused a `problem` whose model
         sources hold no call of the harness's halo exchange by its name: one call on any array
         satisfied it, the shape comparison refuses a missing exchange that changes a result, and a
-        correct composite of columns calls none. Every spelling it used to refuse now passes, on
-        either kind."""
+        correct composite of columns calls none. Every spelling it used to refuse now passes on a
+        `problem`; a `component` that calls no harness operation passes as before."""
         no_call = self._MODEL.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
         for call in ("", "    call exch(u, 1, 1, .true.)\n",
