@@ -631,7 +631,7 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # MPI (issue #316, R4-c): the binary runs under the launcher the package spells, with
         # the profile's rank count, and is compiled through the runtime's compiler wrapper. Its
         # presence floor (`parallel_directives`) is a whole-node judgment — no direct use of the
-        # library, a distributed residency, a problem's halo exchange through the harness (the
+        # library, no harness operation named by a component, a distributed residency (the
         # host-rendered driver partitions, issue #610) — and its prompt text states that floor to
         # the producer and scopes it for the reviewer (`prompt_fragments`), both since R4-c PR-4.
         Backend(
