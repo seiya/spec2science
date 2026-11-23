@@ -83,7 +83,7 @@ COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-38"
 RENDER_VERSION = "render-22"     # host-rendered runner + build control file (Generate)
 BUILD_VERSION = "build-5"        # build-runtime library `compile_project` + the in-process build
 EXECUTE_VERSION = "execute-22"   # `run_program` / `run_quality_checks` + the in-process execute
-VERDICT_VERSION = "verdict-20"   # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
+VERDICT_VERSION = "verdict-21"   # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
 
 #: The phases that ARE derivations, in pipeline order.
 DERIVATION_STEPS: tuple[str, ...] = ("compile", "generate", "build", "validate")
