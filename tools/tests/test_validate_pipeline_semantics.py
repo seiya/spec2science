@@ -20568,6 +20568,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         v = self._run(plan=self._DECLINED)
         self.assertEqual(len(v), 1, v)
         self.assertIn("declares state_residency 'host'", v[0])
+        # ...on the model's path, like every finding of the floor.
+        self.assertRegex(v[0], r"^\S*/src/dep_base_model\.f90: ")
 
     def test_a_component_model_names_no_harness_operation(self) -> None:
         """Issue #512: the driver and every consumer call a component's operations on a rank's
@@ -20676,10 +20678,13 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         `problem`; a `component` that calls no harness operation passes as before."""
         no_call = self._MODEL.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
-        for call in ("", "    call exch(u, 1, 1, .true.)\n",
+        for call in ("", "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n",
+                     "    call exch(u, 1, 1, .true.)\n",
                      "    ! call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n",
                      "    call dep_base__exchange_halo_r1(u, 1, 1, .true.)\n",
-                     "    call harness_fortran_cpu__exchange_halo_r1(u, 1, 1, .true.)\n"):
+                     "    call harness_fortran_cpu__exchange_halo_r1(u, 1, 1, .true.)\n",
+                     "    call harness_fortran_cpu_mpi__exchange_halo_r4(u, 1, 1, .true.)\n",
+                     "    call harness_fortran_cpu_mpi__exchange_halo_r30(u, 1, 1, .true.)\n"):
             with self.subTest(call=call):
                 self.assertEqual(self._floor(no_call.replace(
                     "  end subroutine", f"{call}  end subroutine")), [])
