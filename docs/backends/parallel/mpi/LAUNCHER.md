@@ -146,11 +146,11 @@ the site that runs it, with the site's wrapper (issue #333).
   ranks slowly; nothing refuses that, and the result does not depend on it.
 - The job directory visible at one path from every node the launcher starts a rank on.
 - Ranks on different nodes reaching each other over the runtime's transport. The launch canary
-  exchanges no data, so it passes on a site whose nodes carry a second IP interface the
-  transport cannot route (IP over InfiniBand at issue #713's M-3), and the first multi-rank run
-  over two nodes then hangs until its time bound; the remedy is a `setup` line in the site's
-  entry restricting the transport to the routable subnet (`OMPI_MCA_btl_tcp_if_include`,
-  `OMPI_MCA_oob_tcp_if_include` for Open MPI).
+  exchanges no data, so it passes on a site whose nodes carry a second IP interface the transport
+  cannot route (IP over InfiniBand at issue #713's M-3), and the first run whose ranks on
+  different nodes exchange data then hangs until its time bound; the remedy is a `setup` line in
+  the site's entry restricting the transport to the routable subnet
+  (`OMPI_MCA_btl_tcp_if_include`, `OMPI_MCA_oob_tcp_if_include` for Open MPI).
 
 **The launch canary in the `Build` job.** For a profile of more than one rank every `Build` job
 at a remote site starts with three commands, ahead of the build (`workflow_conductor.
