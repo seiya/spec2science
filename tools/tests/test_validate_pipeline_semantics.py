@@ -20673,8 +20673,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
     def test_a_problem_is_not_asked_for_a_halo_exchange_call(self) -> None:
         """Issue #716 F-1 (decision O7) deleted the clause that refused a `problem` whose model
         sources hold no call of the harness's halo exchange by its name: one call on any array
-        satisfied it, the shape comparison refuses a missing exchange that changes a result, and a
-        correct composite of columns calls none. Every spelling it used to refuse now passes on a
+        satisfied it (`tools/backends/parallel/mpi/directives.py` states what refuses a missing
+        exchange instead), and a correct composite of columns calls none. Every spelling it used to refuse now passes on a
         `problem`; a `component` that calls no harness operation passes as before."""
         no_call = self._MODEL.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")

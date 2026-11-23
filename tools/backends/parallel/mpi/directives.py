@@ -20,14 +20,15 @@ the stop uniform. What the floor asks of the leaf's MODEL sources is what stays 
   the bundle contract couples `distributed_state@2` to it).
 
 A `problem` is not asked for a halo-exchange call (issue #716 F-1, decision O7): one call on any
-array satisfied that clause, the shape comparison refuses a missing exchange that changes a
-result, and a correct composite of columns calls none.
+array satisfied that clause; a missing exchange is refused by the shape comparison where it changes
+a test's verdict or a variable a cross-target predicate compares, on a case the sweep distributes;
+and a correct composite of columns calls none.
 
 A plan that declines MPI exempts nothing: the driver distributes from the IR whatever the plan's
-`parallelization` says, so a `problem` that declines and whose missing exchange changes a result
-fails the shape comparison, and a `component` is held to the same rules either way.
-`lowering_plan_declines` stays the `parallel_directives` capability's interface, which the OpenMP and CUDA floors' callers
-reach through the validator.
+`parallelization` says, so a `problem` that declines is compared over the sweep like any other,
+and a `component` is held to the same rules either way. `lowering_plan_declines` stays the
+`parallel_directives` capability's interface, which the OpenMP and CUDA floors' callers reach
+through the validator.
 
 It is a PRESENCE floor: whether a problem's exchange precedes every stencil read, with the spec's
 periodicity, and whether each global quantity goes through a reduction is `Generate.verify` G6's
