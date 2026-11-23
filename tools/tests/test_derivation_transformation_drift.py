@@ -1017,7 +1017,30 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # against main 3a60cdbe's: the `phase_contract_document` row alone.) The digest
     # `compile-docs-38` shipped with at 3a60cdbe:
     "compile-docs-38@3a60cdbe": "7f8365c96cc429ae5dc78a91e0ebcc210d3a1a95ef4e70a4cef5f47bfd18aa03",
-    "compile-docs-38": "71fbf78f86c48463ba74ff2dda37191f087b6bcc35b25f72c81d64320e87cd54",
+    # compile-docs-38 re-pinned in place by issue #716 F-1b (operator decision D2, 2026-11-23):
+    # `phase_01_compile.md` states a coordinate's optional `rank` (the rank of a snapshot
+    # variable, by default the highest rank), `take` (grammar 8), and the lift of a coordinate
+    # beside an operand one rank above it. The edit widens what a valid IR is and changes no IR
+    # it admitted, with one exception no IR has: a coordinate or bind named `take`, now a
+    # grammar name, was admitted at a72f9f3c and is refused here. An IR without `rank` is
+    # shaped by the previous rule at every reader, by construction. Measured as well, at main a72f9f3c and at this change, over 872 YAML files
+    # (858 IRs; the other 14 are mutant, band and control tables, a config and a run list
+    # under `tools/tests/data/drive_ir/`) of both Projects (every
+    # certified pipeline's IR, `workspace/ir/**`, the SCALE Project's `ir/`, and
+    # `tools/tests/data/drive_ir/`): the 10,738 files `write_case_inputs` writes are
+    # byte-identical, and the `Compile` gate's violation lists (`drive_violations`,
+    # `validate_primary_predicate_schema` under `predicate_schema_context`) are equal; no IR
+    # carries a `rank` key or names `take`. It DEPARTS from the practice for a grammar function:
+    # grammars 4 to 7 each bumped this constant (compile-docs-8, -16, -25, -37), since a leaf
+    # reading the document may author what the previous grammar refused. The ground for not
+    # bumping: a bump buys a re-authoring that may use the new vocabulary, and no certified
+    # node's test needs a coordinate below the highest rank or `take` (238 of the 858 IRs hold
+    # snapshot variables of two or more ranks, and their coordinates take the highest rank as
+    # before), so it would re-derive every node's Compile for nothing it could use. (Measured by diffing `compile_documents_tuple()` against
+    # main a72f9f3c's: the `phase_contract_document` row alone.) The digest `compile-docs-38`
+    # shipped with at a72f9f3c:
+    "compile-docs-38@a72f9f3c": "71fbf78f86c48463ba74ff2dda37191f087b6bcc35b25f72c81d64320e87cd54",
+    "compile-docs-38": "47f3c200d4b13ae99ff83b20731d94136bab0b8d09c70004069a7021f4d772af",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -2456,7 +2479,16 @@ PINNED_EXECUTE: dict[str, str] = {
     # diffing `execute_tuple()` against main 3a60cdbe's: that row and no other.) The digest
     # `execute-22` shipped with at 3a60cdbe:
     "execute-22@3a60cdbe": "daf2e8b51c121f33adce87ab6a8d55c112c5592a36d5429962863ede9abab4ea",
-    "execute-22": "ca86ccd2ed12cd0bae952ad28b13a00fce1c02092f5e9ae78a9b86f554350da2",
+    # execute-22 re-pinned in place by issue #716 F-1b (operator decision D3, 2026-11-23):
+    # `tools/primary_evidence.py` gives a coordinate its own `rank` (`coordinate_ranks`, read by
+    # the evaluator, the static ranker, the count check and the expansion of `derived`) and adds
+    # `take` (grammar 8). Not bumped: on every IR the previous rule admitted the case files are
+    # byte-identical (the measurement at compile-docs-38's a72f9f3c entry), so no case file and
+    # no run of a certified node moves; the predicate records move only by `grammar_version`,
+    # which verdict-21 carries. (Measured by diffing `execute_tuple()` against main a72f9f3c's:
+    # that row and no other.) The digest `execute-22` shipped with at a72f9f3c:
+    "execute-22@a72f9f3c": "ca86ccd2ed12cd0bae952ad28b13a00fce1c02092f5e9ae78a9b86f554350da2",
+    "execute-22": "18f0f3fc0f977883d4523f3772fd5cb9c396afb646eaa1b419f657e2559bfc64",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2746,6 +2778,15 @@ PINNED_VERDICT: dict[str, str] = {
     # that row and no other.) The digest `verdict-20` shipped with at 3a60cdbe:
     "verdict-20@3a60cdbe": "d395c605b0f7c4b816e31853f6e8ef454aafe0920825ac0763e6faebf092dff7",
     "verdict-20": "38e69d17c1e95f973b5a95c9862e61956b045f1adf6823f5903f2d2041098004",
+    # verdict-21 (issue #716 F-1b, operator decision D3): grammar 8 — `take`, and a coordinate's
+    # own `rank` — so every predicate record carries `grammar_version: 8`. Measured at main
+    # a72f9f3c and at this change over the 715 runs with a verdict (705 certified) of both
+    # Projects — every `runs/*/*/verdict.json` under a `workspace/pipelines/*/*/*/lineage.json`,
+    # re-evaluated by `evaluate_primary_predicates(ir, run_dir, output_format=<its target's>)`
+    # with `netCDF4` importable: with `grammar_version` removed no record differs (2 runs
+    # refused with the same message at both). (`verdict_tuple()` against main a72f9f3c's: the `tools/primary_evidence.py` row and
+    # no other.)
+    "verdict-21": "1419f410d9ae0cca5e132ae3d78e1f10da94b8c97194857c57044a68b504bbb4",
 }
 
 

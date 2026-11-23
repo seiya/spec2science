@@ -86,27 +86,33 @@ Names, and where each resolves:
   is loaded only when a predicate names it; zero records / zero committed steps is admitted,
   a non-finite entry is refused, and a reduction over an empty one is an evaluation error of that
   predicate. ``derived.<name>`` — the case's `derived` value as the host evaluated it
-  (`evaluate_case_inputs`), an array taking the state's shape as a coordinate does
-  (`_state_shaped_derived`): host data, never a state read. None of the four combines with
+  (`evaluate_case_inputs`), an array of a coordinate's rank (or of the highest rank) taking
+  the captured shape of that rank as a coordinate does (`_state_shaped_derived`): host data,
+  never a state read. None of the four combines with
   `at('<case>')` or `comparand`.
 - ``smax(a)`` / ``smin(a)`` / ``ssum(a)`` reduce every axis of ``a`` but the leading one (the
   identity on rank 1); a coordinate NAMED directly as an operand of a binary operator broadcasts
-  against an operand of one more rank (a `history.*` one) on its trailing axes.
+  against an operand of one more rank on its trailing axes, whatever that operand is (meant for
+  a `history.*` one of a variable of the coordinate's rank; beside a capture one rank above it
+  the coordinate lands on the wrong axes, so a field of a rank is built from coordinates of
+  that rank).
 - ``inputs.<a>.<b>...`` — a NUMERIC value of the case's `case.test_case_set[].inputs`: a
   number, or (grammar 2) a rectangular nested list of numbers of rank 1 to 4, as a float64
   array — a declared sentinel field a capture is compared against. A string, a boolean, a
   mapping, an empty or ragged list, or a list holding a non-number is refused at name
   resolution.
-- ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array of the STATE's
-  shape carrying the axis's `count` cell-centre positions along `axis` (the same value on
-  every other axis), so a field built from it — an analytic reference — has the state's
-  shape and reduces (`norm2`, `sum`, `mean`) over the same cells. The state's rank is the
-  highest rank among the schema variables, and `axis` indexes it; a coordinate therefore
-  pairs only with a variable of that rank (issue #440: beside a stacked `[ncomp, nx, ny]`
-  state a rank-2 `[nx, ny]` capture never pairs with one). The state's shape is the
-  one shape every captured array of the state's rank has; when those disagree the
-  coordinate keeps extent 1 on the other axes, and a reduction over such a field is refused
-  until it is paired with a state array, unless the case captured an array of that very shape.
+- ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array of the
+  coordinate's rank carrying the axis's `count` cell-centre positions along `axis` (the same
+  value on every other axis), in the one shape every captured array of that rank has, so a
+  field built from it — an analytic reference — has that shape and reduces (`norm2`, `sum`,
+  `mean`) over the same cells. The coordinate's rank is its entry's `rank` (grammar 8, issue
+  #716 F-1b: the rank of a snapshot variable), by default the highest rank among the schema
+  variables (`coordinate_ranks`), and `axis` indexes it; a coordinate therefore pairs only
+  with a variable of its rank (issue #440: beside a stacked `[ncomp, nx, ny]` state a rank-2
+  `[nx, ny]` capture never pairs with a coordinate of the default rank, and does with one of
+  `rank: 2`). When the captured arrays of that rank disagree on shape the coordinate keeps
+  extent 1 on the other axes, and a reduction over such a field is refused until it is
+  paired with a state array, unless the case captured an array of that very shape.
 - ``at('<case_id>').initial.<var>`` / ``at('<case_id>').final.<var>``,
   ``at('<case_id>').inputs.<a>.<b>``, ``at('<case_id>').<coordinate name>`` — the same three
   kinds of value read in another case of the SAME predicate's `target_cases` (a cross-case
@@ -135,20 +141,20 @@ equal rank whose extents agree or are 1 on one side (a coordinate broadcasts aga
 array; a `[nx]` array never silently pairs with a `[nx, ny]` one, and a 32×32 state never
 pairs with a 64×64 one). Any of these — and an unallocated, ragged, non-numeric,
 non-finite or wrong-rank snapshot array, a `roll` shift that is not an integer, a `flip` or
-`transpose` axis outside the array's rank, a `coarsen` factor that does not divide every
-extent, a case whose capture file is absent — raises `PrimaryEvidenceError`, which `evaluate_primary_predicates`
-records on that predicate as a STRUCTURAL failure (the evidence could not be judged) and
+`transpose` or `take` axis outside the array's rank, a `take` index outside the extent, a
+`coarsen` factor that does not divide every extent, a case whose capture file is absent —
+raises `PrimaryEvidenceError`, which `evaluate_primary_predicates` records on that predicate as a STRUCTURAL failure (the evidence could not be judged) and
 `verdict_evaluator.evaluate_verdict` folds into `structural_violation`. `evaluate` also
 converts every arithmetic exception Python or numpy can raise on admitted operands into that
 error, so no evaluation escapes the per-predicate record.
 
 The Compile gate infers RANKS statically (`expr_rank`, issue #440) from the declared
-`shape_expr`s, the state's rank and each case's inputs, so an operand pair of unequal rank, a
-`roll` with the wrong shift count or a non-scalar shift, a `transpose` / `flip` / `coarsen` of
-a scalar or with a non-scalar axis or factor, a `transpose` given one axis, and an
-array-valued `expr` are refused before any run — each but the last with the message
+`shape_expr`s, each coordinate's rank and each case's inputs, so an operand pair of unequal
+rank, a `roll` with the wrong shift count or a non-scalar shift, a `transpose` / `flip` /
+`coarsen` / `take` of a scalar or with a non-scalar axis, factor or index, a `transpose` given
+one axis, and an array-valued `expr` are refused before any run — each but the last with the message
 evaluation would raise, the last naming the rank where `_scalar` names the shape; the gate prefixes the location, names the case when the
-refusal is not the same in every case, and adds the coordinate's rank to an operand-pair
+refusal is not the same in every case, and adds each named coordinate's rank to an operand-pair
 refusal of a predicate that names a coordinate. Extents are not declared numerically, so an extent
 mismatch stays an evaluation error.
 
@@ -173,7 +179,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -195,8 +201,10 @@ from tools.verdict_evaluator import (_QUANTITY_RE, _apply_op, _is_number, _resol
 #: `smin` / `ssum`, and the coordinate broadcast against a `history.*` operand. Grammar 7
 #: (issue #644 P4b) gives every sampled variable its own time axis: `history.<var>.t` /
 #: `history.<var>.step` replace `history.t` / `history.step`, and the `restart_point.*` root
-#: is added.
-GRAMMAR_VERSION = 7
+#: is added. Grammar 8 (issue #716 F-1b) adds `take`, which brings an operand of one rank to
+#: the rank below it (a tracer of a `[k, i, j, q]` state beside a `[k, i, j]` one), and gives
+#: a coordinate its own `rank` (`coordinate_ranks`).
+GRAMMAR_VERSION = 8
 
 #: `quantity` names: lowercase identifiers with dots.
 #: ONE definition, in the verdict evaluator's module.
@@ -219,13 +227,15 @@ COORDINATE_PLACEMENTS: frozenset[str] = frozenset({"cell_center"})
 #: `[ncomp, nx, ny]` state is exchanged with `transpose(a, 1, 2)`); `flip(a, k)` reverses axis
 #: `k` (an integer scalar, leading axis `0`);
 #: `coarsen(a, f)` is the mean over each block of `f` cells along every axis (`f` an integer
-#: scalar `>= 1` dividing every extent). This table is the whole function vocabulary.
+#: scalar `>= 1` dividing every extent); `take(a, k, i)` is `a` at index `i` along axis `k`
+#: (both integer scalars, 0-based, `0 <= i <` the extent), of one rank less. This table is the
+#: whole function vocabulary.
 FUNCTIONS: dict[str, tuple[int, int]] = {
     "sum": (1, 1), "mean": (1, 1), "min": (1, 8), "max": (1, 8), "abs": (1, 1),
     "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
     "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
     "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2), "coarsen": (2, 2),
-    "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1),
+    "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1), "take": (3, 3),
 }
 CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 #: Name roots an attribute chain may start from. `at` is a call, not a root.
@@ -948,8 +958,9 @@ class CaseEnv(NamedTuple):
     case with no ``initial/`` capture (``initial`` None — a harness self-test commits one
     only in the cases its `tests.md` states), is an evaluation error of the predicate that names it. ``history`` /
     ``series`` / ``derived`` (grammar 6) are a mapping or a `Lazy` of one, None when nothing
-    can answer them; ``state_rank`` is the state's rank (the coordinates' rank), None when not
-    known, and lets a reduction tell a sampled field's leading axis from a state axis;
+    can answer them; ``state_rank`` is the highest rank among the snapshot variables (a
+    coordinate's rank unless its entry names another), None when not known, and lets a
+    reduction tell a sampled field's leading axis from a state axis;
     ``captured_shapes`` are the shapes of the case's captured arrays, and let a reduction tell a
     state with an axis of extent 1 from a field the coordinates did not expand."""
     case_id: str
@@ -1021,9 +1032,38 @@ def zero_extent_variables(schema: dict[str, Any]) -> frozenset[str]:
 
 
 def state_rank(schema: dict[str, Any]) -> int:
-    """The rank a coordinate array is shaped to: the highest rank among the schema variables."""
+    """The highest rank among the schema variables: the rank a coordinate array is shaped to
+    when its entry names no `rank` (`coordinate_ranks`)."""
     dims = schema_variables(schema).values()
     return max((len(d) for d in dims), default=0)
+
+
+def coordinate_ranks(schema: dict[str, Any]) -> dict[str, int]:
+    """Coordinate name -> the rank its array is shaped to: the entry's `rank`, by default the
+    highest rank among the snapshot variables (`state_rank`). The one definition every reader
+    of a coordinate's rank calls. An explicit `rank` must be the rank of a snapshot variable:
+    the count check compares `count` with the variables of the coordinate's rank and has
+    nothing to compare against at any other rank, while the coordinate would still pair,
+    through `_lift_coordinate`, with a capture one rank above it."""
+    variables = schema_variables(schema)
+    default = max((len(d) for d in variables.values()), default=0)
+    held = sorted({len(d) for d in variables.values() if d})
+    out: dict[str, int] = {}
+    specs = schema.get("coordinates")
+    for spec in (specs if isinstance(specs, list) else []):
+        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
+            raise PrimaryEvidenceError("coordinates[] entries must be mappings with a name")
+        name = spec["name"].strip()
+        if "rank" not in spec:
+            out[name] = default
+            continue
+        rank = spec["rank"]
+        if not isinstance(rank, int) or rank not in held:
+            raise PrimaryEvidenceError(
+                f"coordinates[{name!r}].rank must be the rank of a snapshot variable "
+                f"(one of {held}); got {rank!r}")
+        out[name] = rank
+    return out
 
 
 def _lookup_input(inputs: Any, dotted: str) -> tuple[bool, Any]:
@@ -1092,18 +1132,20 @@ def _coordinate_param(spec: dict[str, Any], key: str, inputs: Any) -> float:
 
 
 def coordinate_arrays(schema: dict[str, Any], inputs: Any,
-                      state_shape: tuple[int, ...] | None = None) -> dict[str, np.ndarray]:
-    """The coordinate arrays of one case: the axis's `count` positions along `axis`, expanded
-    to ``state_shape`` when one is given (the shape shared by every captured array of the
-    state's rank, so a field built from the coordinate reduces over the state's cells), else
-    with extent 1 on the other axes."""
-    rank = state_rank(schema)
+                      shape_of: Callable[[int], tuple[int, ...] | None] | None = None,
+                      ) -> dict[str, np.ndarray]:
+    """The coordinate arrays of one case, each of its own rank (`coordinate_ranks`): the
+    axis's `count` positions along `axis`, expanded to ``shape_of(rank)`` when that is a shape
+    (the shape shared by every captured array of the coordinate's rank, so a field built from
+    the coordinate reduces over those arrays' cells), else with extent 1 on the other axes.
+    ``shape_of`` None: extent 1 on the other axes for every coordinate."""
+    ranks = coordinate_ranks(schema)
     out: dict[str, np.ndarray] = {}
     specs = schema.get("coordinates")
     for spec in (specs if isinstance(specs, list) else []):
-        if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
-            raise PrimaryEvidenceError("coordinates[] entries must be mappings with a name")
         name = spec["name"].strip()
+        rank = ranks[name]
+        state_shape = shape_of(rank) if shape_of is not None else None
         if not name.isidentifier() or name in CONSTANTS or name in FUNCTIONS \
                 or name in _ROOTS:
             raise PrimaryEvidenceError(
@@ -1112,7 +1154,7 @@ def coordinate_arrays(schema: dict[str, Any], inputs: Any,
         if not isinstance(axis, int) or isinstance(axis, bool) or not (0 <= axis < rank):
             raise PrimaryEvidenceError(
                 f"coordinates[{name!r}].axis must be an integer in [0, {rank}) "
-                f"(the state rank); got {axis!r}")
+                f"(the coordinate's rank); got {axis!r}")
         placement = spec.get("placement")
         if placement not in COORDINATE_PLACEMENTS:
             raise PrimaryEvidenceError(
@@ -1151,21 +1193,27 @@ def state_shape_of(captures: dict[str, Any], rank: int) -> tuple[int, ...] | Non
     return next(iter(shapes)) if len(shapes) == 1 else None
 
 
-def _state_shaped_derived(derived: Any, shape: tuple[int, ...] | None) -> Any:
-    """The case's `derived` values as a predicate reads them: an array of the state's rank whose
-    every extent equals the state's or is 1 takes the state's shape, as a coordinate does. They
-    are evaluated before any capture exists (`_evaluate_case`), so a field of one coordinate
-    alone arrives with extent 1 on the other axes, and a reduction over it would be refused
-    (issue #607). Any other array is left as it is, and pairs or reduces as it would; with no
-    one state shape (``shape`` None) nothing is expanded, as for the coordinates."""
-    if shape is None or derived is None:
+def _state_shaped_derived(derived: Any, shape_of: Callable[[int], tuple[int, ...] | None],
+                          ranks: frozenset[int]) -> Any:
+    """The case's `derived` values as a predicate reads them: an array whose rank is one of
+    ``ranks`` (the highest rank among the snapshot variables and each coordinate's rank) and
+    whose every extent equals ``shape_of(rank)``'s or is 1 takes that shape, as a coordinate of
+    that rank does. They are evaluated before any capture exists (`_evaluate_case`), so a field
+    of one coordinate alone arrives with extent 1 on the other axes, and a reduction over it
+    would be refused (issue #607). Any other array is left as it is, and pairs or reduces as it
+    would: at a rank no coordinate has, expanding would change the value of a reduction the
+    pin admitted (a rank-1 extent-1 array reduces as one cell). With no one shape of a rank
+    (``shape_of`` None there) nothing of that rank is expanded, as for the coordinates."""
+    if derived is None:
         return derived
+    shapes = {r: shape_of(r) for r in ranks}
 
     def expanded() -> dict[str, Any]:
         out: dict[str, Any] = {}
         for name, value in _table(derived).items():
             extents = np.shape(value)
-            if (extents != shape and len(extents) == len(shape)
+            shape = shapes.get(len(extents))
+            if (shape is not None and extents != shape
                     and all(e == s or e == 1 for e, s in zip(extents, shape))):
                 value = np.ascontiguousarray(np.broadcast_to(value, shape))
             out[name] = value
@@ -1424,15 +1472,20 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
     if shape is not None and initial is not None and state_shape_of(initial, rank) != shape:
         raise PrimaryEvidenceError(
             f"{case_id}: the initial and final captures disagree on the state shape")
+
+    def shape_of(r: int) -> tuple[int, ...] | None:
+        return state_shape_of(final, r)
+
+    ranks = frozenset({rank, *coordinate_ranks(schema).values()})
     return CaseEnv(case_id=case_id, initial=initial, final=final, inputs=inputs,
-                   coordinates=coordinate_arrays(schema, inputs, shape),
+                   coordinates=coordinate_arrays(schema, inputs, shape_of),
                    history=Lazy(
                        lambda: _load_history(captures, case_id, variables, tv, final, zero)),
                    series=Lazy(lambda: _load_series(captures, case_id)),
                    restart_point=Lazy(
                        lambda: _load_restart_points(captures, case_id, variables, tv, final,
                                                     zero)),
-                   derived=_state_shaped_derived(derived, shape), state_rank=rank,
+                   derived=_state_shaped_derived(derived, shape_of, ranks), state_rank=rank,
                    captured_shapes=frozenset(np.shape(v) for v in final.values()))
 
 
@@ -1530,8 +1583,8 @@ def _axis(name: str, arr: np.ndarray, value: Any) -> int:
 
 
 def _array_first(name: str, args: list[Any]) -> Any:
-    """`transpose`, `flip` and `coarsen`: the first argument an array, the rest integer
-    scalars; the result has the array's rank."""
+    """`transpose`, `flip`, `coarsen` and `take`: the first argument an array, the rest
+    integer scalars; the result has the array's rank, `take`'s one rank less."""
     arr = np.asarray(args[0])
     if arr.ndim == 0:
         raise PrimaryEvidenceError(f"{name}(): the first argument must be an array")
@@ -1547,6 +1600,15 @@ def _array_first(name: str, args: list[Any]) -> Any:
         return np.swapaxes(arr, i, j)
     if name == "flip":
         return np.flip(arr, axis=_axis(name, arr, args[1]))
+    if name == "take":
+        # checked here: numpy would wrap a negative index and raise a bare IndexError past the end
+        k = _axis(name, arr, args[1])
+        i = _integer_scalar(name, "the index", args[2])
+        if not 0 <= i < arr.shape[k]:
+            raise PrimaryEvidenceError(
+                f"take(): index {i} is outside [0, {arr.shape[k]}) on axis {k} of shape "
+                f"{list(arr.shape)}")
+        return np.take(arr, i, axis=k)
     f = _integer_scalar(name, "the factor", args[1])
     if f < 1:
         raise PrimaryEvidenceError(f"coarsen(): the factor {f} is below 1")
@@ -1617,7 +1679,7 @@ def _call(name: str, args: list[Any], srank: int | None = None,
                     raise PrimaryEvidenceError(f"roll(): shift {fs!r} is not an integer")
                 ints.append(int(fs))
             return np.roll(arr, tuple(ints), axis=tuple(range(arr.ndim)))
-        if name in ("transpose", "flip", "coarsen"):
+        if name in ("transpose", "flip", "coarsen", "take"):
             return _array_first(name, args)
     raise PrimaryEvidenceError(f"function {name!r} is not admitted")  # unreachable past parse
 
@@ -1704,7 +1766,13 @@ def _lift_coordinate(node: ast.AST, value: Any, other: Any, env: CaseEnv,
                      binds: dict[str, Any]) -> tuple[Any, Any]:
     """A coordinate named directly as one operand of a binary operator, against an operand
     of one more rank (a `history.*` field: samples on the leading axis), gains that leading
-    axis with extent 1, so it broadcasts over the samples on the trailing axes (grammar 6)."""
+    axis with extent 1, so it broadcasts over the samples on the trailing axes (grammar 6).
+    Decided by rank alone, so a coordinate below the highest rank beside a CAPTURE one rank
+    above it is lifted the same way and lands on the wrong axes (an extent error, or a field
+    laid along the wrong axis where the extents allow it). No check: the result is a reference
+    a correct kernel does not match, so a leaf that writes it is no closer to a verdict, and
+    neither this function nor `expr_rank` can tell a `history.*` operand from a capture of the
+    same rank in a host expression (issue #716 F-1b, L6)."""
     if _is_coordinate_node(node, env.coordinates, binds) \
             and np.ndim(other) == np.ndim(value) + 1 and np.ndim(value) >= 1:
         return np.asarray(value)[np.newaxis, ...], other
@@ -2064,7 +2132,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
 #: arguments' pairwise rank; ``roll``: the array's rank, with one scalar shift per axis;
 #: ``array_first``: the first argument's rank, which must not be 0, every other argument a
 #: scalar (an axis range, `coarsen`'s divisibility and every integer check stay evaluation
-#: errors: they need values); ``sample_reduce``: rank 1, the argument an array.
+#: errors: they need values); ``take``: as ``array_first``, one rank less (the index range is
+#: an evaluation error); ``sample_reduce``: rank 1, the argument an array.
 _RANK_RULES: dict[str, str] = {
     "sum": "reduce", "mean": "reduce", "norm2": "reduce", "maxabs": "reduce",
     "min": "reduce_or_pairwise", "max": "reduce_or_pairwise",
@@ -2073,18 +2142,17 @@ _RANK_RULES: dict[str, str] = {
     "ceil": "elementwise", "floor": "elementwise",
     "atan2": "pairwise", "roll": "roll",
     "transpose": "array_first", "flip": "array_first", "coarsen": "array_first",
-    "smax": "sample_reduce", "smin": "sample_reduce", "ssum": "sample_reduce",
+    "take": "take", "smax": "sample_reduce", "smin": "sample_reduce", "ssum": "sample_reduce",
 }
 
 
 class RankEnv(NamedTuple):
     """What `expr_rank` knows of a predicate's operands before any run: each capture's rank
-    (from its `shape_expr`; the time variable 0, as `_load_capture` reads it), the coordinate
-    names and the one rank they all have (`state_rank`), and the rank of an input in a case
+    (from its `shape_expr`; the time variable 0, as `_load_capture` reads it), each
+    coordinate's rank by name (`coordinate_ranks`), and the rank of an input in a case
     (``input_rank(case_id, dotted path)``)."""
     captures: dict[str, int]
-    coordinates: frozenset[str]
-    coordinate_rank: int
+    coordinates: Mapping[str, int]   # coordinate name -> its rank
     input_rank: Callable[[str, str], int]
     case: str | None = None   # the case `inputs.<path>` is read in; None when no ref needs one
     #: ``derived_rank(case_id, name)``: the rank of the case's evaluated `derived.<name>`
@@ -2129,7 +2197,7 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
         if node.id in binds:
             return binds[node.id]
         if node.id in env.coordinates:
-            return env.coordinate_rank
+            return env.coordinates[node.id]
         return 0   # a constant
     if isinstance(node, ast.Attribute):
         root, attrs = _attr_chain(node)
@@ -2155,7 +2223,7 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
             return env.captures[attrs[1]]
         if attrs[0] == _INPUTS_ROOT:
             return env.input_rank(case_id, ".".join(attrs[1:]))
-        return env.coordinate_rank
+        return env.coordinates[attrs[0]]
     assert isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     name = node.func.id
     ranks = [expr_rank(a, env, binds) for a in node.args]
@@ -2175,7 +2243,7 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
         return 1
     if rule == "pairwise":
         return _pair_rank(ranks[0], ranks[1], f"{name}()")
-    if rule == "array_first":
+    if rule in ("array_first", "take"):
         if ranks[0] == 0:
             raise PrimaryEvidenceError(f"{name}(): the first argument must be an array")
         if any(r != 0 for r in ranks[1:]):
@@ -2183,7 +2251,7 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
                 f"{name}(): every argument after the first must be a scalar")
         if name == "transpose" and len(ranks) == 2:
             raise PrimaryEvidenceError(_TRANSPOSE_ARITY)
-        return ranks[0]
+        return ranks[0] - 1 if rule == "take" else ranks[0]
     # roll
     if len(ranks) - 1 != ranks[0]:
         raise PrimaryEvidenceError(
@@ -2240,9 +2308,13 @@ def _predicate_rank_violation(pred: dict[str, Any], loc: str,
         return int(np.ndim((case_inputs or {})[cid][f"{_DERIVED}.{name}"]))
 
     refs = [r for _, _, tree in parsed for r in expr_names(tree)]
-    coord_rank = state_rank(schema)
-    base = RankEnv(captures=captures, coordinates=frozenset(coord_names),
-                   coordinate_rank=coord_rank, input_rank=input_rank, derived_rank=derived_rank)
+    try:
+        ranks = coordinate_ranks(schema)
+    except PrimaryEvidenceError:
+        ranks = {}   # the coordinates did not resolve: reported once, and none is a name here
+    coord_ranks = {n: ranks[n] for n in coord_names if n in ranks}
+    base = RankEnv(captures=captures, coordinates=coord_ranks, input_rank=input_rank,
+                   derived_rank=derived_rank)
     contexts: list[str | None] = [None]
     if any(r.kind in ("inputs", _DERIVED) and r.case is None for r in refs):
         try:
@@ -2254,10 +2326,10 @@ def _predicate_rank_violation(pred: dict[str, Any], loc: str,
     if not failed:
         return None
     cid, (eloc, text) = failed[0]
-    if "operands of rank" in text and any(
-            r.kind == "name" and r.name in coord_names for r in refs):
-        text += (f"; a coordinate has the state's rank {coord_rank}, the highest rank among "
-                 "the snapshot variables")
+    named = sorted({r.name for r in refs if r.kind == "name" and r.name in coord_ranks})
+    if "operands of rank" in text and named:
+        text += ("; " + ", ".join(f"coordinate {n!r} has rank {coord_ranks[n]}" for n in named)
+                 + " (its `rank`, by default the highest rank among the snapshot variables)")
     if cid is None or len(failed) == len(found) and len({f for _, f in failed}) == 1:
         return f"{eloc}: {text}"
     return f"{eloc}: in case {cid!r}: {text}"
@@ -2321,10 +2393,10 @@ def validate_primary_predicate_schema(
     of the test's cases would certify the test on its easiest case alone.
 
     A predicate whose names all resolve is then ranked (`expr_rank`, issue #440): every bind
-    in order and `expr`, refusing an operand pair of unequal rank (a coordinate has the
-    state's rank), a `roll` shift count other than the array's rank or a non-scalar shift, a
-    `transpose` / `flip` / `coarsen` of a scalar or with a non-scalar axis or factor, a
-    `transpose` given one axis, and an `expr` that is not a scalar. A name or bind violation
+    in order and `expr`, refusing an operand pair of unequal rank (a coordinate has its
+    `coordinate_ranks` rank), a `roll` shift count other than the array's rank or a non-scalar
+    shift, a `transpose` / `flip` / `coarsen` / `take` of a scalar or with a non-scalar axis,
+    factor or index, a `transpose` given one axis, and an `expr` that is not a scalar. A name or bind violation
     on the predicate suppresses its rank check, so one defect is reported once.
 
     Every parsed predicate must read this run's captured state (`predicate_reads_state`),
@@ -3698,16 +3770,18 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
         # on a case a `pass` test targets every reduction over the state would read nothing.
         raise PrimaryEvidenceError(
             f"state {empty}: an extent of 0 on a case a test other than an `xfail` one targets")
-    rank = state_rank(schema)
-    largest = {shapes[v] for v, d in model.variables.items() if len(d) == rank and rank > 0}
+    ranks = coordinate_ranks(schema)
     for spec in (schema.get("coordinates") or []):
         if not isinstance(spec, dict) or not isinstance(spec.get("axis"), int):
             continue
+        rank = ranks[spec["name"].strip()]
+        largest = {shapes[v] for v, d in model.variables.items() if len(d) == rank and rank > 0}
         n = int(_coordinate_param(spec, "count", inputs))
         if largest and all(shape[spec["axis"]] != n for shape in largest):
             raise PrimaryEvidenceError(
                 f"coordinates[{spec.get('name')!r}].count {n} is not the extent of axis "
-                f"{spec['axis']} of the state ({sorted(map(list, largest))})")
+                f"{spec['axis']} of the snapshot variables of rank {rank} "
+                f"({sorted(map(list, largest))})")
 
     # 2. initial_state — the classes of THIS case (`DriveModel.for_case`, R2-2 / R2-3)
     cm = model.for_case(cid)

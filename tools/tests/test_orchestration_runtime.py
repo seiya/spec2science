@@ -18996,7 +18996,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # entries on an `infrastructure` IR, `restart_point.*` read there, and the zero-token
         # rule of gate (s).
         # 118900->119050 in review round 3: the wrong-rank line's zero-extent exception.
-        "docs/workflow/phases/phase_01_compile.md": 119050,
+        # Raised 119050->121000 (issue #716 F-1b): a coordinate's `rank` with the two-rank
+        # idiom, grammar 8's `take`, and the lift of a coordinate beside an operand one rank
+        # above it. Measured 120835 with `wc -c` (120874 after review round 3).
+        "docs/workflow/phases/phase_01_compile.md": 121000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

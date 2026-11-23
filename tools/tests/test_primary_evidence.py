@@ -217,9 +217,10 @@ class GrammarAllowlistTest(unittest.TestCase):
             "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
             "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
             "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2),
-            "coarsen": (2, 2), "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1)})
+            "coarsen": (2, 2), "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1),
+            "take": (3, 3)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
-        self.assertEqual(pe.GRAMMAR_VERSION, 7)
+        self.assertEqual(pe.GRAMMAR_VERSION, 8)
         self.assertEqual(pe.MAX_INPUT_RANK, 4)
         for src in ("abs(1, 2)", "sum()", "roll(final.h)", "transpose(final.h, 1, 0, 1)",
                     "flip(final.h)", "flip(final.h, 0, 1)", "coarsen(final.h)",
@@ -1207,7 +1208,7 @@ class VerdictIntegrationTest(unittest.TestCase):
         for rec in records:
             self.assertNotIn("sources_read", rec)
             self.assertEqual(rec["scalar_pairing"], {})
-            self.assertEqual(rec["grammar_version"], 7)
+            self.assertEqual(rec["grammar_version"], 8)
         self.assertEqual(records[1]["cases_read"], ["a", "b"])
         self.assertEqual(evaluate_verdict(self.tests, records)["per_test"][0]["status"], "pass")
 
@@ -1501,7 +1502,8 @@ class SchemaGateTest(unittest.TestCase):
 
     _PAIR = ("(an operand must be a scalar or of equal rank; right-aligned broadcasting is not "
              "admitted)")
-    _COORD = "; a coordinate has the state's rank 3, the highest rank among the snapshot variables"
+    _COORD = ("; coordinate 'yc' has rank 3 (its `rank`, by default the highest rank among the "
+              "snapshot variables)")
     _SCALAR = "not a scalar (reduce it with sum/min/max/mean/norm2/maxabs)"
     _YC: ClassVar[list[dict]] = [{"name": "yc", "axis": 2, "count": "inputs.grid.ny",
                                   "length": "inputs.grid.L_y", "placement": "cell_center"}]
@@ -1535,7 +1537,7 @@ class SchemaGateTest(unittest.TestCase):
                     "maxabs(final.S_hv + f_rows * initial.hu))", "value": 1e-12}
         out = self._v([pred], ir=_mixed_ir([pred], coords))
         self.assertEqual(out, [(f"predicates[0].expr: operator *: operands of rank 3 and 2 "
-                                f"{self._PAIR}{self._COORD}")])
+                                f"{self._PAIR}{self._COORD.replace('yc', 'row_center')}")])
         rank2 = [e for e in MIXED_VARIABLES if e["name"] not in ("U", "S")]
         self.assertEqual(self._v([pred], ir=_mixed_ir([pred], coords, rank2)), [])
 
@@ -1724,7 +1726,7 @@ class StaticRankTest(unittest.TestCase):
                          coordinates={"x": h * 0 + 0.25}, history=history, series=series,
                          derived=derived, state_rank=2, restart_point=restart_point)
         ranks = {"h": 2, "v": 1, "s": 0, "t": 0, "step": 0}
-        renv = pe.RankEnv(captures=ranks, coordinates=frozenset({"x"}), coordinate_rank=2,
+        renv = pe.RankEnv(captures=ranks, coordinates={"x": 2},
                           input_rank=lambda cid, p: int(np.ndim(
                               pe.resolve_input_value(env.inputs, p))), case="a",
                           derived_rank=lambda cid, n: int(np.ndim(derived[n])))
@@ -1734,7 +1736,7 @@ class StaticRankTest(unittest.TestCase):
         self.assertEqual(set(pe._RANK_RULES), set(pe.FUNCTIONS))
         self.assertEqual(set(pe._RANK_RULES.values()),
                          {"reduce", "reduce_or_pairwise", "elementwise", "pairwise", "roll",
-                          "array_first", "sample_reduce"})
+                          "array_first", "take", "sample_reduce"})
 
     ROWS = (
         "sum(final.h)", "mean(final.h)", "min(final.h)", "max(final.h)", "abs(final.h)",
@@ -1761,6 +1763,10 @@ class StaticRankTest(unittest.TestCase):
         "history.v.t", "history.s.step", "smax(history.v.t)", "restart_point.h",
         "restart_point.s", "restart_point.t", "restart_point.step", "smax(restart_point.h)",
         "x * restart_point.h",
+        # grammar 8
+        "take(final.h, 1, 0)", "take(final.v, 0, 2)", "final.v * take(final.h, 1, 0)",
+        "take(history.h, 0, 1)", "roll(take(history.h, 0, 0), 1, 0)",
+        "sum(final.v * take(final.h, 1, inputs.k))",
     )
 
     def test_static_rank_is_the_evaluated_rank(self) -> None:
@@ -1803,7 +1809,10 @@ class StaticRankTest(unittest.TestCase):
                      "smax(final.s)", "smax(1.0)", "history.h - final.v", "history.h + final.h",
                      "derived.w * final.h", "sqrt(x) * history.h",
                      # grammar 7
-                     "restart_point.h + final.h", "history.v.t + final.h"):
+                     "restart_point.h + final.h", "history.v.t + final.h",
+                     # grammar 8
+                     "take(final.s, 0, 0)", "take(final.h, final.v, 0)",
+                     "take(final.h, 0, final.v)", "take(final.h, 0, 0) + final.h"):
             with self.subTest(expr=expr):
                 tree = pe.parse_expr(expr)
                 with self.assertRaises(pe.PrimaryEvidenceError) as runtime:
@@ -2098,19 +2107,24 @@ class CompileContractCouplingTest(unittest.TestCase):
         self.assertIn(spelled, names)
 
     def test_the_state_rank_rule_is_stated(self):
-        """Issue #440: the schema block's `coordinates:` line defines the state's shape the
-        coordinate takes (`state_rank`: the highest rank), and the V3 gate list names the
-        static rank check (`expr_rank`); each read on its own line."""
+        """Issue #440, issue #716 F-1b: the schema block's `coordinates:` line defines the
+        rank a coordinate takes (its `rank`, by default `state_rank`: the highest rank), and
+        the V3 gate list names the static rank check (`expr_rank`); each read on its own
+        line."""
         lines = self._DOC.read_text(encoding="utf-8").splitlines()
         coord = [ln for ln in lines if ln.lstrip().startswith("coordinates:")]
         self.assertEqual(len(coord), 1, coord)
-        self.assertIn("the shape the highest-rank snapshot variables share", coord[0])
-        self.assertIn("it pairs only with variables of that rank, never with a lower-rank "
-                      "capture beside them", coord[0])
+        self.assertIn("its `rank` key, an integer that must be the rank of a snapshot variable, "
+                      "and by default the highest rank among the snapshot variables", coord[0])
+        self.assertIn("so it pairs only with variables of its rank", coord[0])
+        self.assertIn("build a field of a rank from coordinates of that rank — in a predicate, "
+                      "in `initial_state` and in `derived` alike — and bring an operand of the "
+                      "higher rank down with `take` where two ranks meet", coord[0])
         import re
         # the worked axis example is `state_rank`'s indexing: the named token sits at that axis
         dims, token, axis = re.search(
-            r"beside `\[([^\]]+)\]` the `(\w+)` axis is (\d)", coord[0]).groups()
+            r"beside `\[([^\]]+)\]` the `(\w+)` axis of a coordinate of the default rank is "
+            r"(\d)", coord[0]).groups()
         tokens = [d.strip() for d in dims.split(",")]
         self.assertGreater(len(tokens), 2, "the worked example is a stacked (mixed-rank) state")
         self.assertEqual(tokens.index(token), int(axis))
@@ -2125,7 +2139,8 @@ class CompileContractCouplingTest(unittest.TestCase):
                       "`inputs.<path>`, so `count` is every case's extent and `c` is i + 1/2)",
                       coord[0])
         self.assertIn("write the comparison over the stacked variables", coord[0])
-        self.assertIn("`count` must equal the captured extent on that axis", coord[0])
+        self.assertIn("`count` must equal the captured extent on that axis of an array of the "
+                      "coordinate's rank", coord[0])
         self.assertNotIn("separate variables", coord[0])   # round 1: unfollowable for a stacked output
         poly, on, off1, off2 = re.search(
             r"on three components `(\(c - [^`]+)` is 1 on component (\d), 0 on components "
@@ -2134,7 +2149,7 @@ class CompileContractCouplingTest(unittest.TestCase):
         schema = {"variables": [{"name": "U", "shape_expr": "[ncomp, nx]"}], "coordinates": [
             {"name": "c", "axis": 0, "count": "inputs.ncomp", "length": "inputs.ncomp",
              "placement": "cell_center"}]}
-        c = pe.coordinate_arrays(schema, {"ncomp": 3}, (3, 2))["c"]
+        c = pe.coordinate_arrays(schema, {"ncomp": 3}, lambda r: (3, 2))["c"]
         env = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={}, coordinates={"c": c})
         mask = pe.evaluate(pe.parse_expr(poly), env)
         self.assertEqual(mask[:, 0].tolist(), [1.0 if i == int(on) else 0.0 for i in range(3)])
@@ -2142,9 +2157,38 @@ class CompileContractCouplingTest(unittest.TestCase):
                   .group(1).split(",")]
         self.assertEqual(len(shifts), len(tokens))   # one shift per axis of the stacked state
         self.assertEqual((shifts[0], set(shifts[1:])), ("±1", {"0"}))
+        # issue #716 F-1b: the tracer mask a leaf transcribes into `initial_state` is the one the
+        # document states, evaluated over the host's cell-centre positions: 1 on tracer q only
+        mask = re.search(r"`(max\(0, 1 - abs\(iq - \(q \+ 0\.5\)\)\))` is 1 on tracer q and 0 "
+                         r"elsewhere", coord[0]).group(1)
+        iq = pe.coordinate_arrays(
+            {"variables": [{"name": "Q", "shape_expr": "[nx, nq]"}], "coordinates": [
+                {"name": "iq", "axis": 1, "count": "inputs.nq", "length": "inputs.nq",
+                 "placement": "cell_center"}]}, {"nq": 3}, lambda r: (2, 3))["iq"]
+        ienv = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={},
+                          coordinates={"iq": iq})
+        for q in range(3):
+            got = pe.evaluate(pe.parse_expr(mask.replace("q + 0.5", f"{q} + 0.5")), ienv)
+            self.assertEqual(got[0].tolist(), [1.0 if k == q else 0.0 for k in range(3)])
+        # `take`'s line: on history.<var> axis 0 is the sample axis, so a rank-4 variable's
+        # tracer axis is 4, and a negative index is refused
+        take_line = next(ln for ln in lines if "take(a, k, i)" in ln)
+        at = lines.index(take_line)
+        take_text = " ".join(ln.lstrip("# ").strip() for ln in lines[at:at + 5])
+        self.assertIn("on history.<var> axis 0 is the sample axis, so the tracer axis of a "
+                      "rank-4 variable is 4", take_text)
+        self.assertIn("a negative index or one at or past the extent is an evaluation error",
+                      take_text)
+        hq = np.zeros((2, 3, 4, 5, 6))
+        henv = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={}, coordinates={},
+                          history={"q": hq})
+        self.assertEqual(np.shape(pe.evaluate(pe.parse_expr("take(history.q, 4, 1)"), henv)),
+                         (2, 3, 4, 5))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "index -1 is outside"):
+            pe.evaluate(pe.parse_expr("take(history.q, 4, -1)"), henv)
         gate = [ln for ln in lines if ln.startswith("- **`io_contract.tests` and `io_contract.predicates`")]
         self.assertEqual(len(gate), 1)
-        self.assertIn("every operand pair is at equal rank (a coordinate at the state's rank) "
+        self.assertIn("every operand pair is at equal rank (a coordinate at its rank) "
                       "and `expr` is a scalar, inferred statically", gate[0])
         self.assertIn("(vi) Each `coordinates[]` entry's `count` names the extent", gate[0])
         self.assertIn("whatever key holds it", gate[0])
@@ -6920,6 +6964,322 @@ class InfrastructureSeriesTest(unittest.TestCase):
         v = pe.drive_violations(ir, kind="infrastructure")
         self.assertEqual(len(v), 1, v)
         self.assertIn("an infrastructure node carries no drive block", v[0])
+
+
+# ------------------------------------------------------- a coordinate's rank (issue #716 F-1b)
+
+#: The extents of `_pl`'s one case: every one different, so an extent mismatch is never hidden
+#: by two equal extents, and `nz != nxe`, so a coordinate laid on the wrong axis is refused.
+PL_EXT: dict[str, int] = {"nz": 3, "nxe": 6, "nye": 5, "nx": 4, "ny": 2, "nq": 2}
+
+
+def _pl_coord(name: str, axis: int, count: str, rank: int | None = None) -> dict:
+    out = {"name": name, "axis": axis, "count": f"inputs.grid.{count}",
+           "length": f"inputs.grid.{count}", "placement": "cell_center"}
+    if rank is not None:
+        out["rank"] = rank
+    return out
+
+
+def _pl() -> dict:
+    """A one-call component of `PL`'s shape (issue #716 P-2): rank-3 fields on two grids
+    (`a` on the extended one, `o` on the interior one) beside a rank-4 tracer array `q`, nine
+    coordinates as the closed-form `PL` `0.2.0` IR declares them (five of `rank: 3`, four of
+    the default rank 4), `q` written per tracer through the mask over `iq`, and a reference of
+    the interior grid as a `derived` field over the rank-3 coordinates."""
+    dims3, dims4, inner = ["nz", "nxe", "nye"], ["nz", "nxe", "nye", "nq"], ["nz", "nx", "ny"]
+    op = ([_arg(n, "in", "integer") for n in PL_EXT]
+          + [_arg("a", "inout", "real", 3, dims3), _arg("q", "in", "real", 4, dims4),
+             _arg("o", "out", "real", 3, inner), _arg("ok", "out", "logical")])
+    common = {"test_id": "t_pl", "target_cases": ["c"], "per_case": True}
+    schema = {"variables": [{"name": "a", "shape_expr": "[nz, nxe, nye]"},
+                            {"name": "q", "shape_expr": "[nz, nxe, nye, nq]"},
+                            {"name": "o", "shape_expr": "[nz, nx, ny]"},
+                            {"name": "ok", "shape_expr": "scalar"}],
+              "time_variable": "t", "time_shape_expr": "scalar",
+              "coordinates": [_pl_coord("zc", 0, "nz", 3), _pl_coord("xe", 1, "nxe", 3),
+                              _pl_coord("ye", 2, "nye", 3), _pl_coord("xi", 1, "nx", 3),
+                              _pl_coord("yi", 2, "ny", 3), _pl_coord("zq", 0, "nz"),
+                              _pl_coord("xq", 1, "nxe"), _pl_coord("yq", 2, "nye"),
+                              _pl_coord("iq", 3, "nq")]}
+    return {
+        "meta": {"spec_id": "pl", "spec_kind": "component"},
+        "public_api": _api({"pl__op": op}),
+        "drive": {"step": {"operation": "pl__op", "result": "ok",
+                           "arguments": {**{n: f"inputs.grid.{n}" for n in PL_EXT},
+                                         "a": "state.a", "q": "state.q", "o": "state.o",
+                                         "ok": "state.ok"}},
+                  "distribute": {"axes": []}},
+        "case": {"test_case_set": [{
+            "case_id": "c", "inputs": {"grid": dict(PL_EXT)},
+            "initial_state": {
+                "a": "1 + zc + 2 * xe + 3 * ye",
+                "q": "max(0, 1 - abs(iq - 0.5)) * (zq + xq) "
+                     "+ max(0, 1 - abs(iq - 1.5)) * (10 + yq)",
+                "o": -999.0},
+            "derived": {"ref": "zc + xi * yi"}}]},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": [
+                {"artifact": "state_snapshots", "required": True, "schema": schema}]},
+            "tests": [{"test_id": "t_pl", "expected_outcome": "pass", "target_cases": ["c"],
+                       "quantities": ["ok", "o_ref", "mass"]}],
+            "predicates": [
+                {**common, "quantity": "ok", "expr": "final.ok", "op": "eq", "value": 1},
+                {**common, "quantity": "o_ref", "expr": "maxabs(final.o - derived.ref)",
+                 "op": "le", "value": 1e-12},
+                {**common, "quantity": "mass", "expr": "sum(final.a * take(final.q, 3, 0))",
+                 "op": "ge", "value": 0}]}}
+
+
+def _pl_coords(ir: dict) -> list[dict]:
+    return pe.snapshot_schema(ir)["coordinates"]
+
+
+def _pl_positions(n: str) -> np.ndarray:
+    return np.arange(PL_EXT[n], dtype=np.float64) + 0.5
+
+
+class CoordinateRankTest(unittest.TestCase):
+    """Issue #716 F-1b: a coordinate's `rank`, and `take`, on a state of `PL`'s shape."""
+
+    # ---- a state of two ranks evaluates
+
+    def test_a_state_of_two_ranks_evaluates(self) -> None:
+        out = pe.evaluate_case_inputs(_pl())["c"]
+        z, xe, ye = _pl_positions("nz"), _pl_positions("nxe"), _pl_positions("nye")
+        a = 1 + z[:, None, None] + 2 * xe[None, :, None] + 3 * ye[None, None, :]
+        self.assertTrue(np.array_equal(np.asarray(out["a"]), a))
+        q = np.asarray(out["q"])
+        self.assertEqual(q.shape, tuple(PL_EXT[n] for n in ("nz", "nxe", "nye", "nq")))
+        self.assertTrue(np.array_equal(
+            q[..., 0], np.broadcast_to(z[:, None, None] + xe[None, :, None], a.shape)))
+        self.assertTrue(np.array_equal(
+            q[..., 1], np.broadcast_to(10 + ye[None, None, :], a.shape)))
+        ref = np.asarray(out["derived.ref"])
+        self.assertEqual(ref.shape, (PL_EXT["nz"], PL_EXT["nx"], PL_EXT["ny"]))
+        self.assertEqual(_all_gates(_pl()), [])
+
+    # ---- the pin's two refusals, read on the same IR without `rank`
+
+    def test_without_rank_the_pin_refuses_it(self) -> None:
+        ir = _pl()
+        for c in _pl_coords(ir):
+            c.pop("rank", None)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"coordinates\['xi'\]\.count 4 is not the extent of axis 1"):
+            pe.evaluate_case_inputs(ir)
+        schema = pe.snapshot_schema(ir)
+        schema["coordinates"] = [c for c in schema["coordinates"] if c["name"] not in ("xi", "yi")]
+        del ir["case"]["test_case_set"][0]["derived"]
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"initial_state\.a: a value of shape \[3, 6, 5, 1\] does not "
+                                    r"fill the shape \[3, 6, 5\]"):
+            pe.evaluate_case_inputs(ir)
+
+    # ---- the count check is per rank
+
+    def test_the_count_check_reads_the_coordinates_rank(self) -> None:
+        for name, count, rank in (("xi", "nye", 3), ("xq", "nx", 4)):
+            with self.subTest(name=name):
+                ir = _pl()
+                [c] = [c for c in _pl_coords(ir) if c["name"] == name]
+                c["count"] = c["length"] = f"inputs.grid.{count}"
+                with self.assertRaisesRegex(
+                        pe.PrimaryEvidenceError,
+                        rf"coordinates\['{name}'\]\.count {PL_EXT[count]} is not the extent of "
+                        rf"axis 1 of the snapshot variables of rank {rank}"):
+                    pe.evaluate_case_inputs(ir)
+
+    # ---- `rank` is the rank of a snapshot variable; `axis` indexes it
+
+    def test_rank_is_the_rank_of_a_snapshot_variable(self) -> None:
+        for bad in (True, "3", 3.0, 2, 0, 5):
+            with self.subTest(rank=bad):
+                schema = pe.snapshot_schema(_pl())
+                schema["coordinates"][0]["rank"] = bad
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            r"coordinates\['zc'\]\.rank must be the rank of a "
+                                            r"snapshot variable \(one of \[3, 4\]\)"):
+                    pe.coordinate_ranks(schema)
+        self.assertEqual(pe.coordinate_ranks(pe.snapshot_schema(_pl())),
+                         {"zc": 3, "xe": 3, "ye": 3, "xi": 3, "yi": 3,
+                          "zq": 4, "xq": 4, "yq": 4, "iq": 4})
+        schema = pe.snapshot_schema(_pl())
+        schema["coordinates"][0]["axis"] = 3
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"coordinates\['zc'\]\.axis must be an integer in \[0, 3\) "
+                                    r"\(the coordinate's rank\)"):
+            pe.coordinate_arrays(schema, {"grid": dict(PL_EXT)})
+        # the gate reports it once, against every case
+        ir = _pl()
+        _pl_coords(ir)[0]["rank"] = 2
+        self.assertTrue(any("rank must be the rank of a snapshot variable" in v
+                            for v in _all_gates(ir)))
+
+    # ---- static ranks, and the lift beside an operand one rank above
+
+    def _renv(self) -> pe.RankEnv:
+        return pe.RankEnv(captures={"a": 3, "q": 4, "o": 3, "ok": 0, "t": 0, "step": 0},
+                          coordinates=pe.coordinate_ranks(pe.snapshot_schema(_pl())),
+                          input_rank=lambda cid, p: 0)
+
+    def test_static_ranks_read_each_coordinates_rank(self) -> None:
+        ok = _pl()
+        ok["io_contract"]["predicates"][1]["expr"] = "maxabs(final.o - (zc + xi * yi))"
+        self.assertEqual(_all_gates(ok), [])
+        bad = _pl()
+        bad["io_contract"]["predicates"][1]["expr"] = "maxabs(final.o - zq)"
+        self.assertIn("operator -: operands of rank 3 and 4 (an operand must be a scalar or of "
+                      "equal rank; right-aligned broadcasting is not admitted); coordinate 'zq' "
+                      "has rank 4 (its `rank`, by default the highest rank among the snapshot "
+                      "variables)", "\n".join(_all_gates(bad)))
+        # the message names each coordinate's OWN rank, a rank-3 one included
+        low = _pl()
+        low["io_contract"]["predicates"][1]["expr"] = (
+            "maxabs(take(take(final.q, 3, 0), 0, 0) - zc)")
+        self.assertIn("operands of rank 2 and 3 (an operand must be a scalar or of equal rank; "
+                      "right-aligned broadcasting is not admitted); coordinate 'zc' has rank 3 ",
+                      "\n".join(_all_gates(low)))
+        renv = self._renv()
+        self.assertEqual(pe.expr_rank(pe.parse_expr("at('c').xi"), renv, {}), 3)
+        self.assertEqual(pe.expr_rank(pe.parse_expr("at('c').xq"), renv, {}), 4)
+
+    def test_the_lift_beside_an_operand_one_rank_above_is_by_rank_alone(self) -> None:
+        """L6, pinned as what it is: a rank-3 coordinate named beside `history.a` gains the
+        sample axis; beside `final.q` it gains a leading axis too, which is not a sample axis,
+        and the extents refuse it here (`nz != nxe`)."""
+        renv = self._renv()
+        self.assertEqual(pe.expr_rank(pe.parse_expr("zc * history.a"), renv, {}), 4)
+        self.assertEqual(pe.expr_rank(pe.parse_expr("final.q * zc"), renv, {}), 4)
+        z = _pl_positions("nz")[:, None, None]
+        a = np.ones((PL_EXT["nz"], PL_EXT["nxe"], PL_EXT["nye"]))
+        q = np.ones((*a.shape, PL_EXT["nq"]))
+        env = pe.CaseEnv(case_id="c", initial=None, final={"a": a, "q": q},
+                         inputs={}, coordinates={"zc": z}, history={"a": np.stack([a, 2 * a])},
+                         state_rank=4)
+        v = pe.evaluate(pe.parse_expr("zc * history.a"), env)
+        self.assertEqual(v.shape, (2, *a.shape))
+        self.assertTrue(np.array_equal(v[1, :, 0, 0], 2 * z[:, 0, 0]))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"operator \*: operands of shape \[3, 6, 5, 2\] and "
+                                    r"\[1, 3, 1, 1\] do not pair"):
+            pe.evaluate(pe.parse_expr("final.q * zc"), env)
+        ir = _pl()
+        ir["case"]["test_case_set"][0]["initial_state"]["q"] = "zc * max(0, 1 - abs(iq - 0.5))"
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"initial_state\.q: a value of shape"):
+            pe.evaluate_case_inputs(ir)
+
+    # ---- the expansion at predicate time
+
+    def _env(self, final: dict, *, coordinates: list[dict] | None = None,
+             variables: list[dict] | None = None, derived: dict | None = None) -> pe.CaseEnv:
+        schema = pe.snapshot_schema(_pl())
+        if coordinates is not None:
+            schema["coordinates"] = coordinates
+        if variables is not None:
+            schema["variables"] = variables
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        cap = {k: np.asarray(v).tolist() for k, v in final.items()}
+        run.write("c", initial={**cap, "t": 0.0, "step": 0}, final={**cap, "t": 0.1, "step": 1})
+        env = pe.load_case_env(run.root, {"case_id": "c", "inputs": {"grid": dict(PL_EXT)}},
+                               schema, derived, output_format="json")
+        if env.derived is not None:
+            env = env._replace(derived=pe._table(env.derived))
+        return env
+
+    def test_a_coordinate_takes_the_one_captured_shape_of_its_rank(self) -> None:
+        a = np.ones((PL_EXT["nz"], PL_EXT["nxe"], PL_EXT["nye"]))
+        q = np.ones((*a.shape, PL_EXT["nq"]))
+        o = np.ones((PL_EXT["nz"], PL_EXT["nx"], PL_EXT["ny"]))
+        coords = [_pl_coord("zc", 0, "nz", 3), _pl_coord("zq", 0, "nz")]
+        one = self._env({"a": a, "q": q}, coordinates=coords)
+        self.assertEqual(one.coordinates["zc"].shape, a.shape)
+        self.assertEqual(one.coordinates["zq"].shape, q.shape)
+        self.assertGreater(pe.evaluate(pe.parse_expr("norm2(sin(zc))"), one), 0)
+        two = self._env({"a": a, "q": q, "o": o}, coordinates=coords)
+        self.assertEqual(two.coordinates["zc"].shape, (PL_EXT["nz"], 1, 1))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "with an extent-1 axis"):
+            pe.evaluate(pe.parse_expr("norm2(sin(zc))"), two)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"coordinates\['xi'\]: count 4 on axis 1 does not match the "
+                                    r"captured state shape \[3, 6, 5\]"):
+            self._env({"a": a, "q": q}, coordinates=[*coords, _pl_coord("xi", 1, "nx", 3)])
+
+    def test_a_derived_field_is_expanded_at_a_coordinates_rank_only(self) -> None:
+        a = np.ones((PL_EXT["nz"], PL_EXT["nxe"], PL_EXT["nye"]))
+        q = np.ones((*a.shape, PL_EXT["nq"]))
+        o = np.ones((PL_EXT["nz"], PL_EXT["nx"], PL_EXT["ny"]))
+        f = _pl_positions("nz")[:, None, None]
+        g = f[..., None]   # rank 4, the highest rank
+        coords = [_pl_coord("zc", 0, "nz", 3)]
+        one = self._env({"a": a, "q": q}, coordinates=coords, derived={"f": f, "g": g})
+        self.assertEqual(np.shape(one.derived["f"]), a.shape)
+        self.assertEqual(np.shape(one.derived["g"]), q.shape)
+        # rank 3 has two captured shapes, rank 4 one: each rank is decided on its own
+        two = self._env({"a": a, "q": q, "o": o}, coordinates=coords, derived={"f": f, "g": g})
+        self.assertEqual(np.shape(two.derived["f"]), f.shape)
+        self.assertEqual(np.shape(two.derived["g"]), q.shape)
+        # review 1 H1: with no `rank` key, an array below the highest rank is left as it is,
+        # so a rank-1 extent-1 array sums to its value beside a rank-1 capture of extent 4
+        bare = self._env({"h": np.ones((4, 5)), "w": np.ones(4)}, coordinates=[],
+                         variables=[{"name": "h", "shape_expr": "[nx, ny]"},
+                                    {"name": "w", "shape_expr": "[nx]"}],
+                         derived={"d": np.array([3.0])})
+        self.assertEqual(np.shape(bare.derived["d"]), (1,))
+        self.assertEqual(pe.evaluate(pe.parse_expr("sum(derived.d)"), bare), 3.0)
+
+    # ---- take
+
+    def test_take(self) -> None:
+        with self.assertRaises(pe.PrimaryEvidenceError):
+            pe.parse_expr("take(final.q, 3)")
+        q = np.arange(3 * 4 * 2, dtype=np.float64).reshape(3, 4, 2)
+        env = pe.CaseEnv(case_id="c", initial=None, final={"q": q, "v": q[:, 0, 0]},
+                         inputs={}, coordinates={})
+        self.assertTrue(np.array_equal(pe.evaluate(pe.parse_expr("take(final.q, 2, 1)"), env),
+                                       q[:, :, 1]))
+        self.assertTrue(np.array_equal(pe.evaluate(pe.parse_expr("take(final.q, 0, 2)"), env),
+                                       q[2]))
+        self.assertEqual(pe.evaluate(pe.parse_expr("take(final.v, 0, 1)"), env), q[1, 0, 0])
+        for expr, message in (
+                ("take(2.0, 0, 0)", "take(): the first argument must be an array"),
+                ("take(final.q, final.v, 0)", "take(): every argument after the first must be a scalar"),
+                ("take(final.q, 0, final.v)", "take(): every argument after the first must be a scalar"),
+                ("take(final.q, 0.5, 0)", "take(): the axis 0.5 is not an integer"),
+                ("take(final.q, 0, 0.5)", "take(): the index 0.5 is not an integer"),
+                ("take(final.q, 3, 0)", "take(): axis 3 is outside [0, 3) for an array of rank 3"),
+                ("take(final.q, 2, -1)", "take(): index -1 is outside [0, 2) on axis 2 of shape [3, 4, 2]"),
+                ("take(final.q, 2, 2)", "take(): index 2 is outside [0, 2) on axis 2 of shape [3, 4, 2]")):
+            with self.subTest(expr=expr):
+                with self.assertRaises(pe.PrimaryEvidenceError) as cm:
+                    pe.evaluate(pe.parse_expr(expr), env)
+                self.assertEqual(str(cm.exception), message)
+
+    def test_take_meets_two_ranks(self) -> None:
+        renv = self._renv()
+        a = np.ones((PL_EXT["nz"], PL_EXT["nxe"], PL_EXT["nye"]))
+        q = np.stack([2 * a, 3 * a], axis=-1)
+        hq = np.stack([q, q])
+        env = pe.CaseEnv(case_id="c", initial=None, final={"a": a, "q": q}, inputs={},
+                         coordinates={"zq": np.ones((PL_EXT["nz"], 1, 1, 1))},
+                         history={"a": np.stack([a, a]), "q": hq}, state_rank=4,
+                         captured_shapes=frozenset({a.shape, q.shape}))
+        self.assertEqual(pe.evaluate(pe.parse_expr("sum(final.a * take(final.q, 3, 1))"), env),
+                         3 * a.size)
+        rolled = pe.evaluate(pe.parse_expr("roll(take(history.q, 4, 0), 1, 0, 0, 0)"), env)
+        self.assertEqual(rolled.shape, (2, *a.shape))
+        self.assertEqual(pe.expr_rank(pe.parse_expr("roll(take(history.q, 4, 0), 1, 0, 0, 0)"),
+                                      renv, {}), 4)
+        # a slice is a field, not a named coordinate: it is never lifted
+        for refuse in (lambda t: pe.evaluate(t, env), lambda t: pe.expr_rank(t, renv, {})):
+            with self.assertRaisesRegex(pe.PrimaryEvidenceError, "operands of rank 3 and 4"):
+                refuse(pe.parse_expr("take(zq, 3, 0) * history.a"))
+        # L2, pinned as the limit it is: one sample of a slice one rank below the state
+        one = env._replace(history={"q": hq[:1]})
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"maxabs\(\): reduction over a field of shape \[1, 3, 6, 5\]"):
+            pe.evaluate(pe.parse_expr("maxabs(take(history.q, 4, 0))"), one)
 
 
 if __name__ == "__main__":
