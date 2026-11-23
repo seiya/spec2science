@@ -7040,7 +7040,8 @@ def _pl_positions(n: str) -> np.ndarray:
 
 
 class CoordinateRankTest(unittest.TestCase):
-    """Issue #716 F-1b: a coordinate's `rank`, and `take`. Rows numbered as the plan's §8."""
+    """Issue #716 F-1b: a coordinate's `rank`, and `take`. Rows numbered as the F-1b plan's
+    §8 (posted on issue #716)."""
 
     # ---- row 1: a state of two ranks evaluates
 

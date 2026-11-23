@@ -1021,8 +1021,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `phase_01_compile.md` states a coordinate's optional `rank` (the rank of a snapshot
     # variable, by default the highest rank), `take` (grammar 8), and the lift of a coordinate
     # beside an operand one rank above it. The edit widens what a valid IR is and changes no IR
-    # it admitted: an IR without `rank` is shaped by the previous rule at every reader, by
-    # construction. Measured as well, at main a72f9f3c and at this change, over 872 YAML files
+    # it admitted, with one exception no IR has: a coordinate or bind named `take`, now a
+    # grammar name, was admitted at a72f9f3c and is refused here. An IR without `rank` is
+    # shaped by the previous rule at every reader, by construction. Measured as well, at main a72f9f3c and at this change, over 872 YAML files
     # (858 IRs; the other 14 are mutant, band and control tables, a config and a run list
     # under `tools/tests/data/drive_ir/`) of both Projects (every
     # certified pipeline's IR, `workspace/ir/**`, the SCALE Project's `ir/`, and
@@ -1030,11 +1031,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # byte-identical, and the `Compile` gate's violation lists (`drive_violations`,
     # `validate_primary_predicate_schema` under `predicate_schema_context`) are equal; no IR
     # carries a `rank` key or names `take`. It DEPARTS from the practice for a grammar function:
-    # grammars 4 to 7 each bumped this constant (compile-docs-8, -16, -26, -37), since a leaf
+    # grammars 4 to 7 each bumped this constant (compile-docs-8, -16, -25, -37), since a leaf
     # reading the document may author what the previous grammar refused. The ground for not
-    # bumping: a bump buys a re-authoring that may use the new vocabulary, and no certified node
-    # holds arrays of two ranks or a test that needs `take`, so it would re-derive every node's
-    # Compile for nothing it could use. (Measured by diffing `compile_documents_tuple()` against
+    # bumping: a bump buys a re-authoring that may use the new vocabulary, and no certified
+    # node's test needs a coordinate below the highest rank or `take` (238 of the 858 IRs hold
+    # snapshot variables of two or more ranks, and their coordinates take the highest rank as
+    # before), so it would re-derive every node's Compile for nothing it could use. (Measured by diffing `compile_documents_tuple()` against
     # main a72f9f3c's: the `phase_contract_document` row alone.) The digest `compile-docs-38`
     # shipped with at a72f9f3c:
     "compile-docs-38@a72f9f3c": "71fbf78f86c48463ba74ff2dda37191f087b6bcc35b25f72c81d64320e87cd54",
@@ -2778,9 +2780,11 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-20": "38e69d17c1e95f973b5a95c9862e61956b045f1adf6823f5903f2d2041098004",
     # verdict-21 (issue #716 F-1b, operator decision D3): grammar 8 — `take`, and a coordinate's
     # own `rank` — so every predicate record carries `grammar_version: 8`. Measured at main
-    # a72f9f3c and at this change over the 715 certified runs of both Projects: with
-    # `grammar_version` removed no record differs (2 runs refused with the same message at
-    # both). (`verdict_tuple()` against main a72f9f3c's: the `tools/primary_evidence.py` row and
+    # a72f9f3c and at this change over the 715 runs with a verdict (705 certified) of both
+    # Projects — every `runs/*/*/verdict.json` under a `workspace/pipelines/*/*/*/lineage.json`,
+    # re-evaluated by `evaluate_primary_predicates(ir, run_dir, output_format=<its target's>)`
+    # with `netCDF4` importable: with `grammar_version` removed no record differs (2 runs
+    # refused with the same message at both). (`verdict_tuple()` against main a72f9f3c's: the `tools/primary_evidence.py` row and
     # no other.)
     "verdict-21": "1419f410d9ae0cca5e132ae3d78e1f10da94b8c97194857c57044a68b504bbb4",
 }
