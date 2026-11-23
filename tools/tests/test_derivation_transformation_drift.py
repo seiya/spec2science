@@ -2486,7 +2486,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # which verdict-21 carries. (Measured by diffing `execute_tuple()` against main a72f9f3c's:
     # that row and no other.) The digest `execute-22` shipped with at a72f9f3c:
     "execute-22@a72f9f3c": "ca86ccd2ed12cd0bae952ad28b13a00fce1c02092f5e9ae78a9b86f554350da2",
-    "execute-22": "b5bafc6509417b6ec612db67bd57d28694e4ecd872447f03d8c64c82d522377e",
+    "execute-22": "18f0f3fc0f977883d4523f3772fd5cb9c396afb646eaa1b419f657e2559bfc64",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2782,7 +2782,7 @@ PINNED_VERDICT: dict[str, str] = {
     # `grammar_version` removed no record differs (2 runs refused with the same message at
     # both). (`verdict_tuple()` against main a72f9f3c's: the `tools/primary_evidence.py` row and
     # no other.)
-    "verdict-21": "2016721695ff82ecdf842051ce05b03b959b6689c0c63ceff94a3f1f358ee8a4",
+    "verdict-21": "1419f410d9ae0cca5e132ae3d78e1f10da94b8c97194857c57044a68b504bbb4",
 }
 
 

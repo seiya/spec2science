@@ -1207,8 +1207,6 @@ def _state_shaped_derived(derived: Any, shape_of: Callable[[int], tuple[int, ...
     if derived is None:
         return derived
     shapes = {r: shape_of(r) for r in ranks}
-    if all(shape is None for shape in shapes.values()):
-        return derived
 
     def expanded() -> dict[str, Any]:
         out: dict[str, Any] = {}
