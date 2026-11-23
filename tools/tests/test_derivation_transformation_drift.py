@@ -1023,7 +1023,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # beside an operand one rank above it. The edit widens what a valid IR is and changes no IR
     # it admitted: an IR without `rank` is shaped by the previous rule at every reader, by
     # construction. Measured as well, at main a72f9f3c and at this change, over 872 YAML files
-    # (871 IRs and one run list under `drive_ir/part3_acceptance/`) of both Projects (every
+    # (858 IRs; the other 14 are mutant, band and control tables, a config and a run list
+    # under `tools/tests/data/drive_ir/`) of both Projects (every
     # certified pipeline's IR, `workspace/ir/**`, the SCALE Project's `ir/`, and
     # `tools/tests/data/drive_ir/`): the 10,738 files `write_case_inputs` writes are
     # byte-identical, and the `Compile` gate's violation lists (`drive_violations`,
