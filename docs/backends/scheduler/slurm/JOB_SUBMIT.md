@@ -252,6 +252,7 @@ must serve launcher targets of different shapes.
   memory.
 - **No task layout of its own.** The batch script runs once, on the first node of the
   allocation, and the executor asks for no task count: a launcher inside the script starts its
-  ranks over the allocation the operator's directives give (§2). Verified on one node; a run over
-  several nodes is not measured (`docs/backends/parallel/mpi/LAUNCHER.md` §4). A `Build` job
-  (issue #333) runs in the same allocation: the build system's own parallelism runs inside it.
+  ranks over the allocation the operator's directives give (§2). Verified on one node through
+  the workflow, and over two nodes outside it (`docs/backends/parallel/mpi/LAUNCHER.md` §4).
+  A `Build` job (issue #333) runs in the same allocation: the build system's own parallelism
+  runs inside it.

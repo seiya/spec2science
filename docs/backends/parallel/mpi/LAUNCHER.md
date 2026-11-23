@@ -145,6 +145,12 @@ the site that runs it, with the site's wrapper (issue #333).
   CPUs and `-n 4` on one, both exit 0, measured 2026-11-21) passes the canary and runs the
   ranks slowly; nothing refuses that, and the result does not depend on it.
 - The job directory visible at one path from every node the launcher starts a rank on.
+- Ranks on different nodes reaching each other over the runtime's transport. The launch canary
+  exchanges no data, so it passes on a site whose nodes carry a second IP interface the transport
+  cannot route (IP over InfiniBand at issue #713's M-3), and the first run whose ranks on
+  different nodes exchange data then hangs until its time bound; the remedy is a `setup` line in
+  the site's entry restricting the transport to the routable subnet
+  (`OMPI_MCA_btl_tcp_if_include`, `OMPI_MCA_oob_tcp_if_include` for Open MPI).
 
 **The launch canary in the `Build` job.** For a profile of more than one rank every `Build` job
 at a remote site starts with three commands, ahead of the build (`workflow_conductor.
@@ -171,13 +177,21 @@ this host's `mpif90 -show`, as its `compiler_version` is this host's: at a remot
 not name the installation the binary links against, and a change of the site's installation
 moves no key.
 
-**Verified on one node.** Open MPI 4.1.2 at a `none` site reached over ssh, and under Slurm
-20.02.5 with no task plugin, on one node. Over several nodes the launcher places the ranks over
-the allocation, and nothing more is built; what is not measured is whether the two variables
-the host sets in the launcher's environment — `SPEC2SCIENCE_PROCESS_GRID` and the thread
-variables — reach a rank on another node. Every rank's `__init` reads the grid from its own
-environment, and only rank 0's grid and team size reach `perf.json`, so `launch_match` and
-`thread_match` hold on rank 0's word.
+**Verified.** Open MPI 4.1.2 at a `none` site reached over ssh, and under Slurm 20.02.5 with no
+task plugin, on one node, through the workflow (issue #700, R-N and R-B). Over two nodes, outside
+the workflow (issue #713, Open MPI 4.1.6 at a two-node `slurm` site): a print program started
+under the launch shape of each of the eight execution shapes of `fortran_cpu_mpi_openmp` read, on
+every rank (the six shapes of three and four ranks spanning both nodes),
+`SPEC2SCIENCE_PROCESS_GRID` and the thread variables as the host set them, with the team size and
+the rank count of the shape (M-1); and a certified launcher model, built at the site from the
+workflow's sources, ran as four ranks of two threads over the two nodes, byte-identical to one
+process (M-3), run from the job directory the site's submit path made, with ranks on both nodes.
+Only rank 0's grid and team size reach `perf.json`, so `launch_match` and `thread_match` hold on
+rank 0's word; M-1 read the others once, at that site, and the workflow still reads rank 0 alone.
+M-3 first hung: the nodes carried a second IP interface (IP over InfiniBand) the TCP transport
+could not reach, and a `setup` line restricting the transport to the routable subnet
+(`OMPI_MCA_btl_tcp_if_include`, `OMPI_MCA_oob_tcp_if_include`) let it run. That is the site's
+environment, which no key holds; a print program exchanges no data and does not meet it.
 
 ## 5. Out of scope
 
