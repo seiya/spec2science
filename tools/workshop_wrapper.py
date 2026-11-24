@@ -43,7 +43,7 @@ from typing import Any
 
 import yaml
 
-from tools import workshop_tree
+from tools import capture_store, workshop_tree
 from tools.workshop_tree import AssemblyFailure, LineagePaths
 
 #: The operations of a bundle (`generate.generate`) lineage, in the order the leaf is told them.
@@ -596,6 +596,15 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
                                findings=f"{current.relative_to(ctx.paths.tree)} must be a "
                                         f"directory of the tree (the run writes its captures "
                                         f"there)")
+    # Every run starts from an EMPTY capture directory, as `Validate.execute`'s fresh run
+    # directory does (issue #722). A harness may open a capture with "fail if it exists" (the
+    # SCALE Project's launcher harness does), so a capture an earlier `run` left stopped every
+    # later run before the model was reached, and the leaf's own test loop went blind. The whole
+    # capture directory is emptied, not each of `run_raw_dirs`: a format may put a file directly
+    # in it (the json store's final records).
+    if ctx.run_raw_dirs:
+        _fresh_dir(ctx.paths.tree.joinpath(*capture_store.SNAPSHOT_DIR_PARTS))
+    for raw_dir in ctx.run_raw_dirs:
         ctx.paths.tree.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
     _write_case_files(ctx)
     # A named `cases_file` selects case ids. What a case holds is the host's: the program reads
