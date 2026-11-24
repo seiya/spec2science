@@ -812,6 +812,42 @@ class WrapperCallCompositionTests(_LineageCase):
             with self.subTest(raw_dir=raw_dir):
                 self.assertTrue(self.paths.tree.joinpath(*raw_dir).is_dir())
 
+    def test_a_second_run_starts_from_an_empty_capture_directory(self) -> None:
+        """Issue #722: a harness that opens each capture with "fail if it exists" stopped every
+        `run` after the first one, on the file the first one left. Each run here writes a file
+        directly in the capture directory (where the json store puts a final record) and one in
+        a group directory, and stops, as that harness does, when either exists already."""
+        from unittest import mock
+
+        snaps = self.paths.tree / "raw" / "state_snapshots"
+        names = ("c1.json", "history/c1.json")
+        inner = self.recorder()
+        stops: list[str] = []
+
+        def run_program(args):
+            for name in names:
+                if (snaps / name).exists():
+                    stops.append(name)
+                    return {"ok": False, "returncode": 2, "stdout": "",
+                            "stderr": "ERROR STOP capture open failure\n"}
+            for name in names:
+                (snaps / name).write_text(f"run {len(self.calls)}\n", encoding="utf-8")
+            return inner(args)
+
+        self.make_binary()
+        ctx = self.run_context(run_raw_dirs=self._CAPTURE_DIRS, max_wrapper_calls=50)
+        with mock.patch("tools.build_runtime.tool_run_program", run_program):
+            for _ in range(2):
+                self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
+        self.assertEqual(stops, [])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(sorted(p.relative_to(snaps).as_posix()
+                                for p in snaps.rglob("*") if p.is_file()), sorted(names))
+        for name in names:
+            self.assertEqual((snaps / name).read_text(encoding="utf-8"), "run 1\n")
+        for raw_dir in self._CAPTURE_DIRS:
+            self.assertTrue(self.paths.tree.joinpath(*raw_dir).is_dir())
+
     def test_a_link_at_any_capture_directory_is_refused_and_starts_nothing(self) -> None:
         """Every part of every directory: a link where one goes is refused, not followed. The
         link's target must stay empty, which is what following it would have changed."""
