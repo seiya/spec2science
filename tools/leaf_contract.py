@@ -38,8 +38,9 @@ from typing import Any, NamedTuple
 # (issue #724 PR-2): the `validate.judge` template left the tuple with the substep. `leaf-109`
 # (issue #724 PR-3): `Generate.generate` is seeded `controlled_spec.md`, and `Generate.verify`
 # is spec-relative. `leaf-110` (issue #724, after PR-3): the openmp reviewer paragraph names a
-# pinned or switched-off region as a finding again.
-LEAF_PROMPT_CONTRACT_VERSION = "leaf-110"
+# pinned or switched-off region as a finding again. `leaf-111` (issue #724, after R-V): that
+# region is one switched off on EVERY tested case, in the reviewer and the producer paragraph.
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-111"
 
 # The keyed half of the contract (issue #574): what one phase's READING leaf reads, which is what
 # "valid" means for that phase. Each is a member of its phase's transformation tuple
@@ -59,7 +60,10 @@ COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-7"
 # `generate-verify-16` (issue #724, after PR-3): the openmp reviewer paragraph again makes a
 # region pinned to one thread or switched off on the tested cases a finding, which PR-3 had
 # dropped; such a region passes the thread comparison with a race in it.
-GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-16"
+# `generate-verify-17` (issue #724, after R-V): that region is one switched off on EVERY tested
+# case. An `if(...)` clause true on one tested case runs at each run's width there and is not a
+# finding; R-V's replay rejected a correct source on exactly that reading of the 16 text.
+GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-17"
 # `VALIDATE_JUDGE_CONTRACT_VERSION` (last `validate-judge-11`) went with the `Validate.judge`
 # substep in issue #724 PR-2: `Validate` has no reading leaf, and its tuple is the two
 # deterministic versions alone (`tools/derivation.py`).

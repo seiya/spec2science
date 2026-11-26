@@ -96,10 +96,13 @@ reduction into the state, or a loop whose result depends on the team size fails 
 for a region that runs at more than one thread in some run: `OMP_THREAD_LIMIT` caps a
 `num_threads(k)` clause at each run's width, but a region pinned to one thread
 (`num_threads(1)`, `omp_set_num_threads(1)`) or switched off by an `if(...)` clause false on
-the cases the tests run is serial in every run, and nothing deterministic observes the width a
+every case the tests run is serial in every run, and nothing deterministic observes the width a
 region ran at — the producer is told not to, and the model `Generate.verify` reviewer's paragraph
 for this backend makes it a finding although it makes no returned value wrong (issue #724,
-`generate-verify-16`).
+`generate-verify-16`). An `if(...)` clause true on at least one tested case is not that region:
+the region runs at each run's width on that case, and every run is compared on every case
+(`generate-verify-17`; R-V of issue #724 saw the reviewer reject a correct source whose clause
+was false on the small grids and true on the large ones).
 
 ## 5. The thread count a run records
 
