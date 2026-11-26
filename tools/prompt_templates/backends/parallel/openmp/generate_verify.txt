@@ -4,4 +4,4 @@
 # `tools/backends/parallel/openmp/prompts.py`; lines before the first header are comments.
 
 @@ review_target_scope
-On this target the driver hands every call the whole case on one process, and the model's own loops may run on several threads; the host runs the binary at several thread counts and compares each run with a one-thread run. What makes a returned value wrong here is a data race: a variable written by more than one thread of a region without the reduction, private copy or ordering the result needs, or one thread's write read by another with no synchronization between them.
+On this backend the model's own loops may run on several threads; the host runs the binary at several thread counts and compares each run with a one-thread run. What makes a returned value wrong here is a data race: a variable written by more than one thread of a region without the reduction, private copy or ordering the result needs, or one thread's write read by another with no synchronization between them.

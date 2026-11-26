@@ -443,6 +443,14 @@ class PromptCompositionTests(unittest.TestCase):
                     self.assertEqual(composed.count(text), 1)
                     self.assertEqual(partitions[template_file] in composed,
                                      "mpi" in backend.split("+"))
+        # The base sentence is the ONE statement of the whole-case default: an `openmp`
+        # paragraph that restated it would be false on `mpi+openmp`, composed beside the `mpi`
+        # one (decision O4; round 1 found the `openmp` reviewer paragraph saying it).
+        for stem in ("generate_generate", "generate_verify"):
+            for name, body in registry.capability_module(
+                    "parallel", "openmp", "prompt_fragments").fragments(stem).items():
+                with self.subTest(stem=stem, section=name):
+                    self.assertNotIn("whole case", body)
 
     def test_a_one_member_value_composes_as_before(self) -> None:
         for template_file in ("workshop_generate_generate.txt", "workshop_generate_verify.txt"):
