@@ -2404,7 +2404,8 @@ class CrossTargetGrammarTest(unittest.TestCase):
         self.assertFalse(pe.is_cross_target_predicate(HMIN))
         in_bind = {**HMIN, "bind": {"R": "sum(comparand.final.h)"}, "expr": "min(final.h) + R"}
         self.assertTrue(pe.is_cross_target_predicate(in_bind))
-        # a bind the expression never reaches is still evaluated, so it still needs a comparand
+        # a bind the expression never reaches is not evaluated (issue #725), and the
+        # classification stays syntactic: it is still a cross-target predicate
         unreached = {**HMIN, "bind": {"R": "sum(comparand.final.h)"}}
         self.assertTrue(pe.is_cross_target_predicate(unreached))
         self.assertFalse(pe.is_cross_target_predicate({**HMIN, "expr": "comparand.nope"}))
@@ -2493,6 +2494,16 @@ class CrossTargetEvaluationTest(unittest.TestCase):
         [cross] = self._eval([{**CROSS, "bind": {"z": bad}}], ["gpu", "mpi"])
         self.assertEqual(cross["kind"], "pass", cross)
         self.assertEqual(len(cross["evaluated"]), 4)
+        # the two narrowed callers' paths (review round 3): the cross-target agreement asks
+        # with `cross_target_only`, the oracle and the shape agreement with `only_cases`
+        for kw in ({"cross_target_only": True}, {"only_cases": {"a"}},
+                   {"cross_target_only": True, "only_cases": {"a"}}):
+            with self.subTest(**{k: str(v) for k, v in kw.items()}):
+                [cross] = pe.evaluate_primary_predicates(
+                    _ir([{**CROSS, "bind": {"z": bad}}]), self.runs["own"].root,
+                    comparands=[_comparand(self.runs["gpu"], "gpu")], output_format="json", **kw)
+                self.assertEqual(cross["kind"], "pass", cross)
+                self.assertTrue(cross["evaluated"])
         [cross] = self._eval([{**CROSS, "bind": {"z": bad},
                                "expr": CROSS["expr"] + " + z"}], ["gpu"])
         self.assertEqual(cross["kind"], "structural")
