@@ -950,6 +950,50 @@ class EvaluationTest(unittest.TestCase):
         self._structural(self._one("B", bind={"B": "A * 2", "A": "sum(final.h)"}),
                          "'A' is not a bind")
 
+    def test_a_bind_expr_does_not_reach_is_not_evaluated(self) -> None:
+        """Issue #725: a bind `expr` does not reach (directly or through a reached bind) enters
+        no value, so its evaluation error no longer fails the predicate; a reached one still
+        does, whether `expr` names it or a reached bind does."""
+        bad = {"neg": "(0 - sum(final.h)) ** 0.5",   # non-finite: a negative base
+               "gone": "sum(final.zeta)"}            # a variable the capture does not hold
+        for name, text in bad.items():
+            with self.subTest(bind=name):
+                [rec] = self._eval([self._one("A", bind={"A": "final.s", "Z": text})])
+                self.assertTrue(rec["satisfied"], rec)
+                self.assertEqual(rec["kind"], "pass")
+                self.assertEqual(rec["evaluated"][0]["value"], 1.0)
+                self._structural(self._one("A + Z", bind={"A": "final.s", "Z": text}),
+                                 "non-finite" if name == "neg" else "final.zeta")
+                self._structural(self._one("B", bind={"Z": text, "B": "Z + final.s"}),
+                                 "non-finite" if name == "neg" else "final.zeta")
+
+    def test_reached_binds_keep_their_order(self) -> None:
+        # the filter keeps the mapping's order: a reached bind that reads a later one is
+        # refused as before, and an unreached bind between them changes nothing
+        self._structural(self._one("B", bind={"B": "A * 2", "C": "final.zeta",
+                                              "A": "sum(final.h)"}), "'A' is not a bind")
+        [rec] = self._eval([self._one("B", bind={"A": "sum(final.h)", "C": "final.zeta",
+                                                 "B": "A * 2"})])
+        self.assertAlmostEqual(rec["evaluated"][0]["value"], 2 * float(self.h.sum()))
+
+    def test_a_bind_named_only_in_a_constant_by_form_term_is_still_evaluated(self) -> None:
+        # The reach is taken over the UNPRUNED expression: `Z * 0` still names Z when it is
+        # evaluated, so Z is bound (without it the term raises "not a bind"), and its own
+        # evaluation error still fails the predicate.
+        [rec] = self._eval([self._one("final.s + Z * 0", bind={"Z": "sum(final.h)"})])
+        self.assertTrue(rec["satisfied"], rec)
+        self.assertEqual(rec["evaluated"][0]["value"], 1.0)
+        self._structural(self._one("final.s + Z * 0", bind={"Z": "final.zeta"}), "final.zeta")
+
+    def test_evaluate_binds_with_reached(self) -> None:
+        env = pe.CaseEnv(case_id="c", initial={}, final={"u": np.array([1.0, 2.0])},
+                         inputs={}, coordinates={})
+        bind = {"A": "sum(final.u)", "Z": "sum(final.nope)", "B": "A * 2"}
+        self.assertEqual(pe.evaluate_binds(bind, env, {}, reached={"A", "B"}),
+                         {"A": 3.0, "B": 6.0})
+        with self.assertRaises(pe.PrimaryEvidenceError):
+            pe.evaluate_binds(bind, env, {})   # None evaluates every entry, as before
+
     def test_capture_file_defects_are_structural(self) -> None:
         # Grammar 2 (Z6 PR-3): a capture carries the variables its writer holds for the case
         # — a harness self-test's own runner commits an `initial` record in the cases its
@@ -1559,7 +1603,7 @@ class SchemaGateTest(unittest.TestCase):
         out = self._v([{**HMIN, "bind": {"d": "final.h - initial.h"}, "expr": "d"}])
         self.assertEqual(out, [(f"predicates[0].expr: evaluates to an array of rank 2, "
                                 f"{self._SCALAR}")])
-        # an unused bind is still ranked: every bind is evaluated at run time
+        # an unused bind is still ranked by the gate, though the evaluator skips it (issue #725)
         out = self._v([{**HMIN, "bind": {"bad": "final.h + inputs.initial.a1"},
                         "expr": "min(final.h)"}], ir=self._with_inputs())
         self.assertEqual(out, [(f"predicates[0].bind.bad: operator +: operands of rank 2 "
@@ -2360,7 +2404,8 @@ class CrossTargetGrammarTest(unittest.TestCase):
         self.assertFalse(pe.is_cross_target_predicate(HMIN))
         in_bind = {**HMIN, "bind": {"R": "sum(comparand.final.h)"}, "expr": "min(final.h) + R"}
         self.assertTrue(pe.is_cross_target_predicate(in_bind))
-        # a bind the expression never reaches is still evaluated, so it still needs a comparand
+        # a bind the expression never reaches is not evaluated (issue #725), and the
+        # classification stays syntactic: it is still a cross-target predicate
         unreached = {**HMIN, "bind": {"R": "sum(comparand.final.h)"}}
         self.assertTrue(pe.is_cross_target_predicate(unreached))
         self.assertFalse(pe.is_cross_target_predicate({**HMIN, "expr": "comparand.nope"}))
@@ -2441,6 +2486,29 @@ class CrossTargetEvaluationTest(unittest.TestCase):
         for order in (["gpu", "mpi"], ["mpi", "gpu"]):
             with self.subTest(order=order):
                 self.assertEqual(self._eval([CROSS], order)[0]["kind"], "structural")
+
+    def test_a_bind_expr_does_not_reach_is_not_evaluated_against_a_comparand(self) -> None:
+        # Issue #725 on the cross-target pass (review round 1): the comparand passes skip an
+        # unreached bind too, and a reached one that fails is still structural.
+        bad = "(0 - sum(comparand.final.h)) ** 0.5"
+        [cross] = self._eval([{**CROSS, "bind": {"z": bad}}], ["gpu", "mpi"])
+        self.assertEqual(cross["kind"], "pass", cross)
+        self.assertEqual(len(cross["evaluated"]), 4)
+        # the two narrowed callers' paths (review round 3): the cross-target agreement asks
+        # with `cross_target_only`, the oracle and the shape agreement with `only_cases`
+        for kw in ({"cross_target_only": True}, {"only_cases": {"a"}},
+                   {"cross_target_only": True, "only_cases": {"a"}}):
+            with self.subTest(**{k: str(v) for k, v in kw.items()}):
+                [cross] = pe.evaluate_primary_predicates(
+                    _ir([{**CROSS, "bind": {"z": bad}}]), self.runs["own"].root,
+                    comparands=[_comparand(self.runs["gpu"], "gpu")], output_format="json", **kw)
+                self.assertEqual(cross["kind"], "pass", cross)
+                self.assertTrue(cross["evaluated"])
+        [cross] = self._eval([{**CROSS, "bind": {"z": bad},
+                               "expr": CROSS["expr"] + " + z"}], ["gpu"])
+        self.assertEqual(cross["kind"], "structural")
+        self.assertEqual(cross["evaluated"][0]["comparand"], "gpu")
+        self.assertIn("non-finite", cross["evaluated"][0]["error"])
 
     def test_absent_comparand_variable_names_the_comparand(self) -> None:
         self.runs["gpu"].write("a", initial={"h": self.h["a"].tolist(), "s": 1.0, "t": 0.0},
