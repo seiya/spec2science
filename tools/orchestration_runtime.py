@@ -14574,12 +14574,6 @@ def main(argv: list[str] | None = None) -> int:
     # own token, which for an HTTP pure leaf is not a CLI backend at all.
     launch_check_parser.add_argument("--backend", default="claude",
                                      choices=sorted(SUPPORTED_PROVIDER_TOKENS))
-    launch_check_parser.add_argument(
-        "--launch-request-json",
-        default=None,
-        type=_json_arg,
-        help="Optional launch request object for downstream artifact checks (pre_phase_launch).",
-    )
 
     reserve_root_parser = subparsers.add_parser(
         "reserve-phase-root",

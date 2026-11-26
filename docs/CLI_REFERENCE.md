@@ -304,7 +304,6 @@ The pre-phase gate. Checks execution-platform availability and dependency readin
 | `--node-key` | yes | |
 | `--step` | yes | `compile` / `generate` / `build` / `validate` (core 5-phase) |
 | `--backend` | no | default `claude` |
-| `--launch-request-json` | no | the launch request payload for the downstream artifact check |
 
 Return value: `{"status": "pass"|"fail_closed", "next_action": "...", ...}`.
 
