@@ -1236,7 +1236,7 @@ PINNED: dict[str, str] = {
     "leaf-109": "8bf2d1bdfbf5aa1a60f9cc8220181a676bb4536b3a1c860b8027129af2f29951",
     # leaf-110 (issue #724, after PR-3): the openmp reviewer paragraph names a region pinned to
     # one thread or switched off on the tested cases as a finding again.
-    "leaf-110": "86a06b0409432105f312990af1c00bfd250981a1fc07a38d8fefed252ed42812",
+    "leaf-110": "4522a5e204bf9a35244b0cd33b1b8d6333ee5ef262d645ad56dae1b01e6a4385",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1342,7 +1342,7 @@ PINNED_READER: dict[str, str] = {
     "generate-verify-15": "4754824298000c0e21543ebb62e30e1816cfe36c25c1b5a4c7cdd549d10bfa55",
     # generate-verify-16 (issue #724, after PR-3): the same openmp sentence, which PR-3 had
     # dropped (it disclosed the omission on PR #733).
-    "generate-verify-16": "a4a5540e59e83d3c0107219ca998781e6bc1993191b0f56880cf129b6938487b",
+    "generate-verify-16": "b26d7f82a80e14f19128e9e82664d05c95064b8f355e01fd5d17ce1a13ce5335",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",

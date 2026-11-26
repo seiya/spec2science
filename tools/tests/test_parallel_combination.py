@@ -468,7 +468,7 @@ class PromptCompositionTests(unittest.TestCase):
                     for construct in ("`num_threads(1)`", "`omp_set_num_threads(1)`",
                                       "an `if(...)` clause false on those cases"):
                         self.assertIn(construct, composed)
-                self.assertIn("and one that the paragraph for this target's parallel backend "
+                self.assertIn("and one that a paragraph for this target's parallel backend "
                               "names)", composed)
 
     def test_a_one_member_value_composes_as_before(self) -> None:
