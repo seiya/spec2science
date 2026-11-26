@@ -1189,9 +1189,9 @@ class PureRenderTests(unittest.TestCase):
                           f"{module}")
 
     def test_runbook_reopen_trigger_path_resolves_in_the_artifact_it_names(self) -> None:
-        """The `ir_inconsistency` arm of §3-1's dev-verify entry sends the operator to run
-        `reopen-phase` BY HAND, and `--trigger-agent-run-id` is the one parameter that is not
-        obvious. The path it names is DRIVEN against the artifact of this failure.
+        """§3-1's dev-verify entry sends the operator to re-derive `Compile` BY HAND when a
+        `major` names the IR (the `ir_inconsistency` literal that once keyed it went with issue
+        #724 PR-3), and `--trigger-agent-run-id` is the one parameter that is not obvious. The path it names is DRIVEN against the artifact of this failure.
 
         Round 3 wrote `failure_analysis.json#original_finding.failed_substep_agent_run_id` here
         and pinned it by asserting that string occurs in `orchestration_runtime.py` — which it

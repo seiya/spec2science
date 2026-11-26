@@ -7811,7 +7811,7 @@ def _validate_profile_selection(
     is not read there at all. The phase_01 schema block says no case of such a node declares one
     (issue #358: the harness `tests.md` files no longer give the name a meaning of their own),
     and a stray key is still not refused: a leaf that authors one gains nothing toward its
-    verdict (V9 asks no route of a provenance input, the harness reviewer's H3 grades its absence
+    verdict (V9 asks no route of a provenance input, the harness reviewer's H2 grades its absence
     as no finding, and the spec-relative ``Generate.verify`` finds a missing input only where it
     makes a returned value wrong), so
     a second reader of the schema's "absent" buys no certification. A sidecar
