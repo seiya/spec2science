@@ -4,7 +4,7 @@ Status: landed (`tools/workflow_conductor.py`) — deterministic loop, failure
 routing + reopen, LLM diagnostician escalation. The conductor drives orchestration
 for the `claude` / `codex` backends. M1 (a live `claude -p` MCP/hooks cost-measuring
 integration run) remains the open verification gap: the leaf path is exercised by
-mocked unit tests, not yet by a live run.
+mocked unit tests, not yet by a live run. The `Validate.judge` LLM substep this document describes was deleted, with the `pre_judge` substep, by [issue #724](https://github.com/seiya/spec2science/issues/724); `Validate` is the two deterministic substeps `execute` and `post_judge` (`docs/workflow/phases/phase_04_validate.md`).
 
 ## Why
 

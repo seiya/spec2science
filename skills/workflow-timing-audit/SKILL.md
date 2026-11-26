@@ -192,8 +192,8 @@ script's figures feed, and states the sizing rule they support.
    any leaf flagged `[dead wall dropped]` or `[warm resume]` — its raw numbers are not
    comparable to the others'.
 4. In the inside-leaf section, identify the **dominant turn(s)**. A `generate.generate`
-   leaf is typically dominated by one large "write the whole source" turn; `verify` /
-   `judge` leaves spread time across many `thinking`-heavy turns.
+   leaf is typically dominated by one large "write the whole source" turn; `verify`
+   leaves spread time across many `thinking`-heavy turns.
 
 ### Step 3 — report
 State, per node: total min, LLM share, the slowest leaf, and its dominant turn

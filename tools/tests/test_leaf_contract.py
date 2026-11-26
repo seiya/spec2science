@@ -5,8 +5,8 @@ Every LLM leaf is a `workshop leaf` since issue #534 PR-J4-b, and the pure leaf'
 `Conductor.leaf_command`) went with it. What stays here: the workshop flag set and its preflight
 option census, the result-envelope parser (fed a null `result`, an absent `usage`, `is_error`,
 non-JSON and empty stdout, so a present `null` is never read as an absent key — `_MISSING`), the
-verdict and semantic-review validators (each joint-invariant violation, and an uppercase `"PASS"`
-to prove an enum is exact, not case-folded), the repair texts, the record predicates old pure
+verdict validator (each joint-invariant violation, and an uppercase `"PASS"` to prove an enum is
+exact, not case-folded), the repair text, the record predicates old pure
 records are still read through, and the codex resume argv's preflight certification.
 """
 
@@ -372,51 +372,6 @@ class VerifyRepairTextTest(unittest.TestCase):
         self.assertEqual(text, f"r\n1. {long}\n2. {long}")
 
 
-class JudgeRepairTextTest(unittest.TestCase):
-    """`judge_repair_text` is the whole of what a repair learns from a judge `fail` (issue
-    #455): `_read_repair_findings` folds the host-written `semantic_review.json` with it, and
-    the fold rides on the revocation the diagnostician's directive causes."""
-
-    @staticmethod
-    def _finding(attribution: str, confidence: str, description: str, *refs: str) -> dict:
-        return {"attribution": attribution, "confidence": confidence,
-                "description": description, "evidence_refs": list(refs)}
-
-    def test_every_finding_in_order_with_its_classification_and_evidence(self):
-        review = {"decision": "fail", "findings": [
-            self._finding("ir", "high", "  halo width absent from the IR \n",
-                          "workspace/ir/spec.ir.yaml#case", "workspace/run/verdict.json"),
-            self._finding("code", "low", "second", "workspace/run/perf.json")]}
-        self.assertEqual(
-            pl.judge_repair_text(review),
-            "[ir/high] halo width absent from the IR (evidence: workspace/ir/spec.ir.yaml#case, "
-            "workspace/run/verdict.json)\n"
-            "[code/low] second (evidence: workspace/run/perf.json)")
-
-    def test_nothing_is_clipped(self):
-        long = "x" * 5000
-        text = pl.judge_repair_text({"decision": "fail", "findings": [
-            self._finding("spec", "medium", long, "a")]})
-        self.assertEqual(text, f"[spec/medium] {long} (evidence: a)")
-
-    def test_anything_but_a_fail_review_with_a_finding_is_null(self):
-        # The input is a file read back from disk: a malformed one gives no findings, never a
-        # raise inside the conduct loop.
-        one = [self._finding("ir", "high", "d", "a")]
-        for review in (None, [], "fail", {"decision": "pass", "findings": one},
-                       {"decision": "fail"}, {"decision": "fail", "findings": "x"},
-                       {"decision": "fail", "findings": []},
-                       {"decision": "fail", "findings": [1, "x", None]}):
-            with self.subTest(review=review):
-                self.assertIsNone(pl.judge_repair_text(review))
-
-    def test_a_non_object_finding_is_skipped_not_fatal(self):
-        self.assertEqual(
-            pl.judge_repair_text({"decision": "fail", "findings": [
-                "junk", self._finding("evidence", "high", "d", "a")]}),
-            "[evidence/high] d (evidence: a)")
-
-
 class VerdictVocabParityTest(unittest.TestCase):
     """Guard the verdict enums against drift from the conductor's severity router — the two
     must agree or the model could author a severity the router mishandles (or vice versa)."""
@@ -438,249 +393,6 @@ class VerdictVocabParityTest(unittest.TestCase):
                 self.assertNotEqual(
                     decision.action, "advance",
                     f"severity {sev!r} must route to a repair, not advance")
-
-
-def _review(**overrides) -> dict:
-    """A well-formed semantic review with `overrides` applied; `DROP` omits a key."""
-    base = {"decision": "pass", "findings": []}
-    base.update(overrides)
-    return {k: v for k, v in base.items() if v is not DROP}
-
-
-def _finding(**overrides) -> dict:
-    base = {
-        "attribution": "code",
-        "evidence_refs": ["verdict_document#per_test[0].basis.predicates[0]"],
-        "confidence": "high",
-        "description": "the reported max CFL is not the one the raw evidence supports",
-    }
-    base.update(overrides)
-    return {k: v for k, v in base.items() if v is not DROP}
-
-
-# The keys the judge is actually given at launch; passed wherever the ref check is the
-# subject, and omitted wherever it is not, so each test states which layer it observes.
-_DOC_KEYS = ("perf_document", "verdict_document", "tests_document")
-
-
-class SemanticReviewDocumentTest(unittest.TestCase):
-    """The `validate.judge` document validator (issue #169, Z3).
-
-    PINNED here: every schema branch of `semantic_review_document_violations` and both
-    halves of its one joint invariant. NOT pinned here: that the host writes the same
-    shape into `semantic_review.json` — that crosses into the conductor and belongs to the
-    judge wiring tests.
-    """
-
-    def test_valid_pass(self):
-        self.assertEqual(pl.semantic_review_document_violations(_review()), [])
-
-    def test_valid_fail(self):
-        doc = _review(decision="fail", findings=[_finding()], notes="quality check clean")
-        self.assertEqual(
-            pl.semantic_review_document_violations(doc, document_keys=_DOC_KEYS), [])
-
-    def test_non_dict_review(self):
-        self.assertEqual(pl.semantic_review_document_violations([1, 2]),
-                         ["the semantic review must be a JSON object"])
-
-    # --- schema: the object ---
-    def test_missing_key(self):
-        self.assertIn("findings is required",
-                      pl.semantic_review_document_violations(_review(findings=DROP)))
-
-    def test_unknown_key_closed(self):
-        # The 34 improvised top-level keys measured across the recorded reviews are what
-        # this branch exists to refuse; `recomputation` is one of them.
-        doc = _review()
-        doc["recomputation"] = {"cfl": 0.4}
-        violations = pl.semantic_review_document_violations(doc)
-        self.assertTrue(any("unknown key 'recomputation'" in c for c in violations))
-        self.assertTrue(any("put anything else in `notes`" in c for c in violations))
-
-    def test_uppercase_decision_rejected_not_folded(self):
-        # EXACT, like the verify verdict's status: a case-folded accept would let the
-        # leaf's casing choice decide a verdict.
-        violations = pl.semantic_review_document_violations(_review(decision="PASS"))
-        self.assertTrue(any("decision must be one of" in c for c in violations))
-
-    def test_unknown_decision_rejected(self):
-        violations = pl.semantic_review_document_violations(_review(decision="unclear"))
-        self.assertTrue(any("decision must be one of" in c for c in violations))
-
-    def test_notes_must_be_a_string(self):
-        violations = pl.semantic_review_document_violations(_review(notes={"a": 1}))
-        self.assertIn("notes must be a string", violations)
-
-    def test_notes_bounded(self):
-        over = "x" * (pl.SEMANTIC_REVIEW_NOTES_MAX_CHARS + 1)
-        violations = pl.semantic_review_document_violations(_review(notes=over))
-        self.assertTrue(any("at most" in c for c in violations))
-        # The bound itself is not off by one.
-        self.assertEqual(
-            pl.semantic_review_document_violations(
-                _review(notes="x" * pl.SEMANTIC_REVIEW_NOTES_MAX_CHARS)), [])
-
-    def test_findings_not_an_array(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings="oops"))
-        self.assertIn("findings must be an array", violations)
-
-    # --- schema: one finding ---
-    def test_finding_element_not_an_object(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=["a string finding"]))
-        self.assertIn("findings[0] must be an object", violations)
-
-    def test_finding_missing_key(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=[_finding(confidence=DROP)]))
-        self.assertIn("findings[0].confidence is required", violations)
-
-    def test_finding_unknown_key_closed(self):
-        # `finding_id` is the one the plan named and the phase document does not: no
-        # reader of `semantic_review.json#findings[*]` resolves one, so it is refused
-        # like any other key nothing reads.
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=[_finding(finding_id="F1")]))
-        self.assertTrue(any("findings[0] has unknown key 'finding_id'" in c
-                            for c in violations))
-
-    def test_finding_enums_are_exact_not_case_folded(self):
-        """`decision`'s exactness was pinned and these two were not — measured on this branch:
-        a mutant accepting `str(x).lower()` for either survived the suite. The module claims
-        all its enums are exact for ONE reason (a case-folded accept lets the leaf's casing
-        choice decide a verdict), so all of them need the row."""
-        for key, value in (("attribution", "Code"), ("confidence", "HIGH")):
-            with self.subTest(key=key):
-                violations = pl.semantic_review_document_violations(
-                    _review(decision="fail", findings=[_finding(**{key: value})]))
-                self.assertTrue(any(f"findings[0].{key} must be one of" in c
-                                    for c in violations),
-                                f"{value!r} was accepted for {key}")
-
-    def test_finding_attribution_vocab(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=[_finding(attribution="performance")]))
-        self.assertTrue(any("findings[0].attribution must be one of" in c
-                            for c in violations))
-
-    def test_finding_confidence_vocab(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=[_finding(confidence="certain")]))
-        self.assertTrue(any("findings[0].confidence must be one of" in c
-                            for c in violations))
-
-    def test_finding_description_must_be_non_empty_text(self):
-        for bad in ("", "   ", None, 7):
-            violations = pl.semantic_review_document_violations(
-                _review(decision="fail", findings=[_finding(description=bad)]))
-            self.assertTrue(
-                any("findings[0].description must be a non-empty string" in c
-                    for c in violations), f"accepted description {bad!r}")
-
-    def test_every_finding_is_reported_by_its_own_index(self):
-        doc = _review(decision="fail",
-                      findings=[_finding(), _finding(attribution="nonsense")])
-        violations = pl.semantic_review_document_violations(doc)
-        self.assertTrue(any(c.startswith("findings[1].attribution") for c in violations))
-        self.assertFalse(any(c.startswith("findings[0]") for c in violations))
-
-    # --- schema: evidence_refs ---
-    def test_evidence_refs_must_be_a_non_empty_array(self):
-        for bad in ([], "verdict_document", {}):
-            violations = pl.semantic_review_document_violations(
-                _review(decision="fail", findings=[_finding(evidence_refs=bad)]))
-            self.assertIn("findings[0].evidence_refs must be a non-empty array", violations)
-
-    def test_evidence_ref_element_must_be_non_empty_text(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=[_finding(evidence_refs=["  "])]))
-        self.assertIn("findings[0].evidence_refs[0] must be a non-empty string", violations)
-
-    def test_evidence_ref_needs_a_key_before_its_fragment(self):
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail", findings=[_finding(evidence_refs=["#per_case"])]),
-            document_keys=_DOC_KEYS)
-        self.assertTrue(any("must name an inlined document before its '#' fragment" in c
-                            for c in violations))
-
-    def test_evidence_ref_must_name_a_document_it_was_given(self):
-        # A workspace path is exactly what the leaf must NOT invent: it cites the key it
-        # was handed, and the host resolves that key to the path it inlined from.
-        violations = pl.semantic_review_document_violations(
-            _review(decision="fail",
-                    findings=[_finding(evidence_refs=["workspace/runs/r1/raw/x.json"])]),
-            document_keys=_DOC_KEYS)
-        self.assertTrue(any("which is not one of the documents you were given" in c
-                            for c in violations))
-
-    def test_fragment_is_not_validated_only_the_key(self):
-        doc = _review(decision="fail", findings=[
-            _finding(evidence_refs=["verdict_document#per_test[3].basis.no_such_field"])])
-        self.assertEqual(
-            pl.semantic_review_document_violations(doc, document_keys=_DOC_KEYS), [])
-
-    def test_empty_document_keys_skips_only_the_key_check(self):
-        # A caller that does not know the keys gets the shape checked and the membership
-        # skipped — never a silently weaker validation of the rest.
-        bare = _review(decision="fail",
-                       findings=[_finding(evidence_refs=["not_a_document#x"])])
-        self.assertEqual(pl.semantic_review_document_violations(bare), [])
-        self.assertTrue(pl.semantic_review_document_violations(bare, document_keys=_DOC_KEYS))
-        malformed = _review(decision="fail",
-                            findings=[_finding(evidence_refs=["not_a_document#x"],
-                                               confidence="certain")])
-        self.assertTrue(any("confidence must be one of" in c for c in
-                            pl.semantic_review_document_violations(malformed)))
-
-    # --- the joint invariant, and that it never runs on an unsound document ---
-    def test_pass_with_findings_violation(self):
-        violations = pl.semantic_review_document_violations(
-            _review(findings=[_finding()]), document_keys=_DOC_KEYS)
-        self.assertEqual(violations, ["decision 'pass' requires an empty findings array"])
-
-    def test_fail_without_findings_violation(self):
-        violations = pl.semantic_review_document_violations(_review(decision="fail"))
-        self.assertEqual(violations, ["decision 'fail' requires at least one finding"])
-
-    def test_invariant_is_not_reported_on_a_schema_unsound_document(self):
-        # One defect, reported once: a document whose `decision` is not in the vocabulary
-        # gets the enum violation and NOT a second, derived complaint about its findings.
-        violations = pl.semantic_review_document_violations(
-            _review(decision="PASS", findings=[_finding()]), document_keys=_DOC_KEYS)
-        self.assertEqual(len(violations), 1)
-        self.assertTrue(violations[0].startswith("decision must be one of"))
-
-    def test_missing_decision_does_not_crash_the_invariant(self):
-        violations = pl.semantic_review_document_violations(_review(decision=DROP))
-        self.assertEqual(violations, ["decision is required"])
-
-
-class SemanticReviewVocabTest(unittest.TestCase):
-    """The document's vocabularies, pinned where they are stated so a widening is a
-    test-visible event, and coupled to the routers that read them."""
-
-    def test_decision_vocab_pinned(self):
-        self.assertEqual(pl.SEMANTIC_REVIEW_DECISIONS, ("pass", "fail"))
-
-    def test_attribution_vocab_pinned(self):
-        self.assertEqual(pl.SEMANTIC_REVIEW_ATTRIBUTIONS,
-                         ("code", "ir", "spec", "evidence"))
-
-    def test_confidence_vocab_pinned(self):
-        self.assertEqual(pl.SEMANTIC_REVIEW_CONFIDENCES, ("high", "medium", "low"))
-
-    def test_key_sets_are_disjoint_and_closed(self):
-        required = set(pl.SEMANTIC_REVIEW_REQUIRED_KEYS)
-        optional = set(pl.SEMANTIC_REVIEW_OPTIONAL_KEYS)
-        self.assertEqual(required & optional, set())
-        # Every key the validator accepts is one of the two sets: the closed-object
-        # branch is derived from them, not spelled a second time.
-        doc = {k: None for k in (*required, *optional)}
-        unknown = [c for c in pl.semantic_review_document_violations(doc)
-                   if "unknown key" in c]
-        self.assertEqual(unknown, [])
 
 
 class PurePromptConstantsTest(unittest.TestCase):
@@ -718,7 +430,7 @@ class ClaudeArgvCarriesTheWholeFlagSetTest(unittest.TestCase):
             for pair, kwargs, flags in (
                     (("generate", "generate"), {"mcp_config_json": mcp},
                      pl.workshop_leaf_flags(mcp)),
-                    (("validate", "judge"), {"reading": True},
+                    (("compile", "verify"), {"reading": True},
                      pl.workshop_leaf_flags(None, reading=True))):
                 entry = c.entry_for(*pair)
                 self.assertEqual(entry.provider, "claude_cli")
@@ -759,8 +471,8 @@ class CodexResumeArgvCertificationTest(unittest.TestCase):
                     ("producing", lambda r: _producing_config(r), ("generate", "generate"),
                      {"mcp_config_json": leaf_contract.workshop_mcp_config_json(
                          "http://127.0.0.1:5/mcp")}),
-                    ("reading", lambda r: _reading_config(r, "validate", "judge"),
-                     ("validate", "judge"), {"reading": True})):
+                    ("reading", lambda r: _reading_config(r, "compile", "verify"),
+                     ("compile", "verify"), {"reading": True})):
                 with self.subTest(workshop=kind):
                     c = wc.Conductor(repo_root=Path(tmp), orchestration_id="o",
                                      orchestration_agent_run_id="orch", env={},

@@ -1008,6 +1008,52 @@ class PureLeafABSummaryTest(unittest.TestCase):
                 repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
         self.assertEqual([n["ir_ref"] for n in out["pure_compile_nodes"]], [self.IR_A])
 
+    def test_a_workshop_reviewer_row_reports_its_lineage_and_wall_clock(self) -> None:
+        """Issue #534 step 3: a workshop reviewer's row carries the lineage, the model turns
+        and the summed `leaf_wall_s`, and renders them. (Until issue #724 PR-2 the vehicle was
+        `validate.judge`'s `judge_meta.json`; it is the `compile.verify` record since, read
+        through the same `summarize_pure_leaf_metas` / `_render_pure_leaf_row`.)"""
+        per = {"agent_run_id": "c2", "model": "claude-sonnet-5",
+               "usage": {"input_tokens": 200, "output_tokens": 20}}
+        meta = {"result": "pass", "failure_category": None, "attempts": 2,
+                "prompt_contract_version": "pure-32", "leaf_mode": "workshop",
+                "per_attempt": [
+                    dict(per, lineage_id="c2", warm=False, model_turns=9,
+                         items_completed=None, wrapper_calls=0, ended_by=None,
+                         leaf_wall_s=61.5),
+                    dict(per, agent_run_id="c3", lineage_id="c2", warm=True, model_turns=3,
+                         items_completed=None, wrapper_calls=0, ended_by=None,
+                         leaf_wall_s=10.25)]}
+
+        def rollup(verify_meta: dict | None) -> tuple[dict, str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self._lay_out(repo, with_metas=False)
+                self._launch(repo, "a1", step="compile", ir_ref=self.IR_A,
+                             leaf_mode="workshop")
+                self._compile_metas(repo, self.IR_A)
+                if verify_meta is not None:
+                    (repo / self.IR_A / "compile_verify_meta.json").write_text(
+                        json.dumps(verify_meta), encoding="utf-8")
+                summary = collect_pure_leaf_ab_summary(
+                    repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
+            lines: list[str] = []
+            ao._render_pure_leaf_ab(summary, lines)
+            return summary, "\n".join(lines)
+
+        summary, rendered = rollup(meta)
+        row = summary["pure_compile_nodes"][0]["verify"]
+        self.assertEqual((row["leaf_mode"], row["lineages"], row["model_turns"],
+                          row["wrapper_calls"], row["leaf_wall_s"]),
+                         ("workshop", ["c2"], 12, 0, 71.75))
+        self.assertIn("workshop leaf — lineages 1 (`c2`), wrapper calls 0, model turns 12",
+                      rendered)
+        self.assertIn("leaf wall 71.75 s", rendered)
+        # A pure row from before the field reports no wall clock rather than a 0.
+        summary, rendered = rollup(None)
+        self.assertIsNone(summary["pure_compile_nodes"][0]["verify"]["leaf_wall_s"])
+        self.assertNotIn("leaf wall", rendered)
+
     def test_discovery_ignores_a_launch_that_is_not_a_pure_compile_leaf(self) -> None:
         """Two rejections, one row each, because a single combined fixture would let one of
         them stop working unnoticed: another step, and an agentic compile launch (no
@@ -1573,122 +1619,6 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertNotIn(outside_key, ao._PURE_LEAF_MAP_KEYS)
         outside = self._summary({outside_key: {"backend": "codex", "model": "x"}})
         self.assertEqual(outside["backend"], "claude")
-
-
-class PureJudgeAbRollupTests(unittest.TestCase):
-    """Z3 (issue #169): the judge's per-attempt record joins the A/B rollup.
-
-    Its directory is discovered from the persisted launch requests, like the compile pair's,
-    because a reservation names only the LIVE run and would drop every repaired attempt."""
-
-    def _rollup(self, *, request: dict, meta: dict | None = None) -> tuple[dict, str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = repo_root / "workspace" / "orchestrations" / "o"
-            (orch / "launches").mkdir(parents=True)
-            (orch / "orchestration_meta.json").write_text(json.dumps({
-                "orchestration_id": "o",
-                "invocation": {"generate_executor": "pure", "llm_leaf_map": {}},
-            }), encoding="utf-8")
-            (orch / "preflight.json").write_text(json.dumps({
-                "backend": "claude", "agent_version": "2.1.9", "probe_command": "claude"}),
-                encoding="utf-8")
-            (orch / "launches" / "c1.request.json").write_text(json.dumps(request),
-                                                               encoding="utf-8")
-            if meta is not None:
-                run_node = (repo_root / request["pipeline_ref"] / "runs"
-                            / request["run_id"] / "component__spec_x__0.1.0")
-                run_node.mkdir(parents=True)
-                (run_node / "judge_meta.json").write_text(json.dumps(meta), encoding="utf-8")
-            orch_meta = json.loads(
-                (orch / "orchestration_meta.json").read_text(encoding="utf-8"))
-            summary = ao.collect_pure_leaf_ab_summary(repo_root, "o", orch_meta)
-        lines: list[str] = []
-        ao._render_pure_leaf_ab(summary, lines)
-        return summary, "\n".join(lines)
-
-    _REQUEST = {
-        "step": "validate", "substep": "judge", "leaf_mode": "pure",
-        "node_key": "component/spec_x@0.1.0",
-        "pipeline_ref": f"workspace/pipelines/component__spec_x__0.1.0/{_TARGET_ID}/p_1",
-        "run_id": "run_1",
-    }
-    _META = {"result": "pass", "attempts": 1, "prompt_contract_version": "pure-36",
-             "per_attempt": [{"agent_run_id": "c1", "model": "opus",
-                              "usage": {"input_tokens": 10, "output_tokens": 20}}]}
-
-    def test_a_pure_judge_run_reports_its_judge_row(self) -> None:
-        summary, rendered = self._rollup(request=self._REQUEST, meta=self._META)
-        self.assertTrue(summary["available"])
-        node = summary["pure_validate_nodes"][0]
-        self.assertEqual(node["run_node_dir"],
-                         f"workspace/pipelines/component__spec_x__0.1.0/{_TARGET_ID}/p_1"
-                         "/runs/run_1/component__spec_x__0.1.0")
-        self.assertTrue(node["judge"]["found"])
-        self.assertIn("### validate `workspace/pipelines/", rendered)
-        self.assertIn("judge", rendered)
-
-    def test_the_safe_node_key_is_read_out_of_the_pipeline_ref(self) -> None:
-        """Not recomputed from `node_key`: the tree already has two spellings of that
-        transform, and a third here would be the one nothing checks. A request whose
-        `pipeline_ref` is neither `<safe>/<target_id>/<id>` (issue #284) nor the pre-target
-        `<safe>/<id>` an older run recorded names no directory at all."""
-        # The judge record EXISTS at each bad path (`meta=`), so an empty result is the shape
-        # check refusing the ref, not a missing file; the good ref, same setup, is found.
-        good, _ = self._rollup(request=self._REQUEST, meta=self._META)
-        self.assertEqual(len(good["pure_validate_nodes"]), 1)
-        for bad in ("workspace/pipelines/component__spec_x__0.1.0",
-                    "workspace/pipelines/component__spec_x__0.1.0/Not_A_Target/p_1",
-                    "workspace/pipelines/component__spec_x__0.1.0/a/b/p_1"):
-            request = dict(self._REQUEST, pipeline_ref=bad)
-            summary, _ = self._rollup(request=request, meta=self._META)
-            self.assertEqual(summary["pure_validate_nodes"], [], bad)
-
-    def test_a_pre_target_run_is_audited_where_it_put_its_pipeline(self) -> None:
-        """An orchestration recorded before issue #284 carries the four-segment
-        `pipeline_ref`; its judge record is read there (origin/main did, and 102 of the 105
-        orchestrations on the author's machine are such runs)."""
-        legacy = "workspace/pipelines/component__spec_x__0.1.0/p_1"
-        summary, _ = self._rollup(request=dict(self._REQUEST, pipeline_ref=legacy),
-                                  meta=self._META)
-        node = summary["pure_validate_nodes"][0]
-        self.assertEqual(node["run_node_dir"],
-                         f"{legacy}/runs/run_1/component__spec_x__0.1.0")
-        self.assertTrue(node["judge"]["found"])
-
-    def test_a_judge_request_without_leaf_mode_leaves_no_row(self) -> None:
-        request = dict(self._REQUEST)
-        del request["leaf_mode"]
-        summary, _ = self._rollup(request=request, meta=self._META)
-        self.assertEqual(summary["pure_validate_nodes"], [])
-
-    def test_a_launched_judge_with_no_record_leaves_no_row(self) -> None:
-        summary, _ = self._rollup(request=self._REQUEST, meta=None)
-        self.assertEqual(summary["pure_validate_nodes"], [])
-
-    def test_a_workshop_judge_run_reports_its_lineage_and_wall_clock(self) -> None:
-        """Issue #534 step 3: a workshop `validate.judge` writes the same `judge_meta.json`;
-        dropping it from the discovery would make the judge vanish from the A/B section. Its
-        row carries the lineage, the model turns and the summed `leaf_wall_s`."""
-        meta = dict(self._META, leaf_mode="workshop", per_attempt=[
-            dict(self._META["per_attempt"][0], lineage_id="c1", warm=False, model_turns=9,
-                 items_completed=None, wrapper_calls=0, ended_by=None, leaf_wall_s=61.5),
-            dict(self._META["per_attempt"][0], agent_run_id="c2", lineage_id="c1", warm=True,
-                 model_turns=3, items_completed=None, wrapper_calls=0, ended_by=None,
-                 leaf_wall_s=10.25)])
-        summary, rendered = self._rollup(
-            request=dict(self._REQUEST, leaf_mode="workshop"), meta=meta)
-        row = summary["pure_validate_nodes"][0]["judge"]
-        self.assertEqual((row["leaf_mode"], row["lineages"], row["model_turns"],
-                          row["wrapper_calls"], row["leaf_wall_s"]),
-                         ("workshop", ["c1"], 12, 0, 71.75))
-        self.assertIn("workshop leaf — lineages 1 (`c1`), wrapper calls 0, model turns 12",
-                      rendered)
-        self.assertIn("leaf wall 71.75 s", rendered)
-        # A pure row from before the field reports no wall clock rather than a 0.
-        summary, rendered = self._rollup(request=self._REQUEST, meta=self._META)
-        self.assertIsNone(summary["pure_validate_nodes"][0]["judge"]["leaf_wall_s"])
-        self.assertNotIn("leaf wall", rendered)
 
 
 class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):

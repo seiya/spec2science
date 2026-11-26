@@ -779,13 +779,12 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
 #: of a phase share one schema (`_summarize_one_pure_meta`) and differ only in name and
 #: directory, so the rollup reads them through one function rather than two.
 #: Each phase's pure per-attempt records, keyed by the SUBSTEP that wrote one. A mapping
-#: rather than a producer/reviewer PAIR since Z3 (issue #169): `validate` has one pure leaf,
-#: not two, and a table shaped for exactly two would have had to invent a second.
+#: rather than a producer/reviewer PAIR since Z3 (issue #169), when `validate` had one pure
+#: leaf; its `judge` row went with that substep in issue #724 PR-2.
 PURE_LEAF_META_FILES: dict[str, dict[str, str]] = {
     "generate": {"generate": "bundle_meta.json", "verify": "verdict_meta.json"},
     "compile": {"generate": "compile_generate_meta.json",
                 "verify": "compile_verify_meta.json"},
-    "validate": {"judge": "judge_meta.json"},
 }
 
 #: Where a REVIEWER substep's verdict is projected, beside its per-attempt record: the file
@@ -799,7 +798,6 @@ PURE_LEAF_META_FILES: dict[str, dict[str, str]] = {
 PURE_LEAF_VERDICT_FILES: dict[str, dict[str, tuple[str, str]]] = {
     "generate": {"verify": ("source_meta.json", "verification_status")},
     "compile": {"verify": ("ir_meta.json", "verification_status")},
-    "validate": {"judge": ("semantic_review.json", "decision")},
 }
 
 
@@ -821,7 +819,7 @@ def _projected_verdict(artifact_dir: Path, basename: str, field: str
 
     `verdict` is `None` when no projection was written — the reviewer loop ended without an
     accepted document, whether by budget exhaustion or by a transport death; the row's
-    `failure_category` says which — for `generate` / `validate`, and the renderer prints that
+    `failure_category` says which — for `generate`, and the renderer prints that
     as `verdict=none` rather than guessing. `compile` is the exception — its producer writes
     `ir_meta.json` at `pending` before the reviewer runs, so the same end on `compile.verify`
     reads `pending`, which is what the file says. Best-effort like every reader here: a
@@ -847,11 +845,11 @@ def summarize_pure_leaf_metas(artifact_dir: Path, phase: str) -> dict[str, Any]:
     Reads the phase's per-attempt records — the in-repo, ~/.claude-free per-attempt
     usage/model provenance — and returns one row per SUBSTEP plus `found`. For `generate` that
     is `<source_dir>/bundle_meta.json` + `verdict_meta.json` (Z2, milestone M-E); for `compile`
-    it is `<ir_ref>/compile_generate_meta.json` + `compile_verify_meta.json` (Z1, issue #168);
-    for `validate` it is `<run_node_dir>/judge_meta.json` alone (Z3, issue #169). The keys name
-    the SUBSTEP, which is what the A/B table compares, not the phase — so a `compile` node's
-    rows read `generate` / `verify` exactly as a `generate` node's do, and a `validate` node's
-    reads `judge`.
+    it is `<ir_ref>/compile_generate_meta.json` + `compile_verify_meta.json` (Z1, issue #168).
+    (`validate`'s `judge_meta.json` row went with `validate.judge` in issue #724 PR-2; the phase
+    is now an unknown one here.) The keys name the SUBSTEP, which is what the A/B table
+    compares, not the phase — so a `compile` node's rows read `generate` / `verify` exactly as
+    a `generate` node's do.
 
     Each substep key holds a per-leaf row (see `_summarize_one_pure_meta`); a REVIEWER row
     additionally carries `verdict`, the decision projected beside the record

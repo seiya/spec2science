@@ -11,7 +11,7 @@ output accumulates in its context and is re-read every turn (cache_read grows
 O(turns^2)). Moving the deterministic loop into Python removes the parent LLM's
 turns, its ~70K static-protocol-doc resident load, and the per-turn accumulation;
 the LLM is invoked only as a leaf for the judgement-bearing substeps
-(generate/verify/judge) and, on an unclassifiable failure, a one-shot diagnostician.
+(generate/verify) and, on an unclassifiable failure, a one-shot diagnostician.
 
 This module is intentionally self-contained: it reuses the existing
 orchestration_runtime.py subcommands (the stable CLI contract) and the
@@ -119,12 +119,12 @@ LAUNCH_INSTANT_PROBE_BASENAME = "launch_instant.probe.json"
 # filesystem), and the wait costs ONE OF THEM per launch: median 3.999-4.000 ms over 300 calls,
 # re-measured by three readers. The MAX is not one tick — a call that loses the CPU spans two,
 # and 8.0 ms was observed — so read the cost as "a tick, occasionally two", not as a ceiling.
-# `SUBSTEPS` totals 11 per node (compile 3 / generate 3 / build 1 / validate 4) and only a
-# substep launch reaches this, so a node pass pays ~44 ms, against leaves that run for minutes.
+# `SUBSTEPS` totals 9 per node (compile 3 / generate 3 / build 1 / validate 2) and only a
+# substep launch reaches this, so a node pass pays ~36 ms, against leaves that run for minutes.
 # The bound is here only so a filesystem whose stamps advance MORE SLOWLY THAN IT degrades
 # LOUDLY (`launch_instant_tick_wait_timeout`) instead of blocking a run. Between one tick and
 # the bound there is no loudness to have: the wait simply succeeds, having spun without sleeping
-# for up to that long per launch (a 1-second-granularity mount would spend ~11 CPU-seconds per
+# for up to that long per launch (a 1-second-granularity mount would spend ~9 CPU-seconds per
 # node pass and emit nothing). No such mount exists in any recorded run — every one is the 4 ms
 # xfs above — which is why this is stated rather than handled.
 LAUNCH_INSTANT_TICK_WAIT_SECONDS = 2.0
@@ -137,8 +137,8 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
-# The ONE reader of the two deterministic Validate gate metas (`pre_judge_meta.json`,
-# `post_judge_meta.json`). Writing `isinstance` at each call site instead, and asserting the
+# The ONE reader of the deterministic Validate gate meta (`post_judge_meta.json`; its twin
+# `pre_judge_meta.json` went with the `pre_judge` substep in issue #724 PR-2). Writing `isinstance` at each call site instead, and asserting the
 # coverage in a docstring, failed three rounds running: the claim named two sites when there were
 # seven, and the site that runs FIRST (`determine_substep_status`) was not among the guarded ones,
 # so a non-object payload still crashed the conductor before any guard was reached. A later
@@ -204,30 +204,21 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     (GATE_FAILURE_ROUTING).
     "generate": ("generate", "gate", "verify"),
     "build": (None,),
-    # validate wraps the LLM judge in two deterministic conductor-in-process gates,
-    # mirroring the compile/generate deterministic-interleave model:
-    #   - pre_judge  (Conductor._pre_judge_inproc):  records `pre_judge_meta.json` as `pass`
-    #     and checks nothing. The pre-spawn dependency-DAG readiness check (a --with-deps
-    #     closure not built+validated in its own pipeline) is `run_phase`'s, before any
-    #     substep (`_judge_pre_spawn_dag_block`), so a cold judge is never spawned for an
-    #     incomplete closure; it fails the phase closed (issue #643 PR-5 removed the duplicate
-    #     check `_pre_judge_inproc` also ran).
-    #   - execute    (Conductor._execute_inproc):    unchanged binary run + evidence capture.
-    #   - judge      (LLM leaf):                      a semantic pass holding neither a gate
-    #     nor an MCP grant. Since Z3 (issue #169) it holds no TOOLS either — it is a pure
-    #     leaf, which is a different and stronger claim than the "pure semantic pass" this
-    #     comment used to make, and the reason that older phrase is gone from these three
-    #     lines. Z4 (issue #171) made it the only claim there is to make: no leaf holds a
-    #     tool, and the per-substep gate-allowlist map this line used to cite is deleted
-    #     with the agentic prompt it constrained.
+    # validate is two deterministic conductor-in-process substeps (issue #724 PR-2 deleted the
+    # LLM `judge` between them and the `pre_judge` substep before them, which checked nothing).
+    # The dependency-DAG readiness check (a --with-deps closure not built+validated in its own
+    # pipeline) is `run_phase`'s, before any substep (`_judge_pre_spawn_dag_block`), and fails
+    # the phase closed.
+    #   - execute    (Conductor._execute_inproc):    the binary run + evidence capture + the
+    #     host verdict.
     #   - post_judge (Conductor._post_judge_inproc):  runs `validate_pipeline_semantics
-    #     --stage pre_judge` (the gate the judge leaf used to own) and CLASSIFIES the
-    #     violation severity. Both graded classes — leaf/judge-authored conformance and
-    #     orchestration-record/DAG integrity — are fail_closed; an unknown one escalates.
-    #     (Until issue #176 a conformance violation warm-resumed the judge in place.) NOTE the naming: the substep is `post_judge`
-    #     (it runs AFTER the judge) but the validator STAGE it invokes is literally named
-    #     `pre_judge` ("before pass-certification") — do not confuse the two.
-    "validate": ("pre_judge", "execute", "judge", "post_judge"),
+    #     --stage pre_judge` and CLASSIFIES the violation severity. Both graded classes —
+    #     host-authored-artifact conformance and orchestration-record/DAG integrity — are
+    #     fail_closed; an unknown one escalates. NOTE the naming, kept for the records that carry
+    #     it (issue #724 O8): the substep is `post_judge` (it ran AFTER the judge) and the
+    #     validator STAGE it invokes is literally named `pre_judge` ("before
+    #     pass-certification") — do not confuse the two.
+    "validate": ("execute", "post_judge"),
 }
 
 # Build is the only phase whose step_result executor is the (child) step agent;
@@ -281,8 +272,7 @@ def phases_through(until_phase: str) -> tuple[str, ...]:
 #
 # Canonical source for the Build table: docs/workflow/phases/phase_03_build.md
 # (Build failure_category -> retry). Kept as data so the conductor (and its unit tests)
-# route deterministically. A Validate.judge failure has no table: it escalates
-# (`classify_failure`'s judge branch; issue #455).
+# route deterministically.
 
 # Build failure_category -> (retry_target_phase, repair_strategy)
 BUILD_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
@@ -471,7 +461,7 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
     is outside the leaf's read set."""
     lines = [
         f"{_VERDICT_FAIL_MARKER} deterministic per-test verdict is fail "
-        f"(failure_class={verdict_doc.get('failure_class')}); the judge leaf was not spawned. "
+        f"(failure_class={verdict_doc.get('failure_class')}). "
         f"See verdict.json#per_test for the failing predicate(s)."
     ]
     error = verdict_doc.get("predicate_error")
@@ -551,7 +541,7 @@ def _cross_target_disagreement_report(cross: Mapping[str, Any]) -> list[str]:
 
 
 # Validate.execute STRUCTURAL failure_category -> (retry_target_phase, repair_strategy).
-# A structural execute failure authors no verdict.json (the judge leaf never ran), so the
+# A structural execute failure authors no verdict.json, so the
 # defect is in the generated runner/model code, not in a physics predicate (the class the deleted
 # judge table, issue #455, used to send to ("generate", "reuse")). It is routed warm (reuse) with the gate's own violation text threaded through as repair findings
 # (trial_meta.json#failure_excerpt), instead of a blind cold restart that discards the reason
@@ -670,10 +660,10 @@ GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # launch in which a command printed
 # more than codex's budget lets reach the model whole (the byte rule, over the host's own
 # capture), a tool output reached the model cut, or a read was delegated to a sub-agent (its
-# rollout), is refused under this category: the judge certified rows it was never shown. A
+# rollout), is refused under this category: the reviewer certified rows it was never shown. A
 # leaf CONTENT failure, repaired by a cold launch from the seeds alone, on a counter of its own
 # (`_run_leaf_reviewer_substep`); its exhaustion routes as a schema exhaustion does (the two
-# verdict tables below; `validate.judge` by its conformance violation).
+# verdict tables below).
 WORKSHOP_CUT_READ = "workshop_cut_read"
 # The rollout that says what the model received could not be read (no thread id, no file, two,
 # an unreadable file, no `task_started`, a row that is not JSON or not an object, no tool output
@@ -719,20 +709,6 @@ GENERATE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
 GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("generate", "restart") for category in GENERATE_VERDICT_FAILURE_CATEGORIES
 }
-
-# --- Z3 pure `validate.judge` document routing (issue #169) --------------------
-# The judge returns `{decision, findings, notes}` and the host writes `semantic_review.json`
-# from it (`tools/leaf_contract.semantic_review_document_violations`). A malformed document is
-# repaired in the same bounded warm loop the other reviewers use, under this category.
-# There is deliberately NO routing table beside it: when the budget IS exhausted the host has
-# written no `semantic_review.json`, so `_judge_semantic_decision` reads `""` and `run_phase`'s
-# existing `judge_conformance_block` raises `validate_judge_conformance_violation`, so the
-# document-violation class needs no routing table of its own. It is NOT the same terminus a
-# post_judge conformance violation reaches: that one is `validate_pre_judge_violation` and
-# fail_closed (`classify_validate_gate_failure`), while this one is
-# `validate_judge_conformance_violation` and escalates in prod. Two reasons, one of which
-# already existed — which is the point: no third one was added.
-SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
 
 # --- Z1 pure-leaf IR-document routing (issue #168) -----------------------------
 # The pure `compile.generate` producer returns exactly one IR document
@@ -804,35 +780,19 @@ COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # violation strings (no structured category), each prefixed with the offending artifact
 # path, so the classifier keys on that leading path token.
 #
-#   - recoverable   : the violation names an artifact the judge itself authored, so re-running
-#                     the judge COULD in principle fix it. Nothing does: issue #176 deleted the
-#                     warm-resume mini-loop, and both graded classes now write `fail_closed`.
-#                     The name is kept because it still says WHOSE artifact failed.
-#                     As of R2 this is scoped to the judge's ONLY deliverable —
-#                     semantic_review.json (incl. the review_method literal). NOTHING else is
-#                     judge-fixable: verdict.json is HOST-authored at execute, and the derived
-#                     aggregate_verdict.json / summary.json / validate_meta.json are HOST-authored
-#                     at post_judge (correct-by-construction from the host verdict.json). A
-#                     a judge re-run would not re-run execute, and would re-derive the artifacts
-#                     from the SAME verdict.json, so a violation naming any of them would repeat
-#                     identically — a conductor/derivation defect, not a judge one. That is why
-#                     the classifier puts them in the other class, and it held when the
-#                     warm-resume loop still existed to waste spawns on them.
 #   - unrecoverable : orchestration-record / cross-pipeline dependency-DAG integrity, OR a
 #                     host-authored artifact defect (verdict.json / the post_judge-derived
-#                     aggregate_verdict.json / summary.json / validate_meta.json). Re-running the
-#                     judge cannot fix these. Sources: _validate_orchestration_hierarchy
+#                     aggregate_verdict.json / summary.json / validate_meta.json), which no
+#                     re-run of the phase repairs. Sources: _validate_orchestration_hierarchy
 #                     (agent_graph.json / an orchestrations/ root), the
 #                     cross-pipeline DAG check (lineage.json / the literal DAG messages), and the
 #                     host-authored verdict/derived artifacts.
-#   - unknown       : anything else (incl. execute-authored evidence) -> `escalate`. G5 wired the
-#                     adjudicator this bullet once called a future follow-up: in prod `run_phase`
-#                     turns the disposition into an escalate RouteDecision and the diagnostician
-#                     decides; dev keeps fail_closed (no billed escalate leaf). Pinned by
-#                     `test_an_unknown_violation_is_written_as_escalate`.
-_POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
-    "semantic_review.json",
-})
+#   - unknown       : anything else (incl. execute-authored evidence) -> `escalate`. In prod
+#                     `run_phase` turns the disposition into an escalate RouteDecision and the
+#                     diagnostician decides; dev keeps fail_closed (no billed escalate leaf).
+#                     Pinned by `test_an_unknown_violation_is_written_as_escalate`.
+# A third class, `recoverable`, named the `validate.judge` leaf's own deliverable,
+# `semantic_review.json`; it went with the judge in issue #724 PR-2.
 _POST_JUDGE_UNRECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "agent_graph.json", "step_result.json", "lineage.json", "verdict.json",
     "aggregate_verdict.json", "summary.json", "validate_meta.json",
@@ -847,18 +807,12 @@ _POST_JUDGE_UNRECOVERABLE_MARKERS: tuple[str, ...] = (
 
 
 def classify_post_judge_violations(violations: list[str]) -> str:
-    """Classify a post_judge `--stage pre_judge` violation list into one of
-    {"recoverable", "unrecoverable", "unknown"}.
+    """Classify a post_judge `--stage pre_judge` violation list as "unrecoverable" or
+    "unknown".
 
-    Precedence is strict: unrecoverable > unknown > recoverable. Any single
-    orchestration-record/DAG integrity violation dominates (the node is not certifiable in
-    this run); a single unclassifiable line forces escalation/terminalization rather than an
-    optimistic warm resume. An empty list is "unknown" (a FAIL with no parsable bullet is not
-    a recoverable conformance issue)."""
-    if not violations:
-        return "unknown"
-    saw_recoverable = False
-    saw_unknown = False
+    Any single orchestration-record/DAG integrity or host-authored-artifact violation makes the
+    list unrecoverable (the node is not certifiable in this run); otherwise it is unknown. An
+    empty list is "unknown" (a FAIL with no parsable bullet says nothing to grade)."""
     for raw in violations:
         line = raw.strip()
         # The offending artifact path is the leading token, delimited by ':' or whitespace.
@@ -869,13 +823,7 @@ def classify_post_judge_violations(violations: list[str]) -> str:
                 or "orchestrations/" in token
                 or any(m in line for m in _POST_JUDGE_UNRECOVERABLE_MARKERS)):
             return "unrecoverable"
-        if basename in _POST_JUDGE_RECOVERABLE_BASENAMES:
-            saw_recoverable = True
-        else:
-            saw_unknown = True
-    if saw_unknown:
-        return "unknown"
-    return "recoverable" if saw_recoverable else "unknown"
+    return "unknown"
 
 
 # Bound the deterministic retry/reopen loop so a persistently-failing node cannot
@@ -991,10 +939,10 @@ def classify_compile_static_failure(failure_category: str | None) -> RouteDecisi
                          reason=f"compile_static_{failure_category}")
 
 
-# Reason returned for a `Validate.pre_judge` / `Validate.post_judge` failure whose OWN meta
-# records no failure category (issue #114). Both substeps can fail for a reason their meta does
-# not name — the measured case is a `pre_judge` whose meta says `status: "pass"` but whose
-# deliverable failed the freshness gate in `determine_substep_status` — and naming that failure
+# Reason returned for a `Validate.post_judge` failure whose OWN meta records no failure category
+# (issue #114). The substep can fail for a reason its meta does not name — the measured case was
+# a `pre_judge` (a substep since deleted, issue #724 PR-2) whose meta said `status: "pass"` but
+# whose deliverable failed the freshness gate in `determine_substep_status` — and naming that failure
 # after a violation the substep did not record (issue #114's case was `pre_judge_dag_incomplete`,
 # which the substep classified until issue #643 PR-5 removed its copy of the DAG check, which
 # `run_phase` already ran before any substep) writes a
@@ -1015,26 +963,25 @@ VALIDATE_GATE_STALE_DELIVERABLE_SUFFIX = "_deliverable_not_freshly_written"
 
 def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) -> str:
     """Terminal fail_closed reason for a failed deterministic Validate gate substep
-    (`pre_judge` / `post_judge`), derived from that substep's OWN meta rather than from its
-    index in `SUBSTEPS["validate"]` (issue #114).
+    (`post_judge`; the `pre_judge` substep went in issue #724 PR-2), derived from that
+    substep's OWN meta rather than from its index in `SUBSTEPS["validate"]` (issue #114).
 
-    `meta` is what `_read_gate_meta` returned for `pre_judge_meta.json` / `post_judge_meta.json`
-    — a dict, or None for absent / undecodable / non-object. That one reader is what makes the
-    non-dict case safe everywhere; the `isinstance` below is this function's own precondition,
-    since it is a pure function callers may reach with anything. Four outcomes:
+    `meta` is what `_read_gate_meta` returned for `post_judge_meta.json` — a dict, or None for
+    absent / undecodable / non-object. That one reader is what makes the non-dict case safe
+    everywhere; the `isinstance` below is this function's own precondition, since it is a pure
+    function callers may reach with anything. Four outcomes:
 
       - a recorded `failure_category` -> `validate_<category>`, the shape the run_phase branch
-        already used. Only `post_judge` records one today: `pre_judge` writes `pass` and checks
-        nothing since issue #643 PR-5, and `run_phase` names the DAG failure
-        `validate_pre_judge_dag_incomplete` itself, before any substep;
+        already used. `run_phase` names the DAG failure `validate_pre_judge_dag_incomplete`
+        itself, before any substep;
       - a meta whose own `status` is `pass`, with no category
         -> `validate_<substep>_deliverable_not_freshly_written`. This is NOT a vague answer: it
         is the one thing the state can mean. `determine_substep_status` fails a gate substep iff
-        the meta's status is not `pass` OR the deliverable was not freshly written, and both
-        in-process bodies set a category on every fail arm — so "the body recorded success and
+        the meta's status is not `pass` OR the deliverable was not freshly written, and the
+        in-process body sets a category on every fail arm — so "the body recorded success and
         the substep still failed" is exactly the freshness gate, and the reason says so instead
         of making the operator re-derive it from the event log (round 2). The measured incident
-        (`orch_20260827T105454Z_99f63b7e`) is this case;
+        (`orch_20260827T105454Z_99f63b7e`, on the since-deleted `pre_judge`) is this case;
       - a meta with no category and a non-`pass` status
         -> `validate_<substep>_failed_without_category`. No writer produces this today (see the
         conjunction above); it is the honest answer if one ever does, and it names no violation;
@@ -1099,8 +1046,7 @@ _PHASE_PRIMARY_ARTIFACTS: dict[str, tuple[str, ...]] = {
     # first; source_meta.json (the verify verdict) is not authored until the gate has passed.
     "generate": ("gate_meta.json", "source_meta.json"),
     "build": ("binary_meta.json",),
-    "validate": ("verdict.json", "semantic_review.json", "aggregate_verdict.json",
-                 "post_judge_meta.json", "pre_judge_meta.json"),
+    "validate": ("verdict.json", "aggregate_verdict.json", "post_judge_meta.json"),
 }
 
 
@@ -1211,35 +1157,6 @@ def _gate_guards_section(text: str) -> str:
             stop = index
             break
     return "\n".join(lines[start:stop]).rstrip("\n")
-
-
-# The runner-output contract's evidence section — §3 (`raw/` primary evidence) — as it reaches the
-# `validate.judge` reviewer (issue #169): what `raw/` is obliged to hold and in what shape.
-# §2 (`perf.json` required fields) is `Validate.execute`'s deliverable gate rather than a
-# semantic question; §4 (JSON serialization) and §5 (other runner constraints) are settled
-# deterministically before the judge sees anything, and the template tells it not to re-check
-# what a gate has settled.
-_RUNNER_OUTPUT_CONTRACT_SECTIONS = (("3", "4"),)
-
-
-def _runner_output_contract_sections(text: str) -> str:
-    """Return §3 of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`.
-
-    `_numbered_section_range` owns the anchoring and the fail-closed semantics.
-
-    Specific to this document, and CORRECTED after a review round: it holds exactly ONE fenced
-    block, indented two spaces, at lines 151-164 inside §4. An earlier version of this docstring
-    said the file held none — measured with a column-0 probe (`startswith`) that an indented
-    fence evades, which is the contaminated-probe trap in miniature. The true statement is
-    narrower and is what the caller may rely on: the one fence lies OUTSIDE both slices' spans
-    (§4 is past the `## 4.` terminator of the second range) and carries no `## <n>.`-shaped line,
-    so the engine's fence-unawareness has nothing to catch HERE — not because there is no fence,
-    but because of where it sits. Extending `_RUNNER_OUTPUT_CONTRACT_SECTIONS` over §4 would put
-    a fence inside a slice and make that unawareness live. What each section CONTAINS is not
-    re-derived here; it is pinned by the drift guard, which hashes this slice itself."""
-    return "\n\n".join(
-        _numbered_section_range(text, begin, end, subject="runner-output contract")
-        for begin, end in _RUNNER_OUTPUT_CONTRACT_SECTIONS)
 
 
 # The `Generate.verify` severity rubric — the `#### Severity of a finding` subsection of
@@ -1667,7 +1584,7 @@ def build_launch_request(
     # validator, which is where the omission showed up.)
     deterministic = not diagnose and (
         step == "build"
-        or (step == "validate" and substep in ("pre_judge", "execute", "post_judge"))
+        or (step == "validate" and substep in ("execute", "post_judge"))
         or (step == "generate" and substep == "gate")
         or (step == "compile" and substep == "static"))
     rep = {
@@ -1759,17 +1676,11 @@ def build_launch_request(
         req["run_id"] = refs.run_id
         req["dependency_ref"] = refs.pipeline_ref
         rundir = refs.run_node_dir()
-        if substep == "pre_judge":
-            # Deterministic substep that records `pass` and checks nothing (the dependency-DAG
-            # readiness gate is `run_phase`'s, before any substep). The conductor authors
-            # pre_judge_meta.json (the only freshness-gated deliverable) in-process; no leaf,
-            # no must-read, no run evidence yet.
-            req["allowed_output_paths"] = [f"{rundir}/pre_judge_meta.json"]
-        elif substep == "post_judge":
-            # Deterministic post-return `--stage pre_judge` gate + severity classifier. The
-            # conductor authors post_judge_meta.json (status + violations + disposition)
-            # AND, G6, the deterministically-derivable aggregate_verdict / summary /
-            # validate_meta (all in-process after the judge leaf returns).
+        if substep == "post_judge":
+            # Deterministic `--stage pre_judge` gate + severity classifier. The conductor
+            # authors post_judge_meta.json (status + violations + disposition) AND, G6, the
+            # deterministically-derivable aggregate_verdict / summary / validate_meta (all
+            # in-process after execute).
             req["allowed_output_paths"] = [
                 f"{rundir}/post_judge_meta.json",
                 f"{rundir}/aggregate_verdict.json",
@@ -1785,7 +1696,7 @@ def build_launch_request(
                 f"{rundir}/trial_meta.json",
                 f"{rundir}/quality_check.json",
                 # R2: execute authors verdict.json deterministically (the host's predicates over
-                # the captures), so the judge leaf authors only semantic_review.json.
+                # the captures).
                 f"{rundir}/verdict.json",
             ]
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
@@ -1819,11 +1730,12 @@ def build_launch_request(
             ]
             req["allowed_output_paths"] = outs
 
-    # Orientation-only dependency facts for the LLM leaves that benefit (generate's
-    # semantic authoring, validate.judge's dependency-PASS review). Deterministic phases
-    # (build / validate.execute) render the minimal prompt and never read them, so they
-    # are omitted there. The `<dependency_facts>` renderer drops them when empty.
-    if resolved_dependencies and not deterministic and step in ("generate", "validate"):
+    # Orientation-only dependency facts for the LLM leaves that benefit (generate's semantic
+    # authoring; `validate.judge`'s dependency-PASS review was the other, until issue #724 PR-2
+    # deleted it). Deterministic phases (build / validate) render the minimal prompt and never
+    # read them, so they are omitted there. The `<dependency_facts>` renderer drops them when
+    # empty.
+    if resolved_dependencies and not deterministic and step == "generate":
         req["resolved_dependencies"] = list(resolved_dependencies)
     # L2: the component-dep published-surface catalog (op names, plus each dep IR's `public_api`
     # ABI since issue #486), injected ONLY into the compile.generate leaf so it transcribes real
@@ -3709,8 +3621,7 @@ def _indented_json_seed(text: str) -> str:
     """A JSON document's text as a reading workshop leaf's seed: re-serialized with one value
     per line (`indent=2`), so a file tool that pages by line can reach every value. The value
     is the parsed document's (a number keeps its value, not necessarily its spelling: `1.0E-5`
-    is written `1e-05`); `evidence_refs` name document keys, which the host resolves against
-    the workspace file, never against the seed. Text that is not JSON (or nests past the
+    is written `1e-05`). Text that is not JSON (or nests past the
     parser's depth), a document with a repeated key in one object (`json.loads` keeps the last
     value, so a re-serialization would drop the others the raw text shows), and one whose
     strings hold an unpaired surrogate escape (the indented text would not encode as UTF-8)
@@ -5746,7 +5657,7 @@ class Conductor:
     def _leaf_language(self, phase: str) -> str:
         """The language a pure launch of `phase` composes its template for: the target's, on
         the phase that renders language rules (`generate`). Compile is target-free (issue #284)
-        and Validate's judge reads output documents, so neither is told one."""
+        and Validate runs no leaf but its diagnostician, so neither is told one."""
         return str(self.target.toolchain["language"]) if phase == "generate" else ""
 
     def _leaf_parallel(self, phase: str) -> str:
@@ -5820,8 +5731,9 @@ class Conductor:
         """The basename of the node's model source. ONE spelling, like the runner's above, and
         the target language's (`bundle_facts.model_basename`, issue #289).
 
-        Extracted when `_semantic_review_scope` became a second reader (issue #169); the name
-        was written here until the language backend said it."""
+        Extracted when `_semantic_review_scope` (deleted with `validate.judge`, issue #724 PR-2)
+        became a second reader (issue #169); the name was written here until the language
+        backend said it."""
         return str(self._language_facts().model_basename(refs.spec_id))
 
     def _control_file_basename(self, refs: NodeRefs) -> str:
@@ -5991,21 +5903,14 @@ class Conductor:
         cannot be evaluated. An `infrastructure` node's Compile therefore goes pure too — the
         Generate-side carve-out (#169) is a separate question.
 
-        `(validate, judge)` (Z3, issue #169) carries no shape condition either, and for a
-        related reason: what the judge reviews is the run's evidence against `tests.md` and the
-        IR's `io_contract`, which every node kind has. It went pure once the host could hand it
-        the one thing it used tools for — `raw/`, 13 MB of float arrays, now summarized by
-        `tools/raw_evidence_excerpt.py`.
-
-        Five LLM substeps go pure: `(compile, generate)` (the IR producer, Z1) and
+        Four LLM substeps go pure: `(compile, generate)` (the IR producer, Z1) and
         `(compile, verify)` (the IR reviewer, Z1); `(generate, generate)` (the CodegenBundle
         producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D) on a node with a
-        bundle shape; and
-        `(validate, judge)` (the semantic reviewer, Z3). Each pair is dispatched to its own loop
-        in `run_substep`. Deterministic substeps (compile.static, generate lint/syntax/static)
-        are never pure — they run in-process regardless."""
-        if (phase, substep) in (("compile", "generate"), ("compile", "verify"),
-                                ("validate", "judge")):
+        bundle shape. The fifth, `(validate, judge)` (the semantic reviewer, Z3), went with the
+        substep in issue #724 PR-2. Each pair is dispatched to its own loop in `run_substep`.
+        Deterministic substeps (compile.static, generate lint/syntax/static) are never pure —
+        they run in-process regardless."""
+        if (phase, substep) in (("compile", "generate"), ("compile", "verify")):
             return True
         if (phase, substep) not in (("generate", "generate"), ("generate", "verify")):
             return False
@@ -6425,8 +6330,7 @@ class Conductor:
         that entry's OUTPUT must satisfy — `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, verbatim
         and whole, which is what the agentic runner-authoring leaf force-read (the non-M3c
         branch of `leaf_contract_doc_refs`, deleted with that leaf in Z4 — issue #171). Whole, not sliced: every section of it
-        governs a leaf that writes the program, where the judge (which reads §1+§3) only reads
-        the output afterwards.
+        governs a leaf that writes the program.
 
         The SEVENTH document is the static lint check's DECLARED RULE SET, asked of the linter
         backend the node's language resolves to (`lint_rules_document`). §5 below states the
@@ -7316,14 +7220,12 @@ class Conductor:
     def _write_leaf_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
                                  failure_category: str | None, failure_excerpt: str | None,
                                  attempts: int, per_attempt: list[dict[str, Any]],
-                                 parent: str | None = None,
                                  leaf_mode: str = "workshop") -> None:
-        """Author `<parent>/<basename>` — the per-attempt record of a pure substep, `<ir_ref>` by
-        default. Byte for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
-        `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. For the compile
-        pair it lives beside `compile_static_meta.json` and is named after its substep the same
-        way; `validate.judge` passes its run-node dir, because that is where the run's own
-        records live."""
+        """Author `<ir_ref>/<basename>` — the per-attempt record of a pure compile substep.
+        Byte for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
+        `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. It lives beside
+        `compile_static_meta.json` and is named after its substep the same way. (`validate.judge`
+        passed its run-node dir as a `parent` until issue #724 PR-2 deleted it.)"""
         from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
@@ -7339,7 +7241,7 @@ class Conductor:
         meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
-        path = self.repo_root / (parent or refs.ir_ref) / basename
+        path = self.repo_root / refs.ir_ref / basename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -7351,167 +7253,14 @@ class Conductor:
         """The pure `compile.verify` reviewer's per-attempt record (`verdict_meta.json`'s twin)."""
         self._write_leaf_attempt_meta(refs, "compile_verify_meta.json", **kwargs)
 
-    # --- the pure `validate.judge` reviewer (Z3, issue #169) ------------------
-
     def _node_runner_host_authored(self, refs: NodeRefs) -> bool:
         """The `runner_host_authored` stamp read off the NODE.
 
         `_runner_host_authored_m3c` returns the constant `True`, which is the truth for the
-        pure paths that only ever see an M3c node. The judge sees every node kind, so it asks
-        instead — the stamp's reader believed what the request said.
+        pure paths that only ever see an M3c node. A reader that sees every node kind (the
+        harness shape's) asks instead — the stamp's reader believed what the request said.
         """
         return self._conductor_authors_runner(refs)
-
-    def _write_judge_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
-        """The pure `validate.judge` reviewer's per-attempt record, in the run-node dir beside
-        the run's other host-written records. Same key set as its `compile` / `generate` twins,
-        so `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged."""
-        self._write_leaf_attempt_meta(refs, "judge_meta.json",
-                                      parent=refs.run_node_dir(), **kwargs)
-
-    def _semantic_review_scope(self, refs: NodeRefs) -> dict[str, Any]:
-        """The `scope` block of `semantic_review.json`: what the review was OF.
-
-        Every value here is a fact about the workspace, which is why the host writes it and the
-        leaf does not: `--stage pre_judge` requires each ref to be a `workspace/`-rooted path
-        that EXISTS, and a closed-context leaf could only guess. The model and runner refs come
-        from the bundle's declared roles when there is a bundle — each `files[]` entry is written
-        to `src/<logical_path>`, which is what makes the join below correct — and from the
-        conductor's own two basename helpers otherwise. Never from a spelling invented here: the
-        basenames are the language's `bundle_facts`, and a third copy would be language knowledge
-        in the neutral core (`docs/BACKEND_BOUNDARY.md`).
-
-        `raw_refs` is empty when the run produced no `raw/` at all. That is left to fail at the
-        gate, which requires a non-empty list — deliberately, because a node certified on no
-        primary evidence is exactly what the gate is for, and the judge that passed such a run
-        was looking at an excerpt whose `raw_dir_present` said so."""
-        source_dir = refs.source_dir()
-        model_ref = f"{source_dir}/src/{self._model_basename(refs)}"
-        runner_ref = f"{source_dir}/src/{self._runner_basename(refs)}"
-        bundle_path = self.repo_root / source_dir / "codegen_bundle.json"
-        try:
-            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            bundle = None
-        if isinstance(bundle, dict):
-            declared: dict[str, str] = {}
-            for role in ("model", "runner"):
-                named = [f["logical_path"] for f in (bundle.get("files") or [])
-                         if isinstance(f, dict) and f.get("role") == role
-                         and isinstance(f.get("logical_path"), str)]
-                # EXACTLY one, or the conductor's own naming stands: two files in a role is a
-                # bundle the gates refuse, and guessing which one the review was "of" would put
-                # an arbitrary path into the record the operator reads.
-                if len(named) == 1:
-                    declared[role] = f"{source_dir}/src/{named[0]}"
-            model_ref = declared.get("model", model_ref)
-            runner_ref = declared.get("runner", runner_ref)
-        raw_dir = self.repo_root / refs.run_node_dir() / "raw"
-        raw_refs = sorted(
-            str(path.relative_to(self.repo_root)).replace("\\", "/")
-            for path in raw_dir.rglob("*") if path.is_file()) if raw_dir.is_dir() else []
-        return {"model_ref": model_ref, "runner_ref": runner_ref, "raw_refs": raw_refs}
-
-    def _write_semantic_review(self, refs: NodeRefs, review: dict[str, Any], *,
-                               attempts: int) -> None:
-        """Author `<run_node_dir>/semantic_review.json` from the judge's returned judgement.
-
-        The leaf returns `{decision, findings, notes}` and NOTHING else; everything the
-        `--stage pre_judge` gate reads besides the decision is a fact about the workspace that
-        this method supplies. `review_method` is the exact literal the gate requires — the
-        SKILL used to spend a paragraph telling the leaf to write it correctly, and a
-        host-written literal cannot be written incorrectly.
-
-        `evidence_refs` are rewritten from `<document_key>[#fragment]` to the workspace path
-        that key was inlined FROM, which is what keeps the gate's "path list" a path list. The
-        in-loop validator has already refused any key that was not inlined, so a key that
-        somehow reaches here without a path is kept VERBATIM rather than dropped: a finding is
-        the operator's evidence, and silently deleting a reference to make a file look tidy is
-        worse than an unresolved one.
-
-        Never called on an exhausted attempt: no accepted document, no file — which is what
-        makes the file's absence the signal `run_phase` routes on."""
-        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
-        from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
-        paths = self._leaf_judge_document_refs(refs)
-        findings = []
-        for finding in review["findings"]:
-            resolved = dict(finding)
-            refs_out = []
-            for ref in finding["evidence_refs"]:
-                key, _, fragment = ref.partition("#")
-                path = paths.get(key.strip())
-                refs_out.append(f"{path}#{fragment}" if (path and fragment)
-                                else (path or ref))
-            resolved["evidence_refs"] = refs_out
-            findings.append(resolved)
-        review_document = {
-            "review_method": "llm_semantic_review",
-            "decision": review["decision"],
-            "findings": findings,
-            "scope": self._semantic_review_scope(refs),
-            "node_key": refs.node_key,
-            "pipeline_id": refs.pipeline_id,
-            "run_id": refs.run_id,
-            "attempt_count": attempts,
-            "raw_excerpt_policy_version": RAW_EXCERPT_POLICY_VERSION,
-            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
-        }
-        if review.get("notes"):
-            review_document["notes"] = review["notes"]
-        path = self.repo_root / refs.run_node_dir() / "semantic_review.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(review_document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-    @staticmethod
-    def _semantic_review_violations(review: dict[str, Any]) -> list[str]:
-        """The judge document's schema, bound to the keys the host actually inlines.
-
-        The key set is taken from `PURE_CONTEXT_REQUIRED_KEYS`, the same table the renderer
-        validates the launch against, so a document slot added or removed there moves what an
-        `evidence_refs` entry may name WITHOUT a second list here going stale."""
-        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
-        from tools.leaf_contract import semantic_review_document_violations
-        return semantic_review_document_violations(
-            review, document_keys=PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")])
-
-    @staticmethod
-    def _semantic_review_summary(review: dict[str, Any], attempts: int) -> str:
-        """The `result_summary` of a judge row. A pure row's `output_refs` is empty, so this is
-        the only field that can satisfy `_validate_agent_summary_text`."""
-        if review["decision"] == "pass":
-            return f"pure_judge_pass: decision pass (findings=0, attempts={attempts})"
-        first = review["findings"][0]
-        return (f"pure_judge_fail: {first['attribution']}: "
-                f"{first['description'][:200]}")
-
-    def _leaf_judge_spec(self) -> "Conductor._LeafReviewerSpec":
-        """The `validate.judge` half of the pure reviewer loop.
-
-        `runner_host_authored` carries the NODE's real value rather than the M3c constant the
-        two older reviewers pass: the judge runs on every node kind, and the launch request's
-        stamp had one reader, and it is deleted (see `_runner_host_authored_m3c`)."""
-        return self._LeafReviewerSpec(
-            build_context=self._build_leaf_judge_context,
-            write_project_meta=self._write_semantic_review,
-            write_meta=self._write_judge_meta,
-            repair_reason="pure_semantic_review_repair",
-            attempt_failed_event="pure_semantic_review_attempt_failed",
-            summary_prefix="pure_judge",
-            host_write_failed_reason="pure_judge_host_write_failed",
-            runner_host_authored=self._node_runner_host_authored,
-            violations=self._semantic_review_violations,
-            schema_category=SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
-            status_of=lambda doc: doc["decision"],
-            reply_of=lambda doc, rc: (
-                f"semantic review: decision {doc['decision']} "
-                f"(findings={len(doc['findings'])})\nleaf rc={rc}"),
-            summary_of=self._semantic_review_summary,
-            document_name="semantic review",
-            **self._workshop_reviewer_fields(
-                "validate", "judge", "", SEMANTIC_REVIEW_DOCUMENT_VIOLATION),
-        )
 
     # --- the two leaf loops, parametrised ------------------------------------
     # `_run_workshop_producer_substep` / `_run_leaf_reviewer_substep` are PHASE-INDEPENDENT: the
@@ -9186,123 +8935,6 @@ class Conductor:
                 f"{refs.source_dir()}/codegen_bundle.json", "bundle"),
         }
 
-    #: The `validate.judge` documents that are a FILE, keyed by the pure-context slot name.
-    #: One definition, three readers: the context builder reads each path, `_write_semantic_review`
-    #: resolves an `evidence_refs` key back to it, and `test_leaf_judge` walks it. The three
-    #: DERIVED slots are added by `_leaf_judge_document_refs`, which is what a caller should use.
-    _LEAF_JUDGE_RUN_NODE_DOCUMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("verdict_document", "verdict.json"),
-        ("perf_document", "perf.json"),
-        ("trial_meta_document", "trial_meta.json"),
-        ("quality_check_document", "quality_check.json"),
-    )
-
-    #: The keys of `_leaf_judge_document_refs` whose path is the FRAMEWORK's, read under
-    #: `FRAMEWORK_ROOT`; every other key names a Project path (issue #705).
-    _LEAF_JUDGE_FRAMEWORK_DOCUMENTS: ClassVar[frozenset[str]] = frozenset(
-        {"runner_output_contract_document"})
-
-    def _leaf_judge_document_refs(self, refs: NodeRefs) -> dict[str, str]:
-        """Each inlined judge document, mapped to the repository path it was inlined FROM.
-
-        This is what makes `evidence_refs` resolvable: the leaf cites the slot it was given and
-        the host turns that back into a path, so `semantic_review.json`'s "path list" stays a
-        path list without the leaf ever naming a workspace location. The raw-evidence excerpt
-        maps to the DIRECTORY it summarizes, which is the honest answer — there is no file
-        holding the excerpt, and `scope.raw_refs` enumerates what is under it."""
-        from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
-        run_node_dir = refs.run_node_dir()
-        paths = {key: f"{run_node_dir}/{name}"
-                 for key, name in self._LEAF_JUDGE_RUN_NODE_DOCUMENTS}
-        paths.update({
-            "tests_document": f"{refs.spec_path}/tests.md",
-            "io_contract_document": f"{refs.ir_ref}/spec.ir.yaml",
-            "runner_output_contract_document": RUNNER_OUTPUT_CONTRACT_REF,
-            "binary_meta_document": f"{refs.binary_dir()}/binary_meta.json",
-            "source_meta_document": f"{refs.source_dir()}/source_meta.json",
-            "raw_evidence_excerpt_document": f"{run_node_dir}/raw",
-        })
-        return paths
-
-    def _build_leaf_judge_context(self, refs: NodeRefs) -> dict[str, str]:
-        """Assemble the closed context a pure `validate.judge` reviewer sees.
-
-        The judge is the one leaf that used to hold tools, and what it did with them was walk
-        `raw/` — 13 MB of float arrays — with scripts it wrote per run. Everything it can
-        legitimately reach is inlined here instead, and the arrays become
-        `raw_evidence_excerpt_document` (`tools/raw_evidence_excerpt.py`), which is the whole of
-        the judge's window onto `raw/`.
-
-        WHAT IS NOT HERE, and why. `spec.ir.yaml` in full (52 KB) — the judge's canonical sources
-        are `tests.md` and the IR's `io_contract`, so only that section is inlined.
-        `controlled_spec.md` — the behavioural contract is `Generate.verify`'s subject; the judge
-        asks whether the EVIDENCE supports the verdict. `phase_04_validate.md` — 40 KB of which
-        the judge's part is the review contract, and that is the template's job; it also took 12
-        commits in seven weeks, and a document edited that often is not a stable leaf input.
-        `pre_judge_meta.json` — a constant `pass` the substep records without checking anything
-        (the readiness gate is `run_phase`'s, before any substep), from which the judge gains
-        nothing.
-
-        EVERY read RAISES, as the `generate.verify` sibling's four node artifacts do since issue
-        #467 (they degraded to `""` until then). No degradation may travel here: each document
-        below is evidence the judge weighs, and a judge that cannot see `verdict.json` has no
-        basis for `pass` and would be answering about the absence. The REASON given here was
-        wrong until a review round measured it — a blank value does NOT reach the leaf, because
-        `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as
-        missing and raises. What degrading actually buys is a refusal one frame too LATE: a
-        `ValueError` out of `record_launch`, escaping this loop's named
-        `pure_context_assembly_failed` branch and aborting the conductor instead — the issue #168
-        shape where a recoverable named outcome becomes a crash. Raising HERE keeps the named
-        outcome.
-        `_run_leaf_reviewer_substep` turns the exception into a `pure_context_assembly_failed`
-        fail-closed outcome and spawns no leaf, which is the pure form of the SKILL's rule that
-        the judge does not begin without its evidence.
-
-        The excerpt is the exception to nothing: it does not raise for a defect in the evidence,
-        because a missing or malformed `raw/` is precisely what the judge is there to find and an
-        exception would mean no judge ran. `tools/raw_evidence_excerpt.py` records that.
-        """
-        from tools.raw_evidence_excerpt import raw_evidence_excerpt
-        paths = self._leaf_judge_document_refs(refs)
-
-        def _read(key: str) -> str:
-            # The runner-output contract is the framework's document; every other path of the
-            # table is the Project's (a spec file or a run artifact) — issue #705.
-            root = (FRAMEWORK_ROOT if key in self._LEAF_JUDGE_FRAMEWORK_DOCUMENTS
-                    else self.repo_root)
-            return (root / paths[key]).read_text(encoding="utf-8")
-
-        runner_output_contract = _runner_output_contract_sections(
-            _read("runner_output_contract_document"))
-
-        ir_text = _read("io_contract_document")
-        try:
-            ir_document = yaml.safe_load(ir_text)
-        except yaml.YAMLError as exc:
-            raise RuntimeError(
-                f"pure_io_contract_document_unreadable: "
-                f"{paths['io_contract_document']}: {exc}") from exc
-        io_contract = ir_document.get("io_contract") if isinstance(ir_document, dict) else None
-        if not isinstance(io_contract, dict):
-            raise RuntimeError(
-                f"pure_io_contract_document_missing: {paths['io_contract_document']}: "
-                "the IR declares no io_contract")
-
-        excerpt = raw_evidence_excerpt(
-            self.repo_root / paths["raw_evidence_excerpt_document"], io_contract,
-            output_format=self.target.output_format)
-        context = {key: _read(key) for key, _ in self._LEAF_JUDGE_RUN_NODE_DOCUMENTS}
-        context.update({
-            "tests_document": _read("tests_document"),
-            "io_contract_document": yaml.safe_dump(io_contract, sort_keys=False,
-                                                   allow_unicode=True),
-            "runner_output_contract_document": runner_output_contract,
-            "binary_meta_document": _read("binary_meta_document"),
-            "source_meta_document": _read("source_meta_document"),
-            "raw_evidence_excerpt_document": json.dumps(excerpt, indent=2, allow_nan=False),
-        })
-        return context
-
     def _write_verdict_meta(self, refs: NodeRefs, *, result: str,
                             failure_category: str | None, failure_excerpt: str | None,
                             attempts: int, per_attempt: list[dict[str, Any]],
@@ -9388,11 +9020,10 @@ class Conductor:
         return summary
 
     # --- the reading kind of workshop leaf (issue #534 step 3) ----------------------------
-    #: The one document a reviewer's tree holds at its root, by substep: the verify verdict, or
-    #: the judge's semantic review. Neither is a seed name (`host_verdict.json` is the judge's
-    #: seed of the HOST's verdict document, for that reason).
-    _WORKSHOP_REVIEW_OUTPUT_BY_SUBSTEP: ClassVar[dict[str, str]] = {
-        "verify": "verdict.json", "judge": "review.json"}
+    #: The one document a reviewer's tree holds at its root, by substep: the verify verdict. It
+    #: is not a seed name. (The judge's `review.json` went with `validate.judge` in issue #724
+    #: PR-2.)
+    _WORKSHOP_REVIEW_OUTPUT_BY_SUBSTEP: ClassVar[dict[str, str]] = {"verify": "verdict.json"}
     #: The tree name each reviewer `pure_context` document is seeded under, by
     #: `(phase, substep, shape)`. `bundle_document` has none: it is EXPANDED into the manifest
     #: and the bundle's own files (`_WORKSHOP_BUNDLE_REVIEW_MANIFEST`). A `.json` name is
@@ -9422,18 +9053,6 @@ class Conductor:
             "target_profile": "target_profile.json",
             "runner_output_contract_document": "runner_output_contract.md",
             "severity_rubric_document": "SEVERITY_RUBRIC.md",
-        }),
-        ("validate", "judge", ""): MappingProxyType({
-            "tests_document": "tests.md",
-            "io_contract_document": "io_contract.yaml",
-            "runner_output_contract_document": "runner_output_contract.md",
-            "verdict_document": "host_verdict.json",
-            "perf_document": "perf.json",
-            "trial_meta_document": "trial_meta.json",
-            "quality_check_document": "quality_check.json",
-            "binary_meta_document": "binary_meta.json",
-            "source_meta_document": "source_meta.json",
-            "raw_evidence_excerpt_document": "raw_evidence_excerpt.json",
         }),
     }
     #: The name the bundle under review's manifest is seeded under. NOT `bundle.yaml`: that is
@@ -9481,12 +9100,10 @@ class Conductor:
                             shape: str | None = None) -> "Conductor._LeafReviewerSpec":
         """The phase-specific half of the pure reviewer loop.
 
-        Keyed by `(phase, substep)` since Z3: `validate` has a reviewer that is not a `verify`,
-        and its document is a semantic review rather than a verify verdict. `shape` is the
-        node's CodegenBundle shape and is consulted only for `generate.verify`, where what the
-        reviewer is shown alongside the bundle differs between the two shapes."""
-        if (phase, substep) == ("validate", "judge"):
-            return self._leaf_judge_spec()
+        Keyed by `(phase, substep)` since Z3, when `validate` had a reviewer that was not a
+        `verify` (`validate.judge`, deleted in issue #724 PR-2). `shape` is the node's
+        CodegenBundle shape and is consulted only for `generate.verify`, where what the reviewer
+        is shown alongside the bundle differs between the two shapes."""
         if phase == "compile":
             return self._LeafReviewerSpec(
                 build_context=self._build_leaf_compile_verify_context,
@@ -9920,8 +9537,8 @@ class Conductor:
             self.emit(spec.attempt_failed_event, node_key=refs.node_key,
                       substep=substep, attempt=len(per_attempt), failure_category=category,
                       detail=(this_excerpt or "")[:200])
-            # The document's NAME comes from the spec: a judge that returned nothing did not
-            # fail to return a verify verdict.
+            # The document's NAME comes from the spec, so a reviewer that returned nothing is
+            # named by the document it owed.
             reply = (f"{spec.document_name}: none\nleaf rc={proc.returncode}\n"
                      f"category: {category or 'none'}")
             result_summary = f"{spec.summary_prefix}_fail: {category}"
@@ -10403,10 +10020,12 @@ class Conductor:
         derivation above needs no such term.)
 
         The repository's own suite is the other exhibit, and it is not a reconstruction:
-        `tools/tests/test_workflow_conductor.py` has 8 failures on `origin/main` at `e64b50a`
+        `tools/tests/test_workflow_conductor.py` had 8 failures on `origin/main` at `e64b50a`
         (`VerifyMetaSchemaWarmResumeTests` and the two
-        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`) whose stubs write
-        their metas in-process inside one tick, and they pass here.
+        `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`, re-hosted onto
+        `compile.verify` as `test_retried_verify_cannot_certify_the_dead_attempts_verdict` in
+        issue #724 PR-2) whose stubs write their metas in-process inside one tick, and they pass
+        here.
 
         Writing a probe and reading ITS mtime removes the clock mismatch rather than allowing
         for it with a margin: both stamps then come from the one coarse clock, so a deliverable
@@ -10472,7 +10091,7 @@ class Conductor:
         # written after this call still stamps at or above the returned value. Without the wait
         # the gate would lose a tick in the wrong direction: a retry launched inside the dead
         # attempt's own tick would accept its artifact
-        # (`test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` is that case).
+        # (`test_retried_verify_cannot_certify_the_dead_attempts_verdict` is that case).
         # `os.utime`, not a rewrite: the same coarse stamp, two syscalls, and the recorded body
         # stays the one written above.
         deadline = time.monotonic() + LAUNCH_INSTANT_TICK_WAIT_SECONDS
@@ -10549,22 +10168,13 @@ class Conductor:
             meta = _read_json(self.repo_root / refs.ir_ref / "compile_static_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
-        elif phase == "validate" and substep == "pre_judge":
-            # The conductor-authored pre_judge_meta records `pass` unconditionally; the
-            # dependency-DAG readiness check is `run_phase`'s (`_judge_pre_spawn_dag_block`),
-            # before any substep. The substep fails here only when that meta is not a fresh
-            # `pass` (a stale or corrupted run directory); run_phase's skip-write branch then
-            # classifies it from the meta (`classify_validate_gate_failure`), and
-            # `classify_failure` raises if reached for it.
-            meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / "pre_judge_meta.json") or {}
-            status = "pass" if (meta.get("status") == "pass"
-                                and _fresh_deliverables_written(allowed_output_paths)) else "fail"
         elif phase == "validate" and substep == "post_judge":
-            # Deterministic post-return gate: the conductor-authored post_judge_meta records
-            # the `--stage pre_judge` verdict (orchestration-record + cross-pipeline DAG
+            # Deterministic gate: the conductor-authored post_judge_meta records the
+            # `--stage pre_judge` verdict (orchestration-record + cross-pipeline DAG
             # integrity). A violation is status=fail with rc 0; run_phase reads its
-            # `disposition` to decide escalate vs fail_closed. This is where the old
-            # judge-gate AND now lives (a certified-pass node must clear this gate).
+            # `disposition` to decide escalate vs fail_closed. A certified-pass node must
+            # clear this gate. (The `pre_judge` substep's branch, which required its own
+            # constant-`pass` meta fresh, went with that substep in issue #724 PR-2.)
             meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / "post_judge_meta.json") or {}
             status = "pass" if (meta.get("status") == "pass"
                                 and _fresh_deliverables_written(allowed_output_paths)) else "fail"
@@ -10605,16 +10215,6 @@ class Conductor:
                 f"{phase}.{substep or ''} is an LLM leaf, which computes its own status "
                 f"inside its pure loop")
         return status, output_refs
-
-    def _judge_semantic_decision(self, refs: NodeRefs) -> str:
-        """Normalized `semantic_review.json#decision` for the judge substep (lower-cased,
-        stripped; `""` when the file or field is absent). Used by run_phase to decide whether a
-        failed judge substep can safely write a `fail` step_result: the pre_phase_complete hook
-        forbids a `fail` step_result unless the decision is present and `"fail"`, so a `pass`
-        (or missing/empty) decision must skip the write and route as a conformance violation
-        rather than crash the runtime write-step-result."""
-        sem = _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json") or {}
-        return str(sem.get("decision") or "").strip().lower()
 
     def _agent_run_json(self, refs: NodeRefs, phase: str, substep: str | None,
                         child_arid: str, status: str,
@@ -10711,10 +10311,10 @@ class Conductor:
         return payload
 
     # -- deterministic (non-LLM) substep execution ----------------------------
-    # Build and Validate.execute are contractually non-LLM (deterministic compile /
-    # run), so the conductor ALWAYS runs their body IN-PROCESS (no `claude -p` leaf) by
-    # calling the build-runtime library's entry points directly (`tools/build_runtime.py`). Validate.judge stays an LLM
-    # leaf (its independent semantic check is essential).
+    # Build and Validate are contractually non-LLM (deterministic compile / run / gate), so
+    # the conductor ALWAYS runs their body IN-PROCESS (no `claude -p` leaf) by calling the
+    # build-runtime library's entry points directly (`tools/build_runtime.py`). Validate's one
+    # LLM leaf, `judge`, was deleted in issue #724 PR-2.
 
     @staticmethod
     def _is_deterministic_substep(phase: str, substep: str | None) -> bool:
@@ -10724,7 +10324,7 @@ class Conductor:
         if substep == DIAGNOSE_SUBSTEP:
             return False
         return (phase == "build"
-                or (phase == "validate" and substep in ("pre_judge", "execute", "post_judge"))
+                or (phase == "validate" and substep in ("execute", "post_judge"))
                 or (phase == "generate" and substep == "gate")
                 or (phase == "compile" and substep == "static"))
 
@@ -10775,8 +10375,6 @@ class Conductor:
         try:
             if phase == "build":
                 out = self._build_inproc(refs, child_arid)
-            elif phase == "validate" and substep == "pre_judge":
-                out = self._pre_judge_inproc(refs, child_arid)
             elif phase == "validate" and substep == "post_judge":
                 out = self._post_judge_inproc(refs, child_arid)
             elif phase == "validate" and substep == "execute":
@@ -13243,7 +12841,7 @@ class Conductor:
         promote the runner's primary evidence to the canonical run node dir, author the
         agent-owned metadata (snapshot_schema/quality_check/trial_meta/stdout/stderr),
         then run the post_execute gate. The runner's evidence bytes are never authored
-        by an LLM (preserving Validate.judge's non-fabrication independence)."""
+        by an LLM."""
         from tools.build_runtime import (
             QUALITY_CHECKS_TIMEOUT_SEC,
             RUN_PROGRAM_TIMEOUT_SEC,
@@ -14006,8 +13604,7 @@ class Conductor:
         # The test profile the cases were authored under (issue #346): every `tests.md` §8 asks
         # for it in this record, which only the host writes. The value every case declares, and
         # `null` when a case lacks it or two cases disagree. A record: no gate and no verdict
-        # predicate reads it and nothing fails on it (the judge is shown trial_meta.json whole,
-        # as it is shown every other record field), so a leaf gains nothing from its value.
+        # predicate reads it and nothing fails on it, so a leaf gains nothing from its value.
         case_set = ir.get("case", {}).get("test_case_set") if isinstance(ir.get("case"), dict) else None
         case_inputs = [c["inputs"] if isinstance(c, dict) and isinstance(c.get("inputs"), dict) else {}
                        for c in (case_set if isinstance(case_set, list) else [])]
@@ -14217,10 +13814,9 @@ class Conductor:
         # 5. R2: the run is structurally valid (evidence present, post_execute gate + quality
         # check clean), so author verdict.json deterministically from the IR's predicates over
         # the captures. A per-test predicate failure (physics_fail / structural_violation)
-        # fails the execute substep WITHOUT spawning the judge leaf (the R2 cost lever) —
-        # classify_failure reads verdict.json#failure_class to route it. An all-clean verdict
-        # (self_verdict ∈ {pass, xfail}) leaves the execute substep passing; the judge then
-        # authors semantic_review.json only.
+        # fails the execute substep — classify_failure reads verdict.json#failure_class to
+        # route it. An all-clean verdict (self_verdict ∈ {pass, xfail}) leaves the execute
+        # substep passing, and `post_judge` follows.
         verdict_doc = self._evaluate_execute_verdict(refs, ir)
         from tools import oracle as oracle_mod
         # 6. The oracle (issue #680, `docs/workflow/phases/phase_04_validate.md` §4-1): on a run
@@ -14450,8 +14046,8 @@ class Conductor:
           `_run_leaf_reviewer_substep`, each of which owns its own spawn/validate/repair/
           finalize/write loop. The leaf holds no write authority: the host writes every
           artifact from the snapshot of its tree.
-        * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.pre_judge /
-          execute / post_judge) runs in-process below. It still takes an agent_run_id, a
+        * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.execute /
+          post_judge) runs in-process below. It still takes an agent_run_id, a
           recorded launch and a finalize-child, so the integrity validators read it as an
           ordinary substep agent run; what it does not take is a leaf, a sandbox, or a retry —
           none of the transient-death, usage-limit or warm-resume paths the old loop carried
@@ -14476,12 +14072,11 @@ class Conductor:
                 return SubstepOutcome(
                     self.new_agent_run_id(), "fail", [], 1,
                     ("node_has_no_bundle_shape", detail), 1)
-            if substep in ("verify", "judge"):
+            if substep == "verify":
                 # The reviewer: its own spawn/validate/repair/finalize loop, host-authors
                 # the phase's stage meta from the returned document after the child window
-                # closes. `judge` joined it in Z3 — a judge reviews a run where a verify reviews
-                # an artifact, and the loop is the same shape either way; what differs is the
-                # document, which the spec says.
+                # closes. (`judge` joined it in Z3 and left it with the substep, issue #724
+                # PR-2.)
                 return self._run_leaf_reviewer_substep(
                     refs, phase, substep, resolved_dependencies,
                     self._leaf_reviewer_spec(phase, substep, self._shape_for_spec(refs, phase)))
@@ -15229,21 +14824,14 @@ class Conductor:
                              -> runs/<run_id>/trial_meta.json#failure_excerpt
           `build_<category>` (category in BUILD_FAILURE_ROUTING)
                              -> binary/<binary_id>/binary_meta.json#failure_excerpt
-          `judge_semantic_review_fail`
-                             -> runs/<run_id>/semantic_review.json#findings[], one entry per
-                                finding (folded here by `judge_repair_text`, issue #455)
+        (`judge_semantic_review_fail`, which folded `semantic_review.json#findings[]`, went with
+        `validate.judge` in issue #724 PR-2, and no classification produces it any more.)
         Read at the conduct reopen point where `refs` still names the FAILED artifact (rotation
         to the fresh id happens later, inside run_phase -> _ensure_fresh_producer_id). Returns
         None when unavailable so the repair simply falls back to the full prompt.
         `compile_declared_fail` matches no clause, by intent: a producer's declaration is not a
         finding to correct, and it terminalizes before any repair (issue #355)."""
         r = (reason or "")
-        if r == "judge_semantic_review_fail":
-            # The judge's findings are a document, not a meta field: fold them the one way
-            # (`judge_repair_text`), from the review the failed run wrote.
-            from tools.leaf_contract import judge_repair_text
-            return judge_repair_text(
-                _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json"))
         field = "failure_excerpt"
         # compile_static_ is checked before gate_ for clarity; the two share no prefix, so order
         # is not load-bearing.
@@ -15297,30 +14885,27 @@ class Conductor:
         excerpt = meta.get(field) if isinstance(meta, dict) else None
         return excerpt if isinstance(excerpt, str) and excerpt.strip() else None
 
-    # -- Validate.judge conductor-owned pre_judge gate (G3) --------------------
+    # -- Validate's conductor-owned `--stage pre_judge` gate (G3) ------------
     # The purely-structural `--stage pre_judge` gate (orchestration-record integrity +
     # the cross-pipeline dependency DAG) used to run INSIDE the LLM judge leaf as its final
-    # step. It is hoisted to the conductor as two deterministic substeps wrapping the judge,
-    # mirroring the G1/G2 deterministic-gate hoists one and two phases up:
-    #   - pre_judge  (`_pre_judge_inproc`, index 0): records `pre_judge_meta.json` as `pass`.
-    #     The readiness check it once ran — fail fast, before execute or a COLD judge, when a
-    #     --with-deps dependency closure is not built+validated in its own pipeline
-    #     (`_judge_pre_spawn_dag_block`) — is `run_phase`'s, before any substep, and is
-    #     fail_closed.
-    #   - post_judge (`_post_judge_inproc`, index 3): after the judge returns its verdict, run
-    #     `--stage pre_judge` and record `post_judge_meta.json` with a severity `disposition`;
-    #     both graded classes (leaf/judge-authored conformance, and integrity) are
-    #     fail_closed; an unknown one escalates.
-    # The judge leaf itself invokes no validator gate — it holds no shell to invoke one with,
-    # and all three of pre_judge / judge / post_judge run their gates in the conductor.
+    # step. It was hoisted to the conductor as deterministic substeps around the judge,
+    # mirroring the G1/G2 deterministic-gate hoists one and two phases up. Since issue #724
+    # PR-2 deleted the judge and the `pre_judge` substep (which recorded `pass` and checked
+    # nothing), it is the one gate substep:
+    #   - post_judge (`_post_judge_inproc`, index 1): after execute, run `--stage pre_judge`
+    #     and record `post_judge_meta.json` with a severity `disposition`; the graded class
+    #     (integrity or a host-authored artifact) is fail_closed; an unknown one escalates.
+    # The dependency-DAG readiness check (`_judge_pre_spawn_dag_block`) is `run_phase`'s,
+    # before any substep, and is fail_closed.
 
     def _judge_pre_spawn_dag_block(self, refs: NodeRefs) -> str | None:
-        """Pre-spawn Validate.judge dependency-DAG readiness (multi-node closures only).
+        """Validate dependency-DAG readiness, before any substep (multi-node closures only).
+        The name is kept from when it guarded the spawn of `Validate.judge` (deleted, issue
+        #724 PR-2).
 
         The `--with-deps` model builds+validates each dependency node in its OWN separate
-        pipeline, then runs the dependent. Before spawning a cold judge (and before even
-        running execute), verify every closure node has its own fully built+validated
-        pipeline. Returns a human-readable excerpt when some closure node is not ready
+        pipeline, then runs the dependent. Before running execute, verify every closure node
+        has its own fully built+validated pipeline. Returns a human-readable excerpt when some closure node is not ready
         (caller fails fast); None for a ready closure OR a single-node run (empty closure,
         zero overhead — the common case).
 
@@ -15331,7 +14916,7 @@ class Conductor:
         cross-pipeline predicate
         (`_closure_node_validated_in_own_pipeline`), so anything blocked here would also
         fail that `--stage pre_judge` gate (run by `post_judge`) — it never fails a run the post-gate would pass; it only saves the
-        wasted execute+judge cost when the closure is genuinely incomplete. Reading
+        wasted execute cost when the closure is genuinely incomplete. Reading
         `all_nodes` directly (not `_dependency_closure_nodes`) also skips that helper's L6
         diamond guard, which is a Build/Model-B staging concern irrelevant to DAG readiness
         (and would otherwise mis-raise for a c/cpp/mixed node at validate time)."""
@@ -15381,36 +14966,17 @@ class Conductor:
         path.write_text(
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    def _pre_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
-        """Deterministic Validate.pre_judge, the recorded substep at index 0: it authors
-        `pre_judge_meta.json` with `status: pass` and checks nothing. The dependency-DAG
-        readiness check is `run_phase`'s, before any substep (`_judge_pre_spawn_dag_block`),
-        which fails the phase closed (`validate_pre_judge_dag_incomplete`) before this substep
-        is reached; the copy this body used to run was removed by issue #643 PR-5. The
-        substep stays because `SUBSTEPS`, `classify_validate_gate_failure` and the runtime
-        name it and its meta."""
-        self._write_run_node_meta(refs, "pre_judge_meta.json", {
-            "run_id": refs.run_id,
-            "node_key": refs.node_key,
-            "pipeline_id": refs.pipeline_id,
-            "status": "pass",
-            "validation_stage": "pre_judge",
-            "failure_category": None,
-            "failure_excerpt": None,
-        })
-        return {"returncode": 0, "stdout": "", "stderr": ""}
-
     def _author_derived_validate_artifacts(self, refs: NodeRefs) -> None:
-        """G6: deterministically author the derived Validate artifacts the judge leaf used
-        to write — `aggregate_verdict.json` / `summary.json` / `validate_meta.json` — from
-        the judge's `verdict.json#per_test` plus the dependency set's `aggregate_verdict`s.
+        """G6: deterministically author the derived Validate artifacts an LLM leaf used to
+        write — `aggregate_verdict.json` / `summary.json` / `validate_meta.json` — from the
+        host's `verdict.json#per_test` plus the dependency set's `aggregate_verdict`s.
         These are 100% deterministically derivable, so the conductor authors them
         correct-by-construction (closing the previously un-gated aggregate/`blocked`-DAG
         composition hole) instead of the LLM. Called at the TOP of `_post_judge_inproc`,
         before the `--stage pre_judge` gate re-validates `summary.counts` vs
         `verdict.per_test` (`_validate_tests_verdict_summary_consistency`). Idempotent on any
-        re-run that reaches it (re-derived from the execute-authored `verdict.json`). As of R2 the
-        judge authors only `semantic_review.json`; `verdict.json` is host-authored at execute."""
+        re-run that reaches it (re-derived from the execute-authored `verdict.json`).
+        `verdict.json` is host-authored at execute (R2)."""
         from tools.orchestration_runtime import _resolve_dependency_facts
 
         node_dir = self.repo_root / refs.run_node_dir()
@@ -15511,7 +15077,7 @@ class Conductor:
 
         # aggregate_verdict: `blocked` when any immediate dep is not ready; else the transitive
         # fold (precedence blocked > fail > xfail > pass) over {self_verdict} + ready-dep
-        # contributions. On the post_judge path the judge passed (self_verdict ∈ {pass,xfail})
+        # contributions. On the post_judge path execute passed (self_verdict ∈ {pass,xfail})
         # and the pre-launch DAG guard found every dep ready, so this is ∈ {pass,xfail} unless a
         # dep's certified verdict no longer resolves through `select`.
         blocked = bool(blocking_direct_deps)
@@ -15585,25 +15151,27 @@ class Conductor:
         # one it always was, not because anything fills it.
         prior_post = _read_gate_meta(node_dir / "post_judge_meta.json") or {}
         last_fail_reason = prior_post.get("failure_excerpt") or None
-        attempt_count = getattr(self, "_judge_attempt_count", {}).get(refs.node_key, 1)
+        # `attempt_count` is a required integer (`meta_contracts`); a run node directory belongs
+        # to one attempt of the phase, so it is `1`. It counted `validate.judge`'s launches, and
+        # `judge_command_ref` named the judge's `semantic_review.json`, until issue #724 PR-2
+        # deleted the judge; the second key went with it.
         self._write_run_node_meta(refs, "validate_meta.json", {
             "run_id": refs.run_id,
             "node_key": refs.node_key,
             "pipeline_id": refs.pipeline_id,
-            "attempt_count": attempt_count,
+            "attempt_count": 1,
             "verification_status": "pass",
             "last_fail_reason": last_fail_reason,
             "debug_mode": (self.workflow_mode == "dev"),
             "context_isolated": True,
-            "judge_command_ref": f"{refs.run_node_dir()}/semantic_review.json",
         })
 
     def _post_judge_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Validate.post_judge: FIRST author the derived artifacts
         (`_author_derived_validate_artifacts` — G6: aggregate_verdict/summary/validate_meta),
         then run `validate_pipeline_semantics --stage pre_judge` (the gate the judge leaf
-        used to own, G3) AFTER the judge returns its verdict, then classify the violation
-        severity into a `disposition`. Authors post_judge_meta.json
+        used to own, G3) after execute, then classify the violation severity into a
+        `disposition`. Authors post_judge_meta.json
         {status, violations, disposition}.
 
         Scoped to this run (`--pipeline-root`/`--run-id`) so historically-broken sibling
@@ -15611,10 +15179,10 @@ class Conductor:
         more: the launch-record audit stopped reading `agent_graph.json` edges in issue #643, so
         this substep's own still-dangling edge is not a finding.)
 
-        disposition: recoverable and unrecoverable alike -> fail_closed; unknown -> escalate
-        (run_phase turns it into an escalate RouteDecision in prod; dev keeps fail_closed).
-        `recoverable` used to warm-resume the judge in place; that mini-loop was deleted by
-        issue #176 (no run ever reached it), so both graded classes terminalize.
+        disposition: unrecoverable -> fail_closed; unknown -> escalate (run_phase turns it into
+        an escalate RouteDecision in prod; dev keeps fail_closed). A third class,
+        `recoverable`, named the judge's own `semantic_review.json` and went with the judge
+        (issue #724 PR-2).
 
         Three exit codes are answered BEFORE the bullets are read at all, because they say the
         gate never reached a verdict about this run's conformance: rc 3 (the structure front end
@@ -15625,7 +15193,7 @@ class Conductor:
         conformance findings. All write `disposition: "fail_closed"` with
         their own `failure_category`, the same shape as the OSError launch-failure branch."""
         # G6: the conductor authors the deterministically-derivable artifacts (aggregate_verdict
-        # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
+        # / summary / validate_meta) from the host's verdict.json + the dependency set BEFORE
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
         self._author_derived_validate_artifacts(refs)
         # A `blocked` aggregate is an integrity blocker (`phase_04_validate.md`): the node is not
@@ -15676,9 +15244,8 @@ class Conductor:
         violations = [ln[2:] for ln in combined.splitlines() if ln.startswith("- ")]
         # TERMINAL EXIT CODES FIRST, and on the CODE rather than on any bullet: the bullets carry
         # leaf-chosen paths, and the severity rules below classify by path prefix, so a bullet
-        # naming a judge-authored artifact would be graded `recoverable` — a judge-authored
-        # conformance finding — over what is really a machine, producer or device problem.
-        # None is anything a re-authored semantic_review.json touches. The violations are still recorded, for observation only.
+        # could be graded `unknown` (escalate) over what is really a machine, producer or device
+        # problem. The violations are still recorded, for observation only.
         #
         # rc 5 is UNREACHABLE from this stage today: it has a single construction site, reached
         # only from post_generate. It is wired so that the day a pre_judge gate reports one, it
@@ -15712,14 +15279,8 @@ class Conductor:
         # G5: an `unknown` violation (unclassifiable by the deterministic path-prefix rules) is
         # not a blind fail_closed — it routes to the unified escalate LLM. run_phase turns the
         # `escalate` disposition into an escalate RouteDecision in prod (dev keeps fail_closed —
-        # no billed escalate leaf). Both GRADED classes terminalize: `unrecoverable` (integrity)
-        # always did, and `recoverable` (judge-authored) does since issue #176 deleted the
-        # warm-resume mini-loop that was its only consumer. Writing `warm_resume` here would
-        # record a follow-up that nothing performs. The severity classification itself
-        # (`classify_post_judge_violations`) is unchanged — it still names the class, and a
-        # `recoverable` under a PURE judge was never re-runnable anyway (the leaf returned a
-        # judgement whose shape the loop validated, and `_write_semantic_review` wrote the file
-        # the violation names, so a re-run reproduces it byte for byte).
+        # no billed escalate leaf). The graded class, `unrecoverable` (integrity or a
+        # host-authored artifact), terminalizes.
         disposition = "escalate" if severity == "unknown" else "fail_closed"
         self._write_run_node_meta(refs, "post_judge_meta.json", {
             "run_id": refs.run_id, "node_key": refs.node_key,
@@ -15768,17 +15329,18 @@ class Conductor:
                                 certified_by=self._certified_by_label(phase, cert))
         # Validate dependency-DAG readiness is checked HERE, before the generic launch gate.
         # This is load-bearing: workflow_launch_check (and EVERY substep's own record-launch,
-        # including pre_judge's) is itself dependency-gated (`_dependency_ready`), so a
+        # including execute's) is itself dependency-gated (`_dependency_ready`), so a
         # not-built+validated closure would be refused `dependency_not_ready` (a
-        # `LaunchCheckRefused`, terminalized by `conduct`) before the `pre_judge` substep could
+        # `LaunchCheckRefused`, terminalized by `conduct`) before the first substep could
         # ever run. Fail fast with the `validate_pre_judge_dag_incomplete` fail_closed (the
-        # historic pre-spawn behavior); its `judge_pre_spawn_blocked` event names the closure
-        # members that are not ready, transitive ones included.
+        # historic pre-spawn behavior; the reason and the `judge_pre_spawn_blocked` event keep
+        # their recorded names, issue #724 O8); the event names the closure members that are
+        # not ready, transitive ones included.
         # `_dependency_ready` only checks DIRECT deps, whereas `_judge_pre_spawn_dag_block`
         # checks the full `dependency.all_nodes` closure, so this also catches transitive gaps
-        # the launch gate would miss. This is the one readiness check before the judge: the
-        # deterministic `pre_judge` substep (index 0) records `pre_judge_meta.json` as `pass`
-        # without repeating it (issue #643 PR-5).
+        # the launch gate would miss. This is the phase's one readiness check (the `pre_judge`
+        # substep that once repeated it went in issue #643 PR-5, and the substep itself in
+        # issue #724 PR-2).
         if phase == "validate":
             block = self._judge_pre_spawn_dag_block(refs)
             if block is not None:
@@ -15911,14 +15473,6 @@ class Conductor:
                       agent_run_id=oc.agent_run_id,
                       elapsed_seconds=round(time.monotonic() - substep_started, 2))
             outcomes.append(oc)
-            if phase == "validate" and substep == "judge":
-                # G6: track judge attempts for validate_meta.attempt_count (best-effort; not
-                # gate-validated). One judge launch per phase attempt; nothing re-runs it
-                # within the attempt since issue #176.
-                if not hasattr(self, "_judge_attempt_count"):
-                    self._judge_attempt_count: dict[str, int] = {}
-                self._judge_attempt_count[refs.node_key] = (
-                    self._judge_attempt_count.get(refs.node_key, 0) + 1)
             if oc.status != "pass":
                 break
         self._producer_arid[phase] = outcomes[0].agent_run_id
@@ -15952,25 +15506,14 @@ class Conductor:
             # it into the certifying meta on a pass, and a failed attempt keeps it here.
             "derivation": derivation,
         }
-        # Every terminal Validate step_result (pass OR fail) must carry a launch_request_ref
-        # so the pre_phase_complete judge hook can resolve the execution dir. Point it at the
-        # JUDGE substep whenever the judge ran (index 2): on a pass the last substep is the
-        # deterministic post_judge, and a post_judge launch_request_ref would make
-        # _pre_phase_complete_judge_checks skip the semantic_review enforcement (it keys on
-        # substep=="judge"). When the judge never ran (pre_judge/execute failure) fall back to
-        # the last substep that ran — its request points at a non-judge substep, so the hook
-        # correctly skips the semantic-review requirement.
-        if phase == "validate" and outcomes:
-            judge_idx = SUBSTEPS["validate"].index("judge")
-            ref_oc = outcomes[judge_idx] if len(outcomes) > judge_idx else outcomes[-1]
-            result["launch_request_ref"] = (
-                f"workspace/orchestrations/{self.orchestration_id}"
-                f"/launches/{ref_oc.agent_run_id}.request.json")
+        # A terminal Validate step_result carried a `launch_request_ref` to the JUDGE substep's
+        # request, whose one reader was the runtime's `_pre_phase_complete_judge_checks`; both
+        # went with `validate.judge` in issue #724 PR-2.
         # A nonzero leaf exit is an infra/transport failure (token limit, OOM, transport,
         # session limit) the decision tables cannot classify — route straight to fail_closed
         # so the operator can --resume. This is checked BEFORE write_step_result: a transport
-        # failure leaves no canonical evidence (e.g. a judge that died with no
-        # semantic_review.json), so writing the step_result would crash on its missing
+        # failure leaves no canonical evidence (e.g. a reviewer that died with no
+        # verdict written), so writing the step_result would crash on its missing
         # deliverable instead of cleanly failing closed. Skipping the write
         # leaves the attempt's already-terminalized agents without a step_result, and since
         # issue #177 that costs nothing to clean up: a terminal arid no step_result vouches is
@@ -16026,62 +15569,39 @@ class Conductor:
                 reason=f"leaf_transport_error: leaf_exit={transport.leaf_returncode}{suffix}")
             return PhaseOutcome(phase, status, substep_arids, failed, decision)
 
-        # G4: the deterministic validate gate substeps (pre_judge / post_judge) fail the phase
-        # as non-physics INTEGRITY blockers, terminalized fail_closed WITHOUT a routeable
+        # G4: the deterministic validate gate substep (post_judge) fails the phase as a
+        # non-physics INTEGRITY blocker, terminalized fail_closed WITHOUT a routeable
         # step_result (skip-write + tombstone, matching the transport branch shape). Gate on the
         # ACTUALLY-failed substep (index len-1), NOT a meta status on disk: the index is the
         # authoritative account of what failed in THIS attempt, while a meta on disk can be a
         # leftover. Issue #176 removed the one producer of such a leftover within an attempt (a
         # warm-resumed judge that then physics-failed left a superseded attempt's
         # post_judge_meta behind), so the shape is no longer reachable; the gate still keys on
-        # the index, which is the reading that does not depend on that. Cases:
-        #   - pre_judge (index 0): its meta is not a fresh `pass` (it records `pass`
-        #     unconditionally since issue #643 PR-5, so this is a stale or corrupted run
-        #     directory; an incomplete closure fails earlier, in `run_phase`'s pre-spawn check).
-        #     No judge ran, so no step_result is written.
-        #   - post_judge (index 3): the `--stage pre_judge` gate failed with a `fail_closed`
-        #     disposition — either graded class, integrity or judge-authored conformance, since
-        #     issue #176. (An `escalate` disposition does NOT reach here; the `is_escalate`
-        #     branch below returns first.) The judge passed physics; the pre_phase_complete hook
-        #     forbids a `fail` step_result atop a `pass` semantic_review, so the write is skipped.
-        #   - judge (index 2) with semantic_review.decision != "fail" (pass, or missing/empty):
-        #     a judge deliverable inconsistency the hook cannot express — either verdict.json is
-        #     malformed (per_test uses a wrong field name / non-certifying value) while decision
-        #     stays `pass`, or the judge left a stray `fail`/`blocked` per_test entry yet reported
-        #     decision `pass` (a routeable failure MUST carry decision=="fail"). Either way the
-        #     pre_phase_complete hook forbids a `fail` step_result atop a non-`fail`
-        #     semantic_review, so a naive write_step_result would raise a hard conductor_error
-        #     (physics-pass here is per the leaf's own decision, which may be the very bug).
-        #     Route it like the integrity blockers: skip-write + escalate (prod) / fail_closed
-        #     (dev). A present decision=="fail" is a routeable physics/semantic failure and falls
-        #     through to write_step_result + classify_failure unchanged (the hook allows fail+fail).
+        # the index, which is the reading that does not depend on that. The case:
+        #   - post_judge (index 1): the `--stage pre_judge` gate failed with a `fail_closed`
+        #     disposition (the graded class: integrity or a host-authored artifact), or its
+        #     meta is not a fresh `pass`. (An `escalate` disposition does NOT reach the
+        #     fail_closed return; the `is_escalate` branch below returns first in prod.)
+        #     Execute passed physics, so no routeable step_result is written.
+        # Two more cases went with the substeps they named in issue #724 PR-2: `pre_judge`
+        # (index 0; its constant-`pass` meta was not fresh) and `judge` (a semantic review whose
+        # decision was not `fail`, `validate_judge_conformance_violation`). An `execute` failure
+        # falls through to write_step_result + classify_failure.
         if phase == "validate" and status != "pass" and outcomes:
             failed_sub = SUBSTEPS["validate"][len(outcomes) - 1]
-            judge_conformance_block = False
-            if failed_sub == "judge":
-                judge_conformance_block = self._judge_semantic_decision(refs) != "fail"
-            if failed_sub in ("pre_judge", "post_judge") or judge_conformance_block:
-                if judge_conformance_block:
-                    gate_reason = "validate_judge_conformance_violation"
-                    # A judge-authored conformance violation is routed to the escalate
-                    # diagnostician in prod (it reads verdict.json + semantic_review.json).
-                    is_escalate = True
-                else:
-                    fname = ("pre_judge_meta.json" if failed_sub == "pre_judge"
-                             else "post_judge_meta.json")
-                    # Issue #114: derive the terminal reason from the substep's OWN meta, never
-                    # from its index. `_read_gate_meta` returns None for an absent / undecodable /
-                    # non-object file, which is a DIFFERENT state than a meta that records no
-                    # failure category — keep them apart here (no `or {}`) so the classifier can
-                    # name each.
-                    gate_meta = _read_gate_meta(self.repo_root / refs.run_node_dir() / fname)
-                    gate_reason = classify_validate_gate_failure(failed_sub, gate_meta)
-                    # G5: a prod post_judge `unknown` (disposition="escalate") routes to the
-                    # unified escalate LLM.
-                    is_escalate = (failed_sub == "post_judge"
-                                   and (gate_meta or {}).get("disposition") == "escalate")
-                escalate_reason = ("validate_judge_conformance_violation"
-                                   if judge_conformance_block else "validate_post_judge_unknown")
+            if failed_sub == "post_judge":
+                # Issue #114: derive the terminal reason from the substep's OWN meta, never
+                # from its index. `_read_gate_meta` returns None for an absent / undecodable /
+                # non-object file, which is a DIFFERENT state than a meta that records no
+                # failure category — keep them apart here (no `or {}`) so the classifier can
+                # name each.
+                gate_meta = _read_gate_meta(
+                    self.repo_root / refs.run_node_dir() / "post_judge_meta.json")
+                gate_reason = classify_validate_gate_failure(failed_sub, gate_meta)
+                # G5: a prod post_judge `unknown` (disposition="escalate") routes to the
+                # unified escalate LLM.
+                is_escalate = (gate_meta or {}).get("disposition") == "escalate"
+                escalate_reason = "validate_post_judge_unknown"
                 # Return the escalate decision and let `conduct` run the diagnostician. The
                 # failed arid is carried on the outcome as the rollback's TRIGGER, and since
                 # issue #177 nothing can consume or neutralize it on the way: `revoke_artifact`
@@ -16094,7 +15614,7 @@ class Conductor:
                 if is_escalate and self.workflow_mode != "dev":
                     decision = RouteDecision("escalate", reason=escalate_reason)
                     return PhaseOutcome(phase, status, substep_arids, failed, decision)
-                # Terminal fail_closed cases (pre_judge / integrity / dev escalate):
+                # Terminal fail_closed cases (integrity / dev escalate):
                 # skip-write. The attempt's terminalized arids need no tombstone since issue
                 # #177 — a terminal arid no step_result vouches is a failed attempt, and the
                 # completion vouch reads the artifact chain and the latest attempt instead.
@@ -16121,14 +15641,12 @@ class Conductor:
         an unrelated 11k-character ir_meta."""
         candidates = {
             "verdict.json": f"{refs.run_node_dir()}/verdict.json",
-            "semantic_review.json": f"{refs.run_node_dir()}/semantic_review.json",
             "aggregate_verdict.json": f"{refs.run_node_dir()}/aggregate_verdict.json",
-            # G5: the deterministic validate gate metas — post_judge_meta carries the
+            # G5: the deterministic validate gate meta — post_judge_meta carries the
             # `violations` / `failure_excerpt` / `disposition` that drive a post_judge
-            # `unknown` escalate; pre_judge_meta is the constant `pass` the substep records
-            # (the dependency-DAG readiness check is `run_phase`'s and records no meta).
+            # `unknown` escalate (the dependency-DAG readiness check is `run_phase`'s and
+            # records no meta).
             "post_judge_meta.json": f"{refs.run_node_dir()}/post_judge_meta.json",
-            "pre_judge_meta.json": f"{refs.run_node_dir()}/pre_judge_meta.json",
             "binary_meta.json": f"{refs.binary_dir()}/binary_meta.json",
             "ir_meta.json": f"{refs.ir_ref}/ir_meta.json",
             "source_meta.json": f"{refs.source_dir()}/source_meta.json",
@@ -16417,7 +15935,8 @@ class Conductor:
         if decision is None:
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unparsable")
         # G5: normalize reuse-vs-discard from the graded severity so every escalate site
-        # (generate/compile verify, judge, the post_judge unknown) shares one policy.
+        # (generate/compile verify, the validate execute predicate failure, the post_judge
+        # unknown) shares one policy.
         return resolve_severity_directive(decision)
 
     def classify_failure(self, refs: NodeRefs, phase: str,
@@ -16525,14 +16044,14 @@ class Conductor:
                 meta = _read_json(self.repo_root / refs.ir_ref / "compile_static_meta.json") or {}
                 return classify_compile_static_failure(meta.get("failure_category"))
         if phase == "validate" and outcomes:
-            # SUBSTEPS["validate"] == ("pre_judge","execute","judge","post_judge") and run_phase
-            # breaks on first failure, so the failed substep is index len-1.
+            # SUBSTEPS["validate"] == ("execute", "post_judge") and run_phase breaks on first
+            # failure, so the failed substep is index len-1.
             failed_substep = SUBSTEPS["validate"][len(outcomes) - 1]
-            if failed_substep in ("pre_judge", "post_judge"):
+            if failed_substep == "post_judge":
                 # run_phase's skip-write branch classifies a failed gate substep from its own
                 # meta and returns before calling this (issue #643 PR-5 removed the copy here).
-                # Raised rather than fallen through: the branches below would route it as an
-                # execute or judge failure.
+                # Raised rather than fallen through: the branch below would route it as an
+                # execute failure.
                 raise RuntimeError(f"classify_failure: a failed validate {failed_substep} is "
                                    f"classified by run_phase, which did not return first")
             if failed_substep == "execute":
@@ -16540,11 +16059,10 @@ class Conductor:
                 # authored a verdict.json with a failure_class:
                 #   (a) a per-test PREDICATE failure (physics_fail / structural_violation):
                 #       evidence was structurally valid, but a host predicate over the
-                #       captures failed, so the judge leaf was intentionally not
-                #       spawned. Attribution (code / ir / spec) needs reasoning, so route to
-                #       the escalate diagnostician in prod (it reads verdict.json#per_test.basis)
-                #       and fail_closed in dev (F1 cross-phase rollback posture). This preserves
-                #       the routing the judge's failure_class x attribution used to drive.
+                #       captures failed. Attribution (code / ir / spec) needs reasoning, so route
+                #       to the escalate diagnostician in prod (it reads
+                #       verdict.json#per_test.basis) and fail_closed in dev (F1 cross-phase
+                #       rollback posture).
                 verdict = _read_json(self.repo_root / refs.run_node_dir() / "verdict.json") or {}
                 fclass = verdict.get("failure_class")
                 if fclass in ("physics_fail", "structural_violation"):
@@ -16656,22 +16174,12 @@ class Conductor:
                                          reason=f"{VALIDATE_EXECUTE_REASON_PREFIX}{category}")
                 return RouteDecision("retry", target_phase="generate", repair_strategy="restart",
                                      reason="validate_execute_fail")
-            # The judge is spawned only after a clean execute (`_execute_inproc` fails the
-            # execute substep on any per-test failure), so `verdict.json#failure_class` is
-            # `pass` whenever this branch runs, and a judge `fail` is a semantic finding on
-            # passing tests. Attribution (code / ir / spec / evidence) needs reasoning, so every
-            # judge `fail` goes to the diagnostician, which reads semantic_review.json (its
-            # `attribution` and `confidence` included) and decides the route; the conductor
-            # gates on neither field. The findings travel on whatever the directive revokes
-            # (`_read_repair_findings`' `judge_semantic_review_fail` clause). `run_phase` sends
-            # a judge failure whose decision is not `fail` down its conformance branch before
-            # this one, so the second return names a state that branch should have taken
-            # (issue #455 deleted the (failure_class, attribution) table that used to sit here
-            # and read that state as `advance`).
-            review = _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json") or {}
-            if str(review.get("decision") or "").strip().lower() == "fail":
-                return RouteDecision("escalate", reason="judge_semantic_review_fail")
-            return RouteDecision("escalate", reason="judge_fail_unclassified")
+            # After the execute branch, which returns on every path, a validate failure is
+            # nothing else: the `judge` branch (`judge_semantic_review_fail` /
+            # `judge_fail_unclassified`) went with that substep in issue #724 PR-2. Raised, as
+            # the gate-substep branch above is, rather than routed as something it is not.
+            raise RuntimeError(f"classify_failure: no route for a failed validate "
+                               f"{failed_substep}")
         # compile / generate: verify severity gate. A failed phase with no
         # recorded severity (e.g. the producing substep itself failed) is
         # unclassifiable -> escalate to the diagnostician rather than guessing.
@@ -16821,7 +16329,7 @@ class Conductor:
 
         The compile claim serializes Compile, not what happens after it. Another run of the
         node (another target, or a resume of this target's other orchestration) can, while
-        this chain is past its Compile, REVOKE the shared IR — a judge or verify finding that
+        this chain is past its Compile, REVOKE the shared IR — an execute or verify finding that
         routes to Compile, prod's re-deriving reopen included — and, by a re-derivation that
         lands, certify a newer one. Which answer this chain gets depends on timing. A
         revocation landing before this chain's Validate started stops the next phase start as
@@ -17263,7 +16771,6 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
             f"{rundir}/aggregate_verdict.json",
             f"{rundir}/verdict.json",
             f"{rundir}/summary.json",
-            f"{rundir}/semantic_review.json",
             f"{rundir}/validate_meta.json",
         ]
     raise ValueError(f"unknown phase: {phase}")

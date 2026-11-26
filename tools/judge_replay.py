@@ -7,8 +7,9 @@ Usage:
         --llm-config <path> [--mutate <json>] [--repeat N] [--label <text>] [--check]
 
 The instrument of the judge A/B (parts 2 and 3 of the plan on issue #534). It reads
-`launches/<agent_run_id>.request.json` of a recorded `compile.verify`, `generate.verify` or
-`validate.judge` launch and reuses ONLY its `pure_context`, its `pure_shape`, the node refs it
+`launches/<agent_run_id>.request.json` of a recorded `compile.verify` or `generate.verify`
+launch (a recorded `validate.judge` launch is refused `judge_replay_pair_not_admitted` since
+issue #724 PR-2 deleted that substep) and reuses ONLY its `pure_context`, its `pure_shape`, the node refs it
 names, its `runner_host_authored` stamp and its `resolved_dependencies` (the dependency facts,
 reused verbatim, not re-resolved). Everything else of a launch is built fresh by the REAL
 reviewer loop (`Conductor._run_leaf_reviewer_substep`): a fresh `agent_run_id`, the replay's
@@ -39,7 +40,7 @@ recorded requests).
 Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit 2, before
 any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below
 1); `judge_replay_source_unreadable` / `judge_replay_source_ambiguous` (no such record, or an
-arid prefix naming several); `judge_replay_pair_not_admitted` (not one of the three judging pairs or the four diagnose
+arid prefix naming several); `judge_replay_pair_not_admitted` (not one of the two judging pairs or the four diagnose
 pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
 turn — replay its cold launch); `judge_replay_shape_unknown` (a `pure_shape` the current tables
 do not declare); `judge_replay_context_keys_moved` (the key set is not the CURRENT one);
@@ -50,7 +51,7 @@ closed); `judge_replay_refs_invalid` (the request's `ir_ref` / `pipeline_ref` ar
 node's store refs); `judge_replay_llm_config_invalid`;
 `judge_replay_http_lineage_unsupported` (the entry is an HTTP provider). After it is created, ending it `fail`:
 `judge_replay_preflight_failed` (reason code `preflight_failed`) and `judge_replay_not_ready`
-(a launch gate — the two `--check` answers — does not pass). An exception ends it `fail` /
+(the launch gate `--check` answers does not pass). An exception ends it `fail` /
 `judge_replay_error` and propagates.
 
 Each `replay_result.jsonl` row: the head (`replay_orchestration_id`, `source_*`, `step`,
@@ -78,11 +79,12 @@ runs on `defaults` as `escalate` does (a reading lineage seeded with `diagnosis.
 `--mutate` applies to `diagnosis_document` as to any context document.
 
 `--check` creates the orchestration and answers, without launching, whether a launch of this
-row would pass the two launch gates that depend on the workspace rather than on the request:
-the dependency readiness (`_dependency_ready`, recomputed against the CURRENT transformation
+row would pass the launch gate that depends on the workspace rather than on the request: the
+dependency readiness (`_dependency_ready`, recomputed against the CURRENT transformation
 versions, so a row of a node whose dependency key moved answers
-`derivation_key_mismatch:<input>`) and the downstream artifact gate. Exit 0 when both pass, 1
-when either does not (2 is a refusal). A replay that is not ready is refused anyway, so
+`derivation_key_mismatch:<input>`). (A second, the downstream artifact gate, checked
+`validate.judge` alone and went with it in issue #724 PR-2.) Exit 0 when it passes, 1 when it
+does not (2 is a refusal). A replay that is not ready is refused anyway, so
 `--check` is the dry run over the A/B's rows, not a precondition of a launch.
 
 A replay orchestration and its lineage homes stay after the run, like any run's (its trees
@@ -118,8 +120,7 @@ if str(REPO_ROOT) not in sys.path:
 #: The judging pairs a replay admits, and (issue #534 PR-J4-a) `escalate`'s diagnose launch of
 #: each escalatable phase (`leaf_contract.WORKSHOP_DIAGNOSE_PAIRS`, asserted equal by
 #: `test_judge_replay`).
-JUDGING_PAIRS: tuple[tuple[str, str], ...] = (
-    ("compile", "verify"), ("generate", "verify"), ("validate", "judge"))
+JUDGING_PAIRS: tuple[tuple[str, str], ...] = (("compile", "verify"), ("generate", "verify"))
 DIAGNOSE_PAIRS: tuple[tuple[str, str], ...] = (
     ("build", "diagnose"), ("compile", "diagnose"), ("generate", "diagnose"),
     ("validate", "diagnose"))
@@ -466,24 +467,14 @@ def finish_replay_orchestration(repo_root: Path, replay: ReplayOrchestration, st
 
 def launch_gates(repo_root: Path, orchestration_id: str, source: SourceLaunch
                  ) -> dict[str, Any]:
-    """The two workspace-dependent launch gates `record_launch` would run for this row.
-
-    The downstream gate no longer asks for the run directory's `perf.json` (issue #643: on the
-    workflow path `determine_substep_status` requires it fresh before the judge launches). A
-    replay over a recorded run directory that lacks it is not refused here; it is accepted as a
-    wasted replay, which certifies nothing."""
-    from tools.orchestration_runtime import _dependency_ready, _downstream_phase_launch_gate
+    """The workspace-dependent launch gate `record_launch` would run for this row: the
+    dependency gate. The second one, the downstream gate, checked `validate.judge`'s run
+    directory alone and went with that substep in issue #724 PR-2."""
+    from tools.orchestration_runtime import _dependency_ready
     step = source.pair[0]
     dep_ok, dep_reason = _dependency_ready(repo_root, orchestration_id, step=step)
-    down_ok, down_reason = _downstream_phase_launch_gate(
-        repo_root, node_key=str(source.request.get("node_key") or ""), step=step,
-        pipeline_ref=str(source.request.get("pipeline_ref") or ""),
-        launch_request=source.request)
-    return {
-        "ready": bool(dep_ok and down_ok),
-        "dependency_ready": bool(dep_ok), "dependency_reason": dep_reason,
-        "downstream_ready": bool(down_ok), "downstream_reason": down_reason,
-    }
+    return {"ready": bool(dep_ok), "dependency_ready": bool(dep_ok),
+            "dependency_reason": dep_reason}
 
 
 # --- read coverage ----------------------------------------------------------------------------

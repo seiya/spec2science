@@ -1,4 +1,4 @@
-"""The READING kind of `workshop leaf` (issue #534 step 3): the three judging substeps run by
+"""The READING kind of `workshop leaf` (issue #534 step 3): the two judging substeps run by
 `Conductor._run_leaf_reviewer_substep` (a workshop loop alone since issue #534 PR-J4-b).
 
 The leaf is a fake `spawn_leaf` that writes the reviewer's one document into the lineage's
@@ -25,7 +25,6 @@ import tools.workflow_conductor as wc
 from tools.tests import llm_samples
 from tools import leaf_contract, workshop_tree
 from tools.tests.test_leaf_compile import _write_compile_node
-from tools.tests.test_leaf_judge import _review, _write_run_node
 from tools.tests.test_leaf_producer import _PureFakeConductor, _valid_bundle
 from tools.tests.test_leaf_verify import _verdict, _verify_node
 from tools.tests.test_workshop_producer import (
@@ -419,8 +418,7 @@ class CompileVerifyTests(_Base):
         self.assertEqual(trees, [False])
         rows = self.attempt_meta()["per_attempt"]
         self.assertEqual(len(rows), 3)
-        category = (wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION if self.PHASE == "validate"
-                    else wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
+        category = wc.GENERATE_VERDICT_SCHEMA_VIOLATION
         self.assertEqual((rows[0]["ended_by"], rows[0]["failure_category"]),
                          ("lineage_timeout", category))
         # The finding names THIS kind's document and says what happens next.
@@ -456,9 +454,7 @@ class CompileVerifyTests(_Base):
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass")
         first = self.attempt_meta()["per_attempt"][0]
-        self.assertEqual(first["failure_category"],
-                         wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION if self.PHASE == "validate"
-                         else wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
+        self.assertEqual(first["failure_category"], wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
         self.assertIn("must hold one JSON object; got list", first["failure_excerpt"])
 
     def test_anything_but_a_valid_fail_at_the_bound_is_run_again_from_the_seeds(self) -> None:
@@ -467,8 +463,7 @@ class CompileVerifyTests(_Base):
         CARRYING the document under the shape-only framing — and a shape edit certified it.
         Now a launch its bound ended is accepted only with a schema-valid `fail`; anything
         else is re-run fresh from the seeds, carrying nothing and resuming nothing."""
-        broken = (dict(self.passing(), unexpected=1) if self.PHASE != "validate"
-                  else dict(self.passing(), decision="maybe"))
+        broken = dict(self.passing(), unexpected=1)
         for label, left in (("malformed pass", broken), ("no document", None)):
             with self.subTest(left=label):
                 self.setUp()
@@ -500,8 +495,7 @@ class CompileVerifyTests(_Base):
         """A schema repair in progress whose warm turn is killed with a `pass` in its tree:
         the re-run drops the repair target (no payload naming a document that is not there),
         and runs in a fresh tree."""
-        broken = (dict(self.passing(), unexpected=1) if self.PHASE != "validate"
-                  else dict(self.passing(), decision="maybe"))
+        broken = dict(self.passing(), unexpected=1)
         self.c.leaf_actions = [_writes(self.OUTPUT, broken),
                                _times_out_after(self.OUTPUT, self.passing()),
                                _writes(self.OUTPUT, self.passing())]
@@ -557,9 +551,7 @@ class CompileVerifyTests(_Base):
         self.assertNotIn("prior_document", second)
         self.assertEqual(self.c.spawns[1]["resume_session_id"], self.RESUMED)
         rows = self.attempt_meta()["per_attempt"]
-        self.assertEqual(rows[0]["failure_category"], wc.GENERATE_VERDICT_SCHEMA_VIOLATION
-                         if self.PHASE != "validate"
-                         else wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION)
+        self.assertEqual(rows[0]["failure_category"], wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
         self.assertEqual((rows[1]["lineage_id"], rows[1]["warm"]), ("child-1", True))
 
     def test_an_unresumable_lineage_is_repaired_by_a_cold_reuse_carrying_the_document(
@@ -568,8 +560,7 @@ class CompileVerifyTests(_Base):
         lineage's snapshot — the document under repair — and its prompt re-states the launch
         body (the verdict repair template)."""
         self.c.resumable = False
-        broken = dict(self.passing(), unexpected=1) if self.PHASE != "validate" else dict(
-            self.passing(), decision="maybe")
+        broken = dict(self.passing(), unexpected=1)
         self.c.leaf_actions = [_writes(self.OUTPUT, broken), _writes_nothing]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "fail")
@@ -708,75 +699,6 @@ class GenerateVerifyTests(CompileVerifyTests):
         context = self.c._build_leaf_verify_context(self.refs)
         self.assertFalse(context["severity_rubric_document"].endswith("\n"))
         self.assertEqual(seen, [context["severity_rubric_document"] + "\n"])
-
-
-class ValidateJudgeTests(CompileVerifyTests):
-    PHASE = "validate"
-    SUBSTEP = "judge"
-    OUTPUT = "review.json"
-
-    def stage(self, repo: Path) -> wc.NodeRefs:
-        return _write_run_node(repo)
-
-    def passing(self) -> dict:
-        return _review("pass")
-
-    def failing(self) -> dict:
-        return _review("fail")
-
-    def attempt_meta(self) -> dict:
-        return json.loads((self.repo / self.refs.run_node_dir() / "judge_meta.json").read_text())
-
-    def assert_projected_pass(self) -> None:
-        review = json.loads((self.repo / self.refs.run_node_dir()
-                             / "semantic_review.json").read_text())
-        self.assertEqual((review["decision"], review["review_method"]),
-                         ("pass", "llm_semantic_review"))
-
-    def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
-        self.run_substep()
-        tree = self.paths("child-1").tree
-        context = self.c._build_leaf_judge_context(self.refs)
-        for key, name in self.seeds().items():
-            with self.subTest(key=key):
-                text = (tree / name).read_text()
-                if name.endswith(".json"):
-                    # The same document, one value per line (`_indented_json_seed`).
-                    self.assertEqual(json.loads(text), json.loads(context[key]))
-                    self.assertEqual(text, json.dumps(json.loads(context[key]), indent=2,
-                                                      ensure_ascii=False) + "\n")
-                else:
-                    self.assertEqual(text, _terminated(context[key]))
-        # The host's verdict is a seed under its own name, never the output's.
-        self.assertTrue((tree / "host_verdict.json").is_file())
-        names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
-        self.assertEqual(names, [self.OUTPUT])
-
-    def test_a_valid_fail_verdict_left_by_a_lineage_its_bound_ended_reaches_the_severity_gate(
-            self) -> None:
-        """The judge's twin: a `fail` review in the tree of a lineage its bound ended reaches
-        `escalate("judge_semantic_review_fail")`, not the transport route."""
-        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.failing())]
-        outcome = self.run_substep()
-        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error),
-                         ("fail", 0, None))
-        review = json.loads((self.repo / self.refs.run_node_dir()
-                             / "semantic_review.json").read_text())
-        self.assertEqual(review["decision"], "fail")
-        # `evidence_refs` name document KEYS, resolved by the host to workspace paths.
-        self.assertTrue(review["findings"][0]["evidence_refs"][0].startswith(
-            f"{self.refs.run_node_dir()}/verdict.json#"))
-
-    def test_an_evidence_ref_naming_a_seed_file_is_refused(self) -> None:
-        """The tree shows file names; `evidence_refs` still name document keys, and a file name
-        there is a schema violation repaired as any other (a cost, never a resolution)."""
-        bad = _review("fail")
-        bad["findings"][0]["evidence_refs"] = ["verdict.json#per_test"]
-        self.c.leaf_actions = [_writes(self.OUTPUT, bad), _writes(self.OUTPUT, _review("fail"))]
-        outcome = self.run_substep()
-        self.assertEqual(outcome.status, "fail")
-        self.assertIn("verdict.json", self.requests()[1]["repair_findings"])
-        self.assertEqual(len(self.attempt_meta()["per_attempt"]), 2)
 
 
 def _codex_reading(case) -> None:
@@ -1033,10 +955,36 @@ class _CodexCutReadRows:
         self.assertEqual(len(meta["per_attempt"]), 1 + leaf_contract.MAX_BUNDLE_REPAIR_TURNS)
         self.assert_cut_read_exhaustion_route(outcome)
 
+    def test_a_codex_attempt_records_the_synthetic_envelope(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertTrue(self.paths("child-1").tree.is_dir())
+        self.assertFalse((self.c.homes / _ORCH / "claude").exists())
+        vmeta = self.attempt_meta()
+        self.assertEqual((vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
+                         ("workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
+        self.assertNotIn("workshop_prompt_contract_version", vmeta)
+        row = vmeta["per_attempt"][0]
+        self.assertEqual((row["model"], row["model_turns"], row["items_completed"],
+                          row["wrapper_calls"]), ("gpt-x", None, 3, 0))
+        (spawn,) = self.c.spawns
+        self.assertTrue(spawn["reading"])
+        self.assertIsNone(spawn["mcp_config_json"])
+
+    def test_a_schema_violating_review_is_repaired_warm_on_the_emitted_thread(self) -> None:
+        self.c.leaf_actions = [_writes(self.OUTPUT, {"decision": "maybe"}),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        _, second = self.requests()
+        self.assertTrue(second.get("warm_resume"))
+        self.assertEqual(second["workshop_lineage_id"], "child-1")
+        self.assertEqual(second["workshop_provider"], "codex_cli")
+        self.assertEqual(ort._leaf_repair_template_name(second), "workshop verdict repair")
+        self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
+        self.assertTrue(self.c.spawns[1]["reading"])
+
     def assert_cut_read_exhaustion_route(self, outcome) -> None:
         """The two verify pairs restart their producer through the verdict tables, driven
-        through `classify_failure`; the judge pair overrides this (no review is written, the
-        signal `run_phase` routes to its conformance terminus)."""
+        through `classify_failure`."""
         prior = [wc.SubstepOutcome("x", "pass", [])] * 2
         decision = self.c.classify_failure(self.refs, self.PHASE, [*prior, outcome])
         prefix = (wc.COMPILE_VERDICT_REASON_PREFIX if self.PHASE == "compile"
@@ -1189,48 +1137,6 @@ class CodexCompileVerifyTests(_CodexCutReadRows, CompileVerifyTests):
 
 class CodexGenerateVerifyTests(_CodexCutReadRows, GenerateVerifyTests):
     """Every `generate.verify` row, and the cut-read rows, on a `codex_cli` reading entry."""
-
-
-class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
-    """Every `validate.judge` row above, and the cut-read rows (issue #547; its exhaustion
-    route overridden: the judge's is the conformance terminus), on a `codex_cli` reading
-    workshop entry (step 3 PR-J2): the lineage lives under the codex container, a warm turn resumes the THREAD the
-    launch emitted rather than the agent_run_id, and an attempt row records no turn count and
-    the completed-item count — the places a claude-only assumption of the reviewer branch
-    would show."""
-
-    def assert_cut_read_exhaustion_route(self, outcome) -> None:
-        """No `semantic_review.json` is written, so `run_phase`'s judge conformance branch
-        fires (`validate_judge_conformance_violation`), as on a schema exhaustion."""
-        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 0))
-        self.assertFalse((self.repo / self.refs.run_node_dir() / "semantic_review.json").exists())
-
-    def test_a_codex_attempt_records_the_synthetic_envelope(self) -> None:
-        self.assertEqual(self.run_substep().status, "pass")
-        self.assertTrue(self.paths("child-1").tree.is_dir())
-        self.assertFalse((self.c.homes / _ORCH / "claude").exists())
-        vmeta = self.attempt_meta()
-        self.assertEqual((vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
-                         ("workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
-        self.assertNotIn("workshop_prompt_contract_version", vmeta)
-        row = vmeta["per_attempt"][0]
-        self.assertEqual((row["model"], row["model_turns"], row["items_completed"],
-                          row["wrapper_calls"]), ("gpt-x", None, 3, 0))
-        (spawn,) = self.c.spawns
-        self.assertTrue(spawn["reading"])
-        self.assertIsNone(spawn["mcp_config_json"])
-
-    def test_a_schema_violating_review_is_repaired_warm_on_the_emitted_thread(self) -> None:
-        self.c.leaf_actions = [_writes(self.OUTPUT, {"decision": "maybe"}),
-                               _writes(self.OUTPUT, self.passing())]
-        self.assertEqual(self.run_substep().status, "pass")
-        _, second = self.requests()
-        self.assertTrue(second.get("warm_resume"))
-        self.assertEqual(second["workshop_lineage_id"], "child-1")
-        self.assertEqual(second["workshop_provider"], "codex_cli")
-        self.assertEqual(ort._leaf_repair_template_name(second), "workshop verdict repair")
-        self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
-        self.assertTrue(self.c.spawns[1]["reading"])
 
 
 class ClaudeReadingLineageIsNotScannedTests(_Base):
@@ -1393,7 +1299,7 @@ class JsonSeedLayoutTests(unittest.TestCase):
         repo = Path(tmp.name)
         c = _PureFakeConductor(repo_root=repo, orchestration_id=_ORCH,
                                orchestration_agent_run_id="orch",
-                               llm_config=_config(repo, "validate", "judge"), env={})
+                               llm_config=_config(repo, "compile", "verify"), env={})
         doc = {"per_case": {f"case_{i:03d}": {"metrics": {"x": i * 0.5, "ok": True}}
                             for i in range(3000)}}
         one_line = json.dumps(doc, separators=(",", ":"))
@@ -1413,7 +1319,9 @@ class JsonSeedLayoutTests(unittest.TestCase):
                     self.assertEqual(out_name, name)
                     self.assertEqual(json.loads(text), doc)
                     self.assertLess(max(len(ln) for ln in text.splitlines()), 200)
-        self.assertGreaterEqual(seen_json, 10)
+        # One JSON seed per reading pair (`dependency_surface.json`, and `target_profile.json`
+        # on both `generate.verify` shapes).
+        self.assertGreaterEqual(seen_json, 3)
 
     def test_a_non_finite_token_survives_the_layout(self) -> None:
         """`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` admits non-finite metric values, so a
@@ -1451,7 +1359,7 @@ class JsonSeedLayoutTests(unittest.TestCase):
 class LaunchShapeTests(unittest.TestCase):
     """The argv and the recorded setting surface of a reading launch."""
 
-    def _conductor(self, phase: str = "validate", substep: str = "judge") -> wc.Conductor:
+    def _conductor(self, phase: str = "compile", substep: str = "verify") -> wc.Conductor:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         repo = Path(tmp.name)
@@ -1461,7 +1369,7 @@ class LaunchShapeTests(unittest.TestCase):
 
     def test_a_reading_argv_carries_no_endpoint_and_no_wrapper_grant(self) -> None:
         c = self._conductor()
-        entry = c.entry_for("validate", "judge")
+        entry = c.entry_for("compile", "verify")
         argv = c.leaf_command(entry, session_id="a", reading=True)
         self.assertNotIn("--mcp-config", argv)
         self.assertNotIn("--allowedTools", argv)
@@ -1472,7 +1380,7 @@ class LaunchShapeTests(unittest.TestCase):
 
     def test_the_kind_and_the_endpoint_must_agree(self) -> None:
         c = self._conductor()
-        entry = c.entry_for("validate", "judge")
+        entry = c.entry_for("compile", "verify")
         mcp = leaf_contract.workshop_mcp_config_json("http://127.0.0.1:5/mcp")
         with self.assertRaises(ValueError):
             c.leaf_command(entry, session_id="a", reading=True, mcp_config_json=mcp)
@@ -1481,31 +1389,31 @@ class LaunchShapeTests(unittest.TestCase):
 
     def test_the_recorded_surface_of_a_reading_launch_names_no_endpoint(self) -> None:
         c = self._conductor()
-        entry = c.entry_for("validate", "judge")
+        entry = c.entry_for("compile", "verify")
         surface = c._launch_setting_surface(
-            "a", {"step": "validate", "substep": "judge"}, entry)
+            "a", {"step": "compile", "substep": "verify"}, entry)
         self.assertEqual(surface, {"claude_tools": ["Read,Write,Edit,Glob,Grep"]})
 
     def _codex_conductor(self) -> wc.Conductor:
-        """Codex on `validate.judge` as a reading workshop entry (step 3 PR-J2)."""
+        """Codex on `compile.verify` as a reading workshop entry (step 3 PR-J2)."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         repo = Path(tmp.name)
         return _PureFakeConductor(repo_root=repo, orchestration_id=_ORCH,
                                   orchestration_agent_run_id="orch",
-                                  llm_config=_codex_config(repo, "validate", "judge"), env={})
+                                  llm_config=_codex_config(repo, "compile", "verify"), env={})
 
     def test_the_recorded_surface_of_a_codex_reading_launch_names_no_endpoint(self) -> None:
         c = self._codex_conductor()
         surface = c._launch_setting_surface(
-            "a", {"step": "validate", "substep": "judge"}, c.entry_for("validate", "judge"))
+            "a", {"step": "compile", "substep": "verify"}, c.entry_for("compile", "verify"))
         self.assertEqual(surface, {})
 
     def test_a_codex_reading_argv_is_shaped_without_the_wrapper(self) -> None:
         """The codex reading argv (the lineage a codex judging entry launches) names no
         wrapper server and no approval for its tools, cold and on resume."""
         c = self._codex_conductor()
-        entry = c.entry_for("validate", "judge")
+        entry = c.entry_for("compile", "verify")
         for resume in (None, "thread-1"):
             with self.subTest(resume=resume):
                 argv = c.leaf_command(entry, resume_session_id=resume, reading=True)
@@ -1548,7 +1456,7 @@ class RenderTests(unittest.TestCase):
         return req
 
     PAIRS = (("compile", "verify", ""), ("generate", "verify", ""),
-             ("generate", "verify", "harness"), ("validate", "judge", ""))
+             ("generate", "verify", "harness"))
 
     #: The claude paging rule, which the reading templates do not carry since `workshop-5`:
     #: true of claude's `Read`, false of codex's shell (its output cut keeps the last line).
@@ -1612,7 +1520,7 @@ class RenderTests(unittest.TestCase):
                                      "workshop verdict repair"})
 
     def test_a_reading_request_on_a_provider_with_no_reader_row_is_refused(self) -> None:
-        req = self._request("validate", "judge", workshop_provider="codex_cli")
+        req = self._request("compile", "verify", workshop_provider="codex_cli")
         ort.prepare_launch_request_payload(dict(req))
         claude_only = {"claude_cli": leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
         with (mock.patch.dict(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
@@ -1704,8 +1612,7 @@ class ReaderTemplateTests(unittest.TestCase):
     #: its twin's rules verbatim, went with the pure leaf in issue #534 PR-J4-b: there is no
     #: second copy of a rule left to drift from.)
     _TEMPLATES = ("workshop_compile_verify.txt", "workshop_generate_verify.txt",
-                  "workshop_generate_verify_harness.txt", "workshop_validate_judge.txt",
-                  "workshop_escalate_diagnose.txt")
+                  "workshop_generate_verify_harness.txt", "workshop_escalate_diagnose.txt")
 
     def test_no_document_is_inlined(self) -> None:
         for name in self._TEMPLATES:
@@ -1770,8 +1677,7 @@ class SeedNewlineTests(unittest.TestCase):
     #: Every workshop spec `_workshop_seeds` seeds a lineage by: (phase, substep, shape).
     SPECS = (("compile", "generate", ""), ("generate", "generate", ""),
              ("generate", "generate", "harness"), ("compile", "verify", ""),
-             ("generate", "verify", ""), ("generate", "verify", "harness"),
-             ("validate", "judge", ""))
+             ("generate", "verify", ""), ("generate", "verify", "harness"))
     #: The host sources the fixture places: one unterminated `src/` file and an unterminated
     #: interface header, beside the runner `_write_node` stages.
     DEP_HEADER = ("dep_model.h", "// dep, no final newline")
@@ -1894,22 +1800,15 @@ class SeedNewlineTests(unittest.TestCase):
         """Through the real slicers on the repository's documents: a seed's newline count is its
         line count, which is what `wc -l` and `awk 'END{print NR}'` disagreed on in run (2)."""
         verify = _verify_node(self.repo)
-        judge_repo = self.repo / "judge"
-        judge_repo.mkdir()
-        judge_c = _PureFakeConductor(repo_root=judge_repo, orchestration_id=_ORCH,
-                                     orchestration_agent_run_id="orch",
-                                     llm_config=_config(judge_repo, "validate", "judge"),
-                                     env={})
-        judge = _write_run_node(judge_repo)
         rows = (
-            (self.c, verify, self.c._build_leaf_verify_context(verify),
+            (verify, self.c._build_leaf_verify_context(verify),
              self.c._leaf_reviewer_spec("generate", "verify"),
              ("SEVERITY_RUBRIC.md",)),
-            (judge_c, judge, judge_c._build_leaf_judge_context(judge),
-             judge_c._leaf_reviewer_spec("validate", "judge"),
+            (verify, self.c._build_leaf_harness_verify_context(verify),
+             self.c._leaf_reviewer_spec("generate", "verify", "harness"),
              ("runner_output_contract.md",)))
-        for conductor, refs, context, spec, names in rows:
-            seeds = conductor._workshop_seeds(refs, context, {}, spec)
+        for refs, context, spec, names in rows:
+            seeds = self.c._workshop_seeds(refs, context, {}, spec)
             for name in names:
                 with self.subTest(seed=name):
                     text = seeds[name]

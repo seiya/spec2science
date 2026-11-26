@@ -1071,7 +1071,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         """The production argv (`Conductor.leaf_command`) and profile of one leaf launch.
 
         Since issue #534 PR-J4-b the launch is a `workshop leaf`'s — the READING argv of
-        `validate.judge` (served no endpoint, so the row needs no wrapper) under the profile a
+        `compile.verify` (served no endpoint, so the row needs no wrapper) under the profile a
         lineage the real preparer made implies (`_prepared_lineage`); the leaf's cwd is that
         lineage's tree, a non-git directory like the empty checkout path the pure leaf started
         in. The name is kept because `docs/BWRAP_ENABLEMENT.md` cites the codex row.
@@ -1091,7 +1091,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         conductor = wc.Conductor(
             repo_root=repo, orchestration_id=orch, orchestration_agent_run_id="ORCH",
             llm_config=sample_config_with(backend, agent_model=model), env={})
-        argv = conductor.leaf_command(conductor.entry_for("validate", "judge"),
+        argv = conductor.leaf_command(conductor.entry_for("compile", "verify"),
                                       session_id=arid, reading=True)
         profile = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
@@ -1207,10 +1207,10 @@ class BwrapLineageProfileTests(unittest.TestCase):
                               server: _Loopback400, *, arid: str, isolation: dict,
                               prompt: str, resume_session_id: str | None = None,
                               ) -> subprocess.CompletedProcess:
-        """Exec the real CLI with the production argv — the READING argv of `validate.judge`,
+        """Exec the real CLI with the production argv — the READING argv of `compile.verify`,
         served no endpoint — under the profile a prepared lineage home implies
         (`codex_workshop_profile_kwargs`, the same spelling `record_launch` uses)."""
-        argv = conductor.leaf_command(conductor.entry_for("validate", "judge"), session_id=arid,
+        argv = conductor.leaf_command(conductor.entry_for("compile", "verify"), session_id=arid,
                                       resume_session_id=resume_session_id, reading=True)
         self.assertEqual(argv[-2:], ["--json", "-"])
         overrides = [*self._LOOPBACK_OVERRIDES,
@@ -2212,12 +2212,12 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         from tools import llm_config
         cfg = self.repo.parent / "llm_reading.yaml"
         cfg.write_text(workshop_yaml(
-            "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {validate: "
-            "{substeps: {judge: {lineage_timeout_s: 600}}}}\n"), encoding="utf-8")
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {compile: "
+            "{substeps: {verify: {lineage_timeout_s: 600}}}}\n"), encoding="utf-8")
         self.reader = wc.Conductor(
             repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
             llm_config=llm_config.load_llm_config(cfg), env={})
-        self.reader_entry = self.reader.entry_for("validate", "judge")
+        self.reader_entry = self.reader.entry_for("compile", "verify")
 
     def _read_launch(self, api: _ScriptedApi, *, session: str) -> subprocess.CompletedProcess:
         argv = self.reader.leaf_command(self.reader_entry, session_id=session, reading=True)
@@ -2241,13 +2241,14 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
             lineage_id=self.lineage,
             orchestration_dir=self.repo / "workspace" / "orchestrations" / self.orch)
         paths.make_work_dirs()
-        workshop_tree.seed_tree(paths, {"tests.md": "# tests\n", "host_verdict.json": "{}\n"})
-        review = {"decision": "pass", "findings": []}
+        workshop_tree.seed_tree(paths, {"tests.md": "# tests\n", "spec.ir.yaml": "ir: {}\n"})
+        from tools.tests.test_leaf_verify import _verdict
+        review = _verdict("pass")
         api = self._api([
             ([{"type": "tool_use", "id": "toolu_1", "name": "Read",
                "input": {"file_path": str(self.tree / "tests.md")}}], "tool_use"),
             ([{"type": "tool_use", "id": "toolu_2", "name": "Write",
-               "input": {"file_path": str(self.tree / "review.json"),
+               "input": {"file_path": str(self.tree / "verdict.json"),
                          "content": json.dumps(review)}}], "tool_use"),
             ([{"type": "tool_use", "id": "toolu_3", "name": "Write",
                "input": {"file_path": str(self.tree / "tests.md"),
@@ -2266,11 +2267,11 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         self.assertIn("# tests", json.dumps(api.tool_results()[0]))
         # The document landed; the snapshot carries it and not the seed the leaf edited.
         host_placed = workshop_tree.reserved_tree_names(
-            ("tests.md", "host_verdict.json"), None, ("review.json",)) - {"review.json"}
+            ("tests.md", "spec.ir.yaml"), None, ("verdict.json",)) - {"verdict.json"}
         workshop_tree.snapshot_tree(paths, host_placed)
-        self.assertEqual(sorted(p.name for p in paths.snapshot.iterdir()), ["review.json"])
+        self.assertEqual(sorted(p.name for p in paths.snapshot.iterdir()), ["verdict.json"])
         self.assertEqual(
-            workshop_tree.assemble_document_file(paths.snapshot, "review.json", "x"), review)
+            workshop_tree.assemble_document_file(paths.snapshot, "verdict.json", "x"), review)
 
 
     def test_mj1_the_diagnosticians_lineage_writes_its_directive_and_holds_no_wrapper(
@@ -2704,15 +2705,15 @@ class CodexWorkshopLeafCliTests(_CodexLeafCliCase):
 class CodexReadingLeafCliTests(_CodexLeafCliCase):
     """UNBILLED (issue #534 step 3 PR-J2, MR5): the real codex CLI under a READING workshop
     leaf's launch shape — the production reading argv (`Conductor.leaf_command(reading=True)`,
-    no endpoint) of a codex `validate.judge` entry under the same rendered profile — against
+    no endpoint) of a codex `compile.verify` entry under the same rendered profile — against
     the scripted Responses-API stand-in. MR5-a: no `mcp__` tool; MR5-b: a document a command
     writes lands and assembles; MR5-c: what a large read returns (the ground of the codex
     reader row's paging rule, `leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT`); MR5-d: a warm
     repair resumes the thread."""
 
-    CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {validate: "
-              "{substeps: {judge: {lineage_timeout_s: 600}}}}\n")
-    PAIR = ("validate", "judge")
+    CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {compile: "
+              "{substeps: {verify: {lineage_timeout_s: 600}}}}\n")
+    PAIR = ("compile", "verify")
     READING = True
 
     def _tool_names(self) -> list[str]:
@@ -2741,31 +2742,31 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertEqual([n for n in names if n.startswith("mcp__")], [], names)
 
     def test_mr5b_a_command_written_review_lands_and_assembles(self) -> None:
-        """MR5-b: a command writes `review.json` (a schema-valid semantic review) at the tree
-        root and rewrites the `tests.md` seed; the snapshot holds the review and no seed, and
-        the spec's assembly returns the document, which the review validator accepts."""
+        """MR5-b: a command writes `verdict.json` (a schema-valid verify verdict) at the tree
+        root and rewrites the `tests.md` seed; the snapshot holds the verdict and no seed, and
+        the spec's assembly returns the document, which the verdict validator accepts."""
         from tools import leaf_contract, workshop_tree
-        from tools.tests.test_leaf_judge import _review
+        from tools.tests.test_leaf_verify import _verdict
         self.paths.make_work_dirs()
         workshop_tree.seed_tree(self.paths, {"tests.md": "# tests\n",
-                                             "host_verdict.json": "{}\n"})
-        review = _review("pass")
-        cmd = (f"printf '%s' {json.dumps(json.dumps(review))} > review.json && "
+                                             "spec.ir.yaml": "ir: {}\n"})
+        review = _verdict("pass")
+        cmd = (f"printf '%s' {json.dumps(json.dumps(review))} > verdict.json && "
                "echo edited > tests.md")
         api = self._api([[_exec_call(
             f"text((await tools.exec_command({{cmd: {json.dumps(cmd)}, login: false}}))"
             ".output);")]])
         res = self._launch(api, None)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
-        self.assertEqual(json.loads((self.tree / "review.json").read_text()), review)
+        self.assertEqual(json.loads((self.tree / "verdict.json").read_text()), review)
         host_placed = workshop_tree.reserved_tree_names(
-            ("tests.md", "host_verdict.json"), None, ("review.json",)) - {"review.json"}
+            ("tests.md", "spec.ir.yaml"), None, ("verdict.json",)) - {"verdict.json"}
         workshop_tree.snapshot_tree(self.paths, host_placed)
-        self.assertEqual(sorted(p.name for p in self.paths.snapshot.iterdir()), ["review.json"])
-        spec = self.conductor._leaf_reviewer_spec("validate", "judge")
+        self.assertEqual(sorted(p.name for p in self.paths.snapshot.iterdir()), ["verdict.json"])
+        spec = self.conductor._leaf_reviewer_spec("compile", "verify")
         assembled = spec.workshop_assemble(self.paths.snapshot, ())
         self.assertEqual(assembled, review)
-        self.assertEqual(leaf_contract.semantic_review_document_violations(assembled), [])
+        self.assertEqual(leaf_contract.verify_verdict_violations(assembled), [])
 
     def test_mr5c_a_large_read_reaches_the_model_with_its_middle_removed(self) -> None:
         """MR5-c: a 600,000-byte, 20,000-line file. Inside the JS `exec` tool a `cat`'s
@@ -3044,7 +3045,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
                 "arguments": json.dumps({"timeout_ms": 60000})}
         api = self._api_routed(
             [[spawn], [wait], [_exec_call(
-                "await tools.exec_command({cmd: 'echo {} > review.json', login: false});"
+                "await tools.exec_command({cmd: 'echo {} > verdict.json', login: false});"
                 "text('ok');", 3)]],
             [[_exec_call("text((await tools.exec_command({cmd: 'cat big.txt', "
                          "login: false})).output);", 1)],
@@ -3079,20 +3080,20 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
     def test_mr5d_a_warm_repair_resumes_the_thread_and_rewrites_the_document(self) -> None:
         """MR5-d: `exec resume <thread>` with the reading argv continues the thread (the prior
         turn is in the request) under `sandbox_mode="workspace-write"`, and a command rewrites
-        `review.json`."""
+        `verdict.json`."""
         first = self._launch(self._api([[_exec_call(
-            "await tools.exec_command({cmd: 'echo {} > review.json', login: false});"
+            "await tools.exec_command({cmd: 'echo {} > verdict.json', login: false});"
             "text('ok');")]]), None)
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         thread = self._thread_id(first.stdout)
         self.assertTrue(self.conductor._workshop_session_resumable(self.paths, thread))
         api = self._api([[_exec_call(
-            "await tools.exec_command({cmd: 'echo repaired > review.json', login: false});"
+            "await tools.exec_command({cmd: 'echo repaired > verdict.json', login: false});"
             "text('ok');")]])
         res = self._launch(api, None, resume=thread)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertEqual(self._thread_id(res.stdout), thread)
-        self.assertEqual((self.tree / "review.json").read_text(), "repaired\n")
+        self.assertEqual((self.tree / "verdict.json").read_text(), "repaired\n")
         self.assertIn("Do the task.", json.dumps(api.requests()[0]["input"]))
         self.assertGreater(len(api.requests()[0]["input"]), 2)
 

@@ -103,7 +103,7 @@ def _leaf_action(item):
 
     A launch that exits 0 (a CLI stdout text, or a rc-0 `ProcResult` carrying one) WRITES the
     document its envelope's `result` carries, verbatim, into the lineage tree under the
-    reviewer's output name (`verdict.json`; `review.json` for the judge) — on the workshop path
+    reviewer's output name (`verdict.json`) — on the workshop path
     the tree is the answer, and the envelope is what the CLI prints after such a session, read
     by the host for the model, the usage and the session id only. Any other `ProcResult` (a
     dead or killed leaf) writes nothing and is the launch's result."""
@@ -115,10 +115,7 @@ def _leaf_action(item):
             except (ValueError, AttributeError):
                 result = None
             if isinstance(result, str):
-                request = [cap for sub, cap in c.calls
-                           if sub == "record-launch"][-1]["--request-json"]
-                name = "review.json" if request["step"] == "validate" else "verdict.json"
-                (tree / name).write_text(result, encoding="utf-8")
+                (tree / "verdict.json").write_text(result, encoding="utf-8")
         return proc
     return action
 

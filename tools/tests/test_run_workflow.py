@@ -1272,9 +1272,7 @@ class RunWorkflowTests(unittest.TestCase):
                 "      verify:\n        lineage_timeout_s: 2700\n"
                 "  generate:\n    substeps:\n"
                 "      generate:\n        max_wrapper_calls: 30\n        lineage_timeout_s: 2700\n"
-                "      verify:\n        lineage_timeout_s: 2700\n"
-                "  validate:\n    substeps:\n"
-                "      judge:\n        lineage_timeout_s: 2700\n",
+                "      verify:\n        lineage_timeout_s: 2700\n",
                 encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
                 ["spec/problem/test.md", "compile", "--llm-config", str(config),
@@ -9073,7 +9071,9 @@ class SubstepEventTests(unittest.TestCase):
                 return None
 
         stub = _Stub()
-        # Validate uses four substeps (pre_judge, execute, judge, post_judge).
+        # Validate uses two substeps (execute, post_judge) since issue #724 PR-2 deleted
+        # `pre_judge` and `judge`.
+        self.assertEqual(wc.SUBSTEPS["validate"], ("execute", "post_judge"))
         refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/x@0.1.0", spec_path="spec/x",
             ir_id="ir1", pipeline_id="pl1",
@@ -9084,15 +9084,12 @@ class SubstepEventTests(unittest.TestCase):
         starts = [e for e in captured if e["event"] == "substep_start"]
         completes = [e for e in captured if e["event"] == "substep_complete"]
         self.assertEqual([(e["phase"], e["substep"]) for e in starts],
-                         [("validate", "pre_judge"), ("validate", "execute"),
-                          ("validate", "judge"), ("validate", "post_judge")])
+                         [("validate", "execute"), ("validate", "post_judge")])
         # `attempt` belongs to `phase_start` alone: a substep_start that carried its
         # index under that key read as a retry count on the jsonl stream (issue #262).
         self.assertFalse(any("attempt" in e for e in starts))
         self.assertEqual([(e["phase"], e["substep"], e["result"]) for e in completes],
-                         [("validate", "pre_judge", "pass"),
-                          ("validate", "execute", "pass"),
-                          ("validate", "judge", "pass"),
+                         [("validate", "execute", "pass"),
                           ("validate", "post_judge", "pass")])
         # Every complete carries a numeric elapsed_seconds and the substep's arid.
         for e in completes:
@@ -9610,7 +9607,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 lc.config_sha256(repo_root / "docs" / "examples" / "llm_claude.example.yaml"))
             self.assertEqual(set(inv["llm_leaf_map"]),
                              {"defaults"} | {f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS})
-            self.assertEqual(inv["llm_leaf_map"]["validate.judge"]["backend"], "claude")
+            self.assertEqual(inv["llm_leaf_map"]["generate.verify"]["backend"], "claude")
             # The old keys stay, for tooling that reads them.
             self.assertEqual(inv["llm"], "claude")
             self.assertIn("llm_command", inv)
@@ -9872,8 +9869,8 @@ class LlmConfigStartupTests(unittest.TestCase):
             self._seed(repo_root)
             cfg = repo_root / "custom.yaml"
             cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned-by-file\n"
-                           "phases:\n  validate:\n    substeps:\n      judge:\n"
-                           "        model: judge-only\n"), encoding="utf-8")
+                           "phases:\n  generate:\n    substeps:\n      verify:\n"
+                           "        model: verify-only\n"), encoding="utf-8")
             self._seed_resumable(repo_root, "orch_pin", {
                 "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
@@ -9882,8 +9879,8 @@ class LlmConfigStartupTests(unittest.TestCase):
             code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_pin")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             self.assertEqual(kw["llm_config"].defaults.model, "pinned-by-file")
-            self.assertEqual(kw["llm_config"].entry_for("validate", "judge").model,
-                             "judge-only")
+            self.assertEqual(kw["llm_config"].entry_for("generate", "verify").model,
+                             "verify-only")
 
     def test_the_recorded_overrides_are_read_back_and_refuse_the_resume(self) -> None:
         """Making `_recorded_llm_config` always return `{}` left the suite green: the

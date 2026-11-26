@@ -37,7 +37,6 @@ from tools.tests.http_stand_ins import (
 )
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.test_leaf_compile import _assembled_ir, _write_compile_node
-from tools.tests.test_leaf_judge import _review, _write_run_node
 from tools.tests.test_leaf_producer import _valid_bundle
 from tools.tests.test_leaf_verify import _verdict, _verify_node
 from tools.tests.test_workshop_producer import _WorkshopFakeConductor, _write_node
@@ -726,7 +725,7 @@ class _Reading(_Dialect):
 
 
     def test_a_cut_last_reply_makes_an_unfinished_review(self) -> None:
-        """Round 1 of PR-J3-b: the judge writes a provisional `pass`, then its last reply is
+        """Round 1 of PR-J3-b: the reviewer writes a provisional `pass`, then its last reply is
         cut at the output limit. That `pass` is not accepted: the review is run again from the
         seeds alone, as for a launch its bound ended."""
         self.conductor([self.calls(self.write_output(self.passing())),
@@ -802,18 +801,6 @@ class _GenerateReading(_Reading):
         return _verify_node(repo)
 
 
-class _JudgeReading(_Reading):
-    PHASE = "validate"
-    SUBSTEP = "judge"
-    OUTPUT = "review.json"
-
-    def stage(self, repo: Path) -> wc.NodeRefs:
-        return _write_run_node(repo)
-
-    def passing(self) -> dict:
-        return _review("pass")
-
-
 class AnthropicCompileVerifyTests(_Reading, unittest.TestCase):
     pass
 
@@ -827,14 +814,6 @@ class AnthropicGenerateVerifyTests(_GenerateReading, unittest.TestCase):
 
 
 class ChatGenerateVerifyTests(_ChatDialect, _GenerateReading, unittest.TestCase):
-    pass
-
-
-class AnthropicValidateJudgeTests(_JudgeReading, unittest.TestCase):
-    pass
-
-
-class ChatValidateJudgeTests(_ChatDialect, _JudgeReading, unittest.TestCase):
     pass
 
 

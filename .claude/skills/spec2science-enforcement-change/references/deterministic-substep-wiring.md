@@ -1,8 +1,7 @@
 # Adding a new deterministic (conductor in-process) substep
 
 `docs/ORCHESTRATION.md`'s "Deterministic in-process execution" (a bold bullet, not a heading) describes the substeps that exist
-today (`Compile.static`, `Generate.gate`, `Build`, `Validate.pre_judge`, `Validate.execute`,
-`Validate.post_judge`). This file is the wiring checklist for adding another one — every one of
+today (`Compile.static`, `Generate.gate`, `Build`, `Validate.execute`, `Validate.post_judge`). This file is the wiring checklist for adding another one — every one of
 these was hit adding `Generate.static` (later folded into `Generate.gate`), and every miss left
 the unit suite green while the real flow fail-closed, because the conductor-level tests drive a
 mock conductor that captures `record-launch` / `revoke-artifact` as call tuples and never reaches

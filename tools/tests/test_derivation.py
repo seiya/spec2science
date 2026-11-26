@@ -19,9 +19,7 @@ from tools import leaf_contract
 from tools.leaf_contract import (
     COMPILE_VERIFY_CONTRACT_VERSION,
     GENERATE_VERIFY_CONTRACT_VERSION,
-    VALIDATE_JUDGE_CONTRACT_VERSION,
 )
-from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
 
 
 class CanonicalHashingTests(unittest.TestCase):
@@ -94,8 +92,9 @@ class DerivationKeyTests(unittest.TestCase):
             "compile": (COMPILE_VERIFY_CONTRACT_VERSION, d.COMPILE_INLINED_DOCUMENTS_VERSION),
             "generate": (GENERATE_VERIFY_CONTRACT_VERSION, d.RENDER_VERSION),
             "build": (d.BUILD_VERSION,),
-            "validate": (d.EXECUTE_VERSION, d.VERDICT_VERSION, VALIDATE_JUDGE_CONTRACT_VERSION,
-                         f"raw-excerpt-{RAW_EXCERPT_POLICY_VERSION}"),
+            # Issue #724 PR-2 (decision O10): the judge's contract version and its raw-excerpt
+            # policy left the tuple with `validate.judge`.
+            "validate": (d.EXECUTE_VERSION, d.VERDICT_VERSION),
         })
         self.assertEqual(set(d.transformation_versions()), set(d.DERIVATION_STEPS))
 
@@ -110,13 +109,19 @@ class DerivationKeyTests(unittest.TestCase):
         inputs = {"x": "sha256:" + "1" * 64}
         before = {s: d.derivation_key(s, inputs) for s in d.DERIVATION_STEPS}
         for constant, phase in (("COMPILE_VERIFY_CONTRACT_VERSION", "compile"),
-                                ("GENERATE_VERIFY_CONTRACT_VERSION", "generate"),
-                                ("VALIDATE_JUDGE_CONTRACT_VERSION", "validate")):
+                                ("GENERATE_VERIFY_CONTRACT_VERSION", "generate")):
             with self.subTest(constant=constant), mock.patch.object(
                     leaf_contract, constant, "reader-999"):
                 moved = {s for s in d.DERIVATION_STEPS
                          if d.derivation_key(s, inputs) != before[s]}
                 self.assertEqual(moved, {phase})
+        # `validate` holds no reader constant since issue #724 PR-2; its two deterministic
+        # versions move its key alone.
+        for constant in ("EXECUTE_VERSION", "VERDICT_VERSION"):
+            with self.subTest(constant=constant), mock.patch.object(d, constant, "det-999"):
+                moved = {s for s in d.DERIVATION_STEPS
+                         if d.derivation_key(s, inputs) != before[s]}
+                self.assertEqual(moved, {"validate"})
 
     def test_key_is_the_canonical_hash_of_exactly_four_fields(self) -> None:
         inputs = {"spec": {"tests": "sha256:" + "1" * 64}, "closure": []}

@@ -25,7 +25,9 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   different clocks, so a deterministic in-process body that finished inside one timer tick failed
   its own gate. `tools/tests/test_workflow_conductor.py` was **8 failed / 761 passed on
   `origin/main`** for exactly that reason (`VerifyMetaSchemaWarmResumeTests` and both copies of
-  `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review`, whose stubs write their
+  `test_retried_judge_cannot_certify_the_dead_attempts_semantic_review` — re-hosted on
+  `compile.verify` as `test_retried_verify_cannot_certify_the_dead_attempts_verdict` by issue
+  #724 —, whose stubs write their
   metas in-process), and it went to 770 passed on the branch. Nobody noticed for two rounds: I
   argued the cause from one incident's artifacts and from a timing measurement, a reviewer showed
   the arithmetic did not carry, and only then did another reviewer run the file on `main`. **The

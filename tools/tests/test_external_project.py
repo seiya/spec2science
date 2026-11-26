@@ -264,7 +264,7 @@ class RecordedCommandTests(unittest.TestCase):
         from tools import judge_replay as jr
         source = types.SimpleNamespace(
             meta={"spec_ref": _HARNESS}, orchestration_id="orch_src", agent_run_id="arid",
-            request={}, pair=("validate", "judge"))
+            request={}, pair=("compile", "verify"))
         llm = types.SimpleNamespace(path=FRAMEWORK_ROOT / "llm.yaml", sha256="x",
                                     provenance_map=dict)
         record = jr.replay_invocation(source, llm_config=llm, argv=["orch_src", "arid"],

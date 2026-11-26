@@ -10,7 +10,7 @@ What each class pins:
   the fixture seeds (`netcdf_capture_fixture.DEFECTS`, and one variable per group wrongly
   defined) is refused, never read as a record.
 - `ReaderParityTests` — the readers of a run's captures driven here (the verdict and a
-  comparand, the post-execute gate's `_validate_raw_evidence`, the judge's excerpt, the
+  comparand, the post-execute gate's `_validate_raw_evidence`, the
   conductor's promotion / schema / deliverable / continuation-merge helpers,
   `tools/run_configuration.py`'s restart source and kept records, `_final_records`) gives over
   a `netcdf` run exactly what it gives over the `json` run holding the same records: a reader
@@ -420,14 +420,25 @@ class ReaderParityTests(unittest.TestCase):
                                                  comparands=[comparand])
         self.assertTrue(records and all(r["satisfied"] for r in records), records)
 
-    def test_the_judges_excerpt(self) -> None:
-        from tools.raw_evidence_excerpt import raw_evidence_excerpt
-        js, nc, ir = _twin_runs(self)
-        got = raw_evidence_excerpt(nc / "raw", ir["io_contract"], output_format="netcdf")
-        want = raw_evidence_excerpt(js / "raw", ir["io_contract"], output_format="json")
-        self.assertEqual(got["state_snapshots"]["cases"], want["state_snapshots"]["cases"])
-        self.assertTrue(all(c["read"] and c["initial"]["read"]
-                            for c in got["state_snapshots"]["cases"]))
+    def test_the_stores_own_reader(self) -> None:
+        # Re-hosted (issue #724 PR-2) from the `validate.judge` excerpt, whose vehicle went with
+        # the judge: the two stores read the twin runs to the same cases and the same records
+        # at both capture points.
+        js, nc, _ir = _twin_runs(self)
+        got_store, want_store = cs.store("netcdf"), cs.store("json")
+        got_dir, want_dir = cs.snapshot_dir(nc), cs.snapshot_dir(js)
+        case_ids = list(got_store.case_ids(got_dir))
+        self.assertTrue(case_ids)
+        self.assertEqual(case_ids, list(want_store.case_ids(want_dir)))
+        for cid in case_ids:
+            for group in (cs.FINAL, cs.INITIAL):
+                got = dict(got_store.read_record(got_dir, group, cid))
+                want = dict(want_store.read_record(want_dir, group, cid))
+                self.assertTrue(got, (cid, group))
+                self.assertEqual(set(got), set(want), (cid, group))
+                for name in got:
+                    self.assertEqual(np.asarray(got[name]).tolist(),
+                                     np.asarray(want[name]).tolist(), (cid, group, name))
 
     def test_the_conductors_helpers(self) -> None:
         import types
@@ -611,14 +622,14 @@ class ReaderRefusesAnIncompleteCaseTests(unittest.TestCase):
             self.assertEqual((record["satisfied"], record["kind"]), (False, "structural"))
             self.assertIn("a.nc is incomplete", record["evaluated"][0]["error"])
 
-    def test_the_judges_excerpt(self) -> None:
-        from tools.raw_evidence_excerpt import raw_evidence_excerpt
-        got = raw_evidence_excerpt(self.nc / "raw", self.ir["io_contract"],
-                                   output_format="netcdf")
-        cases = {c["case_id"]: c for c in got["state_snapshots"]["cases"]}
-        self.assertFalse(cases["a"]["read"])
-        self.assertTrue(cases["b"]["read"])
-        self.assertTrue(any("a.nc: incomplete" in p for p in got["problems"]), got["problems"])
+    def test_the_stores_own_reader(self) -> None:
+        # Re-hosted (issue #724 PR-2) from the `validate.judge` excerpt, whose vehicle went with
+        # the judge: the store refuses the incomplete case and reads the complete one.
+        store, sdir = cs.store("netcdf"), cs.snapshot_dir(self.nc)
+        with self.assertRaises(CaptureError) as caught:
+            store.read_record(sdir, cs.FINAL, "a")
+        self.assertIn("incomplete", str(caught.exception))
+        self.assertTrue(dict(store.read_record(sdir, cs.FINAL, "b")))
 
     def test_the_conductors_helpers(self) -> None:
         from tools import workflow_conductor as wc

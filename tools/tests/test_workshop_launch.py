@@ -435,7 +435,7 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertIn("leaf_mode=workshop is only valid for (build, diagnose), "
                       "(compile, diagnose), (compile, generate), (compile, verify), "
                       "(generate, diagnose), (generate, generate), (generate, verify), "
-                      "(validate, diagnose), (validate, judge);", str(ctx.exception))
+                      "(validate, diagnose);", str(ctx.exception))
 
     def test_a_workshop_diagnose_request_is_a_reading_launch(self) -> None:
         """The pair this row's predecessor refused (issue #534 PR-J4-a): a workshop diagnose

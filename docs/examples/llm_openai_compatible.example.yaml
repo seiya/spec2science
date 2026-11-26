@@ -1,6 +1,6 @@
-# Sample leaf-LLM configuration: EVERY LLM leaf — both `compile`, both `generate`, and
-# `validate.judge` — on a local OpenAI-compatible server. `defaults` stays on the Claude Code
-# CLI, and the reason is not the leaves: see the ALL-HTTP note below.
+# Sample leaf-LLM configuration: EVERY LLM leaf — both `compile` and both `generate` —
+# on a local OpenAI-compatible server. `defaults` stays on the Claude Code CLI, and the
+# reason is not the leaves: see the ALL-HTTP note below.
 #
 # Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
 # `--llm-config`:
@@ -23,10 +23,10 @@
 #         max_wrapper_calls: 30      # host-operation calls per lineage (cold launch + repairs)
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
-# On a JUDGING substep (`compile.verify`, `generate.verify`, `validate.judge`) no host operation
-# is served, so `max_wrapper_calls` is refused there:
+# On a JUDGING substep (`compile.verify`, `generate.verify`) no host operation is served, so
+# `max_wrapper_calls` is refused there:
 #
-#       judge:
+#       verify:
 #         provider: openai_compatible
 #         base_url: http://localhost:8000/v1
 #         api_key_env: LOCAL_LLM_API_KEY
@@ -248,31 +248,4 @@ phases:
         # 17.6-19.8 loaded band `docs/ORCHESTRATION.md` records — i.e. the default is a
         # coin toss there rather than a margin. 1200 asks 13.7 tok/s, as the writer does.
         timeout_s: 1200
-        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-
-  validate:
-    substeps:
-      # The independent semantic check, and the last leaf of the run: it reads the seeds and
-      # writes `review.json`. Its seeds are the largest of the five in artifact terms and the
-      # most VARIABLE: the run's own documents plus the raw-evidence excerpt
-      # (`raw_evidence_excerpt.json`), which grows with (test x case x variable). Every page it
-      # reads is re-sent in each later request. Measured on `problem/shallow_water2d@0.4.0`'s
-      # recorded `run_20260802_001`, the excerpt alone is 52,001 bytes (from 13,019,745 bytes of
-      # `raw/`) and the whole seed set is about 150 KB. Re-measure rather than trusting that —
-      # build a `Conductor` and sum
-      # `len(v.encode()) for v in c._build_leaf_judge_context(refs).values()`, whose values
-      # are the seeds (a `.json` one re-indented one value per line).
-      judge:
-        provider: openai_compatible
-        base_url: http://localhost:8000/v1
-        api_key_env: LOCAL_LLM_API_KEY
-        model: qwen2.5-coder-32b-instruct
-        effort: medium
-        # The ARTIFACT here is tiny — a decision and a findings array — so this ceiling is
-        # almost entirely reasoning headroom, and on a reasoning model that is the term that
-        # decides whether anything comes back at all. Read the writer's budget note under
-        # `generate.generate`: below the model's reasoning floor the answer is zero characters
-        # with `finish_reason: length`, not a short answer.
-        max_output_tokens: 16384
-        timeout_s: 1800
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
