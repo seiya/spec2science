@@ -2486,6 +2486,19 @@ class CrossTargetEvaluationTest(unittest.TestCase):
             with self.subTest(order=order):
                 self.assertEqual(self._eval([CROSS], order)[0]["kind"], "structural")
 
+    def test_a_bind_expr_does_not_reach_is_not_evaluated_against_a_comparand(self) -> None:
+        # Issue #725 on the cross-target pass (review round 1): the comparand passes skip an
+        # unreached bind too, and a reached one that fails is still structural.
+        bad = "(0 - sum(comparand.final.h)) ** 0.5"
+        [cross] = self._eval([{**CROSS, "bind": {"z": bad}}], ["gpu", "mpi"])
+        self.assertEqual(cross["kind"], "pass", cross)
+        self.assertEqual(len(cross["evaluated"]), 4)
+        [cross] = self._eval([{**CROSS, "bind": {"z": bad},
+                               "expr": CROSS["expr"] + " + z"}], ["gpu"])
+        self.assertEqual(cross["kind"], "structural")
+        self.assertEqual(cross["evaluated"][0]["comparand"], "gpu")
+        self.assertIn("non-finite", cross["evaluated"][0]["error"])
+
     def test_absent_comparand_variable_names_the_comparand(self) -> None:
         self.runs["gpu"].write("a", initial={"h": self.h["a"].tolist(), "s": 1.0, "t": 0.0},
                                final={"s": 1.0, "t": 0.2})
