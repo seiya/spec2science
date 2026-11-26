@@ -9699,20 +9699,32 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         """`workflow-launch-check` is the subprocess the conductor runs before every phase
         (`Conductor.workflow_launch_check`), and the conductor tests fake it, so this row is
         the one that drives the CLI dispatch into `pre_phase_launch`. Its JSON is the hook's
-        answer for the same arguments (here `fail_closed`: no preflight)."""
+        answer for the same arguments. The preflight is a launchable `claude` one, so the two
+        backends get different answers (`pass` and `fail_closed` on a backend mismatch): a
+        dispatch that dropped or replaced `--backend` would answer one of them wrongly."""
         from tools.orchestration_runtime import main as runtime_main
         with tempfile.TemporaryDirectory() as tmp:
-            args = dict(orchestration_id="o", node_key="problem/shallow_water2d@0.3.0",
-                        step="validate", backend="claude")
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = runtime_main([
-                    "workflow-launch-check", "--repo-root", tmp,
-                    "--orchestration-id", args["orchestration_id"],
-                    "--node-key", args["node_key"], "--step", args["step"],
-                    "--backend", args["backend"]])
-            self.assertEqual(rc, 0, buf.getvalue())
-            self.assertEqual(json.loads(buf.getvalue()), ort.pre_phase_launch(Path(tmp), **args))
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="o")
+            _mark_dependencies_ready(repo_root, "o")
+            write_preflight(repo_root=repo_root, orchestration_id="o",
+                            payload=_launchable_preflight_dict(backend="claude"))
+            statuses = {}
+            for backend in ("claude", "codex"):
+                args = dict(orchestration_id="o", node_key="problem/shallow_water2d@0.3.0",
+                            step="validate", backend=backend)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = runtime_main([
+                        "workflow-launch-check", "--repo-root", tmp,
+                        "--orchestration-id", args["orchestration_id"],
+                        "--node-key", args["node_key"], "--step", args["step"],
+                        "--backend", args["backend"]])
+                self.assertEqual(rc, 0, buf.getvalue())
+                answer = json.loads(buf.getvalue())
+                self.assertEqual(answer, ort.pre_phase_launch(repo_root, **args))
+                statuses[backend] = answer["status"]
+            self.assertEqual(statuses, {"claude": "pass", "codex": "fail_closed"})
 
 
 class PreflightLiveProbeTtlTests(unittest.TestCase):
