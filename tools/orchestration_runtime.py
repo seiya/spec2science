@@ -3571,7 +3571,7 @@ def _resolve_dependency_facts(
     ``deps.yaml`` + catalog). ``Compile.static`` refuses an IR whose ``direct_deps`` key differs
     from the graph's, ``@version`` included (issue #661), so a certified IR carries the resolved
     version. This output decides no launch either way. It has two readers: the leaf's
-    ``DEPENDENCIES.md`` (Generate and Validate), and the conductor's ``post_judge`` aggregate fold
+    ``DEPENDENCIES.md`` (Generate), and the conductor's ``post_judge`` aggregate fold
     (``Conductor._author_derived_validate_artifacts``). The fold reads each fact's
     ``aggregate_verdict_ref`` to choose a READY dependency's contribution, ``xfail`` or
     ``pass``, to the node's ``aggregate_verdict``. A dependency readiness admits but with no
