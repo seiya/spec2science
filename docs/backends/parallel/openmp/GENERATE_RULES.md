@@ -15,12 +15,13 @@ target the default is `!$omp parallel do` on the parallelizable loops, declared 
 
 - **A default, not a rule.** Beyond the presence floor (§2), which loops carry a directive, the
   schedule / chunk / collapse, and every other lowering choice are the producer's, stated in its
-  plan; `Generate.verify` G6 holds the source to the plan, and to this default only where the
-  plan is silent (`docs/workflow/phases/phase_02_generate.md` §2-2, G6).
+  plan. No check holds the source to the plan or to this default: the plan is the producer's
+  record, and `Generate.verify` finds a parallel construct only where it makes a returned value
+  wrong, such as a data race (`docs/workflow/phases/phase_02_generate.md` §2-2).
 - **Never force a directive onto a loop that is not parallelizable** (a carried dependence, a
   reduction that cannot be expressed correctly). Declare `"model": "none"` and say why in the
-  plan; the reviewer holds that declaration to the loops, and a `none` over plainly
-  parallelizable loops is itself a finding.
+  plan. No check holds that declaration to the loops: a `none` over plainly parallelizable loops
+  makes no returned value wrong.
 - **What already counts as parallel** is the construct of the node's language that IS the
   parallelism. In a Fortran source a `do concurrent` loop needs no directive beside it
   ([GENERATE_RULES.md](../../language/fortran/GENERATE_RULES.md) §4).
@@ -74,10 +75,12 @@ following hold. The pieces are this backend's `parallel_directives`
 ## 3. What no gate sees
 
 The floor is a PRESENCE floor. A directive on some loops only, a schedule other than the plan's,
-an incorrect parallelization, and the honesty of a declared `none` all pass it; they are
-`Generate.verify` G6's judgment, told in the `openmp` reviewer fragment. Where the floor does not
-run — an `infrastructure` node, a source out of its reach (§2), a plan that declines — whether the
-source reflects the plan at all is G6's too. The floor reads the model source only.
+an incorrect parallelization, and the honesty of a declared `none` all pass it. An incorrect
+parallelization — a data race — is a `Generate.verify` finding, told in the `openmp` reviewer
+fragment, and the thread-count comparisons of §4 read for it; the coverage of the plan's loops,
+the schedule and the honesty of a `none` are held by no check, here or where the floor does not
+run (an `infrastructure` node, a source out of its reach (§2), a plan that declines). The floor
+reads the model source only.
 
 ## 4. The launch environment
 
@@ -94,8 +97,8 @@ for a region that runs at more than one thread in some run: `OMP_THREAD_LIMIT` c
 `num_threads(k)` clause at each run's width, but a region pinned to one thread
 (`num_threads(1)`, `omp_set_num_threads(1)`) or switched off by an `if(...)` clause false on
 the cases the tests run is serial in every run, and nothing deterministic observes the width a
-region ran at — the producer is told not to and the `openmp` reviewer fragment makes it a
-`Generate.verify` G6 finding.
+region ran at — the producer is told not to, and no check holds it: such a region makes no
+returned value wrong.
 
 ## 5. The thread count a run records
 

@@ -400,7 +400,7 @@ class PromptCompositionTests(unittest.TestCase):
     def test_the_lead_precedes_every_members_section(self) -> None:
         for template_file, section in (("workshop_generate_generate.txt", "target_lowering_floor"),
                                        ("workshop_generate_verify.txt",
-                                        "checklist_g6_floor_scope")):
+                                        "review_target_scope")):
             stem = ort._fragment_template_stem(template_file)
             lead = ort._parallel_combination_lead(stem, "mpi+openmp", ("mpi", "openmp"))[section]
             mpi = registry.capability_module("parallel", "mpi", "prompt_fragments").fragments(
@@ -416,6 +416,33 @@ class PromptCompositionTests(unittest.TestCase):
                 self.assertNotIn("{{members}}", composed)
                 reordered = self._compose(template_file, "openmp+mpi")
                 self.assertIn(f"{openmp}\n\n{mpi}", reordered)
+
+    def test_each_target_is_told_what_the_driver_hands_a_call(self) -> None:
+        """Issue #727 (issue #724 PR-3, decision O4 (a)): the sentence on what the driver hands
+        a call lives in the two base templates, neutral, with an exception clause that points at
+        the parallel backend's paragraph. It reaches the producer and the model reviewer on
+        every target kind — no parallel model, `openmp`, `mpi` and `mpi+openmp` — and where it
+        is excepted (an `mpi` member) the composed prompt carries the paragraph that says the
+        driver partitions the case."""
+        sentence = {
+            "workshop_generate_generate.txt":
+                "The driver hands every call the whole case unless the paragraph for the "
+                "target's parallel backend under rule 7 says it partitions the case",
+            "workshop_generate_verify.txt":
+                "The driver hands every call the whole case unless a paragraph for this "
+                "target's parallel backend at the end of this scope says it partitions the case",
+        }
+        partitions = {"workshop_generate_generate.txt": "The host-rendered driver distributes "
+                                                         "each case",
+                      "workshop_generate_verify.txt": "On this target the host-rendered driver "
+                                                      "distributes each case"}
+        for template_file, text in sentence.items():
+            for backend in ("none", "openmp", "mpi", "mpi+openmp"):
+                with self.subTest(template=template_file, backend=backend):
+                    composed = self._compose(template_file, backend)
+                    self.assertEqual(composed.count(text), 1)
+                    self.assertEqual(partitions[template_file] in composed,
+                                     "mpi" in backend.split("+"))
 
     def test_a_one_member_value_composes_as_before(self) -> None:
         for template_file in ("workshop_generate_generate.txt", "workshop_generate_verify.txt"):

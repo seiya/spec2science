@@ -155,5 +155,6 @@ A plan that declines MPI exempts nothing: the driver distributes from the IR wha
   binary exercises no block margin: a kernel reading past its block is diagnosed on the serial
   target and detected here only where the shape comparison sees it.
 - **A kernel that computes over rank 0's cells alone, or decides its work from the grid**, passes
-  every gate above; `Generate.verify` G6 judges it (the reviewer fragment), and the shape
-  comparison over the sweep is what tells it on a case the table distributes.
+  every gate above; it makes a returned value wrong on several ranks, so it is a
+  `Generate.verify` finding (the reviewer fragment), and the shape comparison over the sweep is
+  what tells it on a case the table distributes.

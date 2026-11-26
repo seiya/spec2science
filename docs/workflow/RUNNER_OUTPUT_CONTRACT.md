@@ -1,8 +1,9 @@
 # Runner output contract (perf.json / raw/)
 
-> **Audience: `Validate.judge` and a runner-authoring `Generate` leaf.** The single
+> **Audience: a runner-authoring `Generate` leaf and its reviewer.** The single
 > canonical source for *what the `runner` must emit* and *how it serializes it* — §3
-> (`raw/` evidence) is what the judge holds the run's evidence against. There is no §1:
+> (`raw/` evidence) is what the harness `Generate.verify` reviewer holds the executable
+> entry against (H6–H8). There is no §1:
 > the diagnostics document it specified was retired by
 > [issue #582](https://github.com/seiya/spec2science/issues/582), and the other sections keep
 > their numbers so that a citation holds. It supersedes the runner-output rules once duplicated in
@@ -16,10 +17,10 @@
 > owns the JSON assembly, and the host authors the verdict. A rendered runner calls no writer but
 > the capture operations and the performance writer. What it does per case is §3, and what it reads is §6.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
-> governs the runner-authoring one — the `infrastructure` self-test — and
-> `Validate.judge`. Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
+> governs the runner-authoring one — the `infrastructure` self-test — and its reviewer.
+> Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
 > followed by the target language's runner-output binding (issue #289), in both
-> `harness`-shape `generate` trees, §3 in the judge's. The *authoring* rules below survive as
+> `harness`-shape `generate` trees. The *authoring* rules below survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
 > capture-directory gates in `validate_pipeline_semantics.py`).
 

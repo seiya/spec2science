@@ -77,8 +77,7 @@
       "fortran-subroutine": 1
     },
     "docs/workflow/phases/phase_02_generate.md": {
-      "fortran": 28,
-      "fortran-intent": 1,
+      "fortran": 22,
       "fortran-subroutine": 1,
       "make-control-file": 1,
       "parallel-directive": 1

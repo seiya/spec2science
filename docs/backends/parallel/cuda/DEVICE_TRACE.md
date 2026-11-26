@@ -224,9 +224,9 @@ the summary's rows (`kernel_instances`):
   covers — dead, launched only on a path the cases do not take, or launched with a configuration
   the device refuses (CUDA runs no kernel for such a launch; not measured under the trace). The
   producer launches it where a case reaches it, with a configuration the device accepts, or
-  removes it only if its work is not needed. Moving the work to a host loop is what
-  `generate.verify` refuses (G6: a loop the plan puts on the device runs there, and a loop kept
-  on the host needs a reason about the loop itself) and this gate cannot see.
+  removes it only if its work is not needed. Moving the work to a host loop is what the producer
+  is told not to do and this gate cannot see; since issue #724 no check holds it, because it makes
+  no returned value wrong (`generate.verify` finds a lowering only where it does).
 - The summary is read only when `trial_meta.json#kernel_trace` names a successful `run_program`
   record of §1's summary command in the node's `command_log.jsonl`; a missing summary, a summary
   without that record, or one the reader refuses (`SummaryUnreadable`) is an ordinary violation.

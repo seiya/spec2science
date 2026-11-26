@@ -31,8 +31,9 @@ and a `component` is held to the same rules either way. `lowering_plan_declines`
 through the validator.
 
 It is a PRESENCE floor: whether a problem's exchange precedes every stencil read, with the spec's
-periodicity, and whether each global quantity goes through a reduction is `Generate.verify` G6's
-judgment, and the shape comparison of the sweep is what judges the result.
+periodicity, and whether each global quantity goes through a reduction is the spec-relative
+`Generate.verify` review's only insofar as it makes a returned value wrong (its `mpi` fragment
+states that), and the shape comparison of the sweep is what judges the result.
 
 The sources are read as the Fortran backend reads them — its `statements` (comments stripped,
 continuations joined, `;` split) with string contents masked — asked of the registry, not

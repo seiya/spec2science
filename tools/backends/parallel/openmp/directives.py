@@ -68,9 +68,8 @@ def _fortran_cpu_remedy(model_file: Path, counted: int) -> str:
         "directive — add `!$omp parallel do` to the parallelizable loops (a `do concurrent` "
         "loop already counts as parallel). Only when a loop genuinely cannot be "
         "parallelized (a carried dependence) is `\"model\": \"none\"` in the plan the "
-        "answer, with the reason stated; the independent reviewer holds that declaration to "
-        "the loops, so never force a directive you believe is wrong and never decline one "
-        "a loop can take"
+        "answer, with the reason stated; never force a directive you believe is wrong and "
+        "never decline one a loop can take"
     )
 
 
@@ -105,9 +104,10 @@ def lowering_plan_declines(plan: Any) -> bool:
     contain (measured in R4-a PR-3's round 3: the only passing counted-loop, directive-free
     physics sources are three July 2026 ones whose IRs claimed OpenMP and which predate the
     floor, and the five real ``none`` plans belong to the harness and two whole-array nodes);
-    whether that declaration is honest is ``Generate.verify`` G6's judgment, told in its
-    template that a ``none`` over plainly parallelizable loops, or with a reason the loops
-    contradict, is itself the finding.
+    whether that declaration is honest is held by nothing deterministic beyond this floor: the
+    plan is a record, and since issue #724 PR-3 ``Generate.verify`` reviews the source against
+    the Controlled Spec, not against the plan. A ``none`` over parallelizable loops leaves no
+    returned value wrong; the thread sweep of ``Validate`` holds what the loops compute.
 
     OpenMP specifically: a plan naming ``mpi`` or ``cuda_streams`` declines OpenMP rather than
     being told to add a directive — a demand that would contradict its own plan. Substring, so

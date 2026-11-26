@@ -157,31 +157,35 @@ def _requests(c) -> list[dict]:
 # _build_leaf_verify_context
 # ======================================================================================
 class PureVerifyContextTests(unittest.TestCase):
-    def test_context_has_the_six_verify_keys(self) -> None:
+    def test_context_has_the_five_verify_keys(self) -> None:
+        # Issue #724 change 2: the model reviewer is spec-relative and holds no IR, in its
+        # context or its seeds (the harness reviewer keeps it: test_leaf_wiring).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             ctx = _conductor(repo)._build_leaf_verify_context(refs)
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
-                              "ir_document", "target_profile",
+                              "target_profile",
                               "severity_rubric_document", "bundle_document"})
+            self.assertNotIn("ir_document", wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS[
+                ("generate", "verify", "")])
             self.assertIn("conserves mass", ctx["controlled_spec_document"])
-            # The reviewer judges G6 against the run's target (issue #284): the whole profile,
-            # the same document the producer is shown.
+            # The reviewer is shown the run's target (issue #284): the whole profile, the same
+            # document the producer is shown.
             conductor = _conductor(repo)
             self.assertEqual(json.loads(ctx["target_profile"]), conductor.target.doc)
             self.assertIn("bundle_schema_version", ctx["bundle_document"])
 
     def test_each_unreadable_node_artifact_raises_its_named_document(self) -> None:
-        """Issue #467: the builder-level rows for the four node artifacts, plus one undecodable
+        """Issue #467: the builder-level rows for the three node artifacts, plus one undecodable
         bundle — `UnicodeError` takes the same named path as a missing file — and one
-        whitespace-only IR."""
+        whitespace-only `tests.md` (the IR it was taken on left this reviewer's context in issue
+        #724 PR-3)."""
         rows = (
             (lambda r: f"{r.spec_path}/controlled_spec.md",
              "pure_controlled_spec_document_missing"),
             (lambda r: f"{r.spec_path}/tests.md", "pure_tests_document_missing"),
-            (lambda r: f"{r.ir_ref}/spec.ir.yaml", "pure_ir_document_missing"),
             (lambda r: f"{r.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing"),
         )
         for rel_of, marker in rows:
@@ -205,10 +209,10 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            (repo / refs.ir_ref / "spec.ir.yaml").write_text(" \n\t\n", encoding="utf-8")
+            (repo / refs.spec_path / "tests.md").write_text(" \n\t\n", encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
                 _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_ir_document_missing", str(cm.exception))
+            self.assertIn("pure_tests_document_missing", str(cm.exception))
             self.assertTrue(str(cm.exception).endswith(": empty"), str(cm.exception))
 
     def _assert_no_contract_overrules_a_finding(self, doc: str) -> None:
@@ -263,16 +267,22 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertIn("do not settle whether the sources under review can serve as the base "
                           "of a repair, the value is `minor`", doc)
             # …and the `minor` bullet's own routing sentence, which round 5 found held by
-            # nothing but the drift digest: flipping "Every G1-G7 finding whose subject is the
+            # nothing but the drift digest: flipping "Every finding whose subject is the
             # generated code takes this value" to `major` reproduces #142's episode — a
-            # contract-conforming bundle terminalizing the run — on a version bump alone.
-            self.assertIn("Every G1-G7 finding whose subject is the generated code takes this "
-                          "value", doc)
-            # `ir_inconsistency` is what routes the operator to `reopen-phase --from-phase
-            # compile` (`docs/RUNBOOK.md` §3-1 keys its first arm on that literal), and deleting
-            # the obligation to write it turned only the drift digest red (round 5).
-            self.assertIn("contains the literal `ir_inconsistency` when the input is "
-                          "`spec.ir.yaml`", doc)
+            # contract-conforming bundle terminalizing the run — on a version bump alone. The
+            # exception it carries is `critical`'s, named in words (issue #724 PR-3), so `minor`
+            # does not swallow `critical`.
+            self.assertIn("Every finding whose subject is the generated code takes this value, "
+                          "except the one `critical` names", doc)
+            # The route literal `ir_inconsistency` is gone with issue #724 PR-3 (no reviewer
+            # writes it; the hand re-derivation of `Compile` is a generic procedure,
+            # `docs/RUNBOOK.md` §3-1). Its return to the seeded slice is refused.
+            self.assertNotIn("ir_inconsistency", doc)
+            # The input-side `major` keeps one IR clause, for the reviewer seeded the IR (the
+            # harness reviewer; issue #724 O5): without it a harness IR defect falls to `minor`
+            # by the tie-break and re-runs a producer that cannot repair it.
+            self.assertIn("for a reviewer seeded `spec.ir.yaml`, the IR drops or distorts a "
+                          "requirement", doc)
             # The rubric grades a FAIL. It must never authorize a pass: a bullet saying an
             # unattributable finding means `pass` is a template-authorized zero-work verdict,
             # and round 5 appended exactly that with only the digest red. Measured: the slice
@@ -289,14 +299,11 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertIn("the value does not grade the consequence the defect would have at "
                           "`Validate`, and the size of the correction does not change it", doc)
             self.assertIn("One question selects the value: whether `Generate.generate`, re-run "
-                          "with the finding and the same `spec.ir.yaml` and `tests.md`, can "
-                          "resolve the finding", doc)
+                          "with the finding and the same inputs, can resolve the finding", doc)
             # Every literal here must occur in the REAL document, or the assertion is true of any
-            # slice and pins nothing. Note what is
-            # NOT usable as an absent literal: `ir_inconsistency` occurs inside the rubric itself.
+            # slice and pins nothing.
             real = _REAL_PHASE_02.read_text(encoding="utf-8")
-            for absent in ("#### G7. dependency consistency",
-                           "See the `verify` `SKILL`.",
+            for absent in ("#### The harness reviewer",
                            "## On-failure behavior",
                            "A `Generate fail` retry defaults to an in-phase retry."):
                 self.assertIn(absent, real, f"{absent!r} no longer occurs in the document, so "
@@ -579,14 +586,15 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertIn("phase_02_generate.md", events[0]["detail"])
 
     def test_a_missing_node_artifact_is_the_same_recorded_fail_closed_outcome(self) -> None:
-        """Issue #467: the four node artifacts degraded to `""`, and the blank was refused one
-        frame later inside `record_launch`, escaping `run_substep` and aborting the conductor
-        with no outcome row. Each is now the same recorded outcome as a missing contract."""
+        """Issue #467: the node artifacts degraded to `""`, and the blank was refused one frame
+        later inside `record_launch`, escaping `run_substep` and aborting the conductor with no
+        outcome row. Each is now the same recorded outcome as a missing contract. (The IR left
+        this reviewer's context in issue #724 PR-3; its missing file is the harness reviewer's
+        row now, and the producer's.)"""
         rows = (
             (lambda r: f"{r.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing"),
             (lambda r: f"{r.spec_path}/controlled_spec.md",
              "pure_controlled_spec_document_missing"),
-            (lambda r: f"{r.ir_ref}/spec.ir.yaml", "pure_ir_document_missing"),
             (lambda r: f"{r.spec_path}/tests.md", "pure_tests_document_missing"),
         )
         for rel_of, marker in rows:
@@ -1910,6 +1918,20 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self.assertEqual(set(ctx), raising | host)
         self.assertEqual(json.loads(ctx["target_profile"]), self.c.target.doc)
         self.assertEqual(len(cases), len(raising))
+
+    def test_the_harness_reviewer_still_holds_the_ir(self) -> None:
+        """Issue #724 PR-3 (decision O5 (a)): only the MODEL reviewer became spec-relative. The
+        harness reviewer keeps the IR — in its context, in its required keys and as the seed
+        `spec.ir.yaml` of its tree — because its checklist is the runner-output contract over
+        the IR's published surface; the model reviewer's table carries no IR at all."""
+        ctx = self.c._build_leaf_harness_verify_context(self.refs)
+        self.assertIn("ir_document", ctx)
+        self.assertIn("ir_document",
+                      wc_ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("generate", "verify", "harness")])
+        seeds = wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS
+        self.assertEqual(seeds[("generate", "verify", "harness")]["ir_document"], "spec.ir.yaml")
+        self.assertNotIn("spec.ir.yaml", seeds[("generate", "verify", "")].values())
+        self.assertNotIn("ir_document", wc_ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")])
 
     def test_a_missing_node_artifact_is_a_recorded_fail_closed_outcome(self) -> None:
         """Issue #467, driven through the production loop for this shape too: the bundle under

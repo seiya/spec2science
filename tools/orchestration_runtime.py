@@ -1381,8 +1381,8 @@ class DerivationResolver:
             else:
                 refused.append((order, {**detail, "meta_path": meta_path}))
         # A REVOCATION shadows every older eligible output of the key. `revoke-artifact` is a
-        # decision that the derivation must run again (an execute's `structural_violation`, a
-        # verify's `ir_inconsistency` — findings no input carries), taken against the output
+        # decision that the derivation must run again (an execute's `structural_violation` — a
+        # finding no input carries), taken against the output
         # that was standing; an older output of the same key produced under the same inputs
         # is not an answer to it, and selecting it would let the decision fall through to a
         # skip. A newer FAILED attempt shadows nothing (a failed attempt is a record, never a
@@ -8388,9 +8388,9 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                             "phase_contract_document", "ir_algorithm_example_document",
                             "ir_algorithm_2d_example_document"),
     ("generate", "generate"): ("harness_capabilities", "target_profile",
-                               "ir_document",
+                               "ir_document", "controlled_spec_document",
                                "tests_document", "runner_document"),
-    ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
+    ("generate", "verify"): ("controlled_spec_document", "tests_document",
                              "target_profile", "severity_rubric_document",
                              "bundle_document"),
     # The escalate diagnostician, one pair per escalatable phase. Its whole closed context is

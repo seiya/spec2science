@@ -35,8 +35,10 @@ from typing import Any, NamedTuple
 # PR-J4, and `leaf-85` is the first bump after it (the leaf-read text PR-J4 deferred, the
 # `inlined`-to-seed wording, and issue #545's judge sentence). It is in no derivation key since
 # issue #574, whose `leaf-86` deleted the certified refs from `DEPENDENCIES.md`. `leaf-108`
-# (issue #724 PR-2): the `validate.judge` template left the tuple with the substep.
-LEAF_PROMPT_CONTRACT_VERSION = "leaf-108"
+# (issue #724 PR-2): the `validate.judge` template left the tuple with the substep. `leaf-109`
+# (issue #724 PR-3): `Generate.generate` is seeded `controlled_spec.md`, and `Generate.verify`
+# is spec-relative.
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-109"
 
 # The keyed half of the contract (issue #574): what one phase's READING leaf reads, which is what
 # "valid" means for that phase. Each is a member of its phase's transformation tuple
@@ -49,7 +51,11 @@ COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-7"
 # `Generate.verify` stopped each, citing H7b, in one sample each on claude
 # (https://github.com/seiya/spec2science/issues/589#issuecomment-6767847531). Narrowing H7b was
 # not measured; replay the three mutations recorded there against the new text.
-GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-14"
+# `generate-verify-15` (issue #724 PR-3): the model reviewer is spec-relative — no IR in its
+# context, G1-G7 replaced by a definition of a finding, the rubric restated, the parallel
+# fragments trimmed to what makes a returned value wrong, and the driver's whole-case default
+# stated (issue #727). Measured on #724 before it landed; R-V replays the final text.
+GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-15"
 # `VALIDATE_JUDGE_CONTRACT_VERSION` (last `validate-judge-11`) went with the `Validate.judge`
 # substep in issue #724 PR-2: `Validate` has no reading leaf, and its tuple is the two
 # deterministic versions alone (`tools/derivation.py`).

@@ -1113,9 +1113,10 @@ def _validate_problem_model_dependency_dataflow(
     regex-level, flow-insensitive view without the callee interfaces. Every flow-insensitive
     approximation attempted here either false-rejected physically-correct code (a dependency result
     reaching intent(out) through a call chain) or failed open (a required source merely co-passed to
-    an unrelated call, or fed to a call whose write is later overwritten). It is therefore left to
-    ``Generate.verify`` G5, which reads ``controlled_spec.md`` and IS the semantic authority for
-    "each intent(out) reaches the required_sources", backed by the runtime. Check 1 below (a
+    an unrelated call, or fed to a call whose write is later overwritten). No gate holds it. Since
+    issue #724 PR-3 the ``Generate.verify`` reviewer reads ``controlled_spec.md`` and not the IR,
+    so it holds an unreached input only where it leaves a returned value wrong against the spec;
+    the runtime (``Validate``) holds it on the tested cases. Check 1 below (a
     dependency RESULT reaching intent(out)) is assignment-only, sound, and kept.
 
     The candidate rule has four clauses: an actual of a dependency `call` is a candidate OUTPUT
@@ -1168,8 +1169,9 @@ def _validate_problem_model_dependency_dataflow(
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
     `problem/` guard below. Closing (c) needs a flow-sensitive pass: each dependency
     operation's per-argument intents from its published interface, and reaching-definitions
-    over statement order (`TODO.md` carries it). `Generate.verify` G5 owns `required_sources`
-    reachability meanwhile. The gfortran debug dump is not that pass's input: measured
+    over statement order (`TODO.md` carries it). Meanwhile `required_sources` reachability has no
+    holder as such: the spec-relative `Generate.verify` review and the runtime hold only a
+    returned value it leaves wrong. The gfortran debug dump is not that pass's input: measured
     2026-08-12, `-fdump-fortran-original` differs between gfortran 12.4.0 and 14.2.0 on 27 of
     319 analysable files overall, the `code:` section included, while its `procedure name =` /
     `Formal arglist:` / `DUMMY(...)` lines were identical on all 4328 lines — enough for dummy
@@ -1182,7 +1184,8 @@ def _validate_problem_model_dependency_dataflow(
     (`if (.false.) then / y = scratch / end if`, measured 0 violations at the same commit), and
     every spelling that names the dead procedure — `if (.false.) call dead()`, and `p => dead`
     for a pointer never called. Each needs control flow, the same flow-sensitive pass as
-    (c); `Generate.verify` G5 and the runtime own them meanwhile.
+    (c); meanwhile the spec-relative `Generate.verify` review and the runtime hold them only
+    where they leave a returned value wrong.
 
     Residue (c) above is the one with a named instance: the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields

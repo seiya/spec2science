@@ -38,6 +38,7 @@
     "harness_capabilities": "<redacted: 226 bytes sha256:6267c55b988e6ed02633a87d9cacbb8a2434e2495bc0f3a6c76cd486c37d4c84>",
     "target_profile": "<redacted: 517 bytes sha256:f037029363c7606f732d2506fbb7bcc3d52f3bd6a2e69578e9c8e3133bf7c2a2>",
     "ir_document": "<redacted: 38876 bytes sha256:17730e7b35816fe07236a2b434efe195405806c6c809e1d240cd88c111510c90>",
+    "controlled_spec_document": "<redacted: 43 bytes sha256:1c3a577add78c952b4a1257841aada9c93f552879c7a7af850059e4a62fbdb3b>",
     "tests_document": "<redacted: 18256 bytes sha256:ff9e2f34ca7a788b8a3ececcceefdfe48c026a1dbe697b1961588028e4c071f6>",
     "runner_document": "<redacted: 16875 bytes sha256:9581755fa379f56d023f08d0a50c1e6af2cee596b0ffdc1406b45c42e60ef344>"
   },

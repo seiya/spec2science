@@ -1681,8 +1681,10 @@ def _validate_generate_outputs_for_generation(
     )
     # Issue #22: a presence floor for the target-lowering rule — an OpenMP-on-CPU Fortran target
     # whose bundle's lowering plan names OpenMP, with counted `do` loops and zero `!$omp`
-    # directives. Everything above that floor (which loops, which schedule) stays with
-    # Generate.verify G6.
+    # directives. Nothing deterministic holds what is above that floor (which loops, which
+    # schedule): the plan is a record, and since issue #724 PR-3 Generate.verify reviews the
+    # source against the Controlled Spec, not the plan; Validate's thread and rank comparisons
+    # hold what the loops compute.
     _validate_parallel_presence_floor(
         repo_root, execution, src_dir, model_files, violations
     )
@@ -1816,9 +1818,11 @@ def _validate_parallel_presence_floor(
     floor fired on `cpu ∧ openmp ∧ fortran` spelled here.
 
     This is a PRESENCE FLOOR only: it never inspects WHICH loops carry a directive, whether the
-    schedule matches the plan, or whether the parallelization is correct. A present-but-wrong or
-    present-but-partial reflection of the plan stays the province of ``Generate.verify`` G6, and
-    so does the honesty of a plan that declines. Only the unambiguous case — the target's model
+    schedule matches the plan, or whether the parallelization is correct. A present-but-partial
+    reflection of the plan, and the honesty of a plan that declines, are held by nothing since
+    issue #724 PR-3 (the plan is a record; ``Generate.verify`` reviews the source against the
+    Controlled Spec); a parallelization that makes a returned value wrong is that review's
+    finding and the thread and rank comparisons of ``Validate``'s. Only the unambiguous case — the target's model
     has a floor, the plan does not say otherwise, the source has loops to parallelize, and there
     is not one directive anywhere — is decided here, where it costs no judgment and no tokens.
 
@@ -1876,7 +1880,7 @@ def _validate_parallel_presence_floor(
     # without this rule a source with counted loops and no directive of that model passes the
     # gate, and the node is certified on a hybrid target without a threaded region. A plan that
     # names no member of the target (`none`, or a word of its own) still declines, as it does on
-    # a one-member target: a declaration G6 judges.
+    # a one-member target: a declaration nothing holds to the loops (issue #724 PR-3).
     declined = all(
         backend_registry.capability_module(
             "parallel", member, "parallel_directives").lowering_plan_declines(plan)
@@ -1908,14 +1912,14 @@ def _validate_parallel_presence_floor(
                 node_kind=execution.node_key.split("/", 1)[0]))
             continue
         if declined:
-            continue  # an explicit declaration G6 judges; the target's backend is the default
+            continue  # an explicit declaration, held to nothing; the target's backend is the default
         for model_file in model_files:
             text = model_texts[model_file]
             if floor.directive.search(text):
                 continue
             counted = source_reading.counted_loops(text)
             if counted < 1:
-                continue  # nothing the floor may count (see `counted_loops`), verify G6's province
+                continue  # nothing the floor may count (see `counted_loops`)
             violations.append(floor.remedy(model_file, counted))
 
 
@@ -4920,8 +4924,8 @@ def _validate_device_kernel_execution(
     Whether the gate applies is decided by the pipeline's TARGET, never by the record: a run
     whose `trial_meta` says nothing about a trace is refused, not exempted. A node whose
     sources define no kernel is asked nothing — a plan declaring `"model": "none"`, a harness —
-    since the rule is "what is defined must run", and the plan's honesty is `Generate.verify`
-    G6's.
+    since the rule is "what is defined must run", and the plan's honesty is held by nothing since
+    issue #724 PR-3 (the plan is a record).
 
     Two failure shapes, routed differently (`_exit_code_for_violations`):
 
@@ -4932,8 +4936,9 @@ def _validate_device_kernel_execution(
       kernel launched on the cases' paths (a stub beside a host loop, a branch every case takes
       to the host) or every launch failing on the model's own account (an invalid launch
       configuration). The `Generate.gate` presence floor does not hold them: it asks only that a
-      kernel exist. Verify G6 is the one rule before the run, for the first; nothing holds the
-      second. The remedy names `--rederive generate` for them;
+      kernel exist, and since issue #724 PR-3 no rule before the run holds the first (the
+      spec-relative `Generate.verify` finds a host loop only where it makes a returned value
+      wrong); nothing holds the second. The remedy names `--rederive generate` for them;
     * some defined kernels have no row: an ordinary violation, a content failure routed back to
       Generate — the model defines a kernel the cases do not launch.
 
@@ -7807,7 +7812,9 @@ def _validate_profile_selection(
     is not read there at all. The phase_01 schema block says no case of such a node declares one
     (issue #358: the harness `tests.md` files no longer give the name a meaning of their own),
     and a stray key is still not refused: a leaf that authors one gains nothing toward its
-    verdict (V9 asks no route of a provenance input, G2/H2 grade its absence as no finding), so
+    verdict (V9 asks no route of a provenance input, the harness reviewer's H3 grades its absence
+    as no finding, and the spec-relative ``Generate.verify`` finds a missing input only where it
+    makes a returned value wrong), so
     a second reader of the schema's "absent" buys no certification. A sidecar
     with NO ``profiles`` key predates this builder: refused, with "re-run Compile" as the
     remedy, rather than skipped.

@@ -23,5 +23,5 @@ The files may be drafted from existing code by the conversion flow (`skills/spec
 
 ## Connection to later stages
 - The `Compile` phase takes `controlled_spec.md` + `tests.md` + `deps.yaml` + `spec/registry/spec_catalog.yaml` as input and generates `spec.ir.yaml`.
-- The stages from `Generate` onward use `spec.ir.yaml` as the canonical source and do not read `controlled_spec.md` directly — the sole exception is `Generate.verify`, which reads `controlled_spec.md` as a requirement-fidelity cross-check (`spec.ir.yaml` stays its primary basis).
+- From `Generate` onward, `controlled_spec.md` is read at `Generate` alone: `Generate.generate` takes the algorithm from it and the calling interface, the cases and the I/O contract from `spec.ir.yaml`, and the model `Generate.verify` reviewer judges the source against it and `tests.md` ([issue #724](https://github.com/seiya/spec2science/issues/724); `docs/workflow/phases/phase_02_generate.md`). `Build` and `Validate` read the IR and the captures, not `controlled_spec.md`.
 - A specification change is expressed by updating one of `controlled_spec.md` / `tests.md` / `deps.yaml`, and a specification must not be changed by an implementation-side modification alone (the Spec-First principle).

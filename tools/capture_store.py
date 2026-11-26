@@ -7,7 +7,7 @@ the format the target profile chooses (`output.format`, the `output_format` axis
 hold them, how one is decoded and what a damaged one looks like is that format's knowledge, held
 by its backend's `capture_store` capability (`tools/backends/output_format/<id>/store.py`). The
 host — the conductor's `Validate.execute`, the verdict's reader (`tools/primary_evidence.py`),
-the post-execute gate, the judge's excerpt and `tools/run_configuration.py` — reaches it here
+the post-execute gate and `tools/run_configuration.py` — reaches it here
 and holds no file name, suffix or directory of its own.
 
 What stays here is what no format decides: where the capture directory is, the host-written
