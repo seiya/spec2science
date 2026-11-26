@@ -362,7 +362,7 @@ backend states a floor (today `openmp` on a `cpu` target) unless the plan's `par
 explicitly declines that model (the backend's `lowering_plan_declines` reads the members `model` /
 `method` / `scheme` / `kind`; an absent model declines nothing). Beyond the floors the plan is the producer's record:
 `Generate.verify` does not hold the source to it, and finds a parallel construct only where it
-makes a returned value wrong (`docs/workflow/phases/phase_02_generate.md` §2-2). On a target whose `parallel.backend` combines
+makes a returned value wrong or the parallel backend's reviewer paragraph names it (`docs/workflow/phases/phase_02_generate.md` §2-2). On a target whose `parallel.backend` combines
 several models (issue #700) the producer is told to name the target's whole value as the plan's
 `model` (no gate checks the spelling), every member's floor is asked, and a plan declines a floor only when every member's `lowering_plan_declines`
 says so: a plan that names one member declines no other member's floor, and `"none"` with the

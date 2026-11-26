@@ -97,8 +97,9 @@ for a region that runs at more than one thread in some run: `OMP_THREAD_LIMIT` c
 `num_threads(k)` clause at each run's width, but a region pinned to one thread
 (`num_threads(1)`, `omp_set_num_threads(1)`) or switched off by an `if(...)` clause false on
 the cases the tests run is serial in every run, and nothing deterministic observes the width a
-region ran at — the producer is told not to, and no check holds it: such a region makes no
-returned value wrong.
+region ran at — the producer is told not to, and the model `Generate.verify` reviewer's paragraph
+for this backend makes it a finding although it makes no returned value wrong (issue #724,
+`generate-verify-16`).
 
 ## 5. The thread count a run records
 
