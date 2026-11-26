@@ -274,7 +274,7 @@ asks the registry nothing.
     them** (issue #644): the `output_format` axis value is the target profile's `output.format`
     (`json` when absent), and its `capture_store` holds which files under `raw/state_snapshots/`
     are a case's records and how one is decoded. `Validate.execute`, the verdict's reader, the
-    post-execute gate, the judge's excerpt, the cross-target agreement and
+    post-execute gate, the cross-target agreement and
     `tools/run_configuration.py` reach it through `tools/capture_store.py` and spell no capture
     file name, suffix or group directory of their own; a comparand's run is read through the
     comparand target's store, whatever the asking target writes. The build control file's

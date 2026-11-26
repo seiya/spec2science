@@ -1,6 +1,6 @@
 """The judge replay tool (`tools/judge_replay.py`, issue #534 step 3 PR-J1-b).
 
-MR3: a replay of a recorded `validate.judge` launch, run end to end through the tool's own
+MR3: a replay of a recorded `generate.verify` launch, run end to end through the tool's own
 `main` over a certified node — the REAL orchestration creation (`init`, the configuration
 snapshot, `preflight`, each runtime command run in-process), the REAL `record_launch` and
 `finalize-child`, the REAL reviewer loop — with only the leaf process scripted. It pins that
@@ -8,11 +8,13 @@ the replayed request carries the recorded dependency facts verbatim, that the li
 holds the recorded (or mutated) context under the seed names, that a mutation applies exactly
 once or nothing runs, that `--check` answers the dependency gate's `derivation_key_mismatch`,
 that a record the retired pure leaf wrote is still replayed on the workshop leaf (issue #534
-PR-J4-b), and that a replay leaves `workspace/ir`, `pipelines` and `runs` byte-identical,
+PR-J4-b), that a recorded `validate.judge` launch is refused (issue #724 PR-2 deleted that
+substep), and that a replay leaves `workspace/ir`, `pipelines` and `runs` byte-identical,
 writes no step result and no reservation, and is invisible to the source's A/B rollup, to
 `--resume`'s latest-orchestration choice and to the audit. (Through PR-J4-a the tool had a
 second arm, the pure leaf, whose rendered prompt was compared with the record's; that arm and
-the comparison went in PR-J4-b.)
+the comparison went in PR-J4-b. Until issue #724 PR-2 the source record was a `validate.judge`
+launch; it is the generate reviewer's since, the judging pair that carries dependency facts.)
 
 MR4: the read-coverage reader over a two-file claude lineage.
 """
@@ -24,7 +26,6 @@ import hashlib
 import io
 import json
 import os
-import shutil
 import sys
 import tempfile
 import unittest
@@ -52,23 +53,31 @@ _DEP = "component/dep_a@0.1.0"
 _USER = "component/user@0.1.0"
 _SRC = "orch_src"
 _SRC_ARID = "11111111-2222-4333-8444-555555555555"
-_STEP, _SUBSTEP = "validate", "judge"
+_STEP, _SUBSTEP = "generate", "verify"
 
 #: One line per document, numbered, so a seed's line count and a mutation's target are known.
+#: The two documents the reviewer's seeds parse are JSON: `target_profile` (seeded one value
+#: per line) and `bundle_document` (expanded into its manifest and its files); the key set is
+#: the pair's CURRENT one, which `check_source` requires (asserted below).
+_TEXT_KEYS = ("controlled_spec_document", "tests_document", "ir_document",
+              "severity_rubric_document")
+_BUNDLE_FILE = "model.src"
 _CONTEXT = {
-    key: "".join(f"{key} line {n}\n" for n in range(1, 6))
-    for key in ("verdict_document", "perf_document",
-                "trial_meta_document", "quality_check_document", "tests_document",
-                "io_contract_document", "runner_output_contract_document",
-                "binary_meta_document", "source_meta_document",
-                "raw_evidence_excerpt_document")
+    **{key: "".join(f"{key} line {n}\n" for n in range(1, 6)) for key in _TEXT_KEYS},
+    "target_profile": json.dumps({"target_id": "fixture", "language": "x"}),
+    "bundle_document": json.dumps({"files": [{
+        "logical_path": _BUNDLE_FILE,
+        "content": "".join(f"bundle line {n}\n" for n in range(1, 6))}]}),
 }
-_REVIEW = {"decision": "pass", "findings": [], "notes": "replayed"}
+assert set(_CONTEXT) == set(ort.PURE_CONTEXT_REQUIRED_KEYS[(_STEP, _SUBSTEP)])
+#: The reviewer's one output document (`verdict.json`): a clean pass verdict.
+_REVIEW = {"verification_status": "pass", "issue_severity": "none",
+           "last_fail_reason": None, "findings": []}
 _FACTS = ({"node_key": _DEP, "pipeline_ref": "workspace/pipelines/x", "run_id": "run_x"},)
 
 _DEFAULTS_YAML = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
 _WORKSHOP_YAML = workshop_yaml(
-    _DEFAULTS_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
+    _DEFAULTS_YAML + "phases:\n  generate:\n    substeps:\n      verify:\n"
     "        provider: claude_cli\n        model: opus\n        lineage_timeout_s: 600\n")
 
 
@@ -110,13 +119,13 @@ def _tree_digest(root: Path) -> str:
 
 
 class _Leaf:
-    """The scripted leaf: a (reading workshop) turn writes `review.json` into its tree and one
+    """The scripted leaf: a (reading workshop) turn writes `verdict.json` into its tree and one
     transcript that reads `tests.md` whole."""
 
     def __init__(self, homes: Path) -> None:
         self.homes = homes
         self.calls: list[dict] = []
-        #: Workshop launches that read `io_contract.yaml`, write NO document and leave their
+        #: Workshop launches that read `spec.ir.yaml`, write NO document and leave their
         #: transcript under another session's name (so the lineage cannot be resumed and the
         #: repair is a cold reuse in a new lineage).
         self.unfinished = 0
@@ -138,10 +147,10 @@ class _Leaf:
             unfinished = self.unfinished > 0
             self.unfinished -= 1
             if not unfinished:
-                (tree / "review.json").write_text(json.dumps(_REVIEW), encoding="utf-8")
+                (tree / "verdict.json").write_text(json.dumps(_REVIEW), encoding="utf-8")
             project = home / "config" / "projects" / "p"
             project.mkdir(parents=True, exist_ok=True)
-            tests = f"{tree}/{'io_contract.yaml' if unfinished else 'tests.md'}"
+            tests = f"{tree}/{'spec.ir.yaml' if unfinished else 'tests.md'}"
             lines = [
                 {"version": "9.9.9", "message": {"content": [
                     {"type": "tool_use", "id": f"r1-{sid}", "name": "Read",
@@ -153,7 +162,7 @@ class _Leaf:
             ]
             (project / f"{'other' if unfinished else sid}.jsonl").write_text(
                 "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-            envelope["result"] = "wrote review.json"
+            envelope["result"] = "wrote verdict.json"
         return wc.ProcResult(0, json.dumps(envelope), "")
 
 
@@ -202,7 +211,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self._seed()
         self._record_source()
 
-    # --- the fixture: a certified node and one recorded judge launch ----------------------
+    # --- the fixture: a certified node and one recorded reviewer launch -------------------
 
     def _seed(self) -> None:
         certify_node(self.repo, "orch_dep", _DEP, ir_id="dep-a_20260101_001",
@@ -235,12 +244,6 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             pipeline_id="user_20260101_001", target_id=conductor.target.target_id,
             source_id="src_20260101_001", binary_id="bin_20260101_001",
             run_id="run_20260101_001")
-        # What every recorded judge launch found: an executed run node (the downstream gate).
-        run_node = self.repo / self.node_refs.run_node_dir()
-        (run_node / "raw").mkdir(parents=True, exist_ok=True)
-        for name in ("perf.json", "command_log.jsonl"):
-            if not (run_node / name).exists():
-                (run_node / name).write_text("{}\n", encoding="utf-8")
         request = wc.build_launch_request(
             self.node_refs, step=_STEP, substep=_SUBSTEP, orchestration_id=_SRC,
             orchestration_agent_run_id="orch-arid", child_agent_run_id=_SRC_ARID,
@@ -329,7 +332,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
     def test_an_exhausted_repair_budget_counts_the_repair_turns(self) -> None:
         from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = wc.ProcResult(0, json.dumps({"type": "result", "is_error": False,
-                                           "result": json.dumps({"decision": "maybe"}),
+                                           "result": json.dumps({"verification_status":
+                                                                 "maybe"}),
                                            "num_turns": 1, "duration_ms": 1}), "")
         with mock.patch.object(wc.Conductor, "spawn_leaf", lambda self, *a, **k: bad):
             rc, out = self._main()
@@ -349,7 +353,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         """Issue #547: the refusals before the last attempt, by kind; a transport death and the
         last attempt's own refusal launched no repair."""
         attempts = [{"failure_category": wc.WORKSHOP_CUT_READ},
-                    {"failure_category": "semantic_review_document_violation"},
+                    {"failure_category": wc.GENERATE_VERDICT_SCHEMA_VIOLATION},
                     {"failure_category": "pure_transport"},
                     {"failure_category": wc.WORKSHOP_CUT_READ},
                     {"failure_category": wc.WORKSHOP_CUT_READ}]
@@ -365,7 +369,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         def tokens_only(conductor, *a, **k):
             leaf(conductor, *a, **k)
             return wc.ProcResult(0, json.dumps({
-                "type": "result", "is_error": False, "result": "wrote review.json",
+                "type": "result", "is_error": False, "result": "wrote verdict.json",
                 "session_id": k.get("session_id") or k["child_arid"],
                 "num_turns": 1, "duration_ms": 1,
                 "usage": {"input_tokens": 5, "output_tokens": 6,
@@ -391,59 +395,25 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(row["mutated_keys"], ["tests_document"])
         [attempt] = row["attempts"]
         tree = self.homes / replay.name / "claude" / attempt["lineage_id"] / "tree"
-        spec = self._conductor(replay.name, self.workshop_cfg)._leaf_judge_spec()
+        spec = self._conductor(replay.name, self.workshop_cfg)._leaf_reviewer_spec(
+            _STEP, _SUBSTEP)
         expected = dict(_CONTEXT, tests_document=_CONTEXT["tests_document"].replace(
             old, "SEEDED DEFECT\n"))
         for key, name in spec.workshop_document_seeds.items():
-            self.assertEqual((tree / name).read_text(encoding="utf-8"), expected[key], key)
+            if key in spec.workshop_seed_expanders:
+                # A JSON seed is re-laid out one value per line: the same document.
+                self.assertEqual(json.loads((tree / name).read_text(encoding="utf-8")),
+                                 json.loads(expected[key]), key)
+            else:
+                self.assertEqual((tree / name).read_text(encoding="utf-8"), expected[key], key)
+        # The bundle under review is expanded into its file.
+        self.assertEqual((tree / _BUNDLE_FILE).read_text(encoding="utf-8"),
+                         json.loads(_CONTEXT["bundle_document"])["files"][0]["content"])
         self.assertEqual(row["cli_versions"], ["9.9.9"])
         self.assertEqual(row["coverage"]["tests.md"],
                          {"lines": 5, "covered": 5, "fraction": 1.0, "ranges": [[1, 5]]})
-        self.assertEqual(row["coverage"]["host_verdict.json"]["covered"], 0)
+        self.assertEqual(row["coverage"]["controlled_spec.md"]["covered"], 0)
         self.assertNotIn("prompt_matches_record", row)
-
-    def test_a_judge_record_from_before_issue_582_is_refused_and_a_current_one_replays(self) -> None:
-        """Issue #582: the tool reads no verdict basis, but a recorded `validate.judge` launch from
-        before the retirement holds `diagnostics_document` beside a verdict of the retired basis
-        (`conditions` / `primary` / `corroboration`), always both, so it is refused on the context
-        key set rather than replayed on a contract it did not have. Measured on a real record:
-        `--check` on such a launch answers `judge_replay_context_keys_moved`."""
-        self.assertNotIn("basis", Path(jr.__file__).read_text(encoding="utf-8"))
-        launches = self.repo / "workspace/orchestrations" / _SRC / "launches"
-        path = launches / f"{_SRC_ARID}.request.json"
-        request = json.loads(path.read_text(encoding="utf-8"))
-        request["pure_context"]["verdict_document"] = json.dumps(
-            {"per_test": [{"test_id": "t", "status": "pass", "basis": {"predicates": []}}]})
-        path.write_text(json.dumps(request), encoding="utf-8")
-        rc, out = self._main("--check")
-        self.assertEqual(rc, 0, out)
-        request["pure_context"]["verdict_document"] = json.dumps(
-            {"per_test": [{"test_id": "t", "status": "pass", "basis": {
-                "conditions": [], "primary": [], "corroboration": "agree"}}]})
-        request["pure_context"]["diagnostics_document"] = "{}"
-        path.write_text(json.dumps(request), encoding="utf-8")
-        rc, out = self._main("--check")
-        self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_context_keys_moved"))
-
-    def test_a_judge_record_replays_with_either_shape_of_predicate_record(self) -> None:
-        """Issue #589: a verdict record lost `sources_read` and carries `grammar_version: 6`
-        and `scalar_pairing`; a recorded launch holds a verdict of either shape, and the tool,
-        which reads no basis, replays both."""
-        self.assertNotIn("sources_read", Path(jr.__file__).read_text(encoding="utf-8"))
-        launches = self.repo / "workspace/orchestrations" / _SRC / "launches"
-        path = launches / f"{_SRC_ARID}.request.json"
-        request = json.loads(path.read_text(encoding="utf-8"))
-        rec = {"test_id": "t", "quantity": "q", "satisfied": True, "kind": "pass",
-               "target_cases": ["a"], "cases_read": ["a"], "comparands": [], "evaluated": []}
-        for shaped in ({**rec, "grammar_version": 5, "sources_read": {"operation": ["a"]}},
-                       {**rec, "grammar_version": 6, "scalar_pairing": {}}):
-            with self.subTest(grammar=shaped["grammar_version"]):
-                request["pure_context"]["verdict_document"] = json.dumps(
-                    {"per_test": [{"test_id": "t", "status": "pass",
-                                   "basis": {"predicates": [shaped]}}]})
-                path.write_text(json.dumps(request), encoding="utf-8")
-                rc, out = self._main("--check")
-                self.assertEqual(rc, 0, out)
 
     def test_the_replay_s_own_seed_build_names_the_provider(self) -> None:
         """Issue #534 PR-J3-a: `_workshop_seeds` places the codex reading helper by the
@@ -475,7 +445,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"],
                           row["output_tokens"]), (0, 0.5, 4.0))
         self.assertGreater(row["leaf_wall_s"], 0)
-        self.assertEqual(row["coverage"]["io_contract.yaml"]["covered"], 5)
+        self.assertEqual(row["coverage"]["spec.ir.yaml"]["covered"], 5)
         self.assertEqual(row["coverage"]["tests.md"]["covered"], 5)
 
     def _status(self, replay: Path) -> tuple[str, str | None]:
@@ -530,9 +500,14 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(ex.exception.code, 2)
 
     def test_check_answers_the_gates_without_launching(self) -> None:
+        """`--check` answers the one workspace-dependent launch gate left, the dependency gate:
+        the downstream gate checked `validate.judge`'s run directory alone and went with that
+        substep (issue #724 PR-2), so the answer carries no `downstream_*` field."""
         rc, out = self._main("--check")
         self.assertEqual(rc, 0, out)
-        self.assertTrue(json.loads(out.strip().splitlines()[-1])["check"]["ready"])
+        check = json.loads(out.strip().splitlines()[-1])["check"]
+        self.assertEqual(check, {"ready": True, "dependency_ready": True,
+                                 "dependency_reason": check["dependency_reason"]})
         # A dependency's key moves: the tests of `dep_a` are edited within its version.
         (self.repo / spec_ref_of(_DEP) / "tests.md").write_text("changed\n", encoding="utf-8")
         rc, out = self._main("--check")
@@ -574,14 +549,6 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             {"old": "a", "new": "b"}]}))
         self.assertEqual(json.loads(out)["reason"], "judge_replay_mutation_unknown_key")
         self.assertEqual(self._replays(), [])
-
-    def test_check_answers_the_downstream_gate(self) -> None:
-        shutil.rmtree(self.repo / self.node_refs.run_node_dir() / "raw")
-        rc, out = self._main("--check")
-        check = json.loads(out.strip().splitlines()[-1])["check"]
-        self.assertEqual((rc, check["dependency_ready"], check["downstream_ready"]),
-                         (1, True, False))
-        self.assertIn("judge_raw_dir_missing", check["downstream_reason"])
 
     def test_refusals_before_any_orchestration(self) -> None:
         # A prefix naming two launches.
@@ -629,7 +596,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         replay orchestration exists, `--check` included."""
         cfg = self.workshop_cfg.parent / "http_workshop.yaml"
         cfg.write_text(workshop_yaml(
-            _DEFAULTS_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
+            _DEFAULTS_YAML + "phases:\n  generate:\n    substeps:\n      verify:\n"
             "        provider: anthropic_api\n        api_key_env: K\n"
             "        model: m\n        lineage_timeout_s: 600\n"), encoding="utf-8")
         for extra in ((), ("--check",)):
@@ -656,6 +623,24 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         [row] = self._rows(replay)
         self.assertEqual((row["status"], row["source_leaf_mode"]), ("pass", "pure"))
         self.assertEqual(row["document"], _REVIEW)
+
+    def test_a_recorded_judge_launch_is_refused_before_any_orchestration(self) -> None:
+        """Issue #724 PR-2 deleted `validate.judge`: a record of one (a run from before that PR)
+        is no longer a judging pair the replay admits, so it is refused by name before any
+        replay orchestration exists, `--check` included — not replayed on a substep that has
+        no reviewer spec."""
+        path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
+                / f"{_SRC_ARID}.request.json")
+        request = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**request, "step": "validate", "substep": "judge"}),
+                        encoding="utf-8")
+        for extra in ((), ("--check",)):
+            with self.subTest(extra=extra):
+                rc, out = self._main(*extra)
+                self.assertEqual((rc, json.loads(out)["reason"]),
+                                 (2, "judge_replay_pair_not_admitted"))
+                self.assertEqual(self._replays(), [])
+        self.assertEqual(self.leaf.calls, [])
 
 
 _DIAGNOSE_ARID = "99999999-2222-4333-8444-555555555555"
@@ -799,7 +784,7 @@ class DiagnoseReplayTests(unittest.TestCase):
         cfg.write_text(workshop_yaml(
             "defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
             "  api_key_env: K\n  model: m\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "phases:\n  generate:\n    substeps:\n      verify:\n"
             "        provider: claude_cli\n"), encoding="utf-8")
         for extra in ((), ("--check",)):
             with self.subTest(extra=extra):
@@ -818,16 +803,20 @@ class DiagnoseReplayTests(unittest.TestCase):
 
 class SourceRefusalTests(unittest.TestCase):
     def _source(self, **request) -> jr.SourceLaunch:
-        base = {"step": "validate", "substep": "judge", "pure_context": dict(_CONTEXT)}
+        base = {"step": _STEP, "substep": _SUBSTEP, "pure_context": dict(_CONTEXT)}
         return jr.SourceLaunch("o", "a", {**base, **request}, {}, None)
 
     def test_only_a_judging_pair_with_its_current_context_is_replayed(self) -> None:
+        # The two verify pairs are the judging pairs since issue #724 PR-2 deleted the third.
+        self.assertEqual(jr.JUDGING_PAIRS, (("compile", "verify"), ("generate", "verify")))
         jr.check_source(self._source())
         jr.check_source(self._source(leaf_mode="workshop"))
         # A record of the retired pure leaf is admitted on the same checks (issue #534 PR-J4-b).
         jr.check_source(self._source(leaf_mode="pure"))
         for request, code in (
                 ({"step": "generate", "substep": "generate"}, "judge_replay_pair_not_admitted"),
+                # The deleted judge (issue #724 PR-2): refused on the pair, before any context.
+                ({"step": "validate", "substep": "judge"}, "judge_replay_pair_not_admitted"),
                 ({"step": "build", "substep": "deterministic_gate"},
                  "judge_replay_pair_not_admitted"),
                 # A diagnose launch is admitted since issue #534 PR-J4-a — with ITS context.
@@ -857,7 +846,7 @@ class SourceRefusalTests(unittest.TestCase):
             {"old": "line one\n", "new": "line ONE\n"}]}))
         out = jr.apply_mutations(_CONTEXT, mutations)
         self.assertTrue(out["tests_document"].startswith("tests_document line ONE\n"))
-        self.assertEqual(out["verdict_document"], _CONTEXT["verdict_document"])
+        self.assertEqual(out["ir_document"], _CONTEXT["ir_document"])
         # A recorded JSON document stays JSON: a raw line break inside one of its strings
         # would break the document, and the lineage's seed expanded from it would carry
         # nothing (until PR-J4-b the pure arm, which inlined the text, still ran).

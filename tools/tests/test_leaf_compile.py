@@ -573,13 +573,12 @@ class FrameworkDocumentsAreReadFromTheFrameworkRootTests(unittest.TestCase):
         self.assertFalse((repo / "docs").exists(), "the scratch Project holds a docs/ tree")
 
     def test_each_builder_inlines_the_real_framework_documents(self) -> None:
-        from tools.tests.test_leaf_judge import _write_run_node
         from tools.tests.test_leaf_producer import (
             _conductor,
             _harness_bundle,
             _write_harness_node,
         )
-        from tools.tests.test_leaf_verify import _reviewer_conductor, _verify_node
+        from tools.tests.test_leaf_verify import _verify_node
 
         self.assertEqual(wc.FRAMEWORK_ROOT, REAL_FRAMEWORK_ROOT,
                          "FRAMEWORK_ROOT is patched; this row must read the real one")
@@ -635,15 +634,6 @@ class FrameworkDocumentsAreReadFromTheFrameworkRootTests(unittest.TestCase):
         ctx = _conductor(repo)._build_leaf_verify_context(refs)
         with self.subTest(builder="generate.verify"):
             self.assertEqual(ctx["severity_rubric_document"], rubric)
-
-        # Validate.judge.
-        repo = self._project()
-        refs = _write_run_node(repo)
-        self._assert_no_framework_file(repo)
-        ctx = _reviewer_conductor(repo, ["{}"])._build_leaf_judge_context(refs)
-        with self.subTest(builder="validate.judge"):
-            self.assertEqual(ctx["runner_output_contract_document"],
-                             wc._runner_output_contract_sections(contract))
 
 
 class PureCompileProfileContextTests(_Fixture):

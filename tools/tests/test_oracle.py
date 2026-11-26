@@ -1359,8 +1359,10 @@ class OracleExecuteTest(unittest.TestCase):
         import tools.workflow_conductor as wc
         c = self.execute(oracle_value={"default": 1.0})[1]["conductor"]
         refs = self.refs()
-        outcomes = [wc.SubstepOutcome("pj", "pass", [], 0),
-                    wc.SubstepOutcome("ex", "fail", [], 0)]
+        # `execute` is validate's first substep since issue #724 PR-2 deleted `pre_judge`, so
+        # a failed execute is the one-outcome list.
+        self.assertEqual(wc.SUBSTEPS["validate"][0], "execute")
+        outcomes = [wc.SubstepOutcome("ex", "fail", [], 0)]
         for _ in range(3):
             d = c.classify_failure(refs, "validate", outcomes)
             self.assertEqual((d.action, d.reason),

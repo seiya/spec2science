@@ -37,7 +37,6 @@ from tools.llm_config import config_sha256 as lc_config_sha256
 from tools.orchestration_runtime import (
     CLAUDE_REQUIRED_LAUNCH_CHECKS,
     TERMINAL_STATUSES,
-    _pre_phase_complete_judge_checks,
     _required_child_agent_kind,
     _capture_repo_revision,
     _compute_sha256,
@@ -7862,7 +7861,7 @@ class PhaseCertificationTests(unittest.TestCase):
                 fh.write(json.dumps({
                     "agent_run_id": "validate-fail-1", "agent_role": "substep",
                     "parent_agent_run_id": "orch_run_001", "node_key": self._NK,
-                    "step": "validate", "substep": "judge", "status": "fail",
+                    "step": "validate", "substep": "execute", "status": "fail",
                     "agent_backend": "claude"}) + "\n")
             result = ort.revoke_artifact(
                 repo, "o1", node_key=self._NK, step="compile",
@@ -8442,7 +8441,7 @@ class CertificationStampTests(unittest.TestCase):
             node_dir = refs["run_node_dir"]
             meta_ref = f"{node_dir}/validate_meta.json"
             outs = [refs["aggregate_verdict"], f"{node_dir}/verdict.json",
-                    f"{node_dir}/summary.json", f"{node_dir}/semantic_review.json", meta_ref]
+                    f"{node_dir}/summary.json", meta_ref]
             doc = ort._stamp_certification(
                 repo, step="validate",
                 required_outputs=outs, derivation=_DERIVATION_RECORD)
@@ -9673,152 +9672,12 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
             )
             self.assertEqual(terminal_entry.get("status"), "blocked")
 
-    def test_pre_phase_complete_judge_checks_rejects_pass_decision_with_fail(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            node_key = "problem/shallow_water2d@0.3.0"
-            nk_safe = "problem__shallow_water2d__0.3.0"
-            pipe_rel = "workspace/pipelines/judge_test_pipe"
-            base = repo / pipe_rel / "runs" / "run_j1" / nk_safe
-            base.mkdir(parents=True)
-            (base / "semantic_review.json").write_text(
-                json.dumps({"decision": "pass"}),
-                encoding="utf-8",
-            )
-            lr_rel = "workspace/launches/judge_lr.json"
-            (repo / lr_rel).parent.mkdir(parents=True, exist_ok=True)
-            (repo / lr_rel).write_text(
-                json.dumps({"pipeline_ref": pipe_rel, "run_id": "run_j1", "substep": "judge"}),
-                encoding="utf-8",
-            )
-            payload = {"launch_request_ref": lr_rel}
-            with self.assertRaisesRegex(
-                ValueError,
-                "decision=pass cannot accompany fail step_result",
-            ):
-                _pre_phase_complete_judge_checks(
-                    repo,
-                    node_key=node_key,
-                    status_token="fail",
-                    payload=payload,
-                )
-
-    def test_pre_phase_complete_judge_checks_allows_blocked_with_pass_decision(
-        self,
-    ) -> None:
-        """`blocked` is decoupled from semantic_review.decision: a node whose
-        physics passed (decision=pass) may still terminalize as blocked when a
-        non-physics blocker (e.g. orchestration-record integrity) prevents
-        certification. The additional blocked artifact requirements still apply."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            node_key = "problem/shallow_water2d@0.3.0"
-            nk_safe = "problem__shallow_water2d__0.3.0"
-            pipe_rel = "workspace/pipelines/judge_blocked_pipe"
-            base = repo / pipe_rel / "runs" / "run_b1" / nk_safe
-            base.mkdir(parents=True)
-            (base / "semantic_review.json").write_text(
-                json.dumps({"decision": "pass"}),
-                encoding="utf-8",
-            )
-            # blocked terminalization still requires these three artifacts.
-            for name in ("aggregate_verdict.json", "summary.json", "trial_meta.json"):
-                (base / name).write_text("{}\n", encoding="utf-8")
-            lr_rel = "workspace/launches/judge_lr_blocked.json"
-            (repo / lr_rel).parent.mkdir(parents=True, exist_ok=True)
-            (repo / lr_rel).write_text(
-                json.dumps({"pipeline_ref": pipe_rel, "run_id": "run_b1", "substep": "judge"}),
-                encoding="utf-8",
-            )
-            payload = {"launch_request_ref": lr_rel}
-            # Must NOT raise — blocked is permitted alongside decision=pass.
-            _pre_phase_complete_judge_checks(
-                repo,
-                node_key=node_key,
-                status_token="blocked",
-                payload=payload,
-            )
-
-    def test_pre_phase_complete_judge_checks_blocked_still_requires_artifacts(
-        self,
-    ) -> None:
-        """Decoupling decision from blocked must not weaken the blocked artifact
-        gate: blocked without aggregate_verdict.json is still rejected."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            node_key = "problem/shallow_water2d@0.3.0"
-            nk_safe = "problem__shallow_water2d__0.3.0"
-            pipe_rel = "workspace/pipelines/judge_blocked_missing_pipe"
-            base = repo / pipe_rel / "runs" / "run_b2" / nk_safe
-            base.mkdir(parents=True)
-            (base / "semantic_review.json").write_text(
-                json.dumps({"decision": "pass"}),
-                encoding="utf-8",
-            )
-            lr_rel = "workspace/launches/judge_lr_blocked_missing.json"
-            (repo / lr_rel).parent.mkdir(parents=True, exist_ok=True)
-            (repo / lr_rel).write_text(
-                json.dumps({"pipeline_ref": pipe_rel, "run_id": "run_b2", "substep": "judge"}),
-                encoding="utf-8",
-            )
-            payload = {"launch_request_ref": lr_rel}
-            with self.assertRaisesRegex(
-                ValueError,
-                "blocked judge requires aggregate_verdict.json",
-            ):
-                _pre_phase_complete_judge_checks(
-                    repo,
-                    node_key=node_key,
-                    status_token="blocked",
-                    payload=payload,
-                )
-
-    def test_pre_phase_complete_judge_checks_skips_semantic_review_on_timeout_or_cancel(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            node_key = "problem/shallow_water2d@0.3.0"
-            nk_safe = "problem__shallow_water2d__0.3.0"
-            pipe_rel = "workspace/pipelines/judge_timeout_pipe"
-            base = repo / pipe_rel / "runs" / "run_to1" / nk_safe
-            base.mkdir(parents=True)
-            lr_rel = "workspace/launches/judge_lr_timeout.json"
-            (repo / lr_rel).parent.mkdir(parents=True, exist_ok=True)
-            (repo / lr_rel).write_text(
-                json.dumps({"pipeline_ref": pipe_rel, "run_id": "run_to1", "substep": "judge"}),
-                encoding="utf-8",
-            )
-            payload = {"launch_request_ref": lr_rel}
-            for st in ("timeout", "cancel"):
-                _pre_phase_complete_judge_checks(
-                    repo,
-                    node_key=node_key,
-                    status_token=st,
-                    payload=payload,
-                )
-
-    def test_pre_phase_complete_judge_checks_skips_when_execute_failed(self) -> None:
-        # When Validate fails at the deterministic `execute` substep, judge never runs
-        # and launch_request_ref points to the execute substep. The judge check must skip
-        # the semantic_review.json requirement (no judge output exists) so the conductor
-        # can route the execute failure via its decision tables instead of erroring.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            node_key = "problem/shallow_water2d@0.3.0"
-            pipe_rel = "workspace/pipelines/judge_exec_fail_pipe"
-            lr_rel = "workspace/launches/execute_lr.json"
-            (repo / lr_rel).parent.mkdir(parents=True, exist_ok=True)
-            (repo / lr_rel).write_text(
-                json.dumps({"pipeline_ref": pipe_rel, "run_id": "run_e1",
-                            "substep": "execute"}),  # execute, not judge
-                encoding="utf-8")
-            # no semantic_review.json anywhere -> would raise if not skipped
-            _pre_phase_complete_judge_checks(
-                repo, node_key=node_key, status_token="fail",
-                payload={"launch_request_ref": lr_rel})
+    # Five `_pre_phase_complete_judge_checks` rows stood here until issue #724 PR-2 deleted the
+    # check with `Validate.judge`: every one observed the judge's `semantic_review.json` decision
+    # against a validate `step_result`. The `blocked` branch's artifact requirement
+    # (`aggregate_verdict.json` / `summary.json` / `trial_meta.json`) sat behind the same judge
+    # gate and is given up with it: `run_phase` writes a validate `step_result` only as `pass` or
+    # `fail`, so no conductor path reaches a `blocked` one.
 
 
 class PreflightLiveProbeTtlTests(unittest.TestCase):
@@ -10929,8 +10788,10 @@ class RuntimeRoBindDnsTests(unittest.TestCase):
 
 
 class DependencyFactsRenderTests(unittest.TestCase):
-    """_build_dependency_facts formats the orientation-only resolved dependency list and
-    the rendered judge prompt carries the verdict path; a no-dep prompt does not."""
+    """_build_dependency_facts formats the orientation-only resolved dependency list, and a
+    no-dep request renders none. The request is a `generate` one: `build_launch_request`
+    attaches `resolved_dependencies` for that step only since issue #724 PR-2 deleted
+    `Validate.judge`, the other step that carried them."""
 
     BASE = dict(
         agent_role="step",
@@ -10938,7 +10799,7 @@ class DependencyFactsRenderTests(unittest.TestCase):
         agent_run_id="arid-DF",
         parent_agent_run_id="arid-PARENT",
         node_key="component/demo_dep_top@0.1.0",
-        step="validate",
+        step="generate",
         ir_ref="workspace/ir/component__demo_dep_top__0.1.0/d_002",
         pipeline_ref="workspace/pipelines/component__demo_dep_top__0.1.0/d_002",
         run_id="run_20260626_001",
@@ -11313,7 +11174,7 @@ class DependencyFactsRenderTests(unittest.TestCase):
              "published_operations": ["flux__compute_flux"], "source": "ir_public_api"}])
         self.assertEqual(_build_dependency_facts(det), "")
 
-    def test_the_pure_judge_prompt_carries_the_block_and_a_no_dep_one_does_not(self) -> None:
+    def test_a_resolved_dependency_renders_the_block_and_a_no_dep_one_does_not(self) -> None:
         """The dependency-facts block `_build_dependency_facts` builds, which a workshop
         lineage receives as a seed file of its tree (`Conductor` seeds it; the pure renderer's
         `<dependency_facts>` slot that first carried it went in issue #534 PR-J4-b).
@@ -18478,7 +18339,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
     # path -> byte ceiling (current size + small headroom)
     # The guarded set, and where each one enters a prompt (Z4, issue #171):
     #   - RUNNER_OUTPUT_CONTRACT.md  (`runner_output_contract_document`: the `harness` shape's
-    #                                 producer and reviewer, whole; the pure judge, sliced)
+    #                                 producer and reviewer, whole; `Validate.judge` was shown
+    #                                 a slice until issue #724 PR-2 deleted it)
     #   - backends/language/<id>/GENERATE_RULES.md (issue #589, which deleted the checks module's
     #                                 contract and bindings: its `Legality and gate guards`
     #                                 section as `gate_guards_document` to the `harness` producer)
@@ -18490,7 +18352,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
     # single common leaf must-read, and a pure leaf has no must-read set.
     _CEILINGS = {
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
-        # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
+        # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it); the
+        # judge is deleted (issue #724 PR-2) and the `harness` shape's two prompts carry it.
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
         # required vars must be present even when empty + shape-valid: 1-D as [],
         # rank-≥2 must still shape-match its shape_expr) + correct/wrong examples,
@@ -19418,7 +19281,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         # not rendered for other substeps / steps / deterministic / missing
         self.assertEqual(_build_exemplar({"step": "generate", "substep": "verify",
                                           "exemplar": exemplar}), "")
-        self.assertEqual(_build_exemplar({"step": "validate", "substep": "judge",
+        self.assertEqual(_build_exemplar({"step": "compile", "substep": "verify",
                                           "exemplar": exemplar}), "")
         self.assertEqual(_build_exemplar({"step": "generate", "substep": "generate",
                                           "deterministic": True, "exemplar": exemplar}), "")
@@ -19505,8 +19368,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
             c = self._conductor(tmp)
             for phase, substep, shape in (("compile", "verify", None),
                                           ("generate", "verify", "m3c"),
-                                          ("generate", "verify", "harness"),
-                                          ("validate", "judge", None)):
+                                          ("generate", "verify", "harness")):
                 with self.subTest(phase=phase, substep=substep, shape=shape):
                     spec = c._leaf_reviewer_spec(phase, substep, shape)
                     self.assertFalse(hasattr(spec, "wants_exemplar"))
@@ -19757,7 +19619,10 @@ class DerivationKeyCertificationTests(unittest.TestCase):
     def test_a_reader_contract_bump_moves_its_phase_and_a_producer_bump_moves_none(self) -> None:
         """Done-when 3 through the production predicate, on stamped artifacts (issue #574): the
         recorded whole-contract version moves no certification; a phase's reader constant refuses
-        that phase, and each later phase stands or falls by its own constants."""
+        that phase, and each later phase stands or falls by its own constants. Validate has no
+        reader constant since issue #724 PR-2 deleted `Validate.judge` (and its
+        `VALIDATE_JUDGE_CONTRACT_VERSION`): no LLM leaf reads for it, so only the two reader
+        phases are bumped here."""
         from tools import leaf_contract
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -19766,8 +19631,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 for step in ("compile", "generate", "build", "validate"):
                     self.assertTrue(self._certified(repo_root, self.USER, step)[0], step)
             for constant, step in (("COMPILE_VERIFY_CONTRACT_VERSION", "compile"),
-                                   ("GENERATE_VERIFY_CONTRACT_VERSION", "generate"),
-                                   ("VALIDATE_JUDGE_CONTRACT_VERSION", "validate")):
+                                   ("GENERATE_VERIFY_CONTRACT_VERSION", "generate")):
                 with self.subTest(constant=constant), mock.patch.object(
                         leaf_contract, constant, "reader-999"):
                     ok, detail = self._certified(repo_root, self.USER, step)
@@ -20793,7 +20657,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapA\n"
-                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "phases:\n  compile:\n    substeps:\n      verify:\n"
                                "        command: wrapB\n")
             seen: list = []
 
@@ -20869,7 +20733,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: claude\n"
-                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "phases:\n  compile:\n    substeps:\n      verify:\n"
                                "        command: otherwrap\n")
             payloads = iter([
                 _launchable_preflight_dict(backend="claude"),
@@ -21438,7 +21302,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         Renaming, adding or deleting a test without classifying it fails here — which is
         exactly what silently happened three times while the census lived in prose.
         `test_every_captured_production_payload_declares_the_demanded_role` is classified
-        SAMPLE-driven deliberately: it globs the fixture corpus and hard-asserts 8, so
+        SAMPLE-driven deliberately: it globs the fixture corpus and hard-asserts 7, so
         mutating either definition leaves it passing (measured, not assumed)."""
         actual = {
             name for name in dir(type(self))
@@ -21459,10 +21323,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
 
         The fixtures are tied back to the LIVE conductor by `test_workflow_conductor.py`'s
         `test_reproduces_every_real_substep_payload`; on its own this test would not notice
-        the conductor changing. Four substeps have no captured payload
-        (`compile.static`, `generate.gate`, `validate.pre_judge`, `validate.post_judge`),
-        so this covers the eight that exist (the escalate diagnostician's `validate.diagnose`
-        among them), not every substep the workflow launches."""
+        the conductor changing. Three substeps have no captured payload
+        (`compile.static`, `generate.gate`, `validate.post_judge`), so this covers the seven
+        that exist (the escalate diagnostician's `validate.diagnose` among them), not every
+        substep the workflow launches. (`validate.pre_judge` was a fourth until issue #724
+        PR-2 deleted it, and the `validate.judge` capture went with that substep.)"""
         from tools.orchestration_runtime import (
             _required_child_agent_kind,
             _validate_launch_request_payload,
@@ -21472,12 +21337,13 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        # EIGHT: two deterministic captures and six redacted WORKSHOP ones (issue #534) — the
+        # SEVEN: two deterministic captures and five redacted WORKSHOP ones (issue #534) — the
         # role field is verbatim in a redaction, so the LLM half of the role rule is covered.
         # The five pure captures went with the pure leaf (issue #534 PR-J4-b), replaced by
         # workshop captures of their pairs, plus the escalate diagnostician's
-        # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
-        self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
+        # (`validate.diagnose`); the `validate.judge` capture went with that substep (issue
+        # #724 PR-2). `BuildLaunchRequestTest`'s docstring carries the provenance.
+        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
         modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
         self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:
@@ -25549,8 +25415,9 @@ class ResolveComparandsTests(unittest.TestCase):
     Pinned per eligibility clause, each by a run that fails only that clause and would
     otherwise be selected (it is the NEWEST run): no `verdict.json`, another binary, a
     `self_verdict` of fail (a verdict-8 run that failed only a cross-target record included),
-    another or no IR, a judge that did not pass, a post-judge gate that did not pass, a revoked
-    meta. Also pinned: B's build not certified, B's IR not this run's, a target that does not
+    another or no IR, a post-judge gate that did not pass, a revoked meta. Also pinned (issue #724
+    PR-2, which deleted `Validate.judge`): a run with no `semantic_review.json` is a comparand,
+    and so is a pre-change run that still holds one. Also pinned: B's build not certified, B's IR not this run's, a target that does not
     load (`CrossTargetUnevaluable`), an eligible run with no capture (selected), and the validate key
     carrying no comparand member — a legacy stamp that does reads as a mismatch on it."""
 
@@ -25584,16 +25451,17 @@ class ResolveComparandsTests(unittest.TestCase):
             (sdir / "a.json").write_text('{"u": [1.0, 2.0]}')
         return refs
 
-    _PASS_REVIEW: ClassVar[dict[str, str]] = {"decision": "pass"}
     _PASS_GATE: ClassVar[dict[str, str]] = {"status": "pass"}
 
     def _run(self, refs: dict[str, str], run_id: str, *, verdict: dict | None,
              binary_id: str | None = None, capture: str = '{"u": [1.0, 2.0]}',
-             review: dict | None = _PASS_REVIEW, gate: dict | None = _PASS_GATE,
+             review: Any = None, gate: dict | None = _PASS_GATE,
              meta: dict | None = None) -> Path:
         """A run of `refs`' binary; its verdict is stamped with this IR's hash unless it names
-        one (or is `None`), and a passing review and post-judge gate record are written unless
-        `review` / `gate` say otherwise."""
+        one (or is `None`), and a passing post-judge gate record is written unless `gate` says
+        otherwise. No `semantic_review.json` is written unless `review` is given — the record a
+        run from before issue #724 PR-2 (which deleted `Validate.judge`) still holds; a `str`
+        is written as it is, so an unreadable one can be planted."""
         if verdict is not None and "ir_hash" not in verdict:
             verdict = {"ir_hash": self._ir_hash(), **verdict}
         node = self.repo / refs["pipeline_ref"] / "runs" / run_id / refs["safe"]
@@ -25605,7 +25473,8 @@ class ResolveComparandsTests(unittest.TestCase):
         if verdict is not None:
             (node / "verdict.json").write_text(json.dumps(verdict))
         if review is not None:
-            (node / "semantic_review.json").write_text(json.dumps(review))
+            (node / "semantic_review.json").write_text(
+                review if isinstance(review, str) else json.dumps(review))
         if gate is not None:
             (node / "post_judge_meta.json").write_text(json.dumps(gate))
         if meta is not None:
@@ -25689,9 +25558,6 @@ class ResolveComparandsTests(unittest.TestCase):
             ("evaluated over another IR",
              {"verdict": {**good, "ir_hash": "sha256:" + "0" * 64}}),
             ("no IR recorded", {"verdict": {**good, "ir_hash": None}}),
-            ("judge failed", {"verdict": good, "review": {"decision": "fail"}}),
-            ("judge never decided", {"verdict": good, "review": None}),
-            ("judge unreadable", {"verdict": good, "review": None}),
             # post_judge writes validate_meta `pass` BEFORE its gate runs, so only its own
             # record says whether the gate passed (round 3)
             ("post_judge gate failed", {"verdict": good, "gate": {"status": "fail"},
@@ -25705,15 +25571,38 @@ class ResolveComparandsTests(unittest.TestCase):
                 b = self._seed_b()
                 self._run(b, "run_20260102_001", verdict=good)
                 node = self._run(b, "run_20260102_002", **kw)
-                if label == "judge unreadable":
-                    (node / "semantic_review.json").write_text("{not json")
                 if label == "revoked":
                     # through the one production writer, not a hand-spelled meta
                     ort._revoke_stage_meta(self.repo, node / "validate_meta.json",
                                            reason="test", trigger_agent_run_id="t")
                 self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
-    def test_an_xfail_run_the_judge_passed_is_eligible(self) -> None:
+    def test_a_passing_gate_with_no_semantic_review_is_a_comparand(self) -> None:
+        """Issue #724 PR-2: no run writes a `semantic_review.json` any more, so the passing
+        `post_judge_meta.json` is what admits a run. Until that change the missing file
+        excluded it (`judge never decided`)."""
+        b = self._seed_b()
+        node = self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
+        self.assertFalse((node / "semantic_review.json").exists())
+        self.assertTrue((node / "post_judge_meta.json").is_file())
+        self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+
+    def test_a_pre_change_run_that_holds_a_semantic_review_is_a_comparand(self) -> None:
+        """A run written before issue #724 PR-2 holds the judge's `semantic_review.json`; it is
+        admitted on its passing gate record alone, whatever that file reads — a passing
+        decision, or text that does not parse."""
+        for label, review in (("decision pass", {"review_method": "llm_semantic_review",
+                                                  "decision": "pass", "findings": []}),
+                              ("unreadable", "{not json")):
+            with self.subTest(label):
+                self.setUp()
+                b = self._seed_b()
+                node = self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"},
+                                 review=review)
+                self.assertTrue((node / "semantic_review.json").is_file())
+                self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+
+    def test_an_xfail_run_the_gate_passed_is_eligible(self) -> None:
         b = self._seed_b()
         self._run(b, "run_20260102_001", verdict={"self_verdict": "xfail"})
         self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
@@ -25736,7 +25625,7 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_003"])
 
     def test_the_certified_fixture_run_itself_is_eligible(self) -> None:
-        """`certify_node` writes a passing verdict, review and gate record, so its run is a
+        """`certify_node` writes a passing verdict and gate record, so its run is a
         comparand once it carries the R4-d fields — and the run target's OWN runs never are,
         even when they are eligible in every other respect (round 3: A's run used to be
         excluded by its missing fields, which made the self-exclusion unobserved)."""

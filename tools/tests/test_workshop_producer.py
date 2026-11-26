@@ -751,8 +751,7 @@ _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harn
               "workshop_ir_repair.txt",
               # Step 3: the reading kind's templates (the judging substeps).
               "workshop_compile_verify.txt", "workshop_generate_verify.txt",
-              "workshop_generate_verify_harness.txt", "workshop_validate_judge.txt",
-              "workshop_verdict_repair.txt",
+              "workshop_generate_verify_harness.txt", "workshop_verdict_repair.txt",
               # PR-J4-a: the diagnostician's reading template (`workshop-9` onward).
               "workshop_escalate_diagnose.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
@@ -879,7 +878,7 @@ class DriverPromptTests(unittest.TestCase):
     TARGETS = ("fortran_cpu", "cpp_gpu")
     PAIRS = (("generate", "generate", ""), ("generate", "generate", "harness"),
              ("generate", "verify", ""), ("generate", "verify", "harness"),
-             ("compile", "generate", ""), ("compile", "verify", ""), ("validate", "judge", ""))
+             ("compile", "generate", ""), ("compile", "verify", ""))
 
     #: The words of the deleted checks module. `_checks` as a token suffix: `<spec_id>_checks`,
     #: `x_checks`, and so on, however the prefix is spelled.
@@ -1072,21 +1071,6 @@ class DriverPromptTests(unittest.TestCase):
                     self.assertIn(old, text)
                     with self.assertRaises(AssertionError):
                         self._assert_reviewer_scope(text.replace(old, new))
-
-    def _assert_judge_capture(self, text: str) -> None:
-        self.assertIn("A capture is what the host-rendered driver wrote from what the published "
-                      "operations left in their arguments", text)
-        self.assertIn("is read from the driver's own `series` fold, never from a kernel's report",
-                      text)
-
-    def test_the_judge_reads_a_capture_as_the_driver_s(self) -> None:
-        text = self._render("validate", "judge", "", self.TARGETS[0])
-        self._assert_judge_capture(text)
-        for old, new in (("the host-rendered driver wrote", "the checks module wrote"),
-                         ("never from a kernel's report", "or from a kernel's report")):
-            self.assertIn(old, text)
-            with self.assertRaises(AssertionError):
-                self._assert_judge_capture(text.replace(old, new))
 
     def test_every_refusal_the_producer_is_quoted_is_the_one_the_host_gives(self) -> None:
         """The prompt quotes the refusal a leaf will read. Each is driven through the real

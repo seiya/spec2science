@@ -2497,6 +2497,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # owes (`Validate`; no case file moves, `Compile` and `Generate` keys are untouched).
     # (`execute_tuple()` against main 7496ad67's: the `tools/primary_evidence.py` row and no other.)
     "execute-23": "dd1c60bff92056d8530dd5eaad8eeaf3bf8888008d3e55eef61d51b2dfe9177a",
+    # execute-24 (issue #724 PR-2): `Conductor._execute_inproc` stops naming `validate.judge` in
+    # its docstring and comments, the substep being deleted. Bumped rather than re-pinned: the
+    # validate tuple moves anyway (its two judge members leave it, decision O10), so the version
+    # string costs nothing more. (`execute_tuple()` against main fd4f3619's: the
+    # `Conductor._execute_inproc` row and no other.)
+    "execute-24": "bead4eb42863decc107ac0d4aaae10c50ccd57de894374445f2d7d6391c7c877",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2810,6 +2816,12 @@ PINNED_VERDICT: dict[str, str] = {
     # (`verdict_tuple()` against main 7496ad67's: the `tools/primary_evidence.py` row and no
     # other.)
     "verdict-22": "504be2a553dd6a45733369cbe82d35785b9c1aec467473772ebc6e1cd8d24a7a",
+    # verdict-23 (issue #724 PR-2): `Conductor._author_derived_validate_artifacts` writes
+    # `validate_meta.json` without `judge_command_ref` and with `attempt_count: 1`, the judge
+    # whose review the one named and whose launches the other counted being deleted.
+    # (`verdict_tuple()` against main fd4f3619's: the
+    # `Conductor._author_derived_validate_artifacts` row and no other.)
+    "verdict-23": "59476793fafdf7814eb041c303f1cc1a0d726d32081d219326d3b35ddc626fdb",
 }
 
 
@@ -2889,7 +2901,7 @@ class TransformationDriftTests(unittest.TestCase):
 #: `compile-docs`: pinned above under `COMPILE_INLINED_DOCUMENTS_VERSION`; `derived`: a
 #: host-computed value that is a function of `input` members and the transformation version
 #: (not hashed on its own); `same-phase`: an artifact an EARLIER substep of the same phase
-#: produced, which the phase's reviewer or judge reads — not a key input of that phase (the
+#: produced, which the phase's reviewer reads — not a key input of that phase (the
 #: key was taken at phase start, before it existed), covered by the phase's own stamp and
 #: output hash; `diagnosis`: the escalate diagnostician's, which certifies nothing.
 INLINED_DOCUMENT_CLASS: dict[str, str] = {
@@ -2904,17 +2916,8 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "harness_capabilities": "input",           # `harness.manifest`
     "target_profile": "input",                 # the target profile's hash (`target.profile`)
     "runner_document": "derived",              # RENDER_VERSION over the IR + harness outputs
-    "io_contract_document": "input",           # inside the IR
-    "verdict_document": "same-phase",
-    "perf_document": "same-phase",
-    "trial_meta_document": "same-phase",
-    "quality_check_document": "same-phase",
-    "binary_meta_document": "input",           # the build output hash
-    "source_meta_document": "input",           # the generate output hash
-    # RAW_EXCERPT_POLICY_VERSION over raw/. Not strictly: issue #396 and issue #691 changed
-    # what the excerpt holds without moving the version (`tools/raw_evidence_excerpt.py`), so
-    # recomputing what a recorded judge saw needs the orchestration's `repo_revision` too.
-    "raw_evidence_excerpt_document": "derived",
+    # The eight keys `validate.judge` alone declared (`io_contract_document`, the run's six
+    # documents and `raw_evidence_excerpt_document`) went with it in issue #724 PR-2.
     "phase_contract_document": "compile-docs",
     "ir_algorithm_example_document": "compile-docs",
     "ir_algorithm_2d_example_document": "compile-docs",
@@ -2968,8 +2971,7 @@ class InlinedDocumentCensusTests(unittest.TestCase):
         from tools.tests import test_leaf_prompt_contract_drift as drift
         member = {
             "severity_rubric_document": "generate_verify_severity_rubric_section",
-            "runner_output_contract_document": {"generate": "runner_output_contract_document",
-                                                "validate": "runner_output_contract_sections"},
+            "runner_output_contract_document": {"generate": "runner_output_contract_document"},
         }
         tables = [*ort.PURE_CONTEXT_REQUIRED_KEYS.items(),
                   *((key[:2], keys) for key, keys in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE.items())]

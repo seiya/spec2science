@@ -1373,7 +1373,6 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         cases = (
             ("compile", "verify", "ir_meta.json", "verification_status", "fail"),
             ("generate", "verify", "source_meta.json", "verification_status", "fail"),
-            ("validate", "judge", "semantic_review.json", "decision", "fail"),
         )
         for phase, substep, basename, field, decision in cases:
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
@@ -1500,9 +1499,12 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         self.assertFalse(absent["found"])
         self.assertEqual(set(absent) - {"found"}, {"generate", "verify"})
 
-    def test_the_validate_phase_reads_its_single_judge_record(self) -> None:
-        """Z3: `validate` has ONE pure leaf, and the table is a substep mapping rather than a
-        producer/reviewer pair so it does not have to invent a second."""
+    def test_the_validate_phase_has_no_record_to_read(self) -> None:
+        """Z3 gave `validate` one pure leaf, the judge, whose `judge_meta.json` this table
+        read; issue #724 PR-2 deleted that substep, so `validate` is an unknown phase here and
+        a run node an older run left a `judge_meta.json` in reports the gap shape, not a row."""
+        self.assertNotIn("validate", diag.PURE_LEAF_META_FILES)
+        self.assertNotIn("validate", diag.PURE_LEAF_VERDICT_FILES)
         with tempfile.TemporaryDirectory() as tmp:
             run_node = Path(tmp)
             (run_node / "judge_meta.json").write_text(json.dumps(
@@ -1511,9 +1513,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                                   "usage": {"input_tokens": 1, "output_tokens": 2}}]}),
                 encoding="utf-8")
             out = diag.summarize_pure_leaf_metas(run_node, "validate")
-        self.assertTrue(out["found"])
-        self.assertTrue(out["judge"]["found"])
-        self.assertEqual(set(out) - {"found"}, {"judge"})
+        self.assertEqual(out, {"found": False})
 
     def test_the_file_table_names_exactly_the_phases_that_have_a_pure_pair(self) -> None:
         import tools.llm_config as lc

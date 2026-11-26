@@ -176,7 +176,7 @@ class EveryLlmLaunchIsAWorkshopLeafTests(unittest.TestCase):
                     outcome = c.run_substep(self.refs, phase, substep)
                     self.assertEqual(outcome.status, "pass",
                                      msg=f"{provider} {shape} {phase}.{substep}")
-                    expect = (("reviewer", phase, substep) if substep in ("verify", "judge")
+                    expect = (("reviewer", phase, substep) if substep == "verify"
                               else ("workshop", phase, substep, ()))
                     self.assertEqual(c.__dict__.get("dispatch"), [expect],
                                      msg=f"{provider} {shape} {phase}.{substep}")
@@ -499,7 +499,7 @@ class CodexLeafHasNoHookLayerTests(unittest.TestCase):
             for pair, kwargs in ((("generate", "generate"),
                                   {"mcp_config_json": workshop_mcp_config_json(
                                       "http://127.0.0.1:5/mcp")}),
-                                 (("validate", "judge"), {"reading": True})):
+                                 (("compile", "verify"), {"reading": True})):
                 entry = c.entry_for(*pair)
                 argvs.append(c.leaf_command(entry, session_id="child-1", **kwargs))
                 argvs.append(c.leaf_command(entry, session_id="child-1",

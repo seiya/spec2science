@@ -1381,7 +1381,7 @@ class DerivationResolver:
             else:
                 refused.append((order, {**detail, "meta_path": meta_path}))
         # A REVOCATION shadows every older eligible output of the key. `revoke-artifact` is a
-        # decision that the derivation must run again (a judge's `structural_violation`, a
+        # decision that the derivation must run again (an execute's `structural_violation`, a
         # verify's `ir_inconsistency` — findings no input carries), taken against the output
         # that was standing; an older output of the same key produced under the same inputs
         # is not an answer to it, and selecting it would let the decision fall through to a
@@ -2135,7 +2135,8 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               its own stamp carries (issue #345, `_comparand_candidate_key`).
 #   validate  binary — this node's certified build output hash;
 #             ir — the compile output hash (the case set and the predicates);
-#             spec.tests — the judge reads `tests.md`;
+#             spec.tests — the `--stage pre_judge` gate `post_judge` runs reads `tests.md`
+#               (`_validate_tests_verdict_summary_consistency`);
 #             run_policy — the execution policy `_execute_inproc` imposes: `{target_id,
 #               profile, threads_per_rank, preset}`.
 #             Nothing of another target is an input (issue #383, reversing #324's
@@ -2727,10 +2728,13 @@ def resolve_comparands(
         does not say which IR's cases and predicates a run was judged on — Codex, round 2;
         a verdict written before R4-d has no `ir_hash` and is never a comparand),
       - has a `self_verdict` in `COMPARAND_VERDICTS`, and
-      - finished Validate: the judge passed it (`semantic_review.json` decided `pass`) and so
-        did the post-judge gate (`post_judge_meta.json#status` is `pass`). The judge and the
-        gate run on every run whose verdict passes, so one without both was rejected or never
-        finished.
+      - finished Validate: the post-judge gate passed it (`post_judge_meta.json#status` is
+        `pass`). The gate runs on every run whose verdict passes, so one without it was
+        rejected or never finished. Until issue #724 PR-2 this also asked that `validate.judge`
+        had passed it (`semantic_review.json` decided `pass`); the judge is deleted, so a run
+        holding no such file is a comparand, and an older run that holds one is read exactly as
+        it is (the judge ran before the gate, so an older run whose judge failed has no passing
+        `post_judge_meta.json` and stays excluded).
     A run's verdict carries no comparison since issue #383, so a variant that passes its own
     tests is a reference whatever another target's captures say; a disagreement between two
     such variants is then seen by BOTH targets' agreements, which is what stops both (plan
@@ -2797,10 +2801,8 @@ def resolve_comparands(
                 continue
             if verdict.get("self_verdict") not in COMPARAND_VERDICTS:
                 continue
-            review = _read_json_or_none(node_dir / "semantic_review.json")
             gate = _read_json_or_none(node_dir / "post_judge_meta.json")
-            if not (isinstance(review, dict) and review.get("decision") == "pass"
-                    and isinstance(gate, dict) and gate.get("status") == "pass"):
+            if not (isinstance(gate, dict) and gate.get("status") == "pass"):
                 continue
             meta = _read_json_or_none(node_dir / "validate_meta.json")
             if isinstance(meta, dict) and str(
@@ -4341,8 +4343,6 @@ def _compute_initial_dependency_readiness(
     if not entries:
         return trivial
     return fail_closed
-# Termination reasons for which Judge's pre_phase_complete verification does not require semantic_review (treated as incomplete).
-JUDGE_SEMANTIC_REVIEW_SKIPPED_STATUSES = frozenset({"timeout", "cancel"})
 SUPPORTED_BACKENDS = {"codex", "claude"}
 PREFLIGHT_TTL_DEFAULT_SECONDS: int = 1800
 
@@ -4430,9 +4430,9 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "SPEC2SCIENCE_HTTP_PREFLIGHT_SKIP_REACHA
 # stage-meta keys, is deleted — `docs/workflow/WORKFLOW_CORE.md` §"Workflow common invariants"
 # and §"Stage meta keys" are canonical for both, for the host. Canonical rationale for the
 # restructure this ended: docs/design/leaf_must_read_restructure.md.
-# Consolidated runner-output contract, INLINED into the prompts that need it: §3 to
-# `validate.judge` (what it reads the raw evidence against), and whole to the `harness` shape's producer and reviewer — the
-# runner-authoring leaf. An `m3c` physics producer does not receive it (it authors the model under
+# Consolidated runner-output contract, INLINED into the prompts that need it: whole to the
+# `harness` shape's producer and reviewer — the runner-authoring leaf (its §3 slice went to
+# `validate.judge` until issue #724 PR-2 deleted that substep). An `m3c` physics producer does not receive it (it authors the model under
 # a host-rendered runner).
 # The node-aware SELECTION used to be `leaf_contract_doc_refs`, deleted with the force-read
 # set in Z4 (issue #171); `Conductor._build_leaf_*_context` makes the same choice now.
@@ -5886,81 +5886,6 @@ def workflow_launch_check(
     }
 
 
-def _resolve_judge_execution_dir(
-    repo_root: Path,
-    *,
-    pipeline_ref: str,
-    node_key: str,
-    launch_request: dict[str, Any],
-) -> tuple[Path | None, str | None]:
-    """Return the `runs/<run_id>/<node_key_safe>/` that is the `Validate.judge` input. On failure, (None, reason)."""
-    rel = _normalize_rel_posix(pipeline_ref)
-    pr_abs = repo_root / rel
-    if not pr_abs.is_dir():
-        return None, "pipeline_missing"
-    nk_safe = _node_key_to_safe(node_key)
-    run_id = launch_request.get("run_id")
-    if isinstance(run_id, str) and run_id.strip():
-        cand = pr_abs / "runs" / run_id.strip() / nk_safe
-        if cand.is_dir():
-            return cand, None
-        return None, "judge_run_path_missing"
-    runs_root = pr_abs / "runs"
-    candidates: list[Path] = []
-    if runs_root.is_dir():
-        for rid_dir in sorted(runs_root.iterdir()):
-            if not rid_dir.is_dir():
-                continue
-            cand = rid_dir / nk_safe
-            if cand.is_dir():
-                candidates.append(cand)
-    if len(candidates) != 1:
-        return None, "judge_run_id_unresolved_or_ambiguous"
-    return candidates[0], None
-
-
-def _downstream_phase_launch_gate(
-    repo_root: Path,
-    *,
-    node_key: str,
-    step: str,
-    pipeline_ref: str,
-    launch_request: dict[str, Any],
-) -> tuple[bool, str | None]:
-    """Check the downstream phase start condition only when `pipeline_ref` exists on disk.
-
-    Only `validate.judge` is checked here. A build or `validate.execute` launch is held by
-    `record_launch`, which binds the request's OWN source (its `source_meta.json` at
-    `verification_status: pass`) and, for execute, its own binary's `binary_meta.json`; the
-    judge's `perf.json` is an execute deliverable `determine_substep_status` requires fresh
-    (issue #643)."""
-    rel = _normalize_rel_posix(pipeline_ref)
-    pr_abs = repo_root / rel
-    if not pr_abs.is_dir():
-        return True, None
-    st = step.strip().lower()
-    substep = str(launch_request.get("substep") or "").strip().lower()
-    if st == "validate" and substep == "judge":
-        base, err = _resolve_judge_execution_dir(
-            repo_root,
-            pipeline_ref=pipeline_ref,
-            node_key=node_key,
-            launch_request=launch_request,
-        )
-        if base is None:
-            return False, f"downstream:{err or 'judge_path'}"
-        raw_dir = base / "raw"
-        if not raw_dir.is_dir():
-            return False, "downstream:judge_raw_dir_missing"
-        exec_ok = (base / "command_log.jsonl").is_file() or (
-            (base / "stdout.log").is_file() and (base / "stderr.log").is_file()
-        )
-        if not exec_ok:
-            return False, "downstream:judge_execution_record_missing"
-        return True, None
-    return True, None
-
-
 def pre_phase_launch(
     repo_root: Path,
     *,
@@ -5968,9 +5893,10 @@ def pre_phase_launch(
     node_key: str,
     step: str,
     backend: str,
-    launch_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """A hook bundling `workflow_launch_check` and the downstream artifact start condition (when `pipeline_ref` exists on disk)."""
+    """The `workflow_launch_check` hook. It also held the downstream artifact start condition
+    (`downstream_artifact_not_ready`), which checked `validate.judge`'s run directory alone and
+    went with that substep in issue #724 PR-2."""
     base = workflow_launch_check(
         repo_root,
         orchestration_id=orchestration_id,
@@ -5980,25 +5906,6 @@ def pre_phase_launch(
     )
     merged: dict[str, Any] = dict(base)
     merged["hook"] = "pre_phase_launch"
-    if merged.get("status") != "pass":
-        return merged
-    if launch_request:
-        pr = launch_request.get("pipeline_ref")
-        if isinstance(pr, str) and pr.strip():
-            ok, reason = _downstream_phase_launch_gate(
-                repo_root,
-                node_key=node_key,
-                step=step,
-                pipeline_ref=pr.strip(),
-                launch_request=launch_request,
-            )
-            if not ok:
-                merged["status"] = "fail_closed"
-                merged["reason_code"] = "downstream_artifact_not_ready"
-                merged["reason_detail"] = reason
-                merged["next_action"] = "stop_before_phase_body"
-                merged["blocking_policy_scope"] = "downstream_artifacts"
-                return merged
     return merged
 
 
@@ -6239,8 +6146,7 @@ def _canonical_command_log_paths(
             )
     elif step_token == "validate" and substep_token == "execute" and node_safe:
         # Only the Validate.execute substep emits command logs (run_program
-        # / run_quality_checks). Validate.judge runs no build-runtime entry point, so it has
-        # no canonical log placement.
+        # / run_quality_checks); it is the phase's only substep that runs a program.
         prefix = f"{pipeline_ref}/runs/"
         for tok in listed_paths:
             if not isinstance(tok, str) or not tok.startswith(prefix):
@@ -8057,13 +7963,13 @@ _PROMPT_TEMPLATE_FILES = {
     # and has its own repair turn.
     "workshop compile.generate": "workshop_compile_generate.txt",
     "workshop ir repair": "workshop_ir_repair.txt",
-    # Step 3: the three judging substeps as READING workshop leaves (adopted 2026-10-25). The
-    # judge's rules and output contract verbatim, each document a seed file of its tree, and one
-    # output document at the tree root. One repair turn for the three.
+    # Step 3: the judging substeps as READING workshop leaves (adopted 2026-10-25; the third,
+    # `validate.judge`, went with the substep in issue #724 PR-2). The reviewer's rules and
+    # output contract verbatim, each document a seed file of its tree, and one output document
+    # at the tree root. One repair turn for them.
     "workshop compile.verify": "workshop_compile_verify.txt",
     "workshop generate.verify": "workshop_generate_verify.txt",
     "workshop generate.verify.harness": "workshop_generate_verify_harness.txt",
-    "workshop validate.judge": "workshop_validate_judge.txt",
     "workshop verdict repair": "workshop_verdict_repair.txt",
     # The escalate diagnostician as a READING workshop leaf (issue #534 PR-J4-a): one template,
     # four (step, substep) keys, because the pair is what the renderer looks up and the prompt
@@ -8487,15 +8393,6 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
                              "target_profile", "severity_rubric_document",
                              "bundle_document"),
-    # `validate.judge` (Z3, issue #169). The two canonical sources (tests + the IR's
-    # `io_contract`), the runner-output contract slice that says what the run's own output is
-    # obliged to be, the run's artifacts, and — in place of `raw/`, which is 13 MB of float
-    # arrays — the host-computed excerpt of it.
-    ("validate", "judge"): ("tests_document", "io_contract_document",
-                            "runner_output_contract_document",
-                            "verdict_document", "perf_document", "trial_meta_document",
-                            "quality_check_document", "binary_meta_document",
-                            "source_meta_document", "raw_evidence_excerpt_document"),
     # The escalate diagnostician, one pair per escalatable phase. Its whole closed context is
     # the failure-artifact document the host composes (`_diagnosis_document`); the persona, the
     # directive schema and the decision criteria are static template body.
@@ -8807,7 +8704,7 @@ def _render_leaf_launch_prompt(request_payload: dict[str, Any]) -> str:
 # The pure pairs whose leaf returns a VERDICT — a conclusion about someone else's artifact —
 # rather than the artifact itself. Only these render `<repair_scope>` (issue #209 round 5).
 #
-# Why the paragraph is conditional rather than shared: for these three, EVERY repairable class is
+# Why the paragraph is conditional rather than shared: for these two, EVERY repairable class is
 # a violation of the verdict document's SHAPE, and the schema's joint invariant couples the
 # conclusion to the evidence (`verification_status` / `decision` against findings, severity and
 # reason). That makes "flip the conclusion" a one-token correction of a shape violation, and an
@@ -8817,7 +8714,7 @@ def _render_leaf_launch_prompt(request_payload: dict[str, Any]) -> str:
 # its document says. A first attempt at one persona-neutral sentence was measured to make two
 # reviewer routes WORSE than saying nothing, which is why this is a slot.
 PURE_VERDICT_PAIRS: frozenset[tuple[str, str]] = frozenset({
-    ("generate", "verify"), ("compile", "verify"), ("validate", "judge"),
+    ("generate", "verify"), ("compile", "verify"),
 })
 
 #: The `<repair_scope>` text. States the invariant in BOTH directions, because either side of it
@@ -10270,78 +10167,6 @@ def _effective_pass_substep_run_ids(
     }
 
 
-def _pre_phase_complete_judge_checks(
-    repo_root: Path,
-    *,
-    node_key: str,
-    status_token: str,
-    payload: dict[str, Any],
-) -> None:
-    lr_ref = payload.get("launch_request_ref")
-    if not isinstance(lr_ref, str) or not lr_ref.strip():
-        raise ValueError("judge step_result requires launch_request_ref for pre_phase_complete hook")
-    lr_path = repo_root / lr_ref.strip()
-    if not lr_path.is_file():
-        raise ValueError(f"judge launch_request_ref not found: {lr_ref}")
-    try:
-        lr = _read_json(lr_path)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"judge launch_request_ref invalid json: {lr_ref}") from exc
-    if not isinstance(lr, dict):
-        raise ValueError(f"judge launch_request must be object: {lr_ref}")
-    # When the Validate phase failed at `execute` (the deterministic substep), `judge`
-    # never ran and the launch_request_ref points to the execute substep. There is no
-    # judge output to verify, so skip the semantic_review requirement — the conductor
-    # routes the execute failure via its decision tables (classify_failure / escalate).
-    # A normal terminal points launch_request_ref at the judge substep.
-    if str(lr.get("substep") or "").strip().lower() != "judge":
-        return
-    pr = lr.get("pipeline_ref")
-    if not isinstance(pr, str) or not pr.strip():
-        raise ValueError("judge launch_request missing pipeline_ref")
-    base, err = _resolve_judge_execution_dir(
-        repo_root,
-        pipeline_ref=pr.strip(),
-        node_key=node_key,
-        launch_request=lr,
-    )
-    if base is None:
-        raise ValueError(f"judge execution directory not resolved: {err}")
-    if status_token in JUDGE_SEMANTIC_REVIEW_SKIPPED_STATUSES:
-        return
-    sem = base / "semantic_review.json"
-    if not sem.is_file():
-        raise ValueError("pre_phase_complete: judge requires semantic_review.json")
-    try:
-        sdoc = _read_json(sem)
-    except json.JSONDecodeError as exc:
-        raise ValueError("semantic_review.json must be valid json") from exc
-    if not isinstance(sdoc, dict):
-        raise ValueError("semantic_review.json must be a json object")
-    dec = sdoc.get("decision")
-    if dec is None or (isinstance(dec, str) and not str(dec).strip()):
-        raise ValueError("semantic_review.json decision missing (completion forbidden)")
-    dec_norm = str(dec).strip().lower()
-    if dec_norm == "fail" and status_token == "pass":
-        raise ValueError("semantic_review.json decision=fail cannot accompany pass step_result")
-    if dec_norm == "pass" and status_token == "fail":
-        raise ValueError("semantic_review.json decision=pass cannot accompany fail step_result")
-    # NOTE: `blocked` is intentionally decoupled from `decision`. A `pass`
-    # semantic_review reflects node-physics correctness, whereas `blocked` means
-    # the node could not be CERTIFIED due to a non-physics blocker (e.g. an
-    # orchestration-record integrity gate failure that is unrecoverable in the
-    # current run). Coupling those two axes previously deadlocked terminalization
-    # — write-step-result rejected `fail`/`blocked` while semantic_review=pass yet
-    # `pass` was impossible without a finalized verdict — forcing fail_closed as
-    # the only escape. A node whose physics passed may still honestly terminalize
-    # as `blocked`; the additional `blocked` artifact requirements below remain
-    # enforced so the verdict is not merely asserted.
-    if status_token == "blocked":
-        for name in ("aggregate_verdict.json", "summary.json", "trial_meta.json"):
-            if not (base / name).is_file():
-                raise ValueError(f"blocked judge requires {name} under execution directory")
-
-
 def _validate_step_result_payload(
     repo_root: Path,
     orchestration_id: str,
@@ -10355,7 +10180,7 @@ def _validate_step_result_payload(
     status = payload.get("status")
     status_token = status.strip().lower() if isinstance(status, str) else ""
 
-    # validation_stage check (at terminal of generate/build/execute/judge)
+    # validation_stage check (at terminal of generate/build/validate)
     if step_token in STEP_REQUIRED_VALIDATION_STAGES and status_token in TERMINAL_STATUSES:
         allowed = STEP_REQUIRED_VALIDATION_STAGES[step_token]
         validation_stage = payload.get("validation_stage")
@@ -10365,13 +10190,8 @@ def _validate_step_result_payload(
                 f"{sorted(allowed)}; status={status_token!r} validation_stage={validation_stage!r}"
             )
 
-    if step_token == "validate" and status_token in TERMINAL_STATUSES:
-        _pre_phase_complete_judge_checks(
-            repo_root,
-            node_key=node_key,
-            status_token=status_token,
-            payload=payload,
-        )
+    # `_pre_phase_complete_judge_checks`, which read `validate.judge`'s `semantic_review.json`
+    # against a terminal `validate` step result, went with that substep in issue #724 PR-2.
 
     # the following is the existing substep verification (compile/generate/validate only)
     if step_token not in SUBSTEP_AWARE_STEPS:
@@ -12513,14 +12333,12 @@ def record_launch(
     # anything — and `write-step-result --backfill`, which existed to break the deadlock it
     # created, goes with it.
     if isinstance(step_raw, str) and step_raw.strip() and isinstance(node_key_raw, str) and node_key_raw.strip():
-        launch_ctx = dict(request_payload)
         check = pre_phase_launch(
             repo_root,
             orchestration_id=orchestration_id,
             node_key=node_key_raw.strip(),
             step=step_raw.strip(),
             backend=backend_token,
-            launch_request=launch_ctx,
         )
         if check.get("status") == "fail_closed":
             reason_code = str(check.get("reason_code") or "child_agent_unavailable_on_execution_platform")
@@ -14751,7 +14569,7 @@ def main(argv: list[str] | None = None) -> int:
         help=_NODE_KEY_HELP,
     )
     launch_check_parser.add_argument("--step", required=True,
-                                     help="Workflow step name: plan, generate, build, execute, judge, etc.")
+                                     help="Workflow step name: compile, generate, build, validate, etc.")
     # Provider tokens, not just spawnable backends: the conductor passes the LAUNCHING leaf's
     # own token, which for an HTTP pure leaf is not a CLI backend at all.
     launch_check_parser.add_argument("--backend", default="claude",
@@ -15213,7 +15031,6 @@ def main(argv: list[str] | None = None) -> int:
                 node_key=args.node_key,
                 step=args.step,
                 backend=args.backend,
-                launch_request=getattr(args, "launch_request_json", None),
             )
         except ValueError as exc:
             print(f"workflow-launch-check: {exc}", file=sys.stderr)

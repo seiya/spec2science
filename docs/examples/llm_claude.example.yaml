@@ -17,9 +17,9 @@
 # and how hard does it think" — a reader should get that answer by reading it, not by
 # re-deriving it from an inheritance chain.
 #
-# The five entries below are the complete set of LLM leaves. Every other substep
-# (compile.static, generate.gate, validate.pre_judge / execute / post_judge, and the whole
-# build phase) is deterministic and runs in-process, so naming one here is rejected.
+# The four entries below are the complete set of LLM leaves. Every other substep
+# (compile.static, generate.gate, and the whole build and validate phases) is deterministic and
+# runs in-process, so naming one here is rejected.
 #
 #   model    An unpinned ALIAS, never a pinned version: versions move, and the exact version
 #            that ran is recovered afterwards from the leaf's own CLI result envelope and
@@ -49,7 +49,9 @@
 #     compile.generate      26.7%    14.8%   1..3
 #     generate.verify       11.3%    21.8%   1..5
 #     compile.verify         8.3%     3.3%   1..2   (90 of 93 nodes passed first try)
-#     validate.judge         8.2%     0.0%   1      (69 of 69)
+#
+# (The fifth leaf of that measurement, the `Validate` judge, 8.2% of tokens, was deleted in issue
+# #724; the shares above are of the same 94 orchestrations.)
 #
 # What the table DOES establish is structural and survives a model change: re-runs were 20% of
 # every token spent, they concentrated in the leaves that WRITE, and `generate.generate` reached
@@ -60,9 +62,8 @@
 # expensive ones.
 #
 # `compile.verify` is where it goes: the smallest leaf, re-run in 3 of 93 nodes, reading an IR
-# the deterministic `compile.static` gate has already proved clean — and both `generate` and
-# `validate.judge` read that same IR afterwards. `validate.judge` is NOT economised despite being
-# equally small and never re-run once in 69 nodes: nothing runs after it, so what it misses ships.
+# the deterministic `compile.static` gate has already proved clean — and both `generate` leaves
+# read that same IR afterwards.
 #
 # Raising `generate.generate` above `medium` is the obvious next question and is deliberately
 # left open. Each notch costs on every attempt, so it only pays if it lifts the first-try rate,
@@ -85,8 +86,8 @@
 # lint, syntax-check and run its bundle; `compile.generate` writes the WHOLE IR in its tree and
 # asks the host to check it the way `Compile.static` will. Their entries state both bounds,
 # `max_wrapper_calls` (wrapper calls per lineage: its cold launch and resumes) and
-# `lineage_timeout_s` (seconds per lineage, from its cold launch). The three judging substeps,
-# `compile.verify`, `generate.verify` and `validate.judge`, read the documents seeded in their
+# `lineage_timeout_s` (seconds per lineage, from its cold launch). The two judging substeps,
+# `compile.verify` and `generate.verify`, read the documents seeded in their
 # tree and write their one verdict document there; they are served no host operation, so they
 # state `lineage_timeout_s` alone and `max_wrapper_calls` is refused on them. The bounds have
 # no default and are written on the substep only: no level inherits one.
@@ -122,8 +123,8 @@ phases:
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # The IR reviewer. Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR
       # seeded in its tree, written as one verdict document, `verdict.json`. The cheapest leaf
-      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read
-      # the same IR afterwards. The only leaf this file economises, and it does so by model tier —
+      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` leaves read the same IR
+      # afterwards. The only leaf this file economises, and it does so by model tier —
       # effort stays at the generation default here as everywhere else.
       verify:
         provider: claude_cli
@@ -147,17 +148,6 @@ phases:
       # Reached only on a source the deterministic gate already accepted — but it re-ran in 12
       # of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
-        provider: claude_cli
-        model: opus
-        effort: medium
-        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-
-  validate:
-    substeps:
-      # The independent semantic check: reads the run's documents seeded in its tree and writes
-      # `review.json`. Never re-run in 69 of 69 nodes, so its cost is perfectly predictable —
-      # and still not economised, because nothing runs after it to catch a miss.
-      judge:
         provider: claude_cli
         model: opus
         effort: medium

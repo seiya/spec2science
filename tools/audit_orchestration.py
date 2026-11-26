@@ -27,7 +27,7 @@ import json
 import sys
 from collections import Counter
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 # One import identity, always `tools.`: a bare-first shim would let `leaf_usage` and
@@ -41,7 +41,7 @@ try:
         build_launch_incident,
         summarize_pure_leaf_metas,
     )
-    from tools.target_profile import is_target_id, pipeline_ref_for
+    from tools.target_profile import pipeline_ref_for
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
     _REPO_ROOT = Path(__file__).resolve().parent.parent
     if str(_REPO_ROOT) not in sys.path:
@@ -52,7 +52,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         build_launch_incident,
         summarize_pure_leaf_metas,
     )
-    from tools.target_profile import is_target_id, pipeline_ref_for
+    from tools.target_profile import pipeline_ref_for
 
 
 def _load_jsonl_with_errors(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -569,49 +569,6 @@ def _pure_ir_dirs_of(
     return sorted(dirs)
 
 
-def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
-    """Every repo-relative run-node directory this orchestration launched a PURE or WORKSHOP
-    `validate` leaf into, in sorted order (Z3, issue #169; issue #534 step 3).
-
-    Discovered from the persisted launch requests for the same reason `_pure_ir_dirs_of` is:
-    one row per attempt, never rewritten. A `validate` request carries `pipeline_ref` and
-    `run_id` rather than the run-node path, so the directory is composed the way `NodeRefs`
-    composes it: `<pipeline_ref>/runs/<run_id>/<node_key_safe>`. The safe node key is READ OUT
-    of `pipeline_ref` (`workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, or the
-    pre-R4-a `workspace/pipelines/<safe>/<pipeline_id>` of an older run; the same `NodeRefs`
-    property) rather than recomputed from `node_key` — this tree already carries two
-    spellings of that transform, and a third living in an audit tool would be the one nothing
-    checks.
-    """
-    dirs: list[str] = []
-    launches = _orch_root(repo_root, orchestration_id) / "launches"
-    if not launches.is_dir():
-        return dirs
-    for path in sorted(launches.glob("*.request.json")):
-        row = _load_json_if_dict(path) or {}
-        if row.get("step") != "validate":
-            continue
-        # A workshop `validate.judge` (issue #534 step 3) writes the same `judge_meta.json`
-        # into the same run node, and a judge it drops would vanish from the A/B section.
-        if row.get("leaf_mode") not in ("pure", "workshop"):
-            continue
-        pipeline_ref = row.get("pipeline_ref")
-        run_id = row.get("run_id")
-        if not (pipeline_ref and run_id):
-            continue
-        parts = PurePosixPath(pipeline_ref).parts
-        # `workspace/pipelines/<safe>/<target_id>/<pipeline_id>`, or the pre-R4-a
-        # `workspace/pipelines/<safe>/<pipeline_id>` a request recorded before issue #284.
-        if parts[:2] != ("workspace", "pipelines") or not (
-                len(parts) == 4 or (len(parts) == 5 and is_target_id(parts[3]))):
-            continue
-        safe = parts[2]
-        ref = f"{pipeline_ref}/runs/{run_id}/{safe}"
-        if ref not in dirs:
-            dirs.append(ref)
-    return sorted(dirs)
-
-
 def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozenset[str]:
     """The `llm_leaf_map` keys of the pure leaves this orchestration ACTUALLY LAUNCHED, read
     from its own persisted launch requests.
@@ -634,8 +591,9 @@ def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozense
     for path in sorted(launches.glob("*.request.json")):
         row = _load_json_if_dict(path) or {}
         # A `workshop leaf` (issue #534) ran on its entry's provider just as a pure one did,
-        # and it is the leaf an A/B of the two models attributes. (Both discoveries above
-        # admit it too: compile since step 2, validate since step 3.)
+        # and it is the leaf an A/B of the two models attributes. (The compile discovery above
+        # admits it too, since step 2.) A recorded `validate.judge` launch is no longer
+        # attributed: the pair left `_PURE_LEAF_MAP_KEYS` with the substep (issue #724 PR-2).
         if row.get("leaf_mode") not in ("pure", "workshop"):
             continue
         step = row.get("step")
@@ -743,16 +701,11 @@ def collect_pure_leaf_ab_summary(
         summary = summarize_pure_leaf_metas(repo_root / ir_dir, "compile")
         if summary.get("found"):
             compile_nodes.append({**summary, "ir_ref": ir_dir})
-    # The Z3 judge (issue #169), discovered the same way and labelled by its run-node dir. One
-    # substep, so its row reads `judge` where the other two read `generate` / `verify`.
-    validate_nodes: list[dict[str, Any]] = []
-    for run_node_dir in _pure_run_node_dirs_of(repo_root, orchestration_id):
-        summary = summarize_pure_leaf_metas(repo_root / run_node_dir, "validate")
-        if summary.get("found"):
-            validate_nodes.append({**summary, "run_node_dir": run_node_dir})
+    # The Z3 judge's rows (`pure_validate_nodes`) went with `validate.judge` in issue #724
+    # PR-2: an orchestration recorded before it is audited without them.
 
     result: dict[str, Any] = {
-        "available": bool(nodes or compile_nodes or validate_nodes),
+        "available": bool(nodes or compile_nodes),
         "generate_executor": generate_executor,
         "backend": backend,
         "agent_cli_version": agent_cli_version,
@@ -762,9 +715,8 @@ def collect_pure_leaf_ab_summary(
         "pure_leaf_provider_differs": pure_leaf_provider_differs,
         "pure_nodes": nodes,
         "pure_compile_nodes": compile_nodes,
-        "pure_validate_nodes": validate_nodes,
     }
-    if not nodes and not compile_nodes and not validate_nodes:
+    if not nodes and not compile_nodes:
         if not pipeline_refs:
             # No pipeline reservation at all: `prepare_node` never ran for any node of
             # this orchestration (or the reservations were removed). Name it — this is
@@ -1181,8 +1133,7 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
                      f"is recorded for it)")
     nodes = summary.get("pure_nodes") or []
     compile_nodes = summary.get("pure_compile_nodes") or []
-    validate_nodes = summary.get("pure_validate_nodes") or []
-    if not summary.get("available") or not (nodes or compile_nodes or validate_nodes):
+    if not summary.get("available") or not (nodes or compile_nodes):
         reason = summary.get("reason")
         hint = reason or "no `bundle_meta.json` / `verdict_meta.json` written"
         lines.append(f"- no pure-leaf node located ({hint})")
@@ -1200,11 +1151,6 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
         lines.append(f"### generate `{node.get('source_dir')}`")
         _render_pure_leaf_row("generate", node.get("generate") or {}, lines)
         _render_pure_leaf_row("verify", node.get("verify") or {}, lines)
-        lines.append("")
-    for node in validate_nodes:
-        # One row, and it is named `judge`: the phase has a single pure leaf.
-        lines.append(f"### validate `{node.get('run_node_dir')}`")
-        _render_pure_leaf_row("judge", node.get("judge") or {}, lines)
         lines.append("")
 
 

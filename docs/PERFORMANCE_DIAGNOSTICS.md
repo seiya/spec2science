@@ -3,7 +3,7 @@
 > **Leaf agents:** the binding `perf.json` field set (§2) and the JSON
 > numeric/boolean serialization rules (§6) are mirrored, as the leaf-facing
 > canonical, in [`docs/workflow/RUNNER_OUTPUT_CONTRACT.md`](workflow/RUNNER_OUTPUT_CONTRACT.md)
-> (your must-read for `Generate` / `Validate.judge`). This document remains the
+> (seeded to the `Generate` leaves of a `harness` node). This document remains the
 > full performance-measurement reference; keep the two consistent and add new
 > runner-output rules to `RUNNER_OUTPUT_CONTRACT.md`.
 

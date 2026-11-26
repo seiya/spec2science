@@ -380,12 +380,12 @@ class CodexLeafCommandTests(unittest.TestCase):
         path = Path(tmp.name) / "llm_codex_reading.yaml"
         path.write_text(workshop_yaml(
             "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
-            "phases: {validate: {substeps: {judge: {provider: codex_cli, model: gpt-x, "
+            "phases: {compile: {substeps: {verify: {provider: codex_cli, model: gpt-x, "
             "effort: medium, lineage_timeout_s: 2700}}}}\n"), encoding="utf-8")
         c = _PureFakeConductor(repo_root=Path(tmp.name), orchestration_id="o",
                                orchestration_agent_run_id="orch", env={},
                                llm_config=lc.load_llm_config(path))
-        entry = c.entry_for("validate", "judge")
+        entry = c.entry_for("compile", "verify")
         overrides = ["--config", 'approval_policy="never"', "--config", "features.apps=false",
                      "--config", 'web_search="disabled"']
         self.assertEqual(

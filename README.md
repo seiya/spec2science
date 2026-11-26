@@ -27,16 +27,16 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 
 From `Generate` onward, `spec.ir.yaml` is the sole generation and verification contract; reading `controlled_spec.md` is forbidden except at `Generate.verify`, which reads it as a secondary requirement-fidelity cross-check.
 
-Each phase runs an ordered substep sequence, and there are three launch shapes. Every `LLM` substep runs as a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534); since PR-J4-b there is no other leaf model and no `leaf:` field to write — the `pure-function leaf` it replaced took a host-inlined closed context and returned one JSON document with no tools). A deterministic substep runs in the conductor's own process. The two producing substeps, `Compile.generate` and `Generate.generate`, run the producing kind: an agent that edits a host-seeded work tree outside the checkout — on `Generate.generate` asking the host to derive, compile, lint, syntax-check and run its bundle, on `Compile.generate` writing the whole IR and asking the host to check it as `Compile.static` will — after which the host snapshots the tree into one document and runs the gates. The three judging substeps, `Compile.verify`, `Generate.verify` and `Validate.judge`, run the reading kind (adopted on the A/B of 2026-10-25), on every provider: it reads its documents as files in a host-seeded tree, is served no host operation, and writes its one verdict document there, which the host checks and writes as it does a returned one (`docs/ORCHESTRATION.md` §workshop leaf). The agentic leaf of the pre-Z4 design ([issue #171](https://github.com/seiya/spec2science/issues/171)), which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape fails closed rather than falling back to one.
+Each phase runs an ordered substep sequence, and there are three launch shapes. Every `LLM` substep runs as a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534); since PR-J4-b there is no other leaf model and no `leaf:` field to write — the `pure-function leaf` it replaced took a host-inlined closed context and returned one JSON document with no tools). A deterministic substep runs in the conductor's own process. The two producing substeps, `Compile.generate` and `Generate.generate`, run the producing kind: an agent that edits a host-seeded work tree outside the checkout — on `Generate.generate` asking the host to derive, compile, lint, syntax-check and run its bundle, on `Compile.generate` writing the whole IR and asking the host to check it as `Compile.static` will — after which the host snapshots the tree into one document and runs the gates. The two judging substeps, `Compile.verify` and `Generate.verify`, run the reading kind (adopted on the A/B of 2026-10-25), on every provider: it reads its documents as files in a host-seeded tree, is served no host operation, and writes its one verdict document there, which the host checks and writes as it does a returned one (`docs/ORCHESTRATION.md` §workshop leaf). The agentic leaf of the pre-Z4 design ([issue #171](https://github.com/seiya/spec2science/issues/171)), which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape fails closed rather than falling back to one.
 
 | phase | substeps | `LLM` substeps |
 |---|---|---|
 | Compile | `generate` → `static` → `verify` | `generate`, `verify` |
 | Generate | `generate` → `gate` → `verify` | `generate`, `verify` |
 | Build | none (a single step) | none |
-| Validate | `pre_judge` → `execute` → `judge` → `post_judge` | `judge` |
+| Validate | `execute` → `post_judge` | none |
 
-The deterministic `Compile.static` and `Generate.gate` substeps route a violation back to the phase's `generate` substep, so the `verify` leaf is reached only on a deterministically-clean artifact. `Validate.pre_judge` blocks execution when the dependency DAG is not ready, and `Validate.post_judge` classifies the severity of a violation found after the judge returns.
+The deterministic `Compile.static` and `Generate.gate` substeps route a violation back to the phase's `generate` substep, so the `verify` leaf is reached only on a deterministically-clean artifact. The conductor blocks `Validate` before `execute` when the dependency DAG is not ready, and `Validate.post_judge` runs the `--stage pre_judge` gate over a run whose own tests passed and classifies the severity of a violation it finds.
 
 ## Running a workflow
 
@@ -93,7 +93,7 @@ workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/ lineage.json
 workspace/orchestrations/<orchestration_id>/                 orchestration_meta.json, agent_graph.json, agent_runs.jsonl
 ```
 
-`Validate` emits `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under the Project's `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
+`Validate` emits `perf.json`, `verdict.json`, `aggregate_verdict.json`, and `summary.json` per `run_id`. Promoted official-version artifacts live under the Project's `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
 
 The driver prints the run's event stream on stdout (`--stdout-format human`, or `jsonl` for a caller that parses it) and mirrors it to `workspace/orchestrations/<orchestration_id>/run_logs/`. A run's terminal state is `orchestration_meta.json#status`; the node's physics judgment, including its dependencies, is `aggregate_verdict.json`.
 

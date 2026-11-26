@@ -82,8 +82,8 @@ COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-38"
 #: either re-pins (behaviour-preserving) or bumps the constant (every key of that phase moves).
 RENDER_VERSION = "render-22"     # host-rendered runner + build control file (Generate)
 BUILD_VERSION = "build-5"        # build-runtime library `compile_project` + the in-process build
-EXECUTE_VERSION = "execute-23"   # `run_program` / `run_quality_checks` + the in-process execute
-VERDICT_VERSION = "verdict-22"   # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
+EXECUTE_VERSION = "execute-24"   # `run_program` / `run_quality_checks` + the in-process execute
+VERDICT_VERSION = "verdict-23"   # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
 
 #: The phases that ARE derivations, in pipeline order.
 DERIVATION_STEPS: tuple[str, ...] = ("compile", "generate", "build", "validate")
@@ -92,22 +92,21 @@ DERIVATION_STEPS: tuple[str, ...] = ("compile", "generate", "build", "validate")
 def transformation_versions() -> dict[str, tuple[str, ...]]:
     """The transformation version tuple of each phase.
 
-    Resolved lazily (the two imports are of modules that must not be imported by this one at
+    Resolved lazily (the import is of a module that must not be imported by this one at
     load time for the runtime's own import order) and returned fresh, so a test that patches a
     constant sees its patch. The tuple is what `derivation_key` hashes under `"transformation"`.
     """
     from tools.leaf_contract import (
         COMPILE_VERIFY_CONTRACT_VERSION,
         GENERATE_VERIFY_CONTRACT_VERSION,
-        VALIDATE_JUDGE_CONTRACT_VERSION,
     )
-    from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
+    # `validate` holds no reader contract since issue #724 PR-2 deleted `Validate.judge`: the
+    # judge's contract version and its raw-excerpt policy left the tuple with it.
     return {
         "compile": (COMPILE_VERIFY_CONTRACT_VERSION, COMPILE_INLINED_DOCUMENTS_VERSION),
         "generate": (GENERATE_VERIFY_CONTRACT_VERSION, RENDER_VERSION),
         "build": (BUILD_VERSION,),
-        "validate": (EXECUTE_VERSION, VERDICT_VERSION, VALIDATE_JUDGE_CONTRACT_VERSION,
-                     f"raw-excerpt-{RAW_EXCERPT_POLICY_VERSION}"),
+        "validate": (EXECUTE_VERSION, VERDICT_VERSION),
     }
 
 

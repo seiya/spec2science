@@ -290,7 +290,7 @@ class _WorkshopLeafFake(_PureFakeConductor):
     each a rc-0 launch). A launch that exits 0 WRITES the document its envelope's `result`
     carries into the lineage's tree (`_write_document_tree`) — the envelope is then what the
     real CLI prints after such a session, read by the host for the model, the usage and the
-    session id only. On a READING lineage (a `verify` / `judge` substep, served no wrapper) the
+    session id only. On a READING lineage (a `verify` substep, served no wrapper) the
     envelope's `result` text is written as the reviewer's one output file. The last scripted
     launch repeats; past `MAX_SPAWNS_PAST_SCRIPT` repeats the fake raises, so a loop that lost a
     budget is a red row rather than a hang."""
@@ -351,7 +351,7 @@ class _WorkshopLeafFake(_PureFakeConductor):
             except ValueError:
                 envelope = None
             result = envelope.get("result") if isinstance(envelope, dict) else None
-            if request.get("substep") in ("verify", "judge"):
+            if request.get("substep") == "verify":
                 # A READING lineage: the reviewer writes its one document file, whatever text
                 # it holds; the host's assembly and validators judge it.
                 if isinstance(result, str):
@@ -2479,9 +2479,9 @@ class PureColdRepairPromptTests(unittest.TestCase):
         context document under a label paragraph, which this row also pinned; a workshop
         template has no document slot — `test_workshop_producer.py` `TemplateTests` — so that
         half went with the pure templates in issue #534 PR-J4-b.)"""
-        # The seven workshop pairs with a repair loop: the two producers (with the harness
-        # shape) and the three judges (with the harness shape).
-        self.assertEqual(len(self._repair_loop_pairs()), 7)
+        # The six workshop pairs with a repair loop: the two producers (with the harness
+        # shape) and the two reviewers (with the harness shape).
+        self.assertEqual(len(self._repair_loop_pairs()), 6)
         for step, substep, shape in self._repair_loop_pairs():
             with self.subTest(pair=f"{step}.{substep}{('.' + shape) if shape else ''}"):
                 keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)]

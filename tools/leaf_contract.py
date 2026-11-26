@@ -9,8 +9,8 @@ prompt and its reply-text extractor went in PR-J4-b, and PR-J4-d renamed the mod
 `tools/pure_leaf.py`. What it holds now is STAGE-AGNOSTIC: the leaf contract version
 (`LEAF_PROMPT_CONTRACT_VERSION`, recorded, and the readers' constants, derivation-key inputs),
 the workshop leaf's launch flags and
-tool-surface tables, the result-envelope parser, the verify verdict and semantic-review
-contracts, and the record predicates (`is_pure_request` and the pure sentinel stay so a
+tool-surface tables, the result-envelope parser, the verify verdict contract, and the record
+predicates (`is_pure_request` and the pure sentinel stay so a
 record written by the pure leaf is still read). It is deliberately free of any
 `generate`-specific knowledge (the `CodegenBundle` producer lives in
 `tools/workflow_conductor.py`; the bundle contract in `tools/codegen_bundle.py`).
@@ -23,7 +23,6 @@ key, and prefix-free violation clauses the caller frames in its own reporting id
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 from typing import Any, NamedTuple
 
 # The leaf prompt-contract version stamped into every launch request, `bundle_meta.json` and
@@ -35,8 +34,9 @@ from typing import Any, NamedTuple
 # through `workshop-9`, which entered no key) is retired; the VALUE stayed `pure-84` through
 # PR-J4, and `leaf-85` is the first bump after it (the leaf-read text PR-J4 deferred, the
 # `inlined`-to-seed wording, and issue #545's judge sentence). It is in no derivation key since
-# issue #574, whose `leaf-86` deleted the certified refs from `DEPENDENCIES.md`.
-LEAF_PROMPT_CONTRACT_VERSION = "leaf-107"
+# issue #574, whose `leaf-86` deleted the certified refs from `DEPENDENCIES.md`. `leaf-108`
+# (issue #724 PR-2): the `validate.judge` template left the tuple with the substep.
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-108"
 
 # The keyed half of the contract (issue #574): what one phase's READING leaf reads, which is what
 # "valid" means for that phase. Each is a member of its phase's transformation tuple
@@ -50,7 +50,9 @@ COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-7"
 # (https://github.com/seiya/spec2science/issues/589#issuecomment-6767847531). Narrowing H7b was
 # not measured; replay the three mutations recorded there against the new text.
 GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-14"
-VALIDATE_JUDGE_CONTRACT_VERSION = "validate-judge-11"
+# `VALIDATE_JUDGE_CONTRACT_VERSION` (last `validate-judge-11`) went with the `Validate.judge`
+# substep in issue #724 PR-2: `Validate` has no reading leaf, and its tuple is the two
+# deterministic versions alone (`tools/derivation.py`).
 
 # Schema-violation repair is a bounded in-conversation continuation (warm `--resume
 # --fork-session`): the producer sees its own prior answer plus the violation excerpt and
@@ -121,10 +123,11 @@ WORKSHOP_PRODUCING_PAIRS: frozenset[tuple[str, str]] = frozenset({
 
 #: The JUDGING pairs a workshop leaf may serve (step 3; adopted 2026-10-25): the READING kind —
 #: a seeded tree, file tools, NO wrapper operation and no endpoint, one output document at the
-#: tree root (`docs/ORCHESTRATION.md` §workshop leaf). The judge contract already forbids running a
-#: validator or a gate, so there is nothing for an endpoint to serve.
+#: tree root (`docs/ORCHESTRATION.md` §workshop leaf). A reviewer's contract already forbids
+#: running a validator or a gate, so there is nothing for an endpoint to serve. The third pair,
+#: `validate.judge`, went with the substep in issue #724 PR-2.
 WORKSHOP_READING_PAIRS: frozenset[tuple[str, str]] = frozenset({
-    ("compile", "verify"), ("generate", "verify"), ("validate", "judge")})
+    ("compile", "verify"), ("generate", "verify")})
 
 #: The phases whose failure the `escalate` diagnostician may be launched for — the ones that
 #: launch a child agent (`orchestration_runtime.STEP_REQUIRED_CHILD_AGENT`, asserted equal by
@@ -956,193 +959,3 @@ def verify_repair_text(verdict: dict[str, Any]) -> str | None:
     lines.extend(f"{index}. {finding['summary'].strip()}"
                  for index, finding in enumerate(verdict["findings"], start=1))
     return "\n".join(lines)
-
-
-def judge_repair_text(review: Any) -> str | None:
-    """The repair findings the host folds from a `semantic_review.json` whose decision is `fail`.
-
-    `verify_repair_text`'s twin for the judge (issue #455): `_read_repair_findings` reads it at
-    the conduct reopen point, so a revocation the diagnostician's directive causes carries the
-    judge's findings as `last_fail_reason` and the re-derived producer gets them as
-    `repair_findings`. One entry per finding in the review's order, each on a new line,
-    `[<attribution>/<confidence>] <description> (evidence: <ref>, <ref>)`, the description
-    stripped (a newline inside it is kept) and nothing capped or deduplicated. The input is a
-    file read back from disk, so anything that is not a `fail` review with at least one object
-    finding gives `None` (the repair then falls back to the full prompt) rather than raising."""
-    if not isinstance(review, dict) or review.get("decision") != "fail":
-        return None
-    findings = review.get("findings")
-    if not isinstance(findings, list):
-        return None
-    lines = []
-    for finding in findings:
-        if not isinstance(finding, dict):
-            continue
-        refs = finding.get("evidence_refs")
-        refs_text = ", ".join(str(ref) for ref in refs) if isinstance(refs, list) else ""
-        lines.append(f"[{finding.get('attribution')}/{finding.get('confidence')}] "
-                     f"{str(finding.get('description') or '').strip()} (evidence: {refs_text})")
-    return "\n".join(lines) or None
-
-
-# --------------------------------------------------------------------------------------
-# The `validate.judge` semantic-review document (issue #169, Z3)
-# --------------------------------------------------------------------------------------
-#
-# The judge leaf returns its JUDGEMENT and nothing else. `semantic_review.json` itself is
-# host-authored: everything the `--stage pre_judge` gate reads besides the decision — the
-# `review_method` literal, `scope.model_ref` / `scope.runner_ref` / `scope.raw_refs` — are
-# facts about the workspace that a closed-context leaf cannot know and must not guess.
-#
-# The shape below is `docs/workflow/phases/phase_04_validate.md`'s "Classification fields the
-# `judge` records as required" table, which was the only definition of it and which no
-# validator read. MEASURED 2026-09-08 over every `semantic_review.json` in this machine's
-# untracked `workspace/` (so the figures are of the recorded runs, not of a commit):
-# 29 reviews, **0 findings in any of them**, so the finding shape has never actually
-# been produced — and 34 distinct top-level keys across those 29 files, of which only
-# `review_method`, `decision`, `scope` and `findings` appear in all. Nineteen of the 34 appear
-# once or twice (`tests_md_intent_check`, `observations_not_findings`, `perf_review`, …): the
-# leaf improvises a structure per run and nothing reads it. Closing the object is what stops
-# that, and this is the first machine check the finding table has ever had.
-#
-# `finding_id` is deliberately NOT a key. The plan named one; the phase document's table does
-# not, and no reader of `semantic_review.json#findings[*]` resolves one.
-# Adding a field nothing reads is the surface this migration exists to remove.
-SEMANTIC_REVIEW_DECISIONS: tuple[str, ...] = ("pass", "fail")
-SEMANTIC_REVIEW_ATTRIBUTIONS: tuple[str, ...] = ("code", "ir", "spec", "evidence")
-SEMANTIC_REVIEW_CONFIDENCES: tuple[str, ...] = ("high", "medium", "low")
-SEMANTIC_REVIEW_REQUIRED_KEYS: tuple[str, ...] = ("decision", "findings")
-SEMANTIC_REVIEW_OPTIONAL_KEYS: tuple[str, ...] = ("notes",)
-SEMANTIC_REVIEW_FINDING_KEYS: tuple[str, ...] = (
-    "attribution", "evidence_refs", "confidence", "description")
-#: `notes` is the one free-text field, and it is the whole budget for everything the leaf used
-#: to spread across those 34 improvised keys — so it is bounded rather than open. The bound is
-#: MEASURED over the population it has to serve, not chosen: across the 29 recorded
-#: `semantic_review.json` files, the JSON of everything outside the four core keys runs 1,518 to
-#: 9,773 characters (median 6,010), and one recorded `notes` field is already 4,272. The first
-#: value here was 4,000, which a review round showed would have REFUSED that real review and
-#: spent a repair turn on a judge that had done its job — this repository's recorded default
-#: error direction. 12,000 clears the observed maximum with headroom while keeping the field
-#: bounded; the template states the limit to the leaf, so a compliant one compresses rather
-#: than being refused.
-SEMANTIC_REVIEW_NOTES_MAX_CHARS = 12000
-
-
-def semantic_review_document_violations(
-    doc: Any, *, document_keys: Sequence[str] = ()
-) -> list[str]:
-    """Validate a `validate.judge` semantic-review document; an empty list is a valid one.
-
-    Same two-layer shape as `verify_verdict_violations`: schema first (presence, enum, type,
-    closed keys), then the joint invariant only on a schema-sound document, so one defect is
-    never reported twice and the invariant never defends against a mistyped field. Enum checks
-    are EXACT, for that function's reason — a case-folded accept would let the leaf's casing
-    choice decide a verdict.
-
-    `document_keys` is the set of `pure_context` keys the host inlined for this launch. Every
-    `evidence_refs[]` entry must be `<document_key>[#<fragment>]` naming one of them: the leaf
-    cites what it was GIVEN, and the host resolves each key to the workspace path it inlined
-    from when it writes `semantic_review.json`, which is what keeps that file's "path list" a
-    path list. An empty `document_keys` skips only the key check (the shape is still checked),
-    so a caller that does not know them cannot be silently given a weaker validation.
-    """
-    if not isinstance(doc, dict):
-        return ["the semantic review must be a JSON object"]
-
-    violations: list[str] = []
-    known = (*SEMANTIC_REVIEW_REQUIRED_KEYS, *SEMANTIC_REVIEW_OPTIONAL_KEYS)
-    for key in SEMANTIC_REVIEW_REQUIRED_KEYS:
-        if key not in doc:
-            violations.append(f"{key} is required")
-    for key in sorted((k for k in doc if k not in known), key=repr):
-        violations.append(
-            f"unknown key {key!r} (the semantic review object is closed; put anything else "
-            f"in `notes`)")
-
-    decision = doc.get("decision", _MISSING)
-    if decision is not _MISSING and decision not in SEMANTIC_REVIEW_DECISIONS:
-        violations.append(
-            f"decision must be one of {', '.join(SEMANTIC_REVIEW_DECISIONS)}")
-    notes = doc.get("notes", _MISSING)
-    if notes is not _MISSING:
-        if not isinstance(notes, str):
-            violations.append("notes must be a string")
-        elif len(notes) > SEMANTIC_REVIEW_NOTES_MAX_CHARS:
-            violations.append(
-                f"notes must be at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS} characters "
-                f"(got {len(notes)})")
-
-    findings = doc.get("findings", _MISSING)
-    if findings is not _MISSING:
-        if not isinstance(findings, list):
-            violations.append("findings must be an array")
-        else:
-            for index, finding in enumerate(findings):
-                violations.extend(
-                    _semantic_review_finding_violations(finding, index, document_keys))
-
-    if violations:
-        return violations
-
-    # The one joint invariant: the decision and the findings must agree. A `fail` with no
-    # finding gives the operator and the diagnostician nothing to act on and the repair no
-    # findings to carry (`judge_repair_text`); a `pass` with findings is a review that reports
-    # a defect and waves it through, which is the shape this whole substep exists to refuse.
-    if doc["decision"] == "pass":
-        if doc["findings"]:
-            violations.append("decision 'pass' requires an empty findings array")
-    elif not doc["findings"]:
-        violations.append("decision 'fail' requires at least one finding")
-    return violations
-
-
-def _semantic_review_finding_violations(
-    finding: Any, index: int, document_keys: Sequence[str]
-) -> list[str]:
-    """The schema of one `findings[]` entry. Split out so the loop above stays one screen."""
-    if not isinstance(finding, dict):
-        return [f"findings[{index}] must be an object"]
-
-    violations: list[str] = []
-    for key in SEMANTIC_REVIEW_FINDING_KEYS:
-        if key not in finding:
-            violations.append(f"findings[{index}].{key} is required")
-    for key in sorted((k for k in finding if k not in SEMANTIC_REVIEW_FINDING_KEYS), key=repr):
-        violations.append(
-            f"findings[{index}] has unknown key {key!r} (a finding object is closed)")
-
-    attribution = finding.get("attribution", _MISSING)
-    if attribution is not _MISSING and attribution not in SEMANTIC_REVIEW_ATTRIBUTIONS:
-        violations.append(
-            f"findings[{index}].attribution must be one of "
-            f"{', '.join(SEMANTIC_REVIEW_ATTRIBUTIONS)}")
-    confidence = finding.get("confidence", _MISSING)
-    if confidence is not _MISSING and confidence not in SEMANTIC_REVIEW_CONFIDENCES:
-        violations.append(
-            f"findings[{index}].confidence must be one of "
-            f"{', '.join(SEMANTIC_REVIEW_CONFIDENCES)}")
-    description = finding.get("description", _MISSING)
-    if description is not _MISSING and not (
-            isinstance(description, str) and description.strip()):
-        violations.append(f"findings[{index}].description must be a non-empty string")
-
-    refs = finding.get("evidence_refs", _MISSING)
-    if refs is _MISSING:
-        return violations
-    if not isinstance(refs, list) or not refs:
-        violations.append(f"findings[{index}].evidence_refs must be a non-empty array")
-        return violations
-    for ref_index, ref in enumerate(refs):
-        label = f"findings[{index}].evidence_refs[{ref_index}]"
-        if not isinstance(ref, str) or not ref.strip():
-            violations.append(f"{label} must be a non-empty string")
-            continue
-        key = ref.split("#", 1)[0].strip()
-        if not key:
-            violations.append(
-                f"{label} must name an inlined document before its '#' fragment")
-        elif document_keys and key not in document_keys:
-            violations.append(
-                f"{label} names {key!r}, which is not one of the documents you were given "
-                f"({', '.join(sorted(document_keys))})")
-    return violations

@@ -164,7 +164,7 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
 
 # --- mirror tables (guarded copies) --------------------------------------------------
 
-# The five substeps that run as an LLM leaf, ALL of which run as workshop leaves (issue #534
+# The four substeps that run as an LLM leaf, ALL of which run as workshop leaves (issue #534
 # PR-J4-b — there is no second leaf model for one of them to run on). Mirror of
 # `workflow_conductor.SUBSTEPS` minus `Conductor._is_deterministic_substep`; guarded by
 # `test_llm_leaf_substeps_matches_conductor`.
@@ -176,9 +176,8 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
 # fails that closed at run time (`node_has_no_bundle_shape`) — which config validation cannot
 # see, because it cannot see a node. The two COMPILE pairs (Z1, issue #168) carry no shape
 # condition: the Compile contract does not depend on the node kind, and at `compile.generate`
-# time no IR exists to read a shape from. `validate.judge` (Z3, issue #169) carries none either,
-# and for the same kind of reason: what it reviews is the run's evidence against the tests,
-# which every node kind has.
+# time no IR exists to read a shape from. `validate.judge` (Z3, issue #169) was the fifth, and
+# went with the substep in issue #724 PR-2: `validate` has no LLM leaf an entry assigns.
 #
 # This table used to have a twin, `PURE_CAPABLE_SUBSTEPS`, naming the subset that had been
 # migrated. The two became equal at issue #169 and Z4 removed the distinction they expressed.
@@ -187,17 +186,18 @@ LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("compile", "verify"),
     ("generate", "generate"),
     ("generate", "verify"),
-    ("validate", "judge"),
 })
 
-# Phases that own at least one LLM leaf. `build` is deliberately absent: it is contractually
-# deterministic, so naming it in a config is an operator error, not a no-op.
+# Phases that own at least one LLM leaf. `build` and `validate` are deliberately absent: both
+# are contractually deterministic (`validate` since issue #724 PR-2; its `escalate`
+# diagnostician is served from `defaults`), so naming either in a config is an operator error,
+# not a no-op.
 LLM_LEAF_PHASES: frozenset[str] = frozenset(p for p, _ in LLM_LEAF_SUBSTEPS)
 
 
 # The pairs a `workshop leaf` serves, by KIND (`docs/design/producer_workshop_leaf.md`
 # §Migration order). PRODUCING: both producing substeps (steps 1 and 2), served the wrapper's
-# operations. READING: the three judging substeps (step 3; adopted 2026-10-25), served no
+# operations. READING: the two judging substeps (step 3; adopted 2026-10-25), served no
 # operation — a seeded tree, file tools and one output document. Mirrors of
 # `leaf_contract.WORKSHOP_PRODUCING_PAIRS` / `WORKSHOP_READING_PAIRS` (the launch validator's
 # tables), compared by `test_llm_config`. The validator's reading set also holds the `escalate`
@@ -208,7 +208,7 @@ LLM_LEAF_PHASES: frozenset[str] = frozenset(p for p, _ in LLM_LEAF_SUBSTEPS)
 WORKSHOP_PRODUCING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("generate", "generate"), ("compile", "generate")})
 WORKSHOP_READING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
-    ("compile", "verify"), ("generate", "verify"), ("validate", "judge")})
+    ("compile", "verify"), ("generate", "verify")})
 WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = (
     WORKSHOP_PRODUCING_SUBSTEPS | WORKSHOP_READING_SUBSTEPS)
 
@@ -786,9 +786,9 @@ class LlmConfig:
         entries sort in, so two runs of one file describe themselves identically.
 
         Raises when nothing in the file launches a process. Since Z3 (issue #169) that IS
-        reachable: `validate.judge` was the last leaf requiring `agentic`, so an all-HTTP file
-        is now valid to every other rule and this is the single remaining floor between one and
-        a run. It is a floor about `init` and the preflight — which take one CLI backend token
+        reachable: `validate.judge` (deleted since in issue #724 PR-2) was the last leaf
+        requiring `agentic`, so an all-HTTP file is valid to every other rule and this is the
+        single remaining floor between one and a run. It is a floor about `init` and the preflight — which take one CLI backend token
         — not about the leaves, and it is to be lifted rather than worked around.
         """
         if not self.defaults.is_http:
@@ -802,8 +802,8 @@ class LlmConfig:
             "no entry in this configuration launches a process: `defaults` is "
             f"{self.defaults.provider!r} and every leaf is an HTTP provider too. The run's "
             "`init` and preflight still speak one CLI backend token, so at least one entry "
-            "must name `claude_cli` or `codex_cli` — assign one to the leaf that needs an "
-            "agentic session (`validate.judge` today), or put one in `defaults`",
+            "must name `claude_cli` or `codex_cli` — assign one to any leaf, or put one in "
+            "`defaults`",
             where="defaults")
 
     def validate_runnable(self) -> None:
@@ -1013,8 +1013,9 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
             seen_phases.add(phase.strip())
         if not isinstance(phase, str) or phase.strip() not in LLM_LEAF_PHASES:
             detail = ""
-            if isinstance(phase, str) and phase.strip() == "build":
-                detail = " ('build' is contractually deterministic and launches no LLM leaf)"
+            if isinstance(phase, str) and phase.strip() in ("build", "validate"):
+                detail = (f" ({phase.strip()!r} is contractually deterministic and launches "
+                          f"no LLM leaf)")
             raise LlmConfigError(
                 "llm_config_unknown_phase",
                 f"unknown phase {phase!r}{detail}; phases with an LLM leaf: "
@@ -1187,7 +1188,7 @@ def apply_defaults_overrides(
         def _inherited(field: str) -> bool:
             """The entry took this field from `defaults` rather than declaring its own.
 
-            DECLARATION, not value equality: a `validate.judge.model: opus` written next to a
+            DECLARATION, not value equality: a `generate.verify.model: opus` written next to a
             `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
             `sonnet` must not move it. `defaults` itself is always overridable — that is what
             a run-wide value overrides."""

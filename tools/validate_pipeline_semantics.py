@@ -31,8 +31,8 @@ try:
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
     from tools import capture_store
-    # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
-    # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
+    # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt` (its excerpt,
+    # the second reader, went with `validate.judge` in issue #724 PR-2).
     # The module imports only the capture store seam (the registry beneath it, stdlib-only)
     # and nothing back, so this introduces no cycle.
     from tools.raw_evidence_excerpt import (
@@ -65,8 +65,8 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
     from tools import capture_store
-    # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
-    # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
+    # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt` (its excerpt,
+    # the second reader, went with `validate.judge` in issue #724 PR-2).
     # The module imports only the capture store seam (the registry beneath it, stdlib-only)
     # and nothing back, so this introduces no cycle.
     from tools.raw_evidence_excerpt import (
@@ -98,7 +98,6 @@ FORBIDDEN_RUNNER_OUTPUTS = (
     "summary.json",
     "trial_meta.json",
 )
-LLM_REVIEW_FILENAME = "semantic_review.json"
 RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
     # Issue #589: the driver's samples of the variables `drive.history` names, each at its stride of committed
@@ -1602,7 +1601,7 @@ def _validate_generate_outputs_for_generation(
     # harness is the target's (issue #284), and a target whose toolchain the host cannot render
     # a runner for is refused at launch (`target_profile.target_profile_violations`).
     # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
-    # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
+    # by the LLM verify + these deterministic backstops, not by the two deleted ones.)
     # The isolation gate over the leaf's sources applies only on an M3c node. Read
     # ONCE, and read here rather than below, because the runner gates underneath need the same
     # answer: on an M3c node the runner is HOST-RENDERED and every finding against it is this
@@ -5174,76 +5173,6 @@ def _validate_tests_verdict_summary_consistency(
             )
 
 
-def _validate_llm_semantic_review(
-    repo_root: Path,
-    execution: NodeExecution,
-    violations: list[str],
-    *,
-    require_llm_review: bool,
-) -> None:
-    review_path = execution.node_dir / LLM_REVIEW_FILENAME
-    if not review_path.exists():
-        if require_llm_review:
-            violations.append(f"{review_path}: missing")
-        return
-
-    try:
-        data = _read_json(review_path)
-    except json.JSONDecodeError:
-        violations.append(f"{review_path}: invalid json")
-        return
-
-    if not isinstance(data, dict):
-        violations.append(f"{review_path}: must be json object")
-        return
-
-    review_method = data.get("review_method")
-    if review_method != "llm_semantic_review":
-        violations.append(
-            f"{review_path}:review_method must be llm_semantic_review"
-        )
-
-    decision = data.get("decision")
-    if decision not in {"pass", "fail"}:
-        violations.append(f"{review_path}:decision must be pass/fail")
-    elif decision != "pass":
-        violations.append(f"{review_path}:decision is fail")
-
-    scope = data.get("scope")
-    if not isinstance(scope, dict):
-        violations.append(f"{review_path}:scope must be object")
-        return
-
-    for key in ("model_ref", "runner_ref"):
-        ref = scope.get(key)
-        if not isinstance(ref, str) or not ref.startswith("workspace/"):
-            violations.append(
-                f"{review_path}:scope.{key} must start with workspace/"
-            )
-            continue
-        target = repo_root / ref
-        if not target.exists():
-            violations.append(
-                f"{review_path}:scope.{key} target not found ({ref})"
-            )
-
-    raw_refs = scope.get("raw_refs")
-    if not isinstance(raw_refs, list) or not raw_refs:
-        violations.append(f"{review_path}:scope.raw_refs must be non-empty list")
-    else:
-        for idx, ref in enumerate(raw_refs):
-            if not isinstance(ref, str) or not ref.startswith("workspace/"):
-                violations.append(
-                    f"{review_path}:scope.raw_refs[{idx}] must start with workspace/"
-                )
-                continue
-            target = repo_root / ref
-            if not target.exists():
-                violations.append(
-                    f"{review_path}:scope.raw_refs[{idx}] target not found ({ref})"
-                )
-
-
 def _build_artifact_suffixes(repo_root: Path, pipeline_dir: Path) -> frozenset[str]:
     """The suffixes of what a build writes beside its sources, for the pipeline's target: the
     build system's objects and libraries (`build_execute.BUILD_ARTIFACT_SUFFIXES`) and the
@@ -8097,7 +8026,6 @@ def validate(
     repo_root: Path,
     workspace_root: str,
     pipeline_roots: list[Path] | None = None,
-    require_llm_review: bool = True,
     require_orchestration: bool = False,
     run_ids: set[str] | None = None,
     current_orchestration_id: str | None = None,
@@ -8107,7 +8035,6 @@ def validate(
         repo_root,
         workspace_root,
         pipeline_roots,
-        require_llm_review,
         require_orchestration,
         run_ids,
         current_orchestration_id,
@@ -8119,7 +8046,6 @@ def _validate_impl(
     repo_root: Path,
     workspace_root: str,
     pipeline_roots: list[Path] | None,
-    require_llm_review: bool,
     require_orchestration: bool,
     run_ids: set[str] | None = None,
     current_orchestration_id: str | None = None,
@@ -8197,12 +8123,9 @@ def _validate_impl(
         _validate_tests_verdict_summary_consistency(
             repo_root, execution, violations, require_verdict=require_verdict
         )
-        _validate_llm_semantic_review(
-            repo_root,
-            execution,
-            violations,
-            require_llm_review=require_llm_review,
-        )
+        # A run directory's `semantic_review.json` (written by `validate.judge` before issue
+        # #724 PR-2 deleted it) is not read: an older run that still holds one is validated
+        # exactly as one that does not.
 
         fp = _source_fingerprint(repo_root, execution)
         if fp is not None:
@@ -8391,8 +8314,10 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "compile: validate IR directory only (spec.ir.yaml structure invariants). "
             "post_generate / post_build: validate one pipeline source tree (requires --pipeline-root). "
-            "post_execute: full validation with LLM review and orchestration optional. "
-            "pre_judge: full validation with LLM review and orchestration required."
+            "post_execute: full validation, orchestration optional, verdict.json not yet "
+            "required. "
+            "pre_judge: full validation with orchestration and verdict.json required (the "
+            "stage post_judge runs; the name predates issue #724, which deleted the judge)."
         ),
     )
     parser.add_argument(
@@ -8497,7 +8422,6 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     repo_root=repo_root,
                     workspace_root=args.workspace_root,
                     pipeline_roots=pipeline_roots,
-                    require_llm_review=False,
                     require_orchestration=False,
                     run_ids=run_ids,
                     # The ONLY stage where verdict.json is legitimately absent: the conductor
@@ -8509,7 +8433,6 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     repo_root=repo_root,
                     workspace_root=args.workspace_root,
                     pipeline_roots=pipeline_roots,
-                    require_llm_review=True,
                     require_orchestration=True,
                     run_ids=run_ids,
                     current_orchestration_id=(

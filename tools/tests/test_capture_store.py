@@ -4,7 +4,7 @@ store (`tools/backends/output_format/json/store.py`) — issue #644, Part 3 P3.
 
 Each row names the mutation it kills. The readers that go through the store are tested where
 they live (`test_primary_evidence.py`, `test_validate_pipeline_semantics.py`,
-`test_workflow_conductor.py`, `test_raw_evidence_excerpt.py`, `test_run_configuration.py`);
+`test_workflow_conductor.py`, `test_run_configuration.py`);
 `CaptureStoreReachTests` here drives each of them through a recording store.
 """
 
@@ -368,7 +368,7 @@ class EnumerationTests(unittest.TestCase):
 
     def test_case_ids_are_every_file_of_the_group_in_file_name_order(self) -> None:
         # Kills: listing the snapshot schema as a case; sorting by id (`a` before `a-b`: the
-        # judge's excerpt lists cases in file-name order, where `a-b.json` sorts first);
+        # store lists cases in file-name order, where `a-b.json` sorts first);
         # reading another group's directory; counting a non-capture file.
         for name in ("snapshot_schema.json", "a.json", "a-b.json", "zz.json", "note.txt"):
             _write(self.sdir / name)
@@ -609,14 +609,20 @@ class CaptureStoreReachTests(unittest.TestCase):
         # the format is how the directory is read, not part of the record
         self.assertNotIn("output_format", comparand.detail())
 
-    def test_the_judges_excerpt_reads_through_the_store_it_is_handed(self) -> None:
-        # Kills: the excerpt listing or decoding captures by itself.
-        from tools.raw_evidence_excerpt import raw_evidence_excerpt
-        own, _other, ir = self._runs()
-        excerpt = raw_evidence_excerpt(own.root / "raw", ir["io_contract"], output_format="own")
-        self.assertEqual([c["case_id"] for c in excerpt["state_snapshots"]["cases"]], ["a", "b"])
-        self.assertTrue(all(c["read"] and c["initial"]["read"]
-                            for c in excerpt["state_snapshots"]["cases"]))
+    def test_the_stores_own_reader_reads_each_case_of_both_capture_points(self) -> None:
+        # Re-hosted (issue #724 PR-2) from the `validate.judge` excerpt's row, whose vehicle went
+        # with the judge: the store's own reader, asked of the run it is handed, lists the
+        # cases and reads each one's final and initial record. Kills: a store that lists or
+        # decodes a directory it was not handed.
+        own, _other, _ir = self._runs()
+        store = cs.store("own")
+        sdir = cs.snapshot_dir(own.root)
+        case_ids = list(store.case_ids(sdir))
+        self.assertEqual(case_ids, ["a", "b"])
+        for cid in case_ids:
+            self.assertTrue(store.read_record(sdir, cs.FINAL, cid))
+            self.assertTrue(store.has_record(sdir, cs.INITIAL, cid))
+            self.assertTrue(store.read_record(sdir, cs.INITIAL, cid))
         self.assertEqual(self._asked(own.root), {"own"})
         self.assertEqual({fn for _n, fn, _a in self.log} & {"case_ids", "read_record"},
                          {"case_ids", "read_record"})

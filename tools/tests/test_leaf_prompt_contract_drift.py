@@ -102,8 +102,9 @@ from tools.backends import registry as _registry
 from tools import leaf_contract
 from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 
-#: The leaf's launch templates — since issue #534 PR-J4-b the eleven `workshop_*.txt` files, the
-#: one leaf model's (the ten `pure_*.txt` files this tuple hashed through `pure-84` are deleted).
+#: The leaf's launch templates — since issue #724 PR-2 the ten `workshop_*.txt` files, the one
+#: leaf model's (the ten `pure_*.txt` files this tuple hashed through `pure-84` are deleted, and
+#: `workshop_validate_judge.txt` went with `validate.judge` at `leaf-108`).
 #: Derived as well as listed: `test_the_template_list_is_every_launch_template` compares this
 #: tuple with the directory, so a template added without joining the pin is a red row.
 _TEMPLATE_FILES = (
@@ -116,7 +117,6 @@ _TEMPLATE_FILES = (
     "workshop_generate_verify.txt",
     "workshop_generate_verify_harness.txt",
     "workshop_ir_repair.txt",
-    "workshop_validate_judge.txt",
     "workshop_verdict_repair.txt",
 )
 
@@ -1223,6 +1223,9 @@ PINNED: dict[str, str] = {
     # leaf-107 (issue #716 F-1, decision O7): the `mpi` producer fragment no longer says the
     # static check refuses a `problem` with no halo-exchange call by the harness name.
     "leaf-107": "2ac7c239eb29560035955e0f002380f6a39cb2c08c6f7bdf33dcf9509ecd6fa4",
+    # leaf-108 (issue #724 PR-2): `validate.judge` is deleted, and with it its template and the
+    # §3 slice of the runner-output contract it was inlined (`runner_output_contract_sections`).
+    "leaf-108": "f9cf2aaf770c7dbee0eb65b738a1327a3b05ff33d53a157e3dcd8e92a1a8a0ec",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1340,10 +1343,11 @@ PINNED_READER: dict[str, str] = {
     # The digest `validate-judge-11` shipped with at 03643f31:
     "validate-judge-11@03643f31": "d18893adaec0cf760b8207e71364d79a5b372afd1c5fcd88bec9af601f475ee1",
     "validate-judge-11": "d7f7da4b9db26a1d4c8982769f04fe14e6dcd758079e8a630d09e188278b0ee3",
+    # The `validate-judge-*` entries are history since issue #724 PR-2 deleted `validate.judge`
+    # and its constant: no reader set names them, and they stay for the uniqueness check.
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
-                     "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
-                     "validate": "VALIDATE_JUDGE_CONTRACT_VERSION"}
+                     "generate": "GENERATE_VERIFY_CONTRACT_VERSION"}
 
 
 def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
@@ -1402,22 +1406,11 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "phases" / "phase_02_generate.md").read_text(
                 encoding="utf-8")),
-        # The §1 + §3 SLICE of the runner-output contract, on the same ground as the two above
-        # (issue #169): since `pure-36` those sections are inlined verbatim into the pure
-        # `validate.judge` prompt, so they are a leaf INPUT rather than a document the leaf
-        # reads. Hashing the slice keeps §2, §4 and §5 out of the tuple — the judge is not shown
-        # them — and makes `_runner_output_contract_sections`' own anchors part of the contract,
-        # which matters more here than for the other two because this slicer takes TWO ranges
-        # and a silent widening would swallow §2 between them.
-        "runner_output_contract_sections": wc._runner_output_contract_sections(
-            (Path(wc.__file__).resolve().parents[1]
-             / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8")),
-        # ...and the WHOLE of the same document, because since `pure-37` the `harness` bundle
+        # The WHOLE of the runner-output contract, because since `pure-37` the `harness` bundle
         # shape's two `generate` prompts inline all of it (issue #169): a leaf that AUTHORS the
-        # program reads every section, where the judge that only reads its output is shown two.
-        # The slice above stays a separate member deliberately — it is what the judge sees, and
-        # a widening of `_runner_output_contract_sections` must still be visible as a change to
-        # THAT member rather than be absorbed by the whole-document one.
+        # program reads every section. (A §3 slice of it, `runner_output_contract_sections`, was
+        # the member `validate.judge` was inlined, and went with that substep at `leaf-108`,
+        # issue #724 PR-2.)
         #
         # This is the one document treated as a leaf CONTRACT rather than as leaf INPUT DATA
         # (the disposition `phase_01_compile.md` and `controlled_spec.md` take above), and the
@@ -1485,7 +1478,7 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
                 "output_format", fmt, "capture_store").capture_layout_document()
             for fmt in _registry.backend_ids("output_format")
         },
-        # The fixed text of `DEPENDENCIES.md` as a generate and a judge leaf read it, per language
+        # The fixed text of `DEPENDENCIES.md` as a generate leaf reads it, per language
         # that reads a dependency's interface (issue #574): rendered over a payload whose every
         # varying field is this tuple's constant, so only the renderer's words can move it.
         "dependency_facts_render": {
@@ -1541,7 +1534,7 @@ def _dependency_facts_payload(language: str, detailed: bool) -> dict[str, object
             {"name": "y", "type": "real"},
             {"name": "f", "type": "procedure", "procedure_interface": "dep_rhs"},
         ]
-    return {"step": "validate", "substep": "judge", "resolved_dependencies": [{
+    return {"step": "generate", "substep": "verify", "resolved_dependencies": [{
         "node_key": "component/dep@0.1.0", "interface_language": language,
         "declared_operations_unresolved": ["dep__gone"],
         "published_operations": [operation],
@@ -1575,12 +1568,6 @@ READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
         "runner_output_contract_document",
         "runner_output_binding_document",
         "capture_layout_document",
-        "dependency_facts_render",
-        "external_library_facts_render",
-    },
-    "validate": _EVERY_READER | {
-        "templates/workshop_validate_judge.txt",
-        "runner_output_contract_sections",
         "dependency_facts_render",
         "external_library_facts_render",
     },
@@ -1682,7 +1669,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "file-tool declarations, the language backends' lint rules, gate-guard section, "
             "runner-output binding or exemplar note, or an inlined document slice — "
             "phase_02_generate.md's severity rubric, "
-            "RUNNER_OUTPUT_CONTRACT.md §3 AND the whole of that file, or the fixed text of "
+            "the whole of RUNNER_OUTPUT_CONTRACT.md, or the fixed text of "
             "DEPENDENCIES.md).\n"
             "A member only a producer reads needs this bump alone, and it moves no derivation key. "
             "A member a reader reads needs its phase's reader constant too "
@@ -1765,8 +1752,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
         for relative, phase in (("workshop_compile_verify.txt", "compile"),
                                 ("workshop_generate_verify.txt", "generate"),
                                 ("backends/language/fortran/generate_verify.txt", "generate"),
-                                ("parallel_combination/generate_verify.txt", "generate"),
-                                ("workshop_validate_judge.txt", "validate")):
+                                ("parallel_combination/generate_verify.txt", "generate")):
             with self.subTest(relative), tempfile.TemporaryDirectory() as tmp:
                 edited = self._edited_templates(tmp, relative)
                 self.assertEqual(
@@ -1788,10 +1774,8 @@ class PurePromptContractDriftTests(unittest.TestCase):
         with mock.patch.object(wc, "_generate_verify_severity_rubric_section",
                                return_value="other"):
             self.assertEqual(moved(), {"generate"})
-        with mock.patch.object(wc, "_runner_output_contract_sections", return_value="other"):
-            self.assertEqual(moved(), {"validate"})
         with mock.patch.object(ort, "_published_operations_lines", return_value=["other"]):
-            self.assertEqual(moved(), {"generate", "validate"})
+            self.assertEqual(moved(), {"generate"})
 
     def test_the_dependency_facts_member_renders_the_fixed_text_it_pins(self) -> None:
         """The member is what it claims only if its payloads drive each branch of the renderer:

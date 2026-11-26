@@ -121,30 +121,7 @@ def _pure_context_for(step: str, substep: str) -> dict[str, str]:
         ("compile", "verify"): _pure_compile_verify_context,
         ("generate", "generate"): _pure_generate_context,
         ("generate", "verify"): _pure_verify_context,
-        ("validate", "judge"): _pure_judge_context,
     }[(step, substep)]()
-
-
-def _pure_judge_context() -> dict[str, str]:
-    """One non-empty value per `PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]` key.
-
-    The excerpt value is a SHAPE, not a sample: what the judge reads out of it is the business
-    of `test_raw_evidence_excerpt`, and what this fixture has to satisfy is the launch
-    validator's "every declared key is a non-empty string"."""
-    return {
-        "tests_document": "- test: conserves mass",
-        "io_contract_document": "tests:\n- test_id: t_a\n",
-        "runner_output_contract_document": (
-            "## 3. `raw/` primary evidence\nstate snapshots\n"),
-        "verdict_document": '{"per_test": [{"test_id": "t_a", "status": "pass"}]}',
-        "perf_document": '{"wall_time_s": 1.0}',
-        "trial_meta_document": '{"trial": 1}',
-        "quality_check_document": '{"status": "pass"}',
-        "binary_meta_document": '{"binary_id": "bin_20260101_001"}',
-        "source_meta_document": '{"verification_status": "pass"}',
-        "raw_evidence_excerpt_document": (
-            '{"policy_version": 3, "state_snapshots": {"cases": []}, "problems": []}'),
-    }
 
 
 def _pure_diagnose_context() -> dict[str, str]:
@@ -344,8 +321,8 @@ class PurePayloadValidationTests(unittest.TestCase):
                     ort.render_launch_prompt_text(bad)
                 self.assertIn("names no rendered prompt", str(caught.exception))
         # A KNOWN shape on a pair the by-shape table does not carry.
-        bad = _workshop_request("judge", step="validate",
-                            pure_context=_pure_context_for("validate", "judge"))
+        bad = _workshop_request("verify", step="compile",
+                            pure_context=_pure_context_for("compile", "verify"))
         bad["pure_shape"] = "harness"
         with self.assertRaises(ValueError) as caught:
             ort.render_launch_prompt_text(bad)
@@ -385,7 +362,8 @@ class PurePayloadValidationTests(unittest.TestCase):
         for step, substep, ctx in (
             # Deterministic substeps, which launch no leaf at all. `validate.judge` used to
             # lead this list as the last agentic LLM leaf; Z3 (issue #169) made it admissible,
-            # so the subjects are now only the pairs that will never take a leaf.
+            # and issue #724 deleted the substep, so the subjects are only the pairs that will
+            # never take a leaf.
             ("compile", "static", _pure_compile_context()),
             ("generate", "gate", _pure_generate_context()),
             ("validate", "execute", _pure_generate_context()),
@@ -530,7 +508,7 @@ class BlankContextRationaleCouplingTests(unittest.TestCase):
     _SCANNED = ("tools/workflow_conductor.py", "tools/orchestration_runtime.py",
                 "tools/leaf_contract.py", "tools/raw_evidence_excerpt.py",
                 "tools/tests/test_leaf_producer.py", "tools/tests/test_leaf_verify.py",
-                "tools/tests/test_leaf_judge.py", "tools/tests/test_leaf_wiring.py",
+                "tools/tests/test_leaf_wiring.py",
                 "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
                 "docs/workflow/phases/phase_04_validate.md")
     #: `docs/design/deterministic_followups.md` is deliberately NOT scanned: issue #181 froze it
@@ -1304,7 +1282,6 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/workshop_compile_verify.txt", None, None),
         ("tools/prompt_templates/workshop_generate_verify.txt", None, None),
         ("tools/prompt_templates/workshop_generate_verify_harness.txt", None, None),
-        ("tools/prompt_templates/workshop_validate_judge.txt", None, None),
         ("tools/prompt_templates/workshop_verdict_repair.txt", None, None),
         # Issue #289 (R4-b PR-2): the generate templates' language rules moved into fragment
         # files the host composes into them, so each fragment file is a leaf-read template
@@ -1454,9 +1431,11 @@ class PureRenderTests(unittest.TestCase):
         # replaced the dangling pointer to an "agent-driven `attribution=ir` route" entry.
         # READ: same tokens, nothing assigned. Issue #643: the malformed-launch-request clause
         # says the conductor composes `dependency_ref` (record-launch no longer re-checks it).
+        # READ: same tokens, nothing assigned. Re-taken for issue #724 PR-2: the judge arms
+        # (`judge_semantic_review_fail`, `judge_repair_text`) went with `validate.judge`.
         # READ: same tokens, nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #834469da1eff"),
+         " #a61735b26e2f"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
@@ -1468,9 +1447,10 @@ class PureRenderTests(unittest.TestCase):
         # PR-4 dropped the clause naming `stale_dependency_ir` as a gate-side backstop (no gate
         # emits it now). READ: same, nothing assigned. Issue #705 PR-2 named the directory the
         # recipe starts in and its `--repo-root` (the sample is a Project under `sample/`).
-        # READ: same, nothing assigned.
+        # READ: same, nothing assigned. Re-taken for issue #724 PR-2: the judge `fail` arm went
+        # with `validate.judge`. READ: same, nothing assigned.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #7add9bf74c78"),
+         " #f17f411270a8"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
@@ -3245,9 +3225,10 @@ class PureValidatePipelineTests(unittest.TestCase):
 class PureRepairScopeSentenceTests(unittest.TestCase):
     """`<repair_scope>` is a slot of the repair templates (`pure_bundle_repair.txt` served three
     pure personas until issue #534 PR-J4-b; the workshop bundle / IR / verdict repair templates
-    since), and only the two reviewer pairs plus the judge return a VERDICT.
+    since), and only the two reviewer pairs return a VERDICT (`validate.judge` was the third until
+    issue #724 deleted it).
 
-    For those three every repairable class is a violation of the verdict document's SHAPE, and the
+    For those two every repairable class is a violation of the verdict document's SHAPE, and the
     schema's joint invariant couples the conclusion to the evidence — so "flip the conclusion" is a
     one-token correction of a shape violation, and an ACCEPTED one: a `leaf shortcut` whose outcome
     is a wrong certification. `<repair_scope>` is the paragraph that closes it, and it is a SLOT
@@ -3284,7 +3265,7 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
         without it."""
         self.assertEqual(
             ort.PURE_VERDICT_PAIRS,
-            frozenset({("generate", "verify"), ("compile", "verify"), ("validate", "judge")}))
+            frozenset({("generate", "verify"), ("compile", "verify")}))
         for step, substep in sorted(ort.PURE_VERDICT_PAIRS):
             with self.subTest(pair=f"{step}.{substep}"):
                 self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, self._render(step, substep))
@@ -3303,7 +3284,7 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
         self.assertNotIn("severity your document already carries", text)
 
     def test_the_paragraph_forbids_only_the_dishonest_edits(self) -> None:
-        text = self._render("validate", "judge")
+        text = self._render("compile", "verify")
         self.assertIn(self._FORBIDS_DROPPING, text)
         self.assertIn(self._FORBIDS_INVENTING, text)
 
@@ -3333,7 +3314,7 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
         """It has to be read before the violation text, not after it: the findings block is what
         offers the cheap correction."""
         from tools.leaf_contract import PURE_DOC_FENCE_BEGIN
-        text = self._render("validate", "judge")
+        text = self._render("compile", "verify")
         self.assertLess(text.index(self._FORBIDS_DROPPING), text.index(PURE_DOC_FENCE_BEGIN))
 
     def test_the_paragraph_is_outside_the_untrusted_fence(self) -> None:
@@ -3533,9 +3514,9 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         self.assertIn("parallel backend 'openmp' defines no fragment for no_such_rule",
                       str(caught.exception))
         with self.assertRaises(ValueError) as caught:
-            ort._compose_parallel_fragments(template, "workshop_validate_judge.txt", "openmp")
+            ort._compose_parallel_fragments(template, "workshop_compile_verify.txt", "openmp")
         self.assertIn("cannot be composed for parallel backend 'openmp'", str(caught.exception))
-        self.assertIn("no openmp prompt fragments for 'validate_judge'", str(caught.exception))
+        self.assertIn("no openmp prompt fragments for 'compile_verify'", str(caught.exception))
         # A template with no marker asks nothing — no backend is needed to render it.
         self.assertEqual("plain", ort._compose_parallel_fragments("plain", "x.txt", None))
 

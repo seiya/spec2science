@@ -902,21 +902,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             "context_isolated": True,
         },
     )
-    _write_json(
-        node_dir / "semantic_review.json",
-        {
-            "review_method": "llm_semantic_review",
-            "decision": "pass",
-            "scope": {
-                "model_ref": f"workspace/{(src_dir / 'shallow_water2d_model.f90').relative_to(workspace).as_posix()}",
-                "runner_ref": f"workspace/{(src_dir / 'shallow_water2d_runner.f90').relative_to(workspace).as_posix()}",
-                "raw_refs": [
-                    f"workspace/{(node_dir / 'perf.json').relative_to(workspace).as_posix()}",
-                ],
-            },
-            "findings": [],
-        },
-    )
     # The bounds-checked binary's row and its records (issue #589 PR-0): the row
     # `passing_shape_rows` wrote above is bound to them.
     from tools.tests.target_fixtures import plant_checked_build
@@ -1519,7 +1504,6 @@ end program shallow_water2d_runner
                 repo_root=repo_root,
                 workspace_root="workspace",
                 pipeline_roots=[root_with_run, root_without_run],
-                require_llm_review=False,
                 require_orchestration=False,
                 run_ids={"run_test_001"},
             )
@@ -3804,97 +3788,6 @@ MODEL_OBJ = $(OBJDIR)/shallow_water2d_model.o
                 any("missing prerequisite for used module" in v for v in violations),
                 f"forward-referenced prereq variable should be flagged; got: {violations}",
             )
-
-    def test_detects_missing_llm_semantic_review(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-
-            review_path = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-                / "semantic_review.json"
-            )
-            review_path.unlink()
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(any("semantic_review.json: missing" in v for v in violations))
-
-    def test_detects_wrong_review_method_literal(self) -> None:
-        # Drift guard for the doc claim (SKILL.md / phase_04_validate.md): the gate
-        # requires the EXACT literal `review_method: "llm_semantic_review"`. A billed E2E
-        # once failed fail_closed because the judge wrote "llm_semantic_recompute". If this
-        # literal ever changes in the gate, this test forces the docs to be updated too.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-            )
-
-            review_path = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-                / "semantic_review.json"
-            )
-            review = json.loads(review_path.read_text())
-            review["review_method"] = "llm_semantic_recompute"
-            review_path.write_text(json.dumps(review))
-
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("review_method must be llm_semantic_review" in v for v in violations))
 
     def test_detects_dependency_call_outputs_not_used_in_out_dataflow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8873,6 +8766,36 @@ end program shallow_water2d_runner
                 Path(tmp), live_substep_arid="substep_run_validate_judge_001")
             self.assertEqual(violations, [], violations)
 
+    def test_pre_judge_stage_ignores_a_left_over_semantic_review(self) -> None:
+        """Issue #724 deleted `Validate.judge` and the check that read its `semantic_review.json`.
+        A run directory written before that change still holds one; the `--stage pre_judge` gate
+        (driven through `main`, so the stage wiring is what runs) must pass over it, including a
+        document the deleted check would have refused (`decision: fail`, a wrong
+        `review_method`), so the file is shown to be ignored rather than merely tolerated."""
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self.assertEqual(self._pre_judge_violations(repo_root), [])
+            node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                        / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                        / "problem__shallow_water2d__0.3.0")
+            self.assertTrue((node_dir / "perf.json").is_file(), "the fixture's run node moved")
+            for review in ({"review_method": "llm_semantic_review", "decision": "pass",
+                            "findings": []},
+                           {"review_method": "llm_semantic_recompute", "decision": "fail",
+                            "findings": [{"attribution": "code"}]},
+                           "not a json object"):
+                with self.subTest(review=review):
+                    _write_json(node_dir / "semantic_review.json", review)
+                    buf = io.StringIO()
+                    with contextlib.redirect_stdout(buf):
+                        rc = vps.main(["--repo-root", str(repo_root), "--workspace-root",
+                                       "workspace", "--stage", "pre_judge",
+                                       "--orchestration-id", "orch_test_001"])
+                    self.assertEqual((rc, buf.getvalue().strip()),
+                                     (0, "pipeline semantic validation: PASS"))
+
     def test_pre_judge_scoped_missing_current_orchestration_fails_closed(self) -> None:
         """Phase-4 D2: a --orchestration-id naming a non-existent orchestration must
         fail closed (the run being judged must be present), not silently pass."""
@@ -12076,14 +11999,14 @@ class WrappedLiteralMetricAssignmentTest(unittest.TestCase):
             )
 
 
-def _pure_judge_context_for_marker_test() -> dict[str, str]:
-    """One non-empty value per declared `validate.judge` context key, derived from the table.
+def _pure_reader_context_for_marker_test() -> dict[str, str]:
+    """One non-empty value per declared `compile.verify` context key, derived from the table.
 
     What each value CONTAINS is the business of the context builder's own tests; what this has
     to satisfy is the launch validator's "every declared key is a non-empty string"."""
     from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
     return {key: f"<{key} fixture body>"
-            for key in PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]}
+            for key in PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]}
 
 
 class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
@@ -12097,8 +12020,10 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
         # Since Z4 (issue #171) the claim is wider and this test says so: NO launch of any
         # shape carries a skill field, because no leaf reads a `SKILL` — the pure leaf is
         # handed its closed context and the deterministic substep runs in-process. The
-        # `validate.judge` tail below used to be the CONTROL ("the leaf path still derives a
-        # real skill_ref"); it is now the second half of the same rule.
+        # leaf tail below used to be the CONTROL ("the leaf path still derives a real
+        # skill_ref"); it is now the second half of the same rule. Its vehicle was
+        # `validate.judge` until issue #724 deleted that substep; `compile.verify` is a live
+        # reading workshop pair on the same render path.
         import tools.workflow_conductor as wc
         from tools.orchestration_runtime import prepare_launch_request_payload
         refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
@@ -12114,13 +12039,13 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
             self.assertIsNone(prepared.get("skill_name"))
             self.assertIsNone(prepared.get("skill_ref"))
             self.assertEqual(prepared.get("skill_must_read_refs"), "")
-        # The LEAF path (a workshop `validate.judge`, the one leaf model since issue #534
-        # PR-J4-b) carries none either.
+        # The LEAF path (a workshop reader, the one leaf model since issue #534 PR-J4-b)
+        # carries none either.
         judge = wc.build_launch_request(
-            refs, step="validate", substep="judge", orchestration_id="o",
+            refs, step="compile", substep="verify", orchestration_id="o",
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
             workflow_mode="dev", pure_leaf=True,
-            pure_context=_pure_judge_context_for_marker_test(),
+            pure_context=_pure_reader_context_for_marker_test(),
             workshop_lineage_id="c", workshop_provider="claude_cli")
         self.assertEqual(judge.get("leaf_mode"), "workshop")
         prepared_judge = prepare_launch_request_payload(judge)

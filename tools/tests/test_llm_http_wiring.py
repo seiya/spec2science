@@ -257,7 +257,7 @@ class HttpWorkshopWiringTests(_ChatDialect, _GenerateHarness, unittest.TestCase)
         c = self.wired([])
         self.assertEqual(c.entry_for("generate", "generate").backend_token, "openai_compatible")
         self.assertEqual(c.entry_for("generate", "verify").backend_token, "claude")
-        self.assertEqual(c.entry_for("validate", "judge").backend_token, "claude")
+        self.assertEqual(c.entry_for("compile", "verify").backend_token, "claude")
         self.assertEqual(c.entry_for(None, None).backend_token, "claude")
         self.assertEqual({row["backend"] for row in c.llm_config.provenance_map().values()},
                          {"claude", "openai_compatible"})

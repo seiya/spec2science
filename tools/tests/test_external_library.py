@@ -958,7 +958,7 @@ class LeafFacingTests(_Fixture):
     def test_the_dependencies_seed_carries_the_block(self) -> None:
         c, refs, spec = self._conductor(("vend", "foo"))
         with mock.patch.object(type(c), "_workshop_spec_reads", lambda self_, s: False):
-            seeds = c._workshop_seeds(refs, {}, {"step": "validate", "substep": "judge"}, spec)
+            seeds = c._workshop_seeds(refs, {}, {"step": "generate", "substep": "verify"}, spec)
         text = seeds["DEPENDENCIES.md"]
         self.assertTrue(text.startswith("## External libraries"), text)
         self.assertIn("- vend: modules [vend]; procedures []", text)
@@ -966,7 +966,7 @@ class LeafFacingTests(_Fixture):
         c, refs, spec = self._conductor(())
         with mock.patch.object(type(c), "_workshop_spec_reads", lambda self_, s: False):
             self.assertNotIn("DEPENDENCIES.md", c._workshop_seeds(
-                refs, {}, {"step": "validate", "substep": "judge"}, spec))
+                refs, {}, {"step": "generate", "substep": "verify"}, spec))
 
 
 class ExecuteLoaderPathTests(unittest.TestCase):

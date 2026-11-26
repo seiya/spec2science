@@ -488,9 +488,6 @@ def certify_node(
     _write_json(run_node / "summary.json", {
         "node_key": node_key, "run_id": run_id, "total": 0, "pass": 0, "fail": 0,
     })
-    _write_json(run_node / "semantic_review.json", {
-        "decision": "pass", "findings": [],
-    })
     run_ref = f"{pipe_ref}/runs/{run_id}/{safe}"
     _write_json(run_node / "validate_meta.json", {
         "run_id": run_id, "node_key": node_key, "pipeline_id": pipeline_id,
@@ -500,8 +497,7 @@ def certify_node(
         # `post_judge_meta.json` are host records outside the declared set.
         "artifact_hashes": {
             f"{run_ref}/{name}": _sha256(run_node / name)
-            for name in ("aggregate_verdict.json", "verdict.json", "summary.json",
-                         "semantic_review.json")},
+            for name in ("aggregate_verdict.json", "verdict.json", "summary.json")},
     })
     refs |= {"run_id": run_id,
              "aggregate_verdict": f"{run_ref}/aggregate_verdict.json",
