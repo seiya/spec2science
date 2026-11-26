@@ -13,7 +13,7 @@ In the core workflow the target profile is a fixed input of every stage from `Ge
 ## Design Policy
 - The target profile names each axis value as an opaque token. The host asks the backend registry (`tools/backends/registry.py`) about the token and does not interpret it (`docs/BACKEND_BOUNDARY.md`).
 - The lowering plan expresses the intent of a lowering choice — which loops are parallel, which layout, which fusion — rather than compiler flags or the concrete spelling of a directive. The concrete spelling is the source's.
-- The plan is the `Generate` producer's own declaration and record. Beyond the deterministic floors of `Generate.gate`, no check holds the source to it: `Generate.verify` does not take it as a reference, and finds a parallel construct only where it makes a returned value wrong (`docs/workflow/phases/phase_02_generate.md` §2-2).
+- The plan is the `Generate` producer's own declaration and record. Beyond the deterministic floors of `Generate.gate`, no check holds the source to it: `Generate.verify` does not take it as a reference, and finds a parallel construct only where it makes a returned value wrong or the parallel backend's reviewer paragraph names it (`docs/workflow/phases/phase_02_generate.md` §2-2).
 
 ## 1. The boundary of generalization
 - Generalize (lowering plan): the intent of a loop transformation — parallel model and scope, schedule, chunk size, collapse, tiling, fusion, vectorization, the memory-layout policy, the async/overlap policy.

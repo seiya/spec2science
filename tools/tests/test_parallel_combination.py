@@ -452,6 +452,25 @@ class PromptCompositionTests(unittest.TestCase):
                 with self.subTest(stem=stem, section=name):
                     self.assertNotIn("whole case", body)
 
+    def test_the_reviewer_finds_a_region_pinned_to_one_thread(self) -> None:
+        """Issue #724, after PR-3 (`generate-verify-16`): a region pinned to one thread or
+        switched off on the tested cases makes no returned value wrong, and hides a race from
+        the thread comparison, so the `openmp` reviewer paragraph names it as a finding. It
+        reaches the reviewer on every target with an `openmp` member, and the base template's
+        "Not findings" list leaves room for it."""
+        sentence = ("One construct is a finding here although it makes no value wrong: a region "
+                    "pinned to one thread or switched off on the cases the tests run")
+        for backend in ("none", "openmp", "mpi", "mpi+openmp"):
+            with self.subTest(backend=backend):
+                composed = self._compose("workshop_generate_verify.txt", backend)
+                self.assertEqual(composed.count(sentence), int("openmp" in backend.split("+")))
+                if "openmp" in backend.split("+"):
+                    for construct in ("`num_threads(1)`", "`omp_set_num_threads(1)`",
+                                      "an `if(...)` clause false on those cases"):
+                        self.assertIn(construct, composed)
+                self.assertIn("and one that the paragraph for this target's parallel backend "
+                              "names)", composed)
+
     def test_a_one_member_value_composes_as_before(self) -> None:
         for template_file in ("workshop_generate_generate.txt", "workshop_generate_verify.txt"):
             stem = ort._fragment_template_stem(template_file)
