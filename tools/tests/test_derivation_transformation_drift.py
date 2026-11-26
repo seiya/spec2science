@@ -1995,7 +1995,7 @@ PINNED_BUILD: dict[str, str] = {
     # because PR-3 re-derives every row from `Generate` anyway, so the version string costs no run.
     # (`build_tuple()` against main 4b5e9ca1's: the `libraries: tools/external_library.py` row
     # and no other.)
-    "build-6": "dd67026339f444fbbd7c4e0f5396a86b6321585314ecb12f80b0a3baf3173cd5",
+    "build-6": "81bba0d8861726014f6630ad017c953a0900ecd0055b29e383844ddb8279ac0d",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2539,7 +2539,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # because PR-3 re-derives every row from `Generate` anyway, so the version string costs no run.
     # (`execute_tuple()` against main 4b5e9ca1's: the `libraries: tools/external_library.py` and
     # `capture store: tools/capture_store.py` rows and no other; the second is render-23's edit.)
-    "execute-25": "57a8f9df18df61df145f922f04849a9b62acda84f14de8ab3a5b78c6eb586533",
+    "execute-25": "f828e7c27de98b883cb9e1f3961d6974a2c57a79c8f64220819739a56c0cefbc",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

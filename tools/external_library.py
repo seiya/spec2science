@@ -505,8 +505,8 @@ def symbol_check(target: Any, objects: Sequence[Path], resolved: Sequence[Resolv
 def facts_text(declarations: Sequence[LibraryDeclaration]) -> str:
     """The `## External libraries` block of a leaf's `DEPENDENCIES.md`: each library the node's
     own deps.yaml declares, with the modules and external procedures a source of the node may
-    reach; `""` for none. The words are a reader's input (the Compile and Generate producers and
-    the Generate reviewers read them), pinned by `tools/tests/test_leaf_prompt_contract_drift.py`."""
+    reach; `""` for none. The words are a reader's input (every workshop leaf of `Compile` and
+    `Generate` reads them), pinned by `tools/tests/test_leaf_prompt_contract_drift.py`."""
     if not declarations:
         return ""
     lines = ["## External libraries", "",
