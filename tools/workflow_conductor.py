@@ -3621,8 +3621,7 @@ def _indented_json_seed(text: str) -> str:
     """A JSON document's text as a reading workshop leaf's seed: re-serialized with one value
     per line (`indent=2`), so a file tool that pages by line can reach every value. The value
     is the parsed document's (a number keeps its value, not necessarily its spelling: `1.0E-5`
-    is written `1e-05`); `evidence_refs` name document keys, which the host resolves against
-    the workspace file, never against the seed. Text that is not JSON (or nests past the
+    is written `1e-05`). Text that is not JSON (or nests past the
     parser's depth), a document with a repeated key in one object (`json.loads` keeps the last
     value, so a re-serialization would drop the others the raw text shows), and one whose
     strings hold an unpaired surrogate escape (the indented text would not encode as UTF-8)

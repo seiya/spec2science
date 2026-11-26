@@ -718,7 +718,7 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
 class LlmConfig:
     """A loaded, fully validated leaf-LLM configuration.
 
-    `entries` holds an entry for EVERY LLM leaf (all five pairs), always — resolution is total,
+    `entries` holds an entry for EVERY LLM leaf (all four pairs), always — resolution is total,
     so no caller has to re-implement the fallback to `defaults`. `defaults` additionally serves
     the one launch that carries no phase/substep at all (the `escalate` diagnostician), which
     is why it is resolved as a READING workshop entry (`_defaults_entry`)."""
