@@ -599,6 +599,10 @@ class PureRenderTests(unittest.TestCase):
                       "for the algorithm you implement", prompt)
         self.assertIn("In your tree: `controlled_spec.md`.", prompt)
         self.assertIn("(8) The Controlled Spec is the authority for the algorithm", prompt)
+        # The direction of change 1, which only the drift digest held (round 1: flipping it to
+        # "follow the IR" survived every other row).
+        self.assertIn("Where the two differ on what is computed, follow the Controlled Spec.",
+                      prompt)
         self.assertNotIn("Audusse reconstruction: h_star = max(0, eta - z_b)", prompt)
         # The harness producer is the exception (issue #644 P4b, an operator decision on its
         # §3 and §4): it
