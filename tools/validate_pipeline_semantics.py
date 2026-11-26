@@ -6643,8 +6643,8 @@ def _validate_published_surface(
       operation.
     - `public_api` present, its NAME surface == §5 (`_validate_public_api_name_surface`).
     - §5.1 fences exactly the §5 surface, and the IR's `signatures` / `module_parameters` == §5.1.
-      §5.1 is the leaf's ONLY carrier of the signature bodies and parameter values, because
-      `Generate.generate` is walled off from controlled_spec.md (phase_02 §2-1). The bodies are
+      The IR is the authority `Generate.generate` follows for the calling interface
+      (phase_02 §2-1, issue #724), so it must carry §5.1's signatures and values exactly. The bodies are
       pinned against the GENERATED source separately, by `_validate_generated_signatures`
       at `Generate.gate`.
 
@@ -6764,9 +6764,8 @@ def _validate_published_surface(
 
     # §5.1 canonical interface block: cross-check its signature set against §5's name lists so the
     # two halves of the spec (prose surface + machine-readable signatures) cannot drift, and pin the
-    # IR's public_api.signatures AND public_api.module_parameters == §5.1 so the Generate.generate
-    # leaf — walled off from controlled_spec.md — carries the exact signatures and parameter values
-    # to publish in its IR.
+    # IR's public_api.signatures AND public_api.module_parameters == §5.1, because the IR is the
+    # authority the Generate.generate leaf follows for the interface it publishes (phase_02 §2-1).
     #
     # Both sides are language-NEUTRAL documents, compared through a language backend's rendering
     # as a canonical form. Compile is target-free (issue #284), so the comparison is made in the
@@ -7073,9 +7072,9 @@ def _validate_ir_module_parameters_against_section51(
 ) -> None:
     """Pin the IR's ``public_api.module_parameters`` == the controlled_spec §5.1 module-level
     parameters (``dp = float64`` / ``case_id_len = 64``), by name AND value. These are part of the
-    published ABI, and the Generate.static gate value-pins them against the GENERATED source — but
-    the Generate.generate leaf is walled off from controlled_spec.md (phase_02 §2-1), so the IR is
-    the only carrier that gets the values to the leaf. A drop / extra / value drift here becomes a
+    published ABI, and the Generate.static gate value-pins them against the GENERATED source; the
+    IR is the authority the Generate.generate leaf follows for the interface (phase_02 §2-1, issue
+    #724), so it must carry the values exactly. A drop / extra / value drift here becomes a
     drift (or a fail-closed Generate.static miss) in the generated model, so it is a Compile fail to
     Compile.generate.
 
@@ -7138,8 +7137,8 @@ def _validate_ir_module_parameters_against_section51(
             violations.append(
                 f"{derived_path}:public_api.module_parameters missing — a {kind} node must "
                 "transcribe every controlled_spec §5.1 module-level parameter (each {name, base?, "
-                "value}); the Generate.generate leaf is walled off from controlled_spec so the IR "
-                "is the only carrier of the pinned values")
+                "value}); the IR is the interface authority the Generate.generate leaf follows, so "
+                "it must carry the pinned values")
         return
 
     mps_raw = public_api.get("module_parameters")
