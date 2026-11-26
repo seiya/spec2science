@@ -579,6 +579,29 @@ class BuildLaunchRequestTest(unittest.TestCase):
         )
         self.assertNotIn("launch_prompt_full", req)
 
+    def test_validate_substeps_declare_every_required_output_of_the_phase(self) -> None:
+        """No `Validate` substep is host-rendered since issue #724 PR-2 deleted the judge, so
+        `_validate_step_result_payload` accepts a pass only when every required output of the
+        phase is one of a substep's `output_refs`, which the conductor takes from each launch's
+        `allowed_output_paths`. A launch list that drops one (`summary.json` from
+        `post_judge`'s, say) makes every `Validate` pass refused at `write-step-result`; this
+        row is the coupling between the two declarations."""
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0",
+                           spec_path="spec/component/x", ir_id="x_20260101_001",
+                           pipeline_id="x_20260101_001", source_id="src_20260101_002",
+                           binary_id="bin_20260101_003", run_id="run_20260101_004")
+        self.assertEqual(wc.SUBSTEPS["validate"], ("execute", "post_judge"))
+        declared: set[str] = set()
+        for substep in wc.SUBSTEPS["validate"]:
+            req = wc.build_launch_request(
+                refs, step="validate", substep=substep, orchestration_id="orch_x",
+                orchestration_agent_run_id="parent", child_agent_run_id=f"child-{substep}",
+                agent_model="m", workflow_mode="dev", case_ids=("c1",), output_format="json")
+            declared |= set(req["allowed_output_paths"])
+        required = wc.phase_required_outputs(refs, "validate")
+        self.assertEqual(len(required), 4)
+        self.assertEqual(set(required) - declared, set())
+
     def _generate_refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0", spec_path="spec/component/x",
                            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
