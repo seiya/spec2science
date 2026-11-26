@@ -1233,7 +1233,7 @@ PINNED: dict[str, str] = {
     # parallel marker renamed `review_target_scope`, its fragments state what makes a returned
     # value wrong); the generate rubric rewritten; the `ir_inconsistency` route deleted; both
     # base templates state what the driver hands a call (issue #727).
-    "leaf-109": "cbe0319b24eb70123adc656c3cfd21dcfe7976e6cf554b2334a2c79e1ec55b5d",
+    "leaf-109": "8e90ecf90c6d0f6ffc9cbb10c93922ef516a768dd5db0d9dad654d6d2b8a2f2e",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1336,7 +1336,7 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-15 (issue #724 PR-3, decisions O3 and O16): the model reviewer judges the
     # source against `controlled_spec.md` and `tests.md`, not the IR; its checklist, its parallel
     # fragments (`review_target_scope`) and the generate rubric are rewritten.
-    "generate-verify-15": "7c74a8b8d29ced07cb106f6600ec49c059f82114bf44cb44b58df08cc3821939",
+    "generate-verify-15": "7fe6686e94eb01eddae50c29ed3c5fb6fc37f9c7717d996594bafdae9f8bb379",
     # validate-judge-9 (issue #644 P4a): the runner-output contract's §3 slice (the capture
     # groups and operations) and the judge template's wording of a case's series.
     "validate-judge-9": "8cd65f44cb987a2c1501c14c94ca4606941c1f6df245f2ccd0fffb4512808517",

@@ -961,7 +961,11 @@ class PureRenderTests(unittest.TestCase):
         #     template's checklist findings are code subjects or the IR clause of `major`.
         #     (9) no example is claimed by two bullets: `minor` lists code defects only, `major`
         #     input contradictions only.
-        "generate": "193167e6bc1794a83549924ea98b79bf17427e91ba412c2933f2728da3a70f41",
+        #   READ again (issue #724 PR-3 round 1, same branch): the `minor` bullet's exception
+        #     moved AFTER its list of code findings. Placed before it, the list read as what
+        #     `critical` names, so (4) failed in the other direction (a sign error graded
+        #     `critical`). Nothing else in the slice moved; (1)-(9) answer as above.
+        "generate": "f1cee468bd37aa022fca051bfc8cc6e2ed67ba8be25c89198b6713a21bd5b2ca",
     }
 
     def test_each_rubric_section_number_is_a_heading_of_its_phase_doc(self) -> None:
@@ -3467,11 +3471,12 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
     _KEYS = ("workshop generate.generate", "workshop generate.verify")
     #: The opening words of the OpenMP paragraph in each template (the fragment's text): the
     #: producer's floor, and (issue #724 PR-3, decision O3 (a)) the reviewer's statement of
-    #: what the driver does on that backend and what makes a returned value wrong there.
+    #: what makes a returned value wrong on that backend. (It does not restate the whole-case
+    #: default: on `mpi+openmp` that is false beside the `mpi` paragraph; round 1.)
     _OPENMP_FLOOR = {
         "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
-        "workshop generate.verify": "On this target the driver hands every call the whole case "
-                                    "on one process",
+        "workshop generate.verify": "On this backend the model's own loops may run on several "
+                                    "threads",
     }
 
     #: The opening words of the MPI paragraph in each template (issue #316, R4-c PR-4; the

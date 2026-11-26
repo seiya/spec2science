@@ -272,8 +272,12 @@ class PureVerifyContextTests(unittest.TestCase):
             # contract-conforming bundle terminalizing the run — on a version bump alone. The
             # exception it carries is `critical`'s, named in words (issue #724 PR-3), so `minor`
             # does not swallow `critical`.
-            self.assertIn("Every finding whose subject is the generated code takes this value, "
-                          "except the one `critical` names", doc)
+            self.assertIn("Every finding whose subject is the generated code takes this value "
+                          "— a different formula", doc)
+            # …and the exception stands AFTER the list (round 1): placed before it, the list
+            # read as the findings `critical` names, so a sign error could be graded `critical`.
+            self.assertIn("a wrong argument order or rank in a dependency call — except the one "
+                          "`critical` names.", doc)
             # The route literal `ir_inconsistency` is gone with issue #724 PR-3 (no reviewer
             # writes it; the hand re-derivation of `Compile` is a generic procedure,
             # `docs/RUNBOOK.md` §3-1). Its return to the seeded slice is refused.
