@@ -2821,7 +2821,7 @@ PINNED_VERDICT: dict[str, str] = {
     # whose review the one named and whose launches the other counted being deleted.
     # (`verdict_tuple()` against main fd4f3619's: the
     # `Conductor._author_derived_validate_artifacts` row and no other.)
-    "verdict-23": "59476793fafdf7814eb041c303f1cc1a0d726d32081d219326d3b35ddc626fdb",
+    "verdict-23": "b2030ee181c01455b240246f40e9654163d84a4197d2737cd9a43dccfdeaf3a9",
 }
 
 

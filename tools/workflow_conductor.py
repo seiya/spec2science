@@ -15077,7 +15077,7 @@ class Conductor:
 
         # aggregate_verdict: `blocked` when any immediate dep is not ready; else the transitive
         # fold (precedence blocked > fail > xfail > pass) over {self_verdict} + ready-dep
-        # contributions. On the post_judge path the judge passed (self_verdict ∈ {pass,xfail})
+        # contributions. On the post_judge path execute passed (self_verdict ∈ {pass,xfail})
         # and the pre-launch DAG guard found every dep ready, so this is ∈ {pass,xfail} unless a
         # dep's certified verdict no longer resolves through `select`.
         blocked = bool(blocking_direct_deps)
