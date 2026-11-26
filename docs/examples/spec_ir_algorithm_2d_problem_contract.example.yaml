@@ -65,9 +65,9 @@
 #   "...:state_contract.required_update_paths must be non-empty string list"
 # refers to `algorithm.required_update_paths` in this sample's form.
 #
-# state_variables[].name is a binding identifier downstream: Generate cannot read controlled_spec,
-# so these names are what the model's state arrays are called. Name them as the controlled_spec
-# names them.
+# state_variables[].name is a binding identifier downstream: these names are what the model's
+# state arrays are called, and Generate reads the algorithm from the controlled_spec, so name them
+# as the controlled_spec names them.
 
 algorithm_id: example_shallow_water_problem
 

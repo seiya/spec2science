@@ -59,8 +59,7 @@ _STEP, _SUBSTEP = "generate", "verify"
 #: The two documents the reviewer's seeds parse are JSON: `target_profile` (seeded one value
 #: per line) and `bundle_document` (expanded into its manifest and its files); the key set is
 #: the pair's CURRENT one, which `check_source` requires (asserted below).
-_TEXT_KEYS = ("controlled_spec_document", "tests_document", "ir_document",
-              "severity_rubric_document")
+_TEXT_KEYS = ("controlled_spec_document", "tests_document", "severity_rubric_document")
 _BUNDLE_FILE = "model.src"
 _CONTEXT = {
     **{key: "".join(f"{key} line {n}\n" for n in range(1, 6)) for key in _TEXT_KEYS},
@@ -125,7 +124,7 @@ class _Leaf:
     def __init__(self, homes: Path) -> None:
         self.homes = homes
         self.calls: list[dict] = []
-        #: Workshop launches that read `spec.ir.yaml`, write NO document and leave their
+        #: Workshop launches that read `controlled_spec.md`, write NO document and leave their
         #: transcript under another session's name (so the lineage cannot be resumed and the
         #: repair is a cold reuse in a new lineage).
         self.unfinished = 0
@@ -150,7 +149,7 @@ class _Leaf:
                 (tree / "verdict.json").write_text(json.dumps(_REVIEW), encoding="utf-8")
             project = home / "config" / "projects" / "p"
             project.mkdir(parents=True, exist_ok=True)
-            tests = f"{tree}/{'spec.ir.yaml' if unfinished else 'tests.md'}"
+            tests = f"{tree}/{'controlled_spec.md' if unfinished else 'tests.md'}"
             lines = [
                 {"version": "9.9.9", "message": {"content": [
                     {"type": "tool_use", "id": f"r1-{sid}", "name": "Read",
@@ -445,7 +444,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"],
                           row["output_tokens"]), (0, 0.5, 4.0))
         self.assertGreater(row["leaf_wall_s"], 0)
-        self.assertEqual(row["coverage"]["spec.ir.yaml"]["covered"], 5)
+        self.assertEqual(row["coverage"]["controlled_spec.md"]["covered"], 5)
         self.assertEqual(row["coverage"]["tests.md"]["covered"], 5)
 
     def _status(self, replay: Path) -> tuple[str, str | None]:
@@ -846,7 +845,7 @@ class SourceRefusalTests(unittest.TestCase):
             {"old": "line one\n", "new": "line ONE\n"}]}))
         out = jr.apply_mutations(_CONTEXT, mutations)
         self.assertTrue(out["tests_document"].startswith("tests_document line ONE\n"))
-        self.assertEqual(out["ir_document"], _CONTEXT["ir_document"])
+        self.assertEqual(out["controlled_spec_document"], _CONTEXT["controlled_spec_document"])
         # A recorded JSON document stays JSON: a raw line break inside one of its strings
         # would break the document, and the lineage's seed expanded from it would carry
         # nothing (until PR-J4-b the pure arm, which inlined the text, still ran).

@@ -356,13 +356,13 @@ source, and it holds the lowering choices of the node (parallel model and scope,
 chunk size, collapse, layout, fusion, tiling, vectorization); the IR carries none of them
 (until R4-a PR-3, issue #284, they were the IR's `impl_defaults` knob layer).
 `parallelization`, when present, is an object whose `model` member names the parallel model,
-`"none"` when nothing is parallelized. Two readers act on the plan: the `Generate.gate`
+`"none"` when nothing is parallelized. One check acts on the plan's `parallelization`: the `Generate.gate`
 parallel-directive floor (`_validate_parallel_presence_floor`) runs where the target's parallel
 backend states a floor (today `openmp` on a `cpu` target) unless the plan's `parallelization`
 explicitly declines that model (the backend's `lowering_plan_declines` reads the members `model` /
-`method` / `scheme` / `kind`; an absent model declines nothing), and
-`Generate.verify` G6 judges the plan and the source against the whole target profile
-(`docs/workflow/phases/phase_02_generate.md`). On a target whose `parallel.backend` combines
+`method` / `scheme` / `kind`; an absent model declines nothing). Beyond the floors the plan is the producer's record:
+`Generate.verify` does not hold the source to it, and finds a parallel construct only where it
+makes a returned value wrong (`docs/workflow/phases/phase_02_generate.md` §2-2). On a target whose `parallel.backend` combines
 several models (issue #700) the producer is told to name the target's whole value as the plan's
 `model` (no gate checks the spelling), every member's floor is asked, and a plan declines a floor only when every member's `lowering_plan_declines`
 says so: a plan that names one member declines no other member's floor, and `"none"` with the

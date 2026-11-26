@@ -514,15 +514,20 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
             self.assertIn(f"use {_SPEC_ID}_model, only:", ctx["runner_document"])
             self.assertIn("sw_update", ctx["runner_document"])
 
-    def test_controlled_spec_is_not_in_producer_context(self) -> None:
-        # pure-10: the pure-5 interim carve-out was removed — the producer is spec-blind again
-        # (phase_02 §2-1), so its context carries NO controlled_spec_document. The verify reviewer
-        # still reads controlled_spec.md by design (test_leaf_verify.py).
+    def test_controlled_spec_is_the_producers_algorithm_authority(self) -> None:
+        # Issue #724 change 1: the producer reads the node's controlled_spec.md as the authority
+        # for the algorithm (phase_02 §2-1), whole and verbatim, and it is seeded under its own
+        # name. (pure-10 had removed the pure-5 carve-out that once inlined it.)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
             ctx = _conductor(repo)._build_leaf_context(refs)
-            self.assertNotIn("controlled_spec_document", ctx)
+            self.assertEqual(
+                ctx["controlled_spec_document"],
+                (repo / refs.spec_path / "controlled_spec.md").read_text(encoding="utf-8"))
+            self.assertEqual(
+                wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"][
+                    "controlled_spec_document"], "controlled_spec.md")
 
     def test_non_utf8_runner_raises_the_named_contract_not_a_bare_decode_error(self) -> None:
         # UnicodeDecodeError is a ValueError, not an OSError: catching OSError alone let it escape
@@ -1318,6 +1323,9 @@ class PureProducerSubstepTests(unittest.TestCase):
         for rel_of, marker, empty in (
                 (lambda refs: f"{refs.ir_ref}/spec.ir.yaml", "pure_ir_document_missing", False),
                 (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing", False),
+                # Issue #724 change 1: the producer reads the spec too.
+                (lambda refs: f"{refs.spec_path}/controlled_spec.md",
+                 "pure_controlled_spec_document_missing", False),
                 # Present but whitespace-only: refused by the launch validator like "", so the
                 # same recorded outcome is owed.
                 (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing", True)):
@@ -2202,6 +2210,7 @@ class PureLaunchRequestTests(unittest.TestCase):
                 runner_host_authored=True,
                 pure_leaf=True, pure_context={"harness_capabilities": "x", "target_profile": "y",
                                               "ir_document": "z", "tests_document": "t",
+                                              "controlled_spec_document": "s",
                                               "runner_document": "program r\nend program\n"},
                 workshop_lineage_id="c", workshop_provider="claude_cli")
             self.assertEqual(req["leaf_mode"], "workshop")
@@ -2363,6 +2372,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         else:
             context = {"harness_capabilities": "hc", "target_profile": "tp",
                        "ir_document": "ir", "tests_document": "tt",
+                       "controlled_spec_document": "cs",
                        "runner_document": "program r\nend program\n"}
         req = {
             "leaf_mode": "workshop", "step": "generate", "substep": "generate",

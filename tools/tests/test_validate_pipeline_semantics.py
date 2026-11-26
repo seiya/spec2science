@@ -11007,9 +11007,18 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         """Issue #22: the reflection rule failed because only the PUNISHING side stated it.
         The fix is symmetry, and nothing else watches for its loss — both files are under a
         size ceiling, which is a MAXIMUM, so deleting either statement stays green. Anchor
-        both: the `Generate.verify` SKILL must say the zero-directive slice is already
-        deterministic (so the verify leaf does not re-derive a settled verdict), and
-        phase_02 must document the floor beside the G6 band above it."""
+        both: the punished side — the producer's template, composed for a fortran + openmp
+        target — states the floor, its scope and the honest decline, and phase_02 documents
+        the floor and names the emitting checker, with the backend's `GENERATE_RULES.md` §2
+        stating its conditions.
+        The REVIEWER half changed subject in issue #724 PR-3 (decision O3 (a)). It used to say
+        the zero-directive slice was already settled by the gate, so the verify leaf would not
+        re-derive a settled verdict while judging the G6 band above the floor. G6 is deleted:
+        the spec-relative reviewer judges no plan and no parallelization, so it is told no
+        floor at all. What is pinned now is that it is told the gate already ran and that a
+        serial or differently parallelized source is not a finding, and that the OpenMP
+        reviewer paragraph states no floor and no directive — a reviewer handed the floor
+        beside a finding definition would re-derive the gate's verdict as a finding."""
         repo_root = Path(vps.__file__).resolve().parent.parent
         # Z4 (issue #171): both SKILLs are deleted with the agentic leaf, and each half of the
         # symmetry moves to the surface that leaf's pure replacement actually reads — its own
@@ -11017,17 +11026,30 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # Since issue #289 (R4-b PR-2) the floor's scope sentence is a fragment the host
         # composes into that template — the OpenMP backend's since issue #316 (R4-c PR-2) — so
         # the fragment file is where it is anchored.
-        verify_prompt = (
+        from tools.tests.target_fixtures import composed_pure_template
+        verify_fragment = (
             repo_root / "tools/prompt_templates/backends/parallel/openmp/generate_verify.txt"
         ).read_text(encoding="utf-8")
+        verify_body = verify_fragment[verify_fragment.index("@@ "):]
+        for absent in ("!$omp", "floor", "target_lowering_plan"):
+            self.assertNotIn(absent, verify_body,
+                             "the OpenMP reviewer paragraph states the gate's floor or the plan "
+                             "again; the spec-relative reviewer judges neither (issue #724)")
+        verify_prompt = composed_pure_template("workshop generate.verify")
+        for stated in ("The deterministic `Generate.gate` union of its lint / syntax / static "
+                       "checkers already ran and passed before you",
+                       "parallelization or performance (a serial source, or one parallelized, "
+                       "scheduled, laid out, fused, tiled or vectorized differently from the "
+                       "`target_lowering_plan`, is not a finding",
+                       "What makes a returned value wrong here is a data race"):
+            self.assertIn(stated, verify_prompt)
         phase_02 = (
             repo_root / "docs/workflow/phases/phase_02_generate.md"
         ).read_text(encoding="utf-8")
-        self.assertIn(
-            "already settled deterministically by the `Generate.gate` static check",
-            verify_prompt,
-            "the pure verify template no longer says the zero-`!$omp` slice is gate-settled",
-        )
+        rules = (repo_root / "docs/backends/parallel/openmp/GENERATE_RULES.md").read_text(
+            encoding="utf-8")
+        self.assertIn("## 2. The presence floor", rules)
+        self.assertIn("validate_pipeline_semantics._validate_parallel_presence_floor", rules)
         self.assertIn("`!$omp` presence floor", phase_02,
                       "phase_02 no longer documents the Generate.gate presence floor")
         # Issue #400: phase_02 hands the reviewer no loop outside the model (the checks module
@@ -11044,7 +11066,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         # COMPOSED for the target (issues #289, #316): the neutral half of rule (7) stays in the
         # template and the floor half is the OpenMP fragment, and the leaf reads both. The
         # template is the workshop one since issue #534 PR-J4-b deleted the pure twin.
-        from tools.tests.target_fixtures import composed_pure_template
         generate_prompt = composed_pure_template("workshop generate.generate")
         for rule in (
             # The target binds, not data to read past. (Until R4-a PR-3, issue #284, the binding
@@ -11061,7 +11082,9 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             "a plan that names no model gets the target's backend, OpenMP",
             # The honest move where a loop genuinely cannot be parallelized. Without it the
             # scope sentence reads as an invitation to emit a directive to clear the floor.
-            "declare `\"model\": \"none\"` and say why in the plan for the reviewer",
+            # (It said "for the reviewer" until issue #724 PR-3, decision O6 (a): no reviewer
+            # reads the plan as a reference now.)
+            "declare `\"model\": \"none\"` and say why in the plan;",
         ):
             self.assertIn(
                 rule, generate_prompt,
@@ -14115,16 +14138,21 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                                 for v in violations), violations)
 
     def test_module_parameters_missing_key_flagged(self) -> None:
-        # §5.1 declares dp but the IR omits the module_parameters key — the leaf's only carrier of
-        # the value is gone, so this is a Compile fail.
+        # §5.1 declares dp but the IR omits the module_parameters key — the IR is the interface
+        # authority Generate follows, so this is a Compile fail.
         with tempfile.TemporaryDirectory() as tmp:
             api = self._full_api()
             del api["module_parameters"]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
             _validate_published_surface(Path(tmp), ir_dir, violations)
-            self.assertTrue(any("public_api.module_parameters missing" in v for v in violations),
-                            violations)
+            missing = [v for v in violations if "public_api.module_parameters missing" in v]
+            self.assertTrue(missing, violations)
+            # The refusal a Compile leaf reads gives the reason that holds since issue #724
+            # (Generate reads the spec too; round 2 found the old premise unpinned).
+            self.assertNotIn("walled off", missing[0])
+            self.assertIn("the IR is the interface authority the Generate.generate leaf "
+                          "follows", missing[0])
 
     def test_module_parameters_null_fails_closed(self) -> None:
         # A present-but-null module_parameters must fail closed (mirrors load_structured_signatures).
@@ -19984,9 +20012,13 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         # The line must also name its own ESCAPE HATCH: a node whose loops genuinely cannot be
         # parallelized is told where the exemption lives — its own plan (issue #284) — or the
         # only readings of this line are "emit a directive you believe is wrong" and "fail
-        # forever". It names who judges it too, so the hatch is not read as a free pass.
+        # forever". It names the one condition the hatch is for and the inverse obligation, so
+        # the hatch is not read as a free pass (no reviewer holds the declaration to the loops
+        # since issue #724 PR-3, and the line no longer says one does).
         self.assertIn('`"model": "none"`', v[0])
-        self.assertIn("the independent reviewer holds that declaration to the loops", v[0])
+        self.assertIn("genuinely cannot be parallelized (a carried dependence)", v[0])
+        self.assertIn("never decline one a loop can take", v[0])
+        self.assertNotIn("reviewer", v[0])
 
     def test_directive_present_passes(self) -> None:
         self.assertEqual(self._run(self._model(
@@ -22828,6 +22860,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 "pure_parallel": "openmp",
                 "pure_context": {"harness_capabilities": "{}", "target_profile": "t",
                                  "ir_document": "i", "tests_document": "t",
+                                 "controlled_spec_document": "c",
                                  "runner_document": "r"}}))
             (root / "launches" / f"{self._ARID}.prompt.txt").write_text(prompt,
                                                                        encoding="utf-8")

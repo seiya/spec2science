@@ -2,20 +2,12 @@
 # Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
 # (the section body, without the newline that precedes the next header). Loaded by
 # `tools/backends/language/fortran/prompts.py`; lines before the first header are comments.
-# `checklist_g6_floor_scope` is empty: the floor it once held is the parallel model's rule, and the
-# template's `{{parallel:checklist_g6_floor_scope}}` marker beside it carries it
-# (`tools/prompt_templates/backends/parallel/<backend_id>/`).
 
 @@ host_rendered_runner_file
 `<spec_id>_runner.f90`
-@@ checklist_g5
-G5 — io_contract consistency: no constant/fixed-JSON/analytic-expression output unrelated to the model computation; each `intent(out)`'s final expression tree reaches the `io_contract.semantic_dependency.required_sources` and `io_contract.outputs` variables. The host-rendered driver captures exactly what a published operation leaves in the arguments `drive` binds, so what the operation returns in them is the raw evidence: a state kept in a private module copy while the argument holds a placeholder, an `out` array with a cell left unassigned on a true result, an `intent(inout)` argument left unadvanced on a true result, or a result logical that does not state what the IR defines it to state (true for a step the operation did not complete, or set from a constant rather than from the guard the IR names) is a fail. Private module state between the initialization operation and the step operation is admitted and is captured in no file; `init` must establish every private field a later call reads, because the driver does not reset it between cases. **The host's predicates over the captures decide each test, and the model judges nothing.**
-@@ checklist_g6_floor_scope
 @@ gate_checked_classes
 unused dummies, `intent(out)` dataflow
 @@ inert_dummy_binding
 an `associate (unused_x => x)` binding of an inert dummy
-@@ dependency_call_consistency
-each `call <dep>__<op>(...)`, or `call <local>(...)` by the local name of a `use <dep>_model, only: <local> => <dep>__<op>` rename, passes arguments in the published interface's order AND rank/shape (a lower-rank dummy is fed a matching slice inside a component loop, not the whole higher-rank state array)
 @@ external_library_use
 A listed library is reached by `use <module>` or by a `call` through an explicit `interface` block. Build refuses a source that reaches an unlisted library, so that is not yours to judge; whether the source USES a listed library for the computation the spec asks of it, rather than declaring it and computing the result some other way, is.

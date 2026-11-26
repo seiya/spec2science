@@ -1040,7 +1040,25 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # main a72f9f3c's: the `phase_contract_document` row alone.) The digest `compile-docs-38`
     # shipped with at a72f9f3c:
     "compile-docs-38@a72f9f3c": "71fbf78f86c48463ba74ff2dda37191f087b6bcc35b25f72c81d64320e87cd54",
-    "compile-docs-38": "47f3c200d4b13ae99ff83b20731d94136bab0b8d09c70004069a7021f4d772af",
+    # compile-docs-38 re-pinned in place by issue #724 PR-3 (operator decision O1 (a),
+    # 2026-11-25): `Generate` now reads `controlled_spec.md` (the producer takes the algorithm
+    # from it, the model `Generate.verify` reviewer judges against it), and what changed in
+    # `phase_01_compile.md` (`:4`, `:16`, `:360`'s comment, `:598`'s premise, `:669-670`,
+    # `:701`, `:713`) and in the 2D example's `:68-70` comment is statements about OTHER phases
+    # and the reasons given for obligations: no obligation on what a `Compile` leaf writes is
+    # added, removed or changed, and no gate moved. Unlike the earlier re-pins, this one cannot
+    # claim that no IR is authored differently: `:598`'s premise ("the IR is `Generate`'s sole
+    # algorithm carrier", now "the IR's `algorithm` is what `Compile.verify` and the
+    # deterministic gates read") is what tells a leaf how fully to lower, so a leaf reading the
+    # new text may lower less fully than one reading the old within the same obligation. A bump
+    # would re-derive every `Compile` (SCALE: +156 M tokens at recorded rates) for that; what
+    # the `algorithm` section is for now is the follow-up of O2 (issue #724: the section's
+    # readers in `Generate` are the default producer's rule 5 and the harness producer and reviewer; no `Generate.gate` check reads it). (Measured by diffing
+    # `compile_documents_tuple()` against main 4b5e9ca1's: the `phase_contract_document` and
+    # `ir_algorithm_2d_example_document` rows alone.) The digest `compile-docs-38` shipped
+    # with at 4b5e9ca1:
+    "compile-docs-38@4b5e9ca1": "47f3c200d4b13ae99ff83b20731d94136bab0b8d09c70004069a7021f4d772af",
+    "compile-docs-38": "7c129ffcb7231500410738f137d55daa2ee71a062374aa025e1739203845e873",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1616,6 +1634,13 @@ PINNED_RENDER: dict[str, str] = {
     # render a runner on main render the same text on this branch.) Within F-1 the digest moved once more, for a comment of `runner.py`
     # (review round 2).
     "render-22": "4f2fb9fe170d9f7f8e2e1d01cdc2357c0aa7d7433d2e0f5269d36d77bac5b0df",
+    # render-23 (issue #724 PR-3, 2026-11-26): `tools/capture_store.py`'s module docstring stops naming the judge's excerpt among the capture
+    # store's readers, the judge having been deleted in PR-2. Comment-only; bumped rather than
+    # re-pinned because PR-3 re-derives every row from `Generate` anyway (decision recorded in
+    # the plan's PR-3), so the version string costs no run.
+    # (`render_tuple()` against main 4b5e9ca1's: the `capture store: tools/capture_store.py` row
+    # and no other.)
+    "render-23": "b7e4746adec1f30b4e071085d9d3e4ffee4752c9e6fda7fb9d0a4d727e280d7e",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1965,6 +1990,12 @@ PINNED_BUILD: dict[str, str] = {
     # The digest `build-5` shipped with at 031178f0:
     "build-5@031178f0": "62fbe08dc647337f070e00e53f8ebf67803604ac0bbf3bc2b2ae358aab91bfc1",
     "build-5": "da468f721bcbed1929c591ecb61c0f8d061e6c4c03186dc2cc5670d49fafd6e3",
+    # build-6 (issue #724 PR-3, 2026-11-26): `tools/external_library.py` `facts_text`'s docstring names the Compile and Generate leaves that
+    # read the block instead of the deleted judge. Comment-only; bumped rather than re-pinned
+    # because PR-3 re-derives every row from `Generate` anyway, so the version string costs no run.
+    # (`build_tuple()` against main 4b5e9ca1's: the `libraries: tools/external_library.py` row
+    # and no other.)
+    "build-6": "81bba0d8861726014f6630ad017c953a0900ecd0055b29e383844ddb8279ac0d",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -2503,6 +2534,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # string costs nothing more. (`execute_tuple()` against main fd4f3619's: the
     # `Conductor._execute_inproc` row and no other.)
     "execute-24": "bead4eb42863decc107ac0d4aaae10c50ccd57de894374445f2d7d6391c7c877",
+    # execute-25 (issue #724 PR-3, 2026-11-26): `tools/external_library.py` `facts_text`'s docstring names the Compile and Generate leaves that
+    # read the block instead of the deleted judge. Comment-only; bumped rather than re-pinned
+    # because PR-3 re-derives every row from `Generate` anyway, so the version string costs no run.
+    # (`execute_tuple()` against main 4b5e9ca1's: the `libraries: tools/external_library.py` and
+    # `capture store: tools/capture_store.py` rows and no other; the second is render-23's edit.)
+    "execute-25": "f828e7c27de98b883cb9e1f3961d6974a2c57a79c8f64220819739a56c0cefbc",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2822,6 +2859,13 @@ PINNED_VERDICT: dict[str, str] = {
     # (`verdict_tuple()` against main fd4f3619's: the
     # `Conductor._author_derived_validate_artifacts` row and no other.)
     "verdict-23": "b2030ee181c01455b240246f40e9654163d84a4197d2737cd9a43dccfdeaf3a9",
+    # verdict-24 (issue #724 PR-3, 2026-11-26): `tools/capture_store.py`'s module docstring stops naming the judge's excerpt among the capture
+    # store's readers, the judge having been deleted in PR-2. Comment-only; bumped rather than
+    # re-pinned because PR-3 re-derives every row from `Generate` anyway (decision recorded in
+    # the plan's PR-3), so the version string costs no run.
+    # (`verdict_tuple()` against main 4b5e9ca1's: the `capture store: tools/capture_store.py` row
+    # and no other.)
+    "verdict-24": "4ea355849a62f92d9c03c3dcd29aa6247ae5acbf6cd298a658accec7a37243b3",
 }
 
 

@@ -5,7 +5,9 @@ The `parallel_directives` capability, stated like the OpenMP backend's
 CUDA on a GPU that has counted loops (the language backend's `source_reading.counted_loops`) must
 carry at least one kernel — a `__global__` function or a `<<<...>>>` launch — unless the bundle's
 `target_lowering_plan.parallelization` explicitly declines CUDA. It is a PRESENCE floor only;
-whether the kernels cover the loops the plan names is `Generate.verify` G6's judgment. The
+whether the kernels cover the loops the plan names is held by nothing deterministic beyond this
+floor (the plan is a record; since issue #724 PR-3 `Generate.verify` reviews the source against
+the Controlled Spec, not against the plan). The
 validator decides which node kinds it is asked of (never an `infrastructure` node).
 
 Stdlib only.
@@ -58,8 +60,9 @@ def launch_violations(texts: dict[Path, str]) -> list[str]:
     """The launch-configuration floor (issue #512): a leaf source that launches a kernel (`<<<`,
     in code) reads the run's threads per block, `spec2science::launch_block_size`, somewhere in its
     code, and no source writes it. A NECESSARY condition only: a source that names the variable
-    and still launches some kernel with a literal block passes, and is `generate.verify` G6's
-    finding. What it catches is the source that never takes the host's block at all — the shape
+    and still launches some kernel with a literal block passes, and nothing deterministic holds
+    it (the plan review that named it went in issue #724 PR-3; a block size leaves no returned
+    value wrong). What it catches is the source that never takes the host's block at all — the shape
     of every `cpp_gpu` problem model certified before the block was imposed, each launching with a
     literal block of its own (`const int block = 128;`, `constexpr int kBlock = 256;`, ...), under
     which the block-size sweep runs one configuration and records it as several.
@@ -104,7 +107,7 @@ def _cuda_cpp_gpu_remedy(model_file: Path, counted: int) -> str:
         f"source has {counted} counted `for` loop(s) and not one kernel — move the "
         "parallelizable loops into a `__global__` kernel launched with `<<<grid, block>>>`. Only "
         "when no loop can run on the device is `\"model\": \"none\"` in the plan the answer, with "
-        "the reason stated; the independent reviewer holds that declaration to the loops")
+        "the reason stated")
 
 
 _FLOORS: dict[tuple[str, str], PresenceFloor] = {

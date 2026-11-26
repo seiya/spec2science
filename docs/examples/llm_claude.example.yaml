@@ -62,8 +62,8 @@
 # expensive ones.
 #
 # `compile.verify` is where it goes: the smallest leaf, re-run in 3 of 93 nodes, reading an IR
-# the deterministic `compile.static` gate has already proved clean — and both `generate` leaves
-# read that same IR afterwards.
+# the deterministic `compile.static` gate has already proved clean — and the `generate.generate`
+# producer reads that same IR afterwards (as the harness reviewer does).
 #
 # Raising `generate.generate` above `medium` is the obvious next question and is deliberately
 # left open. Each notch costs on every attempt, so it only pays if it lifts the first-try rate,
@@ -123,8 +123,8 @@ phases:
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # The IR reviewer. Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR
       # seeded in its tree, written as one verdict document, `verdict.json`. The cheapest leaf
-      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` leaves read the same IR
-      # afterwards. The only leaf this file economises, and it does so by model tier —
+      # to be wrong in: 3 of 93 nodes re-ran it, and the `generate.generate` producer reads the
+      # same IR afterwards. The only leaf this file economises, and it does so by model tier —
       # effort stays at the generation default here as everywhere else.
       verify:
         provider: claude_cli

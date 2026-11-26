@@ -83,8 +83,8 @@ over the code only (`tools/backends/parallel/cuda/directives.py`). The floor doe
 `infrastructure` node. A pointwise operation (`BUNDLE_BINDING.md` §2) defines no kernel and
 launches nothing, while its body may hold a counted loop over its fixed extent (the three
 components of a face): its plan declares `"model": "none"`, with the reason that its consumers'
-kernels call it once per element, which exempts it from the floor and which `generate.verify`
-holds to the binding (the producer and the reviewer are both told). The device trace
+kernels call it once per element, which exempts it from the floor (the producer is told the
+binding). The device trace
 (`DEVICE_TRACE.md`) asks nothing of it; its device path is exercised by the traced runs of the
 consumers whose kernels call it.
 
@@ -95,7 +95,7 @@ the missing result depends on what its outputs held, and the device trace below 
 rule. A host fallback — a path that recomputes a kernel's
 result on the host when an allocation, copy, launch or synchronize fails — is forbidden: it makes a
 run whose kernels never executed produce correct-looking state. The producer is told (rule
-`target_lowering_floor`), `generate.verify` holds it (checklist G6), and `Validate.execute` reads
+`target_lowering_floor`), and `Validate.execute` reads
 for it: the run is traced on the device, and a kernel the node's sources define that no case executed
 fails the run (issue #307). Measured on R4-b PR-6's billed run: a flux component with such a
 fallback passed Validate at a site where every kernel launch failed.
@@ -103,8 +103,9 @@ fallback passed Validate at a site where every kernel launch failed.
 Neither the floor nor the trace sees whether a kernel does its loop's work: the floor asks that a
 kernel exist, and the trace that each defined kernel ran at least once. A loop the plan puts on
 the device that the source computes on the host — beside a stub kernel, or behind a branch that
-sends every case the run covers to the host (a size threshold above them) — is `generate.verify`'s
-to fail (G6). A loop of the model source the plan keeps on the host is the plan's claim, held
+sends every case the run covers to the host (a size threshold above them) — is held by no check
+since issue #724: the spec-relative `generate.verify` finds a lowering only where it makes a
+returned value wrong. A loop of the model source the plan keeps on the host is the plan's claim,
 like a declared `none`: its reason must be about the loop itself (a carried dependence, a
 reduction, a copy that only reshapes host state), not about a gate or a run in which a kernel did
 not execute. The
@@ -146,7 +147,8 @@ value is one more output, whether or not its `return` names anything.
   when the operation's header gives it an ARRAY output (a non-const view, an owning array or
   vector reference, a pointer), one of its array outputs — a guard flag reaching `ok` does not
   stand for a discarded flux. The Fortran binding pools the candidates of every call; neither
-  checks every written name, and `Generate.verify` G5 is the authority on the rest. A call to a
+  checks every written name; for the rest, a dependency result the source discards is a
+  `Generate.verify` finding where it makes a returned value differ from what the spec states. A call to a
   function or kernel the model source defines that calls a dependency operation — directly or
   through another such function — is a dependency call of its caller too, whose candidates are
   the actuals at those of the callee's output parameters that the dependency's result reaches
@@ -169,7 +171,8 @@ value is one more output, whether or not its `return` names anything.
   an argument is not followed into it: a launcher with no parameter, `void run_faces() {
   faces<<<...>>>(g_u, g_f); }`, stands for no dependency call in its caller, so a flux it
   discards passes this gate — which is why the allocation default (§6 A.1) hands a kept buffer
-  to every kernel and helper as an argument, and why `Generate.verify` G5 holds the rest. A
+  to every kernel and helper as an argument; past the gate such a discard is a `Generate.verify`
+  finding only where it makes a returned value wrong. A
   reach over namespace-scope names is not attempted: one refused correct stage helpers that read
   the buffers while a local alias, a struct member and a reassignment still escaped it (#380
   PR-2). Resetting a pointer to
@@ -218,9 +221,9 @@ already holds, and launches per element. The producer's default is three points.
 `target_lowering_plan` says nothing else; it is the baseline of the core workflow, and the plan is
 fixed once Generate certifies the bundle (`docs/IMPL_PLAN_SPEC.md` §Position). A plan that states
 another allocation, transfer or launch shape in its `accelerator_mapping` object, with a reason
-about the operation, is the producer's own claim, and `generate.verify` holds the source to that
-plan (G6). The finding is a source that departs from the stated shape, or from the default while
-the plan is silent; the choice itself is never one. The optimization flow (`Tune`, whose
+about the operation, is the producer's own claim and record. No check holds the source to that
+plan, or to the default while the plan is silent (`generate.verify` finds a lowering only where
+it makes a returned value wrong); the choice itself is never a finding. The optimization flow (`Tune`, whose
 variants override the lowering plan, `accelerator_mapping` included: `docs/TUNING_WORKFLOW.md`
 §The override-allowed boundary) tries, measures and selects among these shapes freely,
 per-call allocation and cross-unit inlining by `-dlto` included. A pointwise dependency called
@@ -277,8 +280,8 @@ they never name the harness (§3's rule is unchanged), and never assign it.
   `gridDim.x * blockDim.x`, never by a literal.
 
 A literal block size, a block size chosen from the device's properties or an occupancy query, or
-a block size that differs between launches is `generate.verify`'s finding (checklist G6): it
-makes the sweep compare runs of one configuration. Choosing the block size is not taken from the
+a block size that differs between launches makes the sweep compare runs of one configuration;
+beyond the gate below, no check holds it (it makes no returned value wrong). Choosing the block size is not taken from the
 optimization flow: `execution.block_size` is the one target-profile field a `Tune` variant may
 override (`docs/TUNING_WORKFLOW.md` §The override-allowed boundary), so a variant that tries
 another block runs every launch at it, is measured and selected like any other, and is still
@@ -291,11 +294,11 @@ The `Generate.gate` static check holds a necessary condition of B.1
 source whose code launches a kernel (`<<<`) and never names `spec2science::launch_block_size` is
 refused, and so is a source that writes it through its qualified name (an assignment, compound or
 plain, or an increment; a local, parameter or member that merely shares the name is not refused,
-and a write through `using` or a reference is G6's). That is the shape every `cpp_gpu` problem
+and a write through `using` or a reference is held by no check). That is the shape every `cpp_gpu` problem
 model certified before the block was imposed had: each launched with a literal block of its own
 (`const int block = 128;`, `constexpr int kBlock = 256;`, ...). Beyond it no gate reads B.1–B.3: a source that names the variable and
 still launches one kernel with a literal passes the floor, because a launch's configuration is an
-expression a pattern over the source does not evaluate, and that launch is G6's. What the run
+expression a pattern over the source does not evaluate, and no check holds that launch. What the run
 records is the block size the harness reports (`perf.json#parallelism.block_size`), which the
 quality check compares with each shape's; it says the harness read the variable, not that
 every kernel used it.

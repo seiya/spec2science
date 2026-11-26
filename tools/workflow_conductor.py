@@ -196,8 +196,8 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #     dominates a co-occurring lint content-fail — the same order as today, only sooner).
     #   - static (Conductor._gate_static_check): runs validate_pipeline_semantics --stage
     #     post_generate + validate_workspace_root; the verify leaf no longer invokes them, so
-    #     verify is a pure LLM semantic (G1-G7) pass reached only on a deterministically-clean
-    #     source. Runs ONLY when lint AND syntax both pass — a dirty source gets the findings
+    #     verify is a pure LLM spec-relative semantic pass reached only on a
+    #     deterministically-clean source. Runs ONLY when lint AND syntax both pass — a dirty source gets the findings
     #     of the checker that read it rather than a second report (recorded
     #     checkers.static.status="skipped", skipped_reason="lint_or_syntax_failed"). The gate
     #     routes its unioned findings back to generate.generate via a warm-resume reopen
@@ -594,7 +594,7 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # launches no kernel on the cases' paths, or whose every launch fails on its own account (an
 # invalid launch configuration), reaches this class too, and the remedy names
 # `--rederive generate` for it. `Generate.gate`'s presence floor does not stop either before the
-# run — it asks only that a kernel exist; verify G6 is the one rule there, for the first. A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
+# run — it asks only that a kernel exist, and since issue #724 PR-3 no rule before the run holds the first (the spec-relative verify finds a host loop only where it makes a returned value wrong). A run in which only SOME defined kernels ran is `post_execute_violation`, warm.
 #
 # `oracle_disagreement` (issue #680, operator decision O5) is a run whose own tests pass and
 # whose state disagrees with its node's oracle. The host cannot tell which side is wrong — the
@@ -1103,8 +1103,9 @@ def _harness_controlled_spec_sections(text: str) -> str:
     its prohibitions — as the harness `generate.generate` producer is seeded them (issue #644 P4b, an operator decision
     recorded on the issue).
 
-    Every other producer reads no `controlled_spec.md` (`phase_02_generate.md` §2-1): the IR
-    carries the algorithm. A harness's contract is the behaviour of each published operation
+    The default-shape producer reads the whole `controlled_spec.md` as its algorithm authority
+    since issue #724 (`phase_02_generate.md` §2-1); the harness producer keeps these sections
+    beside its IR. A harness's contract is the behaviour of each published operation
     and of the self-test in each case, and the audit on the issue found seven rules of it on
     every harness, five more on one and nearly all of the distributed operations' on another
     that no seed stated; restating them in a seeded document had left the next omission to be
@@ -1163,8 +1164,8 @@ def _gate_guards_section(text: str) -> str:
 # `docs/workflow/phases/phase_02_generate.md` §2-2 — as it reaches the pure `generate.verify`
 # reviewer (issue #143). Before it, the routing consequence of `issue_severity` was stated in six
 # documents and the CHOICE of value in none, so a reviewer graded a contract-conforming bundle
-# `major` and the run terminalized `fail_closed`. G1-G7 are outside the slice: they are already
-# the template's own checklist, and re-inlining them would state one rule twice.
+# `major` and the run terminalized `fail_closed`. The definition of a finding is outside the
+# slice: it is already the template's own text, and re-inlining it would state one rule twice.
 _SEVERITY_RUBRIC_BEGIN_RE = re.compile(r"^#### Severity of a finding(?:\s|$)")
 _SEVERITY_RUBRIC_END_RE = re.compile(r"^## On-failure behavior[ \t]*$")
 _ANY_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
@@ -6256,19 +6257,17 @@ class Conductor:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
         string the renderer data-fences. All data is host-resolved from disk here (the leaf has
         no filesystem): the harness capability manifest (A6), the target profile
-        (`_leaf_target_profile_document`), the lowered IR, the tests, and the host-rendered
-        runner. Mirrors the must-read
-        set the agentic `generate.generate` leaf reads.
+        (`_leaf_target_profile_document`), the lowered IR, the node's `controlled_spec.md`, the
+        tests, and the host-rendered runner.
 
-        Per phase_02 §2-1 the producer does NOT read controlled_spec.md — `spec.ir.yaml` is the
-        sole carrier of the algorithm a generate leaf implements. (A pure-5 INTERIM carve-out once
-        inlined controlled_spec.md into this producer context to close a producer-blind /
-        checker-sighted asymmetry against a thin `compile` roll; a pure-8 removal was reverted, an
-        unrelated pure-9 distillation kept it live, and it was finally removed at pure-10 once the
-        `compile`-side IR self-sufficiency guarantees landed — the strengthened lowering rule plus
-        the deterministic `Compile.static` local-op lowering presence floor. The pure
-        `generate.verify` reviewer still reads controlled_spec.md by design — §2-2, see
-        `_build_leaf_verify_context` — because it verifies the source against it.)
+        Per phase_02 §2-1 the producer reads controlled_spec.md as the authority for the
+        algorithm — what is computed, its guards and refusals included — and the IR for the
+        calling interface, the cases and the I/O contract (issue #724 change 1). History: a pure-5
+        interim carve-out once inlined controlled_spec.md here; it was removed at pure-10, when
+        the IR was made the sole algorithm carrier behind the lowering rule and the
+        `Compile.static` local-op lowering presence floor (both stay). #724 measured that an
+        IR-only producer and an IR-relative review let a guard-ordering defect through and
+        rejected most correct sources, and reversed the removal.
 
         The runner is injected VERBATIM (no interface extraction): it is the consumer of the
         operations the leaf must publish. Injecting the rendered artifact rather than a distilled
@@ -6278,6 +6277,8 @@ class Conductor:
         from tools.codegen_bundle import harness_capability_manifest_document_for
         from tools.target_profile import harness_capabilities
         ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
+        controlled_spec_text = self._leaf_node_document(
+            f"{refs.spec_path}/controlled_spec.md", "controlled_spec")
         tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
         # The runner RAISES on an unreadable file, as the ir/tests reads above do.
         # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
@@ -6302,6 +6303,7 @@ class Conductor:
                 indent=2, ensure_ascii=False),
             "target_profile": self._leaf_target_profile_document(),
             "ir_document": ir_text,
+            "controlled_spec_document": controlled_spec_text,
             "tests_document": tests_text,
             "runner_document": runner_text,
         }
@@ -7507,6 +7509,8 @@ class Conductor:
             "harness_capabilities": "harness_capabilities.json",
             "target_profile": "target_profile.json",
             "ir_document": "spec.ir.yaml",
+            # The default shape's producer alone carries this key (issue #724 change 1).
+            "controlled_spec_document": "controlled_spec.md",
             "tests_document": "tests.md",
             # The harness producer alone carries this key (`_build_leaf_harness_context`).
             "controlled_spec_sections_document": "controlled_spec_sections.md",
@@ -8857,16 +8861,16 @@ class Conductor:
 
     def _build_leaf_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.verify` reviewer sees, each value a plain
-        string the renderer data-fences. Unlike the producer, the reviewer DOES read
-        controlled_spec.md (the human-authored behavioral contract it verifies against — phase_02
-        allows it for verify but forbids it for generate) and the producer's `codegen_bundle.json`
-        (the artifact under review), but NOT the host-rendered runner/Makefile glue (deterministic,
-        not the reviewer's concern). All host-resolved from disk here so the closed-context prompt
-        supplies the complete review input.
+        string the renderer data-fences. The review is spec-relative (issue #724 change 2): the
+        reviewer reads controlled_spec.md and the tests (its reference), the target profile, the
+        severity rubric and the producer's `codegen_bundle.json` (the artifact under review). It
+        does NOT read the IR — the published interfaces are the spec's §5.1 and `DEPENDENCIES.md`
+        — nor the host-rendered runner/Makefile glue (deterministic, not the reviewer's
+        concern). The harness reviewer keeps the IR (`_build_leaf_harness_verify_context`).
 
         Every document here has ONE fail-closed disposition: an unreadable file RAISES
         (`UnicodeError` included, since a decode error is a ValueError and not an OSError) —
-        the four NODE artifacts through `_leaf_node_document` since issue #467, and the rubric
+        the three NODE artifacts through `_leaf_node_document` since issue #467, and the rubric
         below — and the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned. Not for
         the reason recorded here until issue #169's review measured it: a blank value does NOT
@@ -8893,9 +8897,9 @@ class Conductor:
             "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
             "tests_document": self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests"),
-            "ir_document": self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
-            # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
-            # `target_lowering_plan` and the source against it — the producer's own document.
+            # The target the source was generated for (issue #284) — the producer's own
+            # document. The spec-relative review does not judge its `parallel.backend` and
+            # `execution`; it names what the driver does on the target.
             "target_profile": self._leaf_target_profile_document(),
             "severity_rubric_document": severity_rubric,
             "bundle_document": self._leaf_node_document(
@@ -8905,13 +8909,14 @@ class Conductor:
     def _build_leaf_harness_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.verify` reviewer sees on the HARNESS shape.
 
-        The four node artifacts are the m3c reviewer's (`_build_leaf_verify_context`) — the
-        human-authored behavioral contract it verifies against, the tests, the IR, and the bundle
-        under review — and every one raises, as the m3c reviewer's do. The severity rubric is the
-        same slice, and raises for the same reason.
+        The four node artifacts are the human-authored behavioral contract, the tests, the IR,
+        and the bundle under review, and every one raises, as the m3c reviewer's do. The severity
+        rubric is the same slice, and raises for the same reason.
 
-        What differs is one document: a harness bundle carries an executable entry, which the m3c
-        bundle does not, so this reviewer also receives `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` whole
+        What differs from the m3c reviewer (`_build_leaf_verify_context`): this reviewer keeps
+        the IR — the harness review is code-vs-IR against the runner-output contract, and the
+        spec-relative change of issue #724 did not reach it (its O5) — and a harness bundle
+        carries an executable entry, which the m3c bundle does not, so this reviewer also receives `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` whole
         — the same document the producer wrote against, so the two are judged by one text rather
         than by the reviewer's recollection of it."""
         from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
@@ -8925,7 +8930,7 @@ class Conductor:
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
             "tests_document": self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests"),
             "ir_document": self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
-            # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
+            # The target the source was generated for (issue #284): H9 judges the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
             "target_profile": self._leaf_target_profile_document(),
             "runner_output_contract_document": self._runner_output_contract_with_binding(
@@ -9042,7 +9047,6 @@ class Conductor:
         ("generate", "verify", ""): MappingProxyType({
             "controlled_spec_document": "controlled_spec.md",
             "tests_document": "tests.md",
-            "ir_document": "spec.ir.yaml",
             "target_profile": "target_profile.json",
             "severity_rubric_document": "SEVERITY_RUBRIC.md",
         }),
@@ -12192,8 +12196,8 @@ class Conductor:
 
     def _gate_static_check(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Generate.gate static checker: run the purely-static post_generate gates that the
-        verify leaf used to own (so verify is now a pure LLM semantic G1-G7 pass reached only
-        on a deterministically-clean source). Returns the `static` section of gate_meta (status /
+        verify leaf used to own (so verify is now a pure LLM spec-relative semantic pass reached
+        only on a deterministically-clean source). Returns the `static` section of gate_meta (status /
         failure_category / failure_excerpt); `_gate_inproc` composes the single gate_meta.json
         verdict and only calls this when lint AND syntax both passed. Runs
         validate_workspace_root.py (bare, as the leaf did; it takes no baseline since issue #445) and

@@ -2595,8 +2595,10 @@ class ToolAdapterTests(unittest.TestCase):
 
     def test_the_leaf_is_told_the_device_callable_binding(self) -> None:
         """Issue #380 (B1): what a `cuda_cpp` leaf reads about a pointwise operation agrees with
-        what the header and the pin do — the producer's rule 6a, the reviewer's dependency-call
-        item, the language's legality section and the lint flags it is shown. A literal guard on
+        what the header and the pin do — the producer's rule 6a, the language's legality section
+        and the lint flags it is shown. (The reviewer's dependency-call item and its pointwise
+        paragraph went with the spec-relative review of issue #724 PR-3: the reviewer judges what
+        a source computes, and the call rule is the template's, language-neutral.) A literal guard on
         the removed phrasing ("a HOST function: no `__device__`") as much as on the new one: a
         leaf told both would be told to define the operation in a way the pin refuses."""
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
@@ -2604,8 +2606,6 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertIn("define it with exactly that pair", rule)
         self.assertIn("`__host__ __device__`", rule)
         self.assertNotIn("A published operation is a HOST function", rule)
-        verify = prompts.fragments("generate_verify")["dependency_call_consistency"]
-        self.assertIn("`__host__ __device__` may be called from inside a kernel", verify)
         legality = (REPO_ROOT / "docs/backends/language/cuda_cpp/GENERATE_RULES.md").read_text(
             encoding="utf-8")
         legality = legality[legality.index("## Legality and gate guards"):]
@@ -2616,21 +2616,19 @@ class ToolAdapterTests(unittest.TestCase):
         # Round 1 of #380 PR-1's review: what the producer and reviewer read beside the binding.
         # The lint argv rule (1) quotes is the declared one, derived from the code; the syntax
         # argv carries the build's relocatable device code; a pointwise operation's plan
-        # declares `none`, and the reviewer reads that as the binding rather than a finding.
+        # declares `none`.
         rules = prompts.fragments("generate_generate")["authoring_rules_1_to_4"]
         self.assertIn(f"`{' '.join(nvcc_lint.check_argv())}`", rules)
         self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", rules)
         self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", legality)
         self.assertIn('declares `"model": "none"`', rule)
-        g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
-        self.assertIn('its plan declares `"model": "none"`', g6)
-        self.assertIn("that is the binding, not a finding", g6)
 
     def test_the_transfer_default_is_told_as_a_recommendation(self) -> None:
         """Issue #380 (A): the producer's default is to allocate a device buffer once, cross the
-        bus once each way and launch once over the range, unless its plan says otherwise; the
-        reviewer holds the source to the plan's stated shape and to the default only where the
-        plan is silent. A literal guard both ways: the removed per-call round trip ("every buffer
+        bus once each way and launch once over the range, unless its plan says otherwise. (Until
+        issue #724 PR-3 the reviewer held the source to the plan's stated shape and to the
+        default where the plan was silent; the spec-relative review judges no lowering.) A
+        literal guard both ways: the removed per-call round trip ("every buffer
         freed on every path") stays out, and the sentences that make the default overridable cannot
         be reworded into a rule with this row green — the optimization flow varies exactly these
         shapes (operator, 2026-10-02). Not caught here: an ADDED sentence contradicting them (only
@@ -2638,30 +2636,20 @@ class ToolAdapterTests(unittest.TestCase):
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         floor = prompts.fragments("generate_generate")["target_lowering_floor"]
         # The override, stated whole: what the default is, when it applies, and that a stated
-        # shape replaces it for the reviewer (round 1 of PR-2's review: with single-word pins,
-        # "DEFAULT" -> "REQUIRED" and "is your own claim" -> "is not accepted" stayed green).
+        # shape replaces it (round 1 of PR-2's review: with single-word pins, "DEFAULT" ->
+        # "REQUIRED" and "is your own claim" -> "is not accepted" stayed green).
         for phrase in ("the DEFAULT use of the device",
                        "they are the lowering you use when your `target_lowering_plan` says "
                        "nothing else",
-                       "inside the plan's `accelerator_mapping` object — is your own claim, which "
-                       "the reviewer holds the source to in place of the default",
+                       "inside the plan's `accelerator_mapping` object — is your own choice, "
+                       "recorded there in place of the default",
                        "allocated once and reused",
                        "otherwise do not free it in the operation",
                        "one launch over the whole range"):
             self.assertIn(phrase, floor)
         self.assertNotIn("every buffer freed on every path", floor)
         self.assertNotIn("free what was allocated", floor)
-        g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
-        for phrase in ("is the one its plan states — or, where the plan says nothing about it, "
-                       "the producer's default",
-                       "That default is a recommendation, not a rule:",
-                       "is the producer's own claim, and you hold the source to it",
-                       "or from the default while the plan is silent — not the choice itself"):
-            self.assertIn(phrase, g6)
-        self.assertNotIn("moves its state to the device and back", g6)
-        self.assertNotIn("freeing what was allocated", g6)
-        for text in (floor, g6):
-            self.assertNotRegex(text, r"(?i)default[^.]*\b(refused|forbidden|is a fail)\b")
+        self.assertNotRegex(floor, r"(?i)default[^.]*\b(refused|forbidden|is a fail)\b")
 
     def test_a_reopened_model_namespace_is_not_listed_in_modules(self) -> None:
         """Issue #384: `validate_bundle` refused a `cpp_gpu` bundle whose two files both listed

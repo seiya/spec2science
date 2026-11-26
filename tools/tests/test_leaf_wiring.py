@@ -63,6 +63,7 @@ def _pure_generate_context() -> dict[str, str]:
         "harness_capabilities": '{"operations": []}',
         "target_profile": "language=fortran build_system=make",
         "ir_document": "algorithm:\n  state_variables: [h]\n",
+        "controlled_spec_document": "the model conserves mass",
         "tests_document": "- test: conserves mass",
         "runner_document": ("program sw_runner\n  use sw_checks, only: &\n    case_run\n"
                             "end program\n"),
@@ -138,7 +139,6 @@ def _pure_verify_context() -> dict[str, str]:
     return {
         "controlled_spec_document": "the model conserves mass",
         "tests_document": "- test: conserves mass",
-        "ir_document": "algorithm:\n  state_variables: [h]\n",
         "severity_rubric_document": (
             "#### Severity of a finding (`issue_severity`)\n"
             "`issue_severity` names the repair a finding calls for.\n"
@@ -584,22 +584,26 @@ class PureRenderTests(unittest.TestCase):
         # The identity block is the tail (variable ids last).
         self.assertGreater(prompt.index("Target node_key:"), prompt.index("Tests"))
 
-    def test_pure_producer_prompt_carries_no_controlled_spec(self) -> None:
-        # pure-10: the producer is spec-blind (phase_02 §2-1). The launch template carries
-        # neither the `Controlled spec` heading nor a `<controlled_spec_document>` slot, and an
-        # incidental `controlled_spec_document` in the context dict (a resume-replayed key, say)
-        # never reaches the prompt. The verify reviewer still reads controlled_spec.md by design
-        # (its own wiring test).
+    def test_pure_producer_prompt_names_the_controlled_spec_seed(self) -> None:
+        # Issue #724 change 1: the producer reads the node's controlled_spec.md as the authority
+        # for the algorithm (phase_02 §2-1). The template names its seed under a label that says
+        # so, and the document itself is a seed of the tree, not inlined: its body never reaches
+        # the prompt, and no `<controlled_spec_document>` slot ships as a literal token.
         ctx = _pure_generate_context()
         ctx["controlled_spec_document"] = "Audusse reconstruction: h_star = max(0, eta - z_b)"
         prepared = ort.prepare_launch_request_payload(
             _workshop_request("generate", pure_context=ctx))
         prompt = prepared["launch_prompt_full"]
         self.assertNotIn("<controlled_spec_document>", prompt)
-        self.assertNotIn("Controlled spec", prompt)
+        self.assertIn("**Controlled spec (the human-authored behavioral contract — the authority "
+                      "for the algorithm you implement", prompt)
+        self.assertIn("In your tree: `controlled_spec.md`.", prompt)
+        self.assertIn("(8) The Controlled Spec is the authority for the algorithm", prompt)
+        # The direction of change 1, which only the drift digest held (round 1: flipping it to
+        # "follow the IR" survived every other row).
+        self.assertIn("Where the two differ on what is computed, follow the Controlled Spec.",
+                      prompt)
         self.assertNotIn("Audusse reconstruction: h_star = max(0, eta - z_b)", prompt)
-        # The template's own bytes carry no controlled_spec surface either.
-        self.assertNotIn("controlled_spec", composed_pure_template("workshop generate.generate"))
         # The harness producer is the exception (issue #644 P4b, an operator decision on its
         # §3 and §4): it
         # is seeded §1 to §4 and §6 of its own node's spec under a name of its own, and its template
@@ -641,7 +645,7 @@ class PureRenderTests(unittest.TestCase):
         req = ort.prepare_launch_request_payload(_workshop_request(
             "verify", repair_findings="verdict is missing findings", repair_strategy="reuse"))
         text = ort._render_leaf_repair_prompt(req)
-        self.assertIn("G1 — case coverage", text)                        # the checklist
+        self.assertIn("Definition of a finding.", text)                  # the checklist
         self.assertIn("do NOT re-check style", text)                     # the gate already ran
         # The rubric had the same shape of hole (#143): the text must arrive with what says
         # the reviewer chooses `issue_severity` BY it. No key-named block, the label instead.
@@ -776,7 +780,7 @@ class PureRenderTests(unittest.TestCase):
         for refused in ("Checks-module contract", "checks-module contract",
                         "CHECKS_MODULE_CONTRACT", "OVERRULE"):
             self.assertNotIn(refused, prompt)
-        self.assertLess(prompt.index("IR (authoritative"),
+        self.assertLess(prompt.index("**Controlled spec ("),
                         prompt.index("Generated CodegenBundle under review"))
 
     def test_pure_verify_prompt_carries_the_severity_rubric(self) -> None:
@@ -793,26 +797,24 @@ class PureRenderTests(unittest.TestCase):
             prompt)
         self.assertIn("the value names the repair the finding calls for, never the weight of "
                       "its consequence", prompt)
-        self.assertIn("fail with the `issue_severity` the seeded severity rubric assigns", prompt)
-        # The checklist must also tell the reviewer that an INPUT-side finding is its to make.
-        # Without it the rubric's `major` had no reachable subject on this transport: G1-G7 are
-        # all code-subject, the checklist said "verify only the code-vs-IR semantics", and the
-        # rubric's own tie-break sends an unsettled subject to `minor` — so an IR that cannot
-        # satisfy a checklist item looped the producer instead of stopping (round 3).
-        self.assertIn("the defect is on the input side — report it, name the input in "
-                      "`last_fail_reason`, and let the seeded severity rubric grade it", prompt)
-        # The clause must not RE-ENUMERATE the rubric's `major` cases. `pure-27` listed one of
-        # four and `pure-28` two of four, each time read as an exhaustive permission and each
-        # time leaving a template-authorized `pass` on the cases it omitted; the rubric is
-        # a seed of the same tree, so the fix is to defer to it rather than to keep two
-        # lists in step (`docs/DEVELOPMENT.md` §Design Policy).
-        self.assertIn("the rubric's `major` bullet enumerates the cases, and this sentence is "
-                      "not a shorter list than that one", prompt)
+        self.assertIn("Every `fail` carries the `issue_severity` the seeded severity rubric "
+                      "assigns", prompt)
+        # The template must also tell the reviewer that an INPUT-side finding is its to make.
+        # Without it the rubric's `major` had no reachable subject on this transport: every
+        # finding the definition names is code-subject, and the rubric's own tie-break sends an
+        # unsettled subject to `minor` — so an input that cannot be met looped the producer
+        # instead of stopping (round 3 of issue #143). Since issue #724 PR-3 the model reviewer
+        # reads no IR, and its one input-side case is the rubric's spec/tests contradiction,
+        # named here as the rubric names it rather than re-enumerated beside it.
+        self.assertIn("where the Controlled Spec and its tests contradict each other on what "
+                      "the source must compute, report it, name the input in `last_fail_reason`, "
+                      "and let the seeded severity rubric grade it", prompt)
         # The refused wording, in the exact spelling this issue removed: it told the reviewer to
         # decide the value from the defect, which is the whole defect.
         self.assertNotIn("the severity the defect warrants", prompt)
-        # Authority before the artifact it judges.
-        self.assertLess(prompt.index("IR (authoritative"), prompt.index("Severity rubric"))
+        # Authority before the artifact it judges; and no IR is the reviewer's (issue #724).
+        self.assertNotIn("IR (authoritative", prompt)
+        self.assertLess(prompt.index("**Controlled spec ("), prompt.index("Severity rubric"))
         self.assertLess(prompt.index("Severity rubric"),
                         prompt.index("Generated CodegenBundle under review"))
 
@@ -932,12 +934,42 @@ class PureRenderTests(unittest.TestCase):
         #     retired keys, and phase_02's scope bullet names a procedure of the checks module and
         #     its counters where it named a callback and a metric. READ: the axis, the tie-breaks
         #     and the pointer are byte-identical, and no severity value moved.
-        "compile": "ba4b635dfd9e25aa14976c8fdafd0c1c96bdfc7a2d87ad890d8cd45c077239d7",
+        #   - issue #724 PR-3 (2026-11-26), compile: the lead's last clause says `spec.ir.yaml`
+        #     is an input of the HARNESS `Generate.verify` reviewer (the model reviewer is not
+        #     seeded it), so a thin lowering takes `major` from that reviewer. READ against 1-9:
+        #     the axis sentence, the three bullets and the tie-breaks are byte-identical; the
+        #     lead still states the disagreement and points at phase_02 §2-2 (5); no value moved.
+        "compile": "6fa4987e6608f9918f66e5f807e67ece1efe9319feb98ae55d72d979808329f3",
         #   - issue #589 PR-1b, generate only: the `major` case "`spec.ir.yaml` contradicts the
         #     checks-module contract" and the bullet about a claim the contract overrules go with
         #     the module. READ: the axis, the tie-breaks and the pointer are byte-identical, the
         #     other `major` cases stand, and no severity value moved.
-        "generate": "e9474e688bb11c43f894d5cd3f8eaa52856af08860a537447d6c9e9cb4fd502e",
+        #   - issue #724 PR-3 (2026-11-26, decision O16, with O5 (a)), generate: the model
+        #     reviewer is spec-relative, so the rubric is rewritten. READ against 1-9:
+        #     (1) the axis sentence is unchanged and the question is "re-run with the finding
+        #     and the same inputs". (2) `minor` = the sources under review, a producer re-run
+        #     fixes it; its examples are the template's definition of a finding (formula, sign,
+        #     constant, limit, branch, operation, refusal, carried state, a dependency call's
+        #     argument order or rank). (3) `major` = an input: a contradiction between
+        #     `controlled_spec.md` and `tests.md` (RUNBOOK §3-1: the `Spec` row), or, for a
+        #     reviewer seeded `spec.ir.yaml` (the harness one, O5 (a)), the IR dropping a
+        #     requirement or lacking what a checklist item requires (RUNBOOK §3-1: the
+        #     cross-phase `Compile` re-derivation); the `ir_inconsistency` literal went with its
+        #     route, and no case names what a gate makes unreachable. (4) `critical` is not
+        #     swallowed: the `minor` universal now says "except the one `critical` names" where
+        #     it was scoped to G1-G7, which is deleted. (5) phase_02's lead still states no
+        #     disagreement; phase_01's pointer holds. (6) both tie-breaks are byte-identical and
+        #     agree: an undecided subject is `minor`, only an input earns `major`. (7) no
+        #     `pass`-side rule entered. (8) every `fail` the model template defines is a code
+        #     subject (`minor`/`critical`) or its one input-side kind (`major`); the harness
+        #     template's checklist findings are code subjects or the IR clause of `major`.
+        #     (9) no example is claimed by two bullets: `minor` lists code defects only, `major`
+        #     input contradictions only.
+        #   READ again (issue #724 PR-3 round 1, same branch): the `minor` bullet's exception
+        #     moved AFTER its list of code findings. Placed before it, the list read as what
+        #     `critical` names, so (4) failed in the other direction (a sign error graded
+        #     `critical`). Nothing else in the slice moved; (1)-(9) answer as above.
+        "generate": "f1cee468bd37aa022fca051bfc8cc6e2ed67ba8be25c89198b6713a21bd5b2ca",
     }
 
     def test_each_rubric_section_number_is_a_heading_of_its_phase_doc(self) -> None:
@@ -1161,9 +1193,9 @@ class PureRenderTests(unittest.TestCase):
                           f"{module}")
 
     def test_runbook_reopen_trigger_path_resolves_in_the_artifact_it_names(self) -> None:
-        """The `ir_inconsistency` arm of §3-1's dev-verify entry sends the operator to run
-        `reopen-phase` BY HAND, and `--trigger-agent-run-id` is the one parameter that is not
-        obvious. The path it names is DRIVEN against the artifact of this failure.
+        """§3-1's dev-verify entry sends the operator to re-derive `Compile` BY HAND when a
+        `major` names the IR (the `ir_inconsistency` literal that once keyed it went with issue
+        #724 PR-3), and `--trigger-agent-run-id` is the one parameter that is not obvious. The path it names is DRIVEN against the artifact of this failure.
 
         Round 3 wrote `failure_analysis.json#original_finding.failed_substep_agent_run_id` here
         and pinned it by asserting that string occurs in `orchestration_runtime.py` — which it
@@ -1433,9 +1465,16 @@ class PureRenderTests(unittest.TestCase):
         # says the conductor composes `dependency_ref` (record-launch no longer re-checks it).
         # READ: same tokens, nothing assigned. Re-taken for issue #724 PR-2: the judge arms
         # (`judge_semantic_review_fail`, `judge_repair_text`) went with `validate.judge`.
-        # READ: same tokens, nothing assigned.
+        # READ: same tokens, nothing assigned. Re-taken for issue #724 PR-3 (2026-11-26): the
+        # `Generate.verify` repair clause says only the harness reviewer, the one seeded the
+        # IR, can name `spec.ir.yaml`, and that a model reviewer's `major` names a
+        # contradiction between `controlled_spec.md` and `tests.md`, repaired per the §3 table.
+        # READ: it states the repair destination of a value the rubric chose and points at
+        # the rubric for the value; nothing assigned. Re-keyed (issue #724 PR-3 round 3): the
+        # "subject question is open" clause now says that of `Compile`'s rubric and names
+        # `Generate`'s input-side cases. READ: still routing and a pointer; nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #a61735b26e2f"),
+         " #17c914289c78"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
@@ -1448,16 +1487,36 @@ class PureRenderTests(unittest.TestCase):
         # emits it now). READ: same, nothing assigned. Issue #705 PR-2 named the directory the
         # recipe starts in and its `--repo-root` (the sample is a Project under `sample/`).
         # READ: same, nothing assigned. Re-taken for issue #724 PR-2: the judge `fail` arm went
-        # with `validate.judge`. READ: same, nothing assigned.
+        # with `validate.judge`. READ: same, nothing assigned. Re-taken for issue #724 PR-3
+        # (2026-11-26): the `major` arm names a finding that names `spec.ir.yaml` (only the
+        # harness reviewer is seeded the IR) where it named `ir_inconsistency`, which is
+        # deleted. READ: it routes a value the rubric chose; nothing assigned.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #f17f411270a8"),
+         " #3168200b4abb"),
+        # Issue #724 PR-3 (2026-11-26): the §3 attribution table's `Generate` verification row
+        # says which phase a `major` names (the spec when `controlled_spec.md` and `tests.md`
+        # contradict, `Compile` when the harness reviewer names the IR). READ: it attributes a
+        # value the rubric chose to its repair phase; nothing assigned.
+        ("docs/RUNBOOK.md: | Generate verification fail (the source disagrees with what"
+         " #8fd349ddd99e"),
+        # Issue #724 PR-3 (2026-11-26): phase_01's paragraph on what reopens `Compile` replaced
+        # its `Validate.judge` sentence, and ends naming the harness reviewer's `major` that
+        # names the IR as reaching `Compile` the same way in `prod`. READ: it routes; nothing
+        # assigned.
+        ("docs/workflow/phases/phase_01_compile.md: `Validate.execute` reopens `Compile` by itself only on a fai"
+         " #83a7abf5dd6e"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
         # §Severity of a finding for the value. READ: it routes, and assigns nothing. Round 2
-        # said which re-run gets the findings. READ: same.
-        ("docs/workflow/phases/phase_02_generate.md: - When `Generate.verify` judges that "
-         "\"the IR itself has an e #755b3fd0cb0b"),
+        # said which re-run gets the findings. READ: same. Issue #724 PR-3 (2026-11-26) deleted
+        # the `ir_inconsistency` route; the bullet is rewritten as the route of a
+        # `Generate.verify` `major` by the input it names (the IR, which only the harness
+        # reviewer can name; a contradiction between `controlled_spec.md` and `tests.md`,
+        # repaired by the operator). It points at §Severity of a finding for the value. READ:
+        # it routes; nothing assigned.
+        ("docs/workflow/phases/phase_02_generate.md: - A `Generate.verify` `major` names an "
+         "input (§Severity of a #f7f20e152773"),
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: no leaf reads a `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.
@@ -1495,8 +1554,9 @@ class PureRenderTests(unittest.TestCase):
         # issue #534 PR-J4-b). READ: no severity word moved, the same pointer to the rubric,
         # nothing assigned. Re-taken for issue #589 PR-1b: the contract's clause goes with the
         # module; READ: the rubric's clause is the same, and nothing is assigned.
-        "tools/prompt_templates/workshop_generate_verify.txt: Review checklist (the semantic "
-        "items to judge the bundle aga #f9dcb2d216e3",
+        # Issue #724 PR-3 deleted that `Review checklist` line with G1 to G7 (the model reviewer
+        # is spec-relative; the template defines a finding and names no severity value beside
+        # it), so the entry is gone: its subject, a pointer beside a checklist, no longer exists.
         "tools/prompt_templates/workshop_generate_verify_harness.txt: One kind of finding is NOT "
         "code-vs-IR and is still yours to  #a06371e39fb9",
         ("tools/prompt_templates/workshop_compile_verify.txt: Output contract (verify verdict): "
@@ -2796,8 +2856,8 @@ class PureRenderTests(unittest.TestCase):
                     f"and every case must have a destination in `docs/RUNBOOK.md` §3-1.\n"
                     f"  4. `critical` = {artifact[step]} cannot be the base of a repair at "
                     f"all, and the `minor` bullet's universal must not swallow it — phase_01 "
-                    f"defers explicitly, phase_02 scopes its universal to the G1-G7 checklist "
-                    f"instead; either works, silence does not.\n"
+                    f"defers explicitly, phase_02's universal excepts \"the one `critical` "
+                    f"names\"; either works, silence does not.\n"
                     f"  5. The lead still says which value this phase gives a defect the OTHER "
                     f"phase grades differently. phase_01 states the disagreement and points at "
                     f"{other[step]}; phase_02 does not, and the pointer test is what holds "
@@ -2807,7 +2867,7 @@ class PureRenderTests(unittest.TestCase):
                     f"  7. No `pass`-side rule has entered the span; this rubric grades a "
                     f"FAILING finding only.\n"
                     f"  8. Every `fail` the phase's verify leaf can report — its checklist is "
-                    f"its launch template, `tools/prompt_templates/pure_{step}_verify.txt`, "
+                    f"its launch template, `tools/prompt_templates/workshop_{step}_verify*.txt`, "
                     f"since Z4 (issue #171) deleted the verify `SKILL`s — can still be graded "
                     f"by one of the three bullets.\n"
                     f"  9. The bullets do not CONTRADICT each other: no example in one bullet's "
@@ -2923,26 +2983,37 @@ class PureRenderTests(unittest.TestCase):
                 slots = set(ort._LEAF_PLACEHOLDER_RE.findall(templates[name]))
                 self.assertEqual(slots & set(keys), set(), name)
 
-    def test_pure_verify_prompt_scopes_the_deterministic_floor(self) -> None:
-        # Issue #22 was an asymmetry between the producer prompt and the reviewer's rule. This
-        # template is the contract the `generate.verify` leaf reads — it reads no SKILL — so
-        # an amendment landing in the verify SKILL and phase_02 but not here re-creates the same
-        # asymmetry with the roles swapped, which is exactly what happened until this pin existed.
+    def test_pure_verify_prompt_does_not_review_the_lowering(self) -> None:
+        # Issue #724 PR-3 deleted the reviewer's band above the deterministic floor (the old
+        # G6, and the row that pinned its scope): the spec-relative review judges what a source
+        # computes, so the `target_lowering_plan` is not a reference, and a parallel construct
+        # is a finding only where it makes a returned value wrong. The two halves are pinned,
+        # because either alone lets the review drift back into a plan check, or out of a race.
         prompt = ort.prepare_launch_request_payload(
             _workshop_request("verify"))["launch_prompt_full"]
-        for token in (
-            "G6 — target lowering",
-            # the floor exists ...
-            "already settled deterministically by the `Generate.gate` static check",
-            # ... and its guarantee is SCOPED, so the reviewer is not told to stop looking where
-            # the floor never ran.
-            "That floor does not run on any other node kind",
-            # Every exemption the floor actually has must appear here: three separate review
-            # rounds found this list telling the reviewer to stop checking existence on a
-            # node shape where no floor runs.
-            "wraps before it can be classified",
-        ):
-            self.assertIn(token, prompt)
+        self.assertIn("The bundle's `target_lowering_plan` is the producer's note on how it "
+                      "lowered the computation; it is not a reference of this review.", prompt)
+        self.assertIn("only a construct that makes a returned value wrong, such as a data race "
+                      "or an uninitialised read, is", prompt)
+        # The sentences that hold the two classes only this review holds (issue #724), and the
+        # exclusion that keeps it from refusing what the producer is told to write, are pinned
+        # by literal: round 2 found each red only on the drift digest, which a re-pin passes.
+        for held in (
+                # the guard-ordering class
+                "Check in particular every invalid or degenerate input the Controlled Spec's "
+                "guards concern",
+                # a source computing something else (hardcoded per-case values included)
+                "a different formula, sign, factor or constant",
+                "state carried between calls that the Controlled Spec does not allow",
+                # the producer's rule (8) exemption, mirrored (round 2: a device-call check on
+                # `cuda_cpp` read as an added refusal)
+                "a report of a failure the runtime itself returns (an I/O, allocation or "
+                "device-call status) where that report changes no answer for an input the "
+                "Controlled Spec accepts"):
+            self.assertIn(held, prompt)
+        for refused in ("G6 — target lowering", "A plan the source does not follow",
+                        "already settled deterministically by the `Generate.gate` static check"):
+            self.assertNotIn(refused, prompt)
 
     # Issue #399: a sentence that names `ok` beside a logical value gives that value a meaning.
     # A bound on growth, not a detector: a rewording that names no value ("reported through
@@ -2963,8 +3034,11 @@ class PureRenderTests(unittest.TestCase):
 
     def test_the_plan_is_about_the_model_and_ok_is_given_no_value_on_every_target(self) -> None:
         """Issues #399 / #400, on every (language, parallel) pair a target composes. #400: the CUDA
-        G6 and producer fragments scope their host-loop sentences to the model source, and the
-        producer's rule (7) says the plan is about the model source. #399: no sentence of either
+        producer fragment scopes its host-loop sentence to the model source, and the producer's
+        rule (7) says the plan is about the model source. The reviewer's half of #400 (G6's
+        plan rule and the CUDA reviewer's host-loop sentences) went with G6 in issue #724 PR-3:
+        the plan is not a reference of the spec-relative review, which is what the reviewer's
+        rows now pin, with the deleted sentences pinned absent. #399: no sentence of either
         composed prompt names `ok` beside a logical value but the one row below reads, which says
         a value written beside a computed state is no answer. Each sentence is pinned WHOLE, so a
         reversal or a deleted clause is red. (The checks module's half — G6's exemption of its
@@ -3003,16 +3077,16 @@ class PureRenderTests(unittest.TestCase):
                 verify = composed("workshop generate.verify", language, parallel)
                 generate = composed("workshop generate.generate", language, parallel)
                 self.assertIn(
-                    "a plan that leaves a `cpu`+`openmp` target's parallelizable loops of the "
-                    "model source serial without saying why is a fail", verify)
+                    "The bundle's `target_lowering_plan` is the producer's note on how it "
+                    "lowered the computation; it is not a reference of this review.", verify)
+                self.assertNotIn("serial without saying why is a fail", verify)
                 self.assertIn("The plan is about the model source", generate)
                 for text in (verify, generate):
                     self.assertNotIn("checks module", text)
+                self.assertNotIn("A loop of the model source the plan keeps on the host",
+                                 verify)
+                self.assertNotIn("kept on the host without such a reason", verify)
                 if language == "cuda_cpp":
-                    self.assertIn("A loop of the model source the plan keeps on the host is "
-                                  "the plan's own claim", verify)
-                    self.assertIn("a plainly parallelizable loop of the model source kept on "
-                                  "the host without such a reason", verify)
                     self.assertIn("A loop of the model source you do keep on the host is named "
                                   "in the plan", generate)
                 for text in (verify, generate):
@@ -3417,17 +3491,22 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
     #: The physics producer's (issue #534 step 1) and reviewer's (step 3) workshop templates.
     #: (Their pure twins, composed from the same fragments, went in issue #534 PR-J4-b.)
     _KEYS = ("workshop generate.generate", "workshop generate.verify")
-    #: The opening words of the OpenMP floor paragraph in each template (the fragment's text).
+    #: The opening words of the OpenMP paragraph in each template (the fragment's text): the
+    #: producer's floor, and (issue #724 PR-3, decision O3 (a)) the reviewer's statement of
+    #: what makes a returned value wrong on that backend. (It does not restate the whole-case
+    #: default: on `mpi+openmp` that is false beside the `mpi` paragraph; round 1.)
     _OPENMP_FLOOR = {
         "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
-        "workshop generate.verify": "on a `component`/`problem` node whose target is "
-                                    "cpu+openmp+",
+        "workshop generate.verify": "On this backend the model's own loops may run on several "
+                                    "threads",
     }
 
-    #: The opening words of the MPI floor paragraph in each template (issue #316, R4-c PR-4).
+    #: The opening words of the MPI paragraph in each template (issue #316, R4-c PR-4; the
+    #: reviewer's rewritten with issue #724 PR-3).
     _MPI_FLOOR = {
         "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `mpi`",
-        "workshop generate.verify": "on a `component`/`problem` node whose target is cpu+mpi+",
+        "workshop generate.verify": "On this target the host-rendered driver distributes each "
+                                    "case",
     }
 
     @staticmethod
@@ -3449,12 +3528,27 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
 
     def test_each_generate_template_carries_one_marker_right_after_its_language_marker(
             self) -> None:
-        for key, name in (("workshop generate.generate", "target_lowering_floor"),
-                          ("workshop generate.verify", "checklist_g6_floor_scope")):
-            with self.subTest(template=key):
-                raw = ort._load_launch_prompt_templates()[key]
-                self.assertEqual(ort._PARALLEL_FRAGMENT_RE.findall(raw), [name])
-                self.assertIn(f"{{{{language:{name}}}}}{{{{parallel:{name}}}}}", raw)
+        """The producer's parallel marker follows its language marker of the same name. The
+        reviewer's (`review_target_scope` since issue #724 PR-3, decision O3 (a); it was
+        `checklist_g6_floor_scope`, which the language fragments defined too and lost with G6)
+        has no language twin: it ends the `Review scope` paragraph, because the template's
+        sentence on what the driver hands a call (issue #727) points at "a paragraph for this
+        target's parallel backend at the end of this scope"."""
+        key, name = "workshop generate.generate", "target_lowering_floor"
+        with self.subTest(template=key):
+            raw = ort._load_launch_prompt_templates()[key]
+            self.assertEqual(ort._PARALLEL_FRAGMENT_RE.findall(raw), [name])
+            self.assertIn(f"{{{{language:{name}}}}}{{{{parallel:{name}}}}}", raw)
+        key, name = "workshop generate.verify", "review_target_scope"
+        with self.subTest(template=key):
+            raw = ort._load_launch_prompt_templates()[key]
+            self.assertEqual(ort._PARALLEL_FRAGMENT_RE.findall(raw), [name])
+            self.assertNotIn(f"{{{{language:{name}}}}}", raw)
+            [line] = [ln for ln in raw.splitlines() if f"{{{{parallel:{name}}}}}" in ln]
+            self.assertTrue(line.startswith("Review scope"), line[:60])
+            self.assertTrue(line.endswith(f"{{{{parallel:{name}}}}}"), line[-80:])
+            self.assertIn("a paragraph for this target's parallel backend at the end of this "
+                          "scope", line)
 
     def test_no_other_template_carries_a_parallel_marker(self) -> None:
         for key, raw in ort._load_launch_prompt_templates().items():
@@ -3466,7 +3560,9 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
             self) -> None:
         """The OpenMP paragraph reaches a `fortran` + `openmp` leaf, a `fortran` leaf of a
         model with no fragments (`none`) gets the same prompt without it, and a `fortran` +
-        `mpi` leaf gets the same prompt with the MPI paragraph in its place (R4-c PR-4). NOT
+        `mpi` leaf gets the same prompt with the MPI paragraph in its place (R4-c PR-4). The
+        producer's paragraph spells the directive sentinel; the reviewer's (issue #724 PR-3)
+        states a data race and no directive, so `!$omp` is asserted on the producer alone. NOT
         asserted: another language with `openmp` — `cuda_cpp` + `openmp` composes the
         paragraph, whose sentences are conditioned on a `fortran` language; no target profile
         names that pair."""
@@ -3476,7 +3572,8 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
                 self.assertIsNone(ort._PARALLEL_FRAGMENT_RE.search(composed))
                 self.assertNotIn("{{", composed)
                 self.assertIn(self._OPENMP_FLOOR[key], composed)
-                self.assertIn("!$omp", composed)
+                if key == "workshop generate.generate":
+                    self.assertIn("!$omp", composed)
                 # A model that declares no fragments says nothing: the marker composes away,
                 # and the OpenMP paragraph — which the language fragment used to carry for
                 # every Fortran target — is not stated for a model it does not govern.
@@ -3493,6 +3590,22 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
                 mpi = self._compose(key, "fortran", "mpi")
                 self.assertIn(self._MPI_FLOOR[key], mpi)
                 self.assertNotIn(self._MPI_FLOOR[key], composed)
+
+    def test_the_model_reviewer_is_told_nothing_of_the_ir(self) -> None:
+        """Issue #724 PR-3 (change 2): the model reviewer is seeded no IR, so its composed
+        prompt names none of the IR's parts, none of the deleted route and substep, and none
+        of the deleted checklist items — on the targets whose parallel paragraphs carried IR
+        names before (`openmp`, `mpi`, the `mpi+openmp` combination) and on one with none.
+        A literal bound, not a reader of meaning."""
+        absent = ("drive.", "spec.ir.yaml", "the IR's", "the IR ", "ir_inconsistency",
+                  "Validate.judge", "ir_document",
+                  *(f"G{n} —" for n in range(1, 8)), *(f"G{n} -" for n in range(1, 8)))
+        for language, parallel in (("fortran", "none"), ("fortran", "openmp"), ("fortran", "mpi"),
+                                   ("fortran", "mpi+openmp"), ("cuda_cpp", "cuda")):
+            composed = self._compose("workshop generate.verify", language, parallel)
+            for token in absent:
+                with self.subTest(language=language, parallel=parallel, token=token):
+                    self.assertNotIn(token, composed)
 
     def test_composition_refuses_every_way_it_can_fail(self) -> None:
         template = "a {{parallel:target_lowering_floor}} b"

@@ -142,6 +142,7 @@ _PURE_GENERATE_CONTEXT = {
     "harness_capabilities": "{}",
     "target_profile": "{}",
     "ir_document": "algorithm:\n  state_variables: [h]\n",
+    "controlled_spec_document": "the model conserves mass",
     "tests_document": "- test: conserves mass",
     "runner_document": "program p\nend program p\n",
 }
@@ -18453,11 +18454,25 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # to "the host refuses an empty array" (the `zero_extent` line; the driver's guard
         # case, the `TODO.md` item of issue #602) and what a harness self-test commits in the
         # other capture groups, which the judge, handed §3, otherwise reads as a defect.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 17500,
+        # Raised 17500->17600 (issue #724 PR-3): the audience note names the harness
+        # `Generate.verify` reviewer, which holds the executable entry to §3 (H6-H8), where it
+        # named `Validate.judge` (deleted in PR-2); the note is otherwise shorter. Measured
+        # 17507. Not trimmed elsewhere: the document is a seed of both `harness`-shape trees, so
+        # a trim to fit would be a second leaf-read edit made only for this ceiling.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 17600,
         # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
         # Measured 39235 and 30421 at this commit.
-        "docs/backends/language/fortran/GENERATE_RULES.md": 40000,
-        "docs/backends/language/cuda_cpp/GENERATE_RULES.md": 31000,
+        # Raised 40000->40100 (issue #724 PR-3): the dependency-dataflow bullet says what the
+        # spec-relative `Generate.verify` does with a result the pooled check passes (a finding
+        # only where it makes a returned value wrong) where it named G5, which is deleted; the
+        # file was 39996 at main 4b5e9ca1, 4 bytes under the ceiling. Measured 40010.
+        "docs/backends/language/fortran/GENERATE_RULES.md": 40100,
+        # Raised 31000->31200 (issue #724 PR-3): each place that handed a judgment to G5 or G6
+        # (the host-loop work of a device-planned loop, a discarded dependency result, a stated
+        # allocation shape, a literal or varying block size) now says what holds it after the
+        # spec-relative review, which is mostly "no check" — a statement a producer needs so
+        # it does not count on a reviewer. Measured 31120 (30908 at main 4b5e9ca1).
+        "docs/backends/language/cuda_cpp/GENERATE_RULES.md": 31200,
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
         # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727; 5742 after the
         # #315 follow-up scoped the no-stop sentence to the emitter.
@@ -18909,7 +18924,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 119050->121000 (issue #716 F-1b): a coordinate's `rank` with the two-rank
         # idiom, grammar 8's `take`, and the lift of a coordinate beside an operand one rank
         # above it. Measured 120835 with `wc -c` (120874 after review round 3).
-        "docs/workflow/phases/phase_01_compile.md": 121000,
+        # Raised 121000->121400 (issue #724 PR-3, decision O1 (a)): the statements about other
+        # phases (that `Generate` reads `controlled_spec.md`, what the IR's `algorithm` is read
+        # by, what reopens `Compile` now that `Validate.judge` is deleted) are corrected; no
+        # obligation on the IR moved. Measured 121211 with `wc -c` (120874 at main 4b5e9ca1).
+        "docs/workflow/phases/phase_01_compile.md": 121400,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -24702,8 +24721,11 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
-        # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:50f0e0d3701d2505":
+        # paragraph gained the procedure binding. READ. Re-keyed again for issue #724 PR-3
+        # (rule 2's reason) and its round 2 (rule 6: the transcription is what later stages'
+        # gates and renderers take the declarations from, not their "only carrier"): rule 3
+        # byte-identical, READ 2026-11-26.
+        "tools/prompt_templates/workshop_compile_generate.txt:58c1e303927b0433":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -24736,7 +24758,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "sentence on a harness self-test's captures took the other capture groups and "
             "their evidence entries, the harness side of P4b — rule 3 unchanged; re-keyed "
             "2026-11-18 when rule 5 dropped \"a `source` key is refused\", issue #643 PR-6 — "
-            "rule 3 unchanged)",
+            "rule 3 unchanged; re-keyed 2026-11-26 when rule 2 said the IR is what "
+            "`Compile.verify` and the deterministic gates read for the algorithm, the next "
+            "phase reading the controlled spec, issue #724 PR-3 — rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "

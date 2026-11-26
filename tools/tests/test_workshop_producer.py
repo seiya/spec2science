@@ -1055,7 +1055,9 @@ class DriverPromptTests(unittest.TestCase):
     def _assert_reviewer_scope(self, text: str) -> None:
         self.assertIn("The host-rendered driver reads each case from a host-written case file, "
                       "holds the state, owns any time loop, writes every capture", text)
-        self.assertIn("the model does none of that, and you do not fail the bundle for driver "
+        # "The model …" opens its own sentence since issue #724 PR-3 put the sentence on what
+        # the driver hands a call (issue #727) between it and the driver's list.
+        self.assertIn("The model does none of that, and you do not fail the bundle for driver "
                       "code you cannot see", text)
 
     def test_the_reviewer_does_not_fail_a_bundle_for_the_driver_on_both_targets(self) -> None:
@@ -1063,7 +1065,7 @@ class DriverPromptTests(unittest.TestCase):
             with self.subTest(target=target_id):
                 text = self._render("generate", "verify", "", target_id)
                 self._assert_reviewer_scope(text)
-                for old, new in (("the model does none of that", "the model does all of that"),
+                for old, new in (("The model does none of that", "The model does all of that"),
                                  ("you do not fail the bundle for driver",
                                   "you fail the bundle for driver"),
                                  ("reads each case from a host-written case file",

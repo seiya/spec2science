@@ -246,7 +246,8 @@ class PresenceFloorTests(unittest.TestCase):
 class PromptFragmentTests(unittest.TestCase):
     def test_each_generate_template_has_its_section(self) -> None:
         self.assertEqual(set(prompts.fragments("generate_generate")), {"target_lowering_floor"})
-        self.assertEqual(set(prompts.fragments("generate_verify")), {"checklist_g6_floor_scope"})
+        # The reviewer's marker is `review_target_scope` since issue #724 PR-3 (decision O3 (a)).
+        self.assertEqual(set(prompts.fragments("generate_verify")), {"review_target_scope"})
         with self.assertRaises(ValueError):
             prompts.fragments("compile_generate")
 
@@ -255,18 +256,39 @@ class PromptFragmentTests(unittest.TestCase):
         makes the stop uniform, so the producer is told no decomposition of its own, no partition
         call and no declining plan, and is told what reaches its operations (the block's count,
         the case's through `derived`, the offset through `block.<axis>.first`) and the wall rule
-        by global index; the reviewer is told the same and what is the finding. Neither says the
-        node is refused, which it was until PR-B2."""
+        by global index; the reviewer is told what the driver does and what makes a returned
+        value wrong. Neither says the node is refused, which it was until PR-B2.
+        Issue #724 PR-3 (decision O3 (a)): the reviewer is spec-relative and holds no IR, so its
+        paragraph names `tests.md`'s `distribute` line where it named the IR's
+        `drive.distribute`, `derived` bindings and `block.<axis>.first`, and states the block's
+        first global index in words; those IR names are pinned absent from it."""
         producer = prompts.fragments("generate_generate")["target_lowering_floor"]
-        reviewer = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
+        reviewer = prompts.fragments("generate_verify")["review_target_scope"]
         for text in (producer, reviewer):
             self.assertNotIn("driver_distributed_pending", text)
             self.assertNotIn("refused at preflight", text)
             self.assertNotIn("decomposition", text)
             self.assertNotIn("__partition(", text)
-            self.assertIn("block.<axis>.first", text)
-            self.assertIn("`derived` binding", text)
             self.assertIn("GLOBAL index", text)
+        self.assertIn("block.<axis>.first", producer)
+        self.assertIn("`derived` binding", producer)
+        for ir_name in ("drive.", "derived", "block.<axis>", "spec.ir.yaml", "the IR"):
+            self.assertNotIn(ir_name, reviewer)
+        self.assertIn("partitions the spatial axes that `tests.md`'s `distribute` line names, "
+                      "hands each call its rank's block", reviewer)
+        self.assertIn("carries the cell-count input the `distribute` line names for an axis "
+                      "carries the block's count on each call", reviewer)
+        # …and the two other inputs that line may name keep their meaning (round 2: the
+        # sentence once said every input of the line carries the block's count, which a
+        # ghost width and an extended count do not).
+        self.assertIn("its `extended` input the block's count plus twice the ghost width", reviewer)
+        self.assertIn("its `ghost` input the ghost width unchanged", reviewer)
+        self.assertIn("walls are decided by GLOBAL index — the block's first global index and "
+                      "the case's count", reviewer)
+        self.assertIn("a stencil read that crosses a partitioned axis with no halo exchange "
+                      "before it", reviewer)
+        self.assertIn("a refusal that precedes a collective and is not first made the same on "
+                      "every rank by a reduction", reviewer)
         self.assertNotIn('"model": "none"', producer)
         self.assertIn("receives the BLOCK's count", producer)
         self.assertIn("the partition, the writers, the capture operations, the gathers", producer)
