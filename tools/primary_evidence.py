@@ -809,8 +809,10 @@ def reached_binds(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]])
     those a reached bind's references name. A bind outside this set enters no value of the
     predicate. The frontier is built from `expr_refs` as given, so a caller that passes
     `effective_names` references follows no bind named only inside a term constant by form.
-    Shared by the reads-state rule (`predicate_reads_state`) and the cases a predicate values
-    (`cases_read`, issue #567)."""
+    Shared by the reads-state rule (`predicate_reads_state`), the cases a predicate values
+    (`cases_read`, issue #567), and the binds the evaluator evaluates (`evaluate_binds`, issue
+    #725), which passes the UNPRUNED references: a bind named only inside a term constant by
+    form is still resolved by name when that term is evaluated."""
     reached: set[str] = set()
     frontier = [r.name for r in expr_refs if r.kind == "name" and r.name in bind_refs]
     while frontier:
@@ -827,8 +829,13 @@ def predicate_reads_comparand(expr_refs: list[NameRef],
                               bind_refs: dict[str, list[NameRef]]) -> bool:
     """Whether a predicate reads a `comparand.` capture ANYWHERE — in `expr` or in any `bind`,
     reached or not — i.e. whether it is a CROSS-TARGET predicate. Unlike `predicate_reads_state`
-    this does not follow reachability: every bind of a predicate is evaluated, so a bind that
-    reads the comparand needs one bound whether `expr` uses it or not."""
+    this does not follow reachability, and it is kept syntactic: the evaluator evaluates only
+    the reached binds (issue #725), so a predicate whose one `comparand.` read is in an
+    unreached bind compares nothing, and it is classed cross-target all the same — evaluated
+    once per comparand, and a satisfied `no_comparand` placeholder without one. It values the
+    same state either way, and no stored IR holds such a predicate (measured over both Projects'
+    IRs for issue #725), so following reachability here would move a classification that other
+    readers persist for no record it changes."""
     return any(r.kind == "comparand" for refs in (expr_refs, *bind_refs.values()) for r in refs)
 
 
@@ -1846,14 +1853,21 @@ def evaluate(tree: ast.Expression, env: CaseEnv, *, at_envs: dict[str, CaseEnv] 
 
 
 def evaluate_binds(bind: Any, env: CaseEnv, at_envs: dict[str, CaseEnv],
-                   comparand_env: CaseEnv | None = None) -> dict[str, Any]:
-    """Evaluate a predicate's `bind` mapping in order; each entry sees the earlier ones."""
+                   comparand_env: CaseEnv | None = None,
+                   reached: set[str] | None = None) -> dict[str, Any]:
+    """Evaluate a predicate's `bind` mapping in order; each entry sees the earlier ones.
+    With ``reached`` (`reached_binds` of the predicate's unpruned references), an entry
+    outside it is not evaluated: it enters no value, so an evaluation error in it would fail a
+    predicate that no source can satisfy (issue #725). Its parse, names and rank are still the
+    Compile gate's. None evaluates every entry."""
     out: dict[str, Any] = {}
     if bind is None:
         return out
     # The mapping, its names and their shadowing are the Compile gate's
     # (`validate_primary_predicate_schema`).
     for name, text in bind.items():
+        if reached is not None and str(name) not in reached:
+            continue
         out[name] = evaluate(parse_expr(text), env, at_envs=at_envs, binds=out,
                              comparand_env=comparand_env)
     return out
@@ -1993,7 +2007,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     ``scalar_pairing`` what D7 asks of it (`record_scalar_pairing`), which
     `verdict_evaluator.evaluate_verdict` re-checks. ``kind`` is ``pass`` / ``physics`` (a
     comparison was false) / ``structural`` (the
-    expression could not be evaluated: `PrimaryEvidenceError`) / ``no_comparand``. An empty
+    expression, or a bind it reaches, could not be evaluated: `PrimaryEvidenceError`; a bind
+    it does not reach is not evaluated, issue #725) / ``no_comparand``. An empty
     list when the IR declares no primary predicate. ``ir`` is one the Compile gate certified
     (`validate_primary_predicate_schema`): the entries' shape,
     their thresholds, the `state_snapshots` entry and the reads-state rule are the gate's and
@@ -2054,6 +2069,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         expr_refs, bind_refs = _predicate_refs(pred)
         scope, contexts = _predicate_scope(pred, loc)
         cross = predicate_reads_comparand(expr_refs, bind_refs)
+        reached = reached_binds(expr_refs, bind_refs)
         if cross_target_only and not cross:
             continue
         if only_cases is not None:
@@ -2100,7 +2116,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                         if record["kind"] != "structural":
                             record["kind"] = "physics"
                         break
-                    binds = evaluate_binds(pred.get("bind"), env, at_envs, cenv)
+                    binds = evaluate_binds(pred.get("bind"), env, at_envs, cenv, reached)
                     value = _scalar(evaluate(tree, env, at_envs=at_envs, binds=binds,
                                              comparand_env=cenv), f"{loc}.expr")
                     _, rhs = _resolve_value(pred.get("value"), cid)
@@ -2264,7 +2280,8 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
 def _rank_violation(parsed: list[tuple[str, str | None, ast.Expression]],
                     env: RankEnv) -> tuple[str, str] | None:
     """``(location, message)`` of the first rank refusal over one predicate's parsed binds
-    (in order — every bind is evaluated at run time, used or not) and `expr`, or None. An
+    (in order — every bind is ranked, used or not, though the evaluator evaluates only the
+    reached ones, issue #725) and `expr`, or None. An
     `expr` of rank above 0 is refused with the scalar rule of `_scalar`."""
     binds: dict[str, int] = {}
     for eloc, bind_name, tree in parsed:

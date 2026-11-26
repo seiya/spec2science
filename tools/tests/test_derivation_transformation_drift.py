@@ -2489,6 +2489,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # that row and no other.) The digest `execute-22` shipped with at a72f9f3c:
     "execute-22@a72f9f3c": "ca86ccd2ed12cd0bae952ad28b13a00fce1c02092f5e9ae78a9b86f554350da2",
     "execute-22": "18f0f3fc0f977883d4523f3772fd5cb9c396afb646eaa1b419f657e2559bfc64",
+    # execute-23 (issue #725; issue #724's plan, PR-1): `tools/primary_evidence.py`
+    # `evaluate_primary_predicates` evaluates only the binds a predicate's `expr` reaches
+    # (`reached_binds` over the unpruned references), so a bind that enters no value can no
+    # longer fail a predicate no source can satisfy. Bumped, not re-pinned: the file is a member
+    # of this tuple and the version string costs only the re-run the verdict-22 bump already
+    # owes (`Validate`; no case file moves, `Compile` and `Generate` keys are untouched).
+    # (`execute_tuple()` against main 7496ad67's: the `tools/primary_evidence.py` row and no other.)
+    "execute-23": "dd1c60bff92056d8530dd5eaad8eeaf3bf8888008d3e55eef61d51b2dfe9177a",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2787,6 +2795,17 @@ PINNED_VERDICT: dict[str, str] = {
     # refused with the same message at both). (`verdict_tuple()` against main a72f9f3c's: the `tools/primary_evidence.py` row and
     # no other.)
     "verdict-21": "1419f410d9ae0cca5e132ae3d78e1f10da94b8c97194857c57044a68b504bbb4",
+    # verdict-22 (issue #725; issue #724's plan, PR-1): the evaluator skips a bind `expr` does
+    # not reach (execute-23's entry). Measured at this change over every run with a verdict of
+    # both Projects (every `runs/*/*/verdict.json` under a `workspace/pipelines/*/*/*/lineage.json`;
+    # SCALE Project 66 runs and 6,847 records, sample 692 runs and 14,121 records), evaluating
+    # with the filter against the same evaluator without it: no record differs (2 sample runs
+    # raise the same message at both). Against the stored `verdict.json` every SCALE run's
+    # `per_test` is equal once `grammar_version` is removed (23 were stored at grammar 7). On
+    # the run issue #725 reports (outside both Projects): 181 -> 184 of 184 satisfied.
+    # (`verdict_tuple()` against main 7496ad67's: the `tools/primary_evidence.py` row and no
+    # other.)
+    "verdict-22": "504be2a553dd6a45733369cbe82d35785b9c1aec467473772ebc6e1cd8d24a7a",
 }
 
 
