@@ -9679,6 +9679,41 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
     # gate and is given up with it: `run_phase` writes a validate `step_result` only as `pass` or
     # `fail`, so no conductor path reaches a `blocked` one.
 
+    def test_a_terminal_validate_step_result_asks_for_no_judge_record(self) -> None:
+        """What is left of the deleted check: a terminal non-pass `validate` step result
+        (the conductor writes `fail` on an execute failure) names no `semantic_review.json` and
+        no judge launch, and validates. The call into the deleted check, restored alone, raises
+        here for every terminal status."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for status in sorted(TERMINAL_STATUSES - {"pass"}):
+                with self.subTest(status=status):
+                    ort._validate_step_result_payload(
+                        repo, "o", node_key="problem/shallow_water2d@0.3.0", step="validate",
+                        agent_run_id="orch",
+                        payload={"status": status, "validation_stage": "post_execute",
+                                 "launch_request_ref":
+                                     "workspace/orchestrations/o/launches/exec-1.request.json"})
+
+    def test_the_launch_check_cli_answers_what_the_hook_answers(self) -> None:
+        """`workflow-launch-check` is the subprocess the conductor runs before every phase
+        (`Conductor.workflow_launch_check`), and the conductor tests fake it, so this row is
+        the one that drives the CLI dispatch into `pre_phase_launch`. Its JSON is the hook's
+        answer for the same arguments (here `fail_closed`: no preflight)."""
+        from tools.orchestration_runtime import main as runtime_main
+        with tempfile.TemporaryDirectory() as tmp:
+            args = dict(orchestration_id="o", node_key="problem/shallow_water2d@0.3.0",
+                        step="validate", backend="claude")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = runtime_main([
+                    "workflow-launch-check", "--repo-root", tmp,
+                    "--orchestration-id", args["orchestration_id"],
+                    "--node-key", args["node_key"], "--step", args["step"],
+                    "--backend", args["backend"]])
+            self.assertEqual(rc, 0, buf.getvalue())
+            self.assertEqual(json.loads(buf.getvalue()), ort.pre_phase_launch(Path(tmp), **args))
+
 
 class PreflightLiveProbeTtlTests(unittest.TestCase):
     def test_live_preflight_mode_never_on_zero(self) -> None:
