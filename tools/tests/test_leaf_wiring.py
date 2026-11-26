@@ -1470,9 +1470,11 @@ class PureRenderTests(unittest.TestCase):
         # IR, can name `spec.ir.yaml`, and that a model reviewer's `major` names a
         # contradiction between `controlled_spec.md` and `tests.md`, repaired per the §3 table.
         # READ: it states the repair destination of a value the rubric chose and points at
-        # the rubric for the value; nothing assigned.
+        # the rubric for the value; nothing assigned. Re-keyed (issue #724 PR-3 round 3): the
+        # "subject question is open" clause now says that of `Compile`'s rubric and names
+        # `Generate`'s input-side cases. READ: still routing and a pointer; nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #0e4977c34e4e"),
+         " #17c914289c78"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
@@ -2993,7 +2995,7 @@ class PureRenderTests(unittest.TestCase):
                       "lowered the computation; it is not a reference of this review.", prompt)
         self.assertIn("only a construct that makes a returned value wrong, such as a data race "
                       "or an uninitialised read, is", prompt)
-        # The sentences that hold the two classes only this review holds (plan §5.8), and the
+        # The sentences that hold the two classes only this review holds (issue #724), and the
         # exclusion that keeps it from refusing what the producer is told to write, are pinned
         # by literal: round 2 found each red only on the drift digest, which a re-pin passes.
         for held in (
@@ -3598,10 +3600,11 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         absent = ("drive.", "spec.ir.yaml", "the IR's", "the IR ", "ir_inconsistency",
                   "Validate.judge", "ir_document",
                   *(f"G{n} —" for n in range(1, 8)), *(f"G{n} -" for n in range(1, 8)))
-        for parallel in ("none", "openmp", "mpi", "mpi+openmp"):
-            composed = self._compose("workshop generate.verify", "fortran", parallel)
+        for language, parallel in (("fortran", "none"), ("fortran", "openmp"), ("fortran", "mpi"),
+                                   ("fortran", "mpi+openmp"), ("cuda_cpp", "cuda")):
+            composed = self._compose("workshop generate.verify", language, parallel)
             for token in absent:
-                with self.subTest(parallel=parallel, token=token):
+                with self.subTest(language=language, parallel=parallel, token=token):
                     self.assertNotIn(token, composed)
 
     def test_composition_refuses_every_way_it_can_fail(self) -> None:

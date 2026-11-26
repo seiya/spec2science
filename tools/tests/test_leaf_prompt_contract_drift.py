@@ -1233,7 +1233,7 @@ PINNED: dict[str, str] = {
     # parallel marker renamed `review_target_scope`, its fragments state what makes a returned
     # value wrong); the generate rubric rewritten; the `ir_inconsistency` route deleted; both
     # base templates state what the driver hands a call (issue #727).
-    "leaf-109": "b6afb402f456b0194556f380bb3c70a7d33e76a2b7bb7b7a5b2f324bce20f771",
+    "leaf-109": "8bf2d1bdfbf5aa1a60f9cc8220181a676bb4536b3a1c860b8027129af2f29951",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
