@@ -14826,8 +14826,7 @@ class Conductor:
           `build_<category>` (category in BUILD_FAILURE_ROUTING)
                              -> binary/<binary_id>/binary_meta.json#failure_excerpt
         (`judge_semantic_review_fail`, which folded `semantic_review.json#findings[]`, went with
-        `validate.judge` in issue #724 PR-2: a revocation an older run recorded under it now
-        matches no clause and falls back to the full prompt.)
+        `validate.judge` in issue #724 PR-2, and no classification produces it any more.)
         Read at the conduct reopen point where `refs` still names the FAILED artifact (rotation
         to the fresh id happens later, inside run_phase -> _ensure_fresh_producer_id). Returns
         None when unavailable so the repair simply falls back to the full prompt.

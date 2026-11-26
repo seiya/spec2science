@@ -805,28 +805,6 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                            "validate_execute_structural_violation_ir"):
                 self.assertIsNone(c._read_repair_findings(refs, reason, "validate"), reason)
 
-    def test_a_retired_judge_reason_falls_back_to_the_full_prompt(self) -> None:
-        """`judge_semantic_review_fail` (issue #455) went with `validate.judge` in issue #724
-        PR-2. A revocation an older run recorded under it, read on a resume, matches no clause:
-        the reader answers None (the full prompt) even with that run's `semantic_review.json`
-        still on disk, rather than reaching for the deleted fold."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
-                               spec_path="spec/component/spec_x",
-                               ir_id="x_1", pipeline_id="x_1", source_id="src_1",
-                               run_id="run_1", binary_id="bin_1", source_binary_id="bin_1")
-            node_dir = repo / refs.run_node_dir()
-            node_dir.mkdir(parents=True)
-            (node_dir / "semantic_review.json").write_text(json.dumps({
-                "decision": "fail", "findings": [{"attribution": "code", "confidence": "high",
-                                                  "summary": "sign error in flux"}]}),
-                encoding="utf-8")
-            c = _FakeConductor(repo_root=repo, orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-            self.assertIsNone(
-                c._read_repair_findings(refs, "judge_semantic_review_fail", "validate"))
-
 
     def test_read_repair_findings_reads_build_excerpt(self) -> None:
         # Issue #464: a routed Build failure keeps its excerpt (the compiler's / linker's /
