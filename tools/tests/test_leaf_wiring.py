@@ -2993,6 +2993,22 @@ class PureRenderTests(unittest.TestCase):
                       "lowered the computation; it is not a reference of this review.", prompt)
         self.assertIn("only a construct that makes a returned value wrong, such as a data race "
                       "or an uninitialised read, is", prompt)
+        # The sentences that hold the two classes only this review holds (plan §5.8), and the
+        # exclusion that keeps it from refusing what the producer is told to write, are pinned
+        # by literal: round 2 found each red only on the drift digest, which a re-pin passes.
+        for held in (
+                # the guard-ordering class
+                "Check in particular every invalid or degenerate input the Controlled Spec's "
+                "guards concern",
+                # a source computing something else (hardcoded per-case values included)
+                "a different formula, sign, factor or constant",
+                "state carried between calls that the Controlled Spec does not allow",
+                # the producer's rule (8) exemption, mirrored (round 2: a device-call check on
+                # `cuda_cpp` read as an added refusal)
+                "a report of a failure the runtime itself returns (an I/O, allocation or "
+                "device-call status) where that report changes no answer for an input the "
+                "Controlled Spec accepts"):
+            self.assertIn(held, prompt)
         for refused in ("G6 — target lowering", "A plan the source does not follow",
                         "already settled deterministically by the `Generate.gate` static check"):
             self.assertNotIn(refused, prompt)
