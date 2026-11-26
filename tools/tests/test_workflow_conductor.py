@@ -602,6 +602,67 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertEqual(len(required), 4)
         self.assertEqual(set(required) - declared, set())
 
+    def test_a_validate_pass_goes_through_the_real_launch_and_step_result_validators(self) -> None:
+        """The row above couples the two DECLARATIONS; this one drives them through the
+        runtime that consumes them. Each `Validate` launch request `build_launch_request`
+        builds is put through what `record_launch` runs on it (`prepare_launch_request_payload`,
+        which renders the prompt and refuses a request that is neither deterministic nor
+        workshop, then `_validate_launch_request_payload`), and a HEAD-shaped pass step_result
+        whose substep rows publish those requests' `allowed_output_paths` is accepted by
+        `_validate_step_result_payload`. No `Validate` substep is host-rendered since issue
+        #724 PR-2, so that function's output_refs-coverage branch carries every `Validate`
+        pass: the subtest drops `summary.json` from `post_judge`'s refs and is refused."""
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0",
+                           spec_path="spec/component/x", ir_id="x_20260101_001",
+                           pipeline_id="x_20260101_001", source_id="src_20260101_002",
+                           binary_id="bin_20260101_003", run_id="run_20260101_004")
+        oid = "orch_x"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            launches = repo / "workspace" / "orchestrations" / oid / "launches"
+            launches.mkdir(parents=True)
+            rows: list[dict] = []
+            for substep in wc.SUBSTEPS["validate"]:
+                arid = f"child-{substep}"
+                req = wc.build_launch_request(
+                    refs, step="validate", substep=substep, orchestration_id=oid,
+                    orchestration_agent_run_id="parent", child_agent_run_id=arid,
+                    agent_model="m", workflow_mode="dev", case_ids=("c1",),
+                    output_format="json")
+                prepared = ort.prepare_launch_request_payload(req)
+                ort._validate_launch_request_payload(prepared)
+                (launches / f"{arid}.request.json").write_text(
+                    json.dumps(prepared), encoding="utf-8")
+                rows.append({"agent_run_id": arid, "agent_role": "substep",
+                             "node_key": refs.node_key, "step": "validate",
+                             "substep": substep, "status": "pass",
+                             "output_refs": list(prepared["allowed_output_paths"])})
+
+            def _write_rows(rs: list[dict]) -> None:
+                (launches.parent / "agent_runs.jsonl").write_text(
+                    "".join(json.dumps(r) + "\n" for r in rs), encoding="utf-8")
+
+            payload = {"status": "pass",
+                       "validation_stage": wc.PHASE_VALIDATION_STAGE["validate"],
+                       "substep_agent_run_ids": [r["agent_run_id"] for r in rows],
+                       "failed_substeps": [], "retry_decisions": None,
+                       "required_outputs": wc.phase_required_outputs(refs, "validate")}
+            _write_rows(rows)
+            ort._validate_step_result_payload(
+                repo, oid, node_key=refs.node_key, step="validate",
+                agent_run_id="parent", payload=payload)
+            with self.subTest("post_judge without summary.json"):
+                post_judge = rows[-1]
+                self.assertEqual(post_judge["substep"], "post_judge")
+                kept = [r for r in post_judge["output_refs"]
+                        if not r.endswith("/summary.json")]
+                self.assertEqual(len(kept), len(post_judge["output_refs"]) - 1)
+                _write_rows([*rows[:-1], {**post_judge, "output_refs": kept}])
+                with self.assertRaisesRegex(ValueError, "summary.json"):
+                    ort._validate_step_result_payload(
+                        repo, oid, node_key=refs.node_key, step="validate",
+                        agent_run_id="parent", payload=payload)
+
     def _generate_refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID, node_key="component/x@0.1.0", spec_path="spec/component/x",
                            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
