@@ -22107,11 +22107,12 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
 
     def test_an_unknown_violation_is_written_as_escalate(self) -> None:
         """Re-hosted from `test_leaf_judge.PostJudgeReclassificationTests` (issue #724 PR-2,
-        whose file went with `validate.judge`): the tree's one witness that the fold
-        `disposition = "escalate" if severity == "unknown" else "fail_closed"` writes its
-        `escalate` half. Every test of the `escalate` ROUTE seeds `post_judge_meta.json` by
-        hand, so collapsing the expression to a bare `"fail_closed"` would leave them green and
-        send a prod `unknown` to `fail_closed` instead of to the escalate diagnostician.
+        whose file went with `validate.judge`): the row that drives the fold
+        `disposition = "escalate" if severity == "unknown" else "fail_closed"` directly for its
+        `escalate` half. The tests of the `escalate` ROUTE seed `post_judge_meta.json` by hand;
+        besides this row, two `post_judge` exit-code / bullet-classification rows reach the
+        fold. Collapsing the expression to a bare `"fail_closed"` would send a prod `unknown`
+        to `fail_closed` instead of to the escalate diagnostician.
 
         Drives the real `_post_judge_inproc` against a gate that fails with one bullet. The
         classifier's own verdict is asserted first, so this row cannot go green because
