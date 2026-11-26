@@ -2798,9 +2798,13 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-22 (issue #725; issue #724's plan, PR-1): the evaluator skips a bind `expr` does
     # not reach (execute-23's entry). Measured at this change over every run with a verdict of
     # both Projects (every `runs/*/*/verdict.json` under a `workspace/pipelines/*/*/*/lineage.json`;
-    # SCALE Project 66 runs and 6,847 records, sample 692 runs and 14,121 records), evaluating
-    # with the filter against the same evaluator without it: no record differs (2 sample runs
-    # raise the same message at both). Against the stored `verdict.json` every SCALE run's
+    # SCALE Project 66 runs and 6,847 records, sample 692 runs and 14,121 records), each against
+    # the IR its lineage's `ir_ref` names, in its target's output format, with no comparand (as
+    # the verdict author calls it), evaluating with the filter against the same evaluator
+    # without it: no record differs (2 sample runs raise the same message at both). The
+    # comparand passes are not exercised by that sweep; no stored cross-target predicate has an
+    # unreached bind (SCALE 0 of 1,508, sample 0 of 2,013), so the cross-target agreement
+    # cannot move either. Against the stored `verdict.json` every SCALE run's
     # `per_test` is equal once `grammar_version` is removed (23 were stored at grammar 7). On
     # the run issue #725 reports (outside both Projects): 181 -> 184 of 184 satisfied.
     # (`verdict_tuple()` against main 7496ad67's: the `tools/primary_evidence.py` row and no
