@@ -1053,7 +1053,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # new text may lower less fully than one reading the old within the same obligation. A bump
     # would re-derive every `Compile` (SCALE: +156 M tokens at recorded rates) for that; what
     # the `algorithm` section is for now is the follow-up of O2 (issue #724: the section's
-    # reader in `Generate` is the gate's sink checks and rule 5). (Measured by diffing
+    # readers in `Generate` are the default producer's rule 5 and the harness producer and reviewer; no `Generate.gate` check reads it). (Measured by diffing
     # `compile_documents_tuple()` against main 4b5e9ca1's: the `phase_contract_document` and
     # `ir_algorithm_2d_example_document` rows alone.) The digest `compile-docs-38` shipped
     # with at 4b5e9ca1:
