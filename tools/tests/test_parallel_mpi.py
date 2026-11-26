@@ -276,7 +276,13 @@ class PromptFragmentTests(unittest.TestCase):
             self.assertNotIn(ir_name, reviewer)
         self.assertIn("partitions the spatial axes that `tests.md`'s `distribute` line names, "
                       "hands each call its rank's block", reviewer)
-        self.assertIn("carries the block's count on each call", reviewer)
+        self.assertIn("carries the cell-count input the `distribute` line names for an axis "
+                      "carries the block's count on each call", reviewer)
+        # …and the two other inputs that line may name keep their meaning (round 2: the
+        # sentence once said every input of the line carries the block's count, which a
+        # ghost width and an extended count do not).
+        self.assertIn("its `extended` input the block's count plus twice the ghost width", reviewer)
+        self.assertIn("its `ghost` input the ghost width unchanged", reviewer)
         self.assertIn("walls are decided by GLOBAL index — the block's first global index and "
                       "the case's count", reviewer)
         self.assertIn("a stencil read that crosses a partitioned axis with no halo exchange "
