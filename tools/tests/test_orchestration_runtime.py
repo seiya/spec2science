@@ -24721,8 +24721,11 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
-        # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:4fc4bd8367cb8888":
+        # paragraph gained the procedure binding. READ. Re-keyed again for issue #724 PR-3
+        # (rule 2's reason) and its round 2 (rule 6: the transcription is what later stages'
+        # gates and renderers take the declarations from, not their "only carrier"): rule 3
+        # byte-identical, READ 2026-11-26.
+        "tools/prompt_templates/workshop_compile_generate.txt:58c1e303927b0433":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "

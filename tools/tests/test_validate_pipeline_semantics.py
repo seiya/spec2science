@@ -14138,16 +14138,21 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                                 for v in violations), violations)
 
     def test_module_parameters_missing_key_flagged(self) -> None:
-        # §5.1 declares dp but the IR omits the module_parameters key — the leaf's only carrier of
-        # the value is gone, so this is a Compile fail.
+        # §5.1 declares dp but the IR omits the module_parameters key — the IR is the interface
+        # authority Generate follows, so this is a Compile fail.
         with tempfile.TemporaryDirectory() as tmp:
             api = self._full_api()
             del api["module_parameters"]
             ir_dir = self._seed(Path(tmp), public_api=api)
             violations: list[str] = []
             _validate_published_surface(Path(tmp), ir_dir, violations)
-            self.assertTrue(any("public_api.module_parameters missing" in v for v in violations),
-                            violations)
+            missing = [v for v in violations if "public_api.module_parameters missing" in v]
+            self.assertTrue(missing, violations)
+            # The refusal a Compile leaf reads gives the reason that holds since issue #724
+            # (Generate reads the spec too; round 2 found the old premise unpinned).
+            self.assertNotIn("walled off", missing[0])
+            self.assertIn("the IR is the interface authority the Generate.generate leaf "
+                          "follows", missing[0])
 
     def test_module_parameters_null_fails_closed(self) -> None:
         # A present-but-null module_parameters must fail closed (mirrors load_structured_signatures).
