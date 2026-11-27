@@ -198,15 +198,15 @@ Measured consequences of that model (2026-07 baseline, measured before Z1): 96-9
 | resume / recovery | certified artifacts + revoke-artifact + overwrite-archiver (issue #177 retired the checkpoint ledger, reopen-phase, the superseded set and backfill) | DAG re-evaluation over cache |
 | parallelism | `run_workflow.py --with-deps --jobs N` (Z5 PR-3): a concurrency-limited ready-set scheduler over child driver processes, sequential by default (rule 36's explicit instruction) | native, concurrency-limited |
 | run records | ~15 JSON artifact kinds per orchestration, cross-validated by a 10.9k-line semantics validator | append-only event log + generated views |
-| audit | policed (manifests, hooks, diffs) with known observational gaps | total at the gateway by construction |
-| prompt economics | host-rendered `workshop leaf` prompt with `cache_control` breakpoints on the HTTP providers (issue #534; `tools/llm_workshop_loop.py`) | host-inlined byte-stable shared prefix |
-| verification | R2 + R3-core landed; no `LLM` judge (issue #724); snapshot values captured by the host-rendered driver (issue #589) | R2 + R3-core adopted; adds the A4 evidence trust boundary (harness-owned target-aware state channel, per-test corroboration) |
+| audit | the manifest and hook complex was deleted by Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)); a `workshop leaf` reaches the build runtime only through the host-served wrapper (`docs/ORCHESTRATION.md` §workshop leaf) | total at the gateway by construction |
+| prompt economics | host-rendered `workshop leaf` prompt with `cache_control` breakpoints on the Anthropic HTTP provider (issue #534; `tools/llm_workshop_loop.py`) | host-inlined byte-stable shared prefix |
+| verification | R2 + R3-core landed; A4's host-owned capture and per-test corroboration landed (Z6, [issue #255](https://github.com/seiya/spec2science/issues/255)); no `LLM` judge (issue #724); snapshot values captured by the host-rendered driver (issue #589) | R2 + R3-core adopted; adds the A4 evidence trust boundary (harness-owned target-aware state channel, per-test corroboration) |
 | target matrix | R4-a to R4-d landed | founding assumption (same content) |
 
 ### What the current implementation embodies that a reimplementation would lack
 
 - `validate_pipeline_semantics.py` (10.9k lines) and the deterministic gates encode several hundred failure modes discovered only through billed E2E runs (render preconditions, interface pinning, lint/syntax attribution, evidence integrity, dependency-fact rank surfacing). This corpus is target-model-independent IP and transfers to any architecture.
-- The verdict evaluator, predicate DSL, multi-target evidence contract, dependency-graph builder, harness spec + certification method, exemplar selector, MCP build-runtime server, and the spec/IR schemas are all A2-compatible as-is.
+- The verdict evaluator, predicate DSL, multi-target evidence contract, dependency-graph builder, harness spec + certification method, exemplar selector, build-runtime library (`tools/build_runtime.py`; its MCP server was deleted by [issue #444](https://github.com/seiya/spec2science/issues/444)), and the spec/IR schemas are all A2-compatible as-is.
 - ~2380 unit tests pin this behavior.
 
 ## Adoption decision
