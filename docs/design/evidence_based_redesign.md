@@ -74,13 +74,13 @@ controlled_spec.md + tests.md (human-authored)
 - The calling interface is taken from the machine-readable interface block of the `spec` by the host. No `LLM` takes part.
 - The cases of `tests.md` are taken as they are authored.
 - No document restating the algorithm is produced (E2).
-- Stage A holds no `LLM`, so the one stop of E7 before generation, made by `Compile.generate` on a contradiction between `tests.md` and the `spec`, has no counterpart in this pipeline. What replaces it is undefined.
+- Stage A holds no `LLM`, so the one stop of E7 before generation, made by `Compile.generate` on a contradiction between `tests.md` and the `spec`, has no counterpart in this pipeline. A general agent reported the same contradiction after generation in 3 of 3 runs (F2), so stage C reaches it after generation. A check before generation is undefined and is not part of this design.
 
 ### B. Test derivation
 
 - A leaf that reads the `spec` and `tests.md`, and no implementation, writes the tests.
 - Every case of `tests.md` is present in each suite; the host checks this by case id.
-- For every guard the `spec` states, each suite holds refusal cases at every operation the guard can reach, the top-level one included, with degenerate values of each argument the guard concerns: zero and negative extents, counts and steps, the smallest valid value, and an invalid largest value (E3, E4).
+- For every guard the `spec` states, each suite holds refusal cases at every operation the guard can reach, the top-level one included, with degenerate values of each argument the guard concerns: zero and negative extents, counts and step sizes, the smallest valid value and the largest invalid value (E3, E4).
 - Two suites are derived independently. A disagreement between them on one source is a finding about the tests or about an ambiguity of the `spec`, not a refusal of the source (E6).
 - A case records its origin. A failure on a case authored in `tests.md` is a refusal. A failure on a derived case alone goes to adjudication.
 - The detecting power of a suite is measured by host-made mutants of the reference implementation.
@@ -100,12 +100,12 @@ controlled_spec.md + tests.md (human-authored)
   - the certification suite;
   - runs at several thread and rank counts;
   - measured performance against the reference implementation.
-- No `LLM` reviews a lowering plan. In the baseline that review was the most frequent ground for rejecting correct code: 10 of the 21 rejections of correct independent sources cited only the lowering-plan row (F1), and the pinned review on a second model family rejected 12 of 12 correct rows with 23 of its 35 findings against the lowering plan (M15).
+- No `LLM` reviews a lowering plan. In the baseline that review was the most frequent ground for rejecting correct code: 10 of the 21 rejections of correct independent sources cited only the lowering-plan criterion G6 (F1), and the pinned review on a second model family rejected 12 of 12 correct rows with 23 of its 35 findings against the lowering plan (M15).
 - The cost of adding a target is a generation and deterministic checks; the judgment of correctness is not repeated.
 
 ### E. Certification record
 
-- Certification stays content-addressed per node and target, and the derivation key decides what is re-derived after a change. This mechanism decided correctly in the experiment and is kept: after a scheme change, the five unchanged dependencies were reused without a leaf launch and only the changed nodes were derived (WP5, F2).
+- Certification stays content-addressed per node and target, and the derivation key decides what is re-derived after a change. This mechanism decided correctly in the experiment and is kept: after a scheme change, the five unchanged dependencies were reused without a leaf launch and only the changed nodes were derived (WP5).
 
 ### Roles and isolation
 
@@ -134,7 +134,7 @@ Adoption of a stage requires the measurement named for it.
 | B | derived tests in the declarative form, inside the pipeline and per node: no false failure on correct sources, detection not below the current test contract, the adjudication of a disagreement between two suites, the connection to an oracle and to the runner format and bounds-checked build of `Validate.execute` |
 | B | the cost of the mutant measurement and the level at which a suite is accepted |
 | C | none beyond issue #724, which measures the generator and the review inside the existing phases |
-| D | agreement tolerances over long integrations and on nodes other than the Kessler column, where one call was measured against the original built at four optimization settings: correct implementations reached at most 0.050 of the band and every detected variant exceeded it by at least 5.9e5, and a fixed relative bound of 1e-12 failed a correct implementation near saturation; a distributed-memory target; an accelerator target; that measured performance separates a good variant from a poor one |
+| D | agreement tolerances over long integrations and on nodes other than the Kessler column, whose four operations were measured against the original at five optimization settings and against an independent implementation: the correct implementations reached at most 0.050 of the band, every variant the band detected exceeded it, and a fixed relative bound of 1e-12 failed a correct implementation near saturation; a distributed-memory target; an accelerator target; that measured performance separates a good variant from a poor one |
 | all | a second model family for every role; a task count above two |
 
 ## Not verified
@@ -146,4 +146,4 @@ Adoption of a stage requires the measurement named for it.
 - Every `spec` of the two tasks was matured through runs of the existing pipeline, and the two SCALE nodes were authored by an agent. A run on an immature `spec` was planned and not made (F4).
 - The evaluators, the mutants, the independent implementations and the scientific review were all written by one `LLM` family, with no human review. The mutants were designed against the existing pipeline's code and tests, and each mutant was run on its own node only.
 - "Correct" means correct against the independent evaluator. The derived suites flagged 3 mutants that the evaluator judges equivalent to the original; each deviates from a stated requirement the evaluator does not check (M2).
-- Inside a producing leaf only the wrapper's tool calls are recorded; a correction the leaf made between two calls is not observable.
+- Inside a producing leaf only the wrapper's tool calls are recorded; a correction the leaf made between two calls is not observable (D1).
