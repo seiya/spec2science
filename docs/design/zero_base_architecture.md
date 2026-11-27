@@ -280,7 +280,6 @@ Recorded 2026-11-27. The following parts of the reference architecture are not i
 
 - **A1, the append-only event log with generated views.** The run records are JSON artifacts cross-validated by `tools/validate_pipeline_semantics.py`, and no defect has been traced to their form. Reopened by a defect that the artifact form causes.
 - **A7, the failure taxonomy as data.** Routing is a table in `tools/workflow_conductor.py`. Reopened by a routing defect that a data form would have prevented.
-- **A8, builds and runs of `Build` and `Validate.execute` under `bwrap`.** Those substeps run code the host composed, and no leaf takes part in them; a leaf gains nothing toward a verdict from their confinement (`AGENTS.md` §Development premises). The `workshop leaf`'s own operations run under `bwrap` (`tools/build_runtime.py`).
 - **A6, asynchronous or device-resident capture, trusted reductions, and capture cost excluded from the performance measurement.** No capture cost or ordering effect has been measured on any target; on `cpp_gpu` the current host-rendered driver has run only outside the workflow (`scale_migration.md` Status). Reopened by a measured capture cost or ordering effect on a target.
 - **The cost targets of §Decision Criteria** (≤10 min wall and ≤100k output tokens per certified node). No run is measured against them, and `evidence_based_redesign.md` E11 records the measured cost instead.
 
