@@ -1,6 +1,6 @@
 # Evidence-based redesign: from a `spec` and its verification set to code optimized per target
 
-Status: **proposed**. Recorded 2026-11-26. Nothing in this note is implemented or adopted. It states the design the measurements of the R8 A-1 experiment support when the existing implementation is set aside, and names what those measurements do not cover. [Issue #724](https://github.com/seiya/spec2science/issues/724) carries the part of the same evidence that is already decided (three changes inside the existing phases); this note does not change that decision.
+Status: **proposed**, in part adopted. Recorded 2026-11-26. [Issue #724](https://github.com/seiya/spec2science/issues/724), closed 2026-11-27 (PRs #731 to #735, pin `4cbeb701`), implemented the part §Decision Criteria assigns to it: the generator reads `controlled_spec.md`, `Generate.verify` reviews the source against it (stage C), and `Validate.judge` is deleted (§Relation, A4). The removal of the IR's `algorithm` section (§Relation, A5) is open as [issue #737](https://github.com/seiya/spec2science/issues/737). Stages B and D are neither implemented nor adopted. It states the design the measurements of the R8 A-1 experiment support when the existing implementation is set aside, and names what those measurements do not cover. [Issue #724](https://github.com/seiya/spec2science/issues/724) carries the part of the same evidence that is already decided (three changes inside the existing phases); this note does not change that decision.
 
 ## Purpose
 

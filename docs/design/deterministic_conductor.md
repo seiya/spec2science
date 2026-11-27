@@ -2,9 +2,15 @@
 
 Status: landed (`tools/workflow_conductor.py`) — deterministic loop, failure
 routing + reopen, LLM diagnostician escalation. The conductor drives orchestration
-for the `claude` / `codex` backends. M1 (a live `claude -p` MCP/hooks cost-measuring
-integration run) remains the open verification gap: the leaf path is exercised by
-mocked unit tests, not yet by a live run. The `Validate.judge` LLM substep this document describes was deleted, with the `pre_judge` substep, by [issue #724](https://github.com/seiya/spec2science/issues/724); `Validate` is the two deterministic substeps `execute` and `post_judge` (`docs/workflow/phases/phase_04_validate.md`).
+for the `claude` / `codex` backends. Nothing in this note is open. M1 (a live `claude -p` MCP/hooks
+cost-measuring integration run) is superseded: the conductor has driven every billed run since
+(for example `orch_20260916T081200Z_5139f6c9`, `zero_base_architecture.md` Status), and the
+mechanisms §Open risks names are deleted — the build-runtime MCP layer by
+[issue #444](https://github.com/seiya/spec2science/issues/444), the leaf hook layer by Z4
+([issue #171](https://github.com/seiya/spec2science/issues/171)). The per-arid bwrap profile
+with `write_roots` that §Leaf session handling describes was replaced by the `workshop leaf`
+of [issue #534](https://github.com/seiya/spec2science/issues/534); `docs/ORCHESTRATION.md`
+§workshop leaf is canonical for the leaf's confinement. The `Validate.judge` LLM substep this document describes was deleted, with the `pre_judge` substep, by [issue #724](https://github.com/seiya/spec2science/issues/724); `Validate` is the two deterministic substeps `execute` and `post_judge` (`docs/workflow/phases/phase_04_validate.md`).
 
 ## Why
 
