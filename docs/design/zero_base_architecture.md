@@ -274,6 +274,16 @@ Sequencing with the R-series: Z0 precedes Z2 and defines the R4 target-matrix ge
 - Z6 is complete only when, in addition to the billed E2E pass, adversarial fixtures fail certification: (a) a checks module that reports pass against a defective kernel; (b) snapshot values falsified through the retired getter path — the path must be unreachable from the rendered runner; (c) a registration binding decoy storage that diverges from the integrated state on at least one case — the host-evaluated predicates must fail; (d) a check/metric callback that writes to registered storage after `case_run` — the captured snapshot must be unaffected. A billed E2E pass with the legacy getter path still live does not qualify.
 - An accelerator implementation of Z6 additionally demonstrates that trusted capture is bound to the certified `CodegenBundle`, assembled-source, and binary output hashes and that correctness capture overhead is excluded from, or separately identified in, the performance measurement contract.
 
+## Items not taken
+
+Recorded 2026-11-27. The following parts of the reference architecture are not implemented and are not open work. Each is reopened only by the condition stated with it.
+
+- **A1, the append-only event log with generated views.** The run records are JSON artifacts cross-validated by `tools/validate_pipeline_semantics.py`, and no defect has been traced to their form. Reopened by a defect that the artifact form causes.
+- **A7, the failure taxonomy as data.** Routing is a table in `tools/workflow_conductor.py`. Reopened by a routing defect that a data form would have prevented.
+- **A8, builds and runs of `Build` and `Validate.execute` under `bwrap`.** Those substeps run code the host composed, and no leaf takes part in them; a leaf gains nothing toward a verdict from their confinement (`AGENTS.md` §Development premises). The `workshop leaf`'s own operations run under `bwrap` (`tools/build_runtime.py`).
+- **A6, asynchronous or device-resident capture, trusted reductions, and capture cost excluded from the performance measurement.** No capture cost or ordering effect has been measured on any target; on `cpp_gpu` the current host-rendered driver has run only outside the workflow (`scale_migration.md` Status). Reopened by a measured capture cost or ordering effect on a target.
+- **The cost targets of §Decision Criteria** (≤10 min wall and ≤100k output tokens per certified node). No run is measured against them, and `evidence_based_redesign.md` E11 records the measured cost instead.
+
 ## References
 
 - `workflow_scaling_redesign.md` (R1-R6)

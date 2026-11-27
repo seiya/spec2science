@@ -26,10 +26,10 @@ This index classifies every note under `docs/design/` by one status word and poi
 | `simplification_program.md` | landed | — |
 | `z4_enforcement_retirement.md` | landed | — |
 | `check_inventory_643/` | record | the residual its `README.md` lists ("what step 3 did not take"): not yet recorded |
-| `workflow_scaling_redesign.md` | proposed | not yet recorded |
-| `zero_base_architecture.md` | proposed | not yet recorded |
-| `scale_migration.md` | proposed | `TODO.md` (the item "Migrating SCALE onto this framework" and the items it lists); several of its expressiveness limits and LETKF not yet recorded |
-| `evidence_based_redesign.md` | proposed | [issue #737](https://github.com/seiya/spec2science/issues/737) for the IR's `algorithm` section; stages B and D not yet recorded |
+| `workflow_scaling_redesign.md` | proposed | `TODO.md` ("No test kind compares a node with its previously certified version"); the rest is in its §Items not taken |
+| `zero_base_architecture.md` | proposed | `TODO.md` ("A multi-node optimization unit is refused at assembly"); the rest is in its §Items not taken |
+| `scale_migration.md` | proposed | `TODO.md` (the item "Migrating SCALE onto this framework" and the items it lists); the residue the note names is listed in that item |
+| `evidence_based_redesign.md` | proposed | [issue #737](https://github.com/seiya/spec2science/issues/737) for the IR's `algorithm` section; stages B and D wait on the measurements of its §Decision Criteria |
 
 ## Operations Rules
 

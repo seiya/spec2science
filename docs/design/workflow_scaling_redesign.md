@@ -100,3 +100,10 @@ Required for premise 1 node counts; each item is independent:
 - A proposal item is adopted only with a billed E2E demonstration on a real node reaching `aggregate_verdict=pass`.
 - Cost claims are verified with the timing-audit method (`skills/workflow-timing-audit/SKILL.md`); the per-node targets after R1+R2+R5 are ≤15 min wall and ≤150k output tokens (baseline: 43-62 min, 360-540k).
 - Any change that lowers certified-outcome accuracy is rejected regardless of cost savings.
+
+## Items not taken
+
+Recorded 2026-11-27. These parts of the roadmap are not open work.
+
+- **The adoption A/B of per-persona model tiering (R6).** A model is chosen per `substep` in the operator's configuration (`docs/ORCHESTRATION.md` "Leaf LLM configuration"), and choosing one is the operator's decision about their own input; the example configuration's choice states its ground in place (`docs/examples/llm_claude.example.yaml`).
+- **The per-node cost targets of §Decision Criteria** (≤15 min wall, ≤150k output tokens). No run is measured against them; `evidence_based_redesign.md` E11 records the measured cost.
