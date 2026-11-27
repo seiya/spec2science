@@ -213,7 +213,7 @@ Note:
 
 ## 10. `spec` Classification Vocabulary (`spec_kind` / `domain` / `family`)
 - **spec_kind**: The kind of `spec`. Only the 4 values `problem` / `component` / `profile` / `infrastructure` are allowed (`infrastructure` = the R1 harness node kind).
-- **domain**: The top-level classification of the physics model. A fixed vocabulary to keep `spec` placement and the `component_id` prefix consistent. Examples: `dynamics`, `microphysics`, `radiation`, `land_surface`.
+- **domain**: The top-level classification of the physics model, chosen by the Project. Its value is a directory name under `spec/<spec_kind>/` and, by recommendation, the first element of `component_id` (`docs/SPEC.md` requirement 6); no code constrains the set of values. Examples: `dynamics`, `microphysics`, `radiation`, `land_surface`.
 - **family**: The classification unit within a `domain`. In `problem` it represents a group of equations, in `component` a group of reusable operations, and in `profile` a group of selection rules.
 - **component**: A reusable physics-operation unit defined by a `component spec`. Divided by equation system or discretization responsibility. Examples: `advection_flux`, `time_integrator`, `boundary_periodic`.
 - **operation**: The callable unit published by a `component`. A vocabulary that abstracts the actual entity of a language-specific function, procedure, method, etc.

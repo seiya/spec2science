@@ -1,6 +1,6 @@
 # Workflow scaling redesign roadmap
 
-Status: **partially implemented**. Recorded 2026-07-06 from a workflow review against the measured cost baseline. This document is the canonical record of the redesign direction; per-item detailed designs are authored separately when an item is picked up. R2 (`tools/verdict_evaluator.py`) and R5 (exemplar injection, `7302b52`) have landed; R4 is staged — R4-a (issue #284), R4-b (issue #289) and R4-c (issue #316) and R4-d (issue #324) have landed (§R4); R1, R3, R6 have not.
+Status: **partially implemented**. Recorded 2026-07-06 from a workflow review against the measured cost baseline. This document is the canonical record of the redesign direction; per-item detailed designs are authored separately when an item is picked up. R2 (`tools/verdict_evaluator.py`) and R5 (exemplar injection, `7302b52`) have landed; R4 is staged — R4-a (issue #284), R4-b (issue #289) and R4-c (issue #316) and R4-d (issue #324) have landed (§R4). R1 has landed in the form M3c and [issue #589](https://github.com/seiya/spec2science/issues/589) gave it: one harness `infrastructure` node per target (`sample/spec/infrastructure/infra/harness/`) and a host-rendered driver, with no per-test checks callback (retired by issues #582 and #589). Of R3, R3-core, `cross_target` (R4-d) and `mms` (Z6) have landed and `regression` has not (§R3). Of R6, incremental recertification (R6 in full, [issue #250](https://github.com/seiya/spec2science/issues/250) PR-2) and DAG-parallel execution (`run_workflow.py --jobs N`, issue #250 PR-3) have landed; prompt prefix caching is realized by the host-rendered `workshop leaf` prompt of [issue #534](https://github.com/seiya/spec2science/issues/534) and the `cache_control` breakpoints of `tools/llm_workshop_loop.py`; per-persona model tiering is configurable per `substep` (`docs/examples/llm_claude.example.yaml`) and its adoption A/B is not recorded. §R4 names "the MCP `run_program` backend", which [issue #444](https://github.com/seiya/spec2science/issues/444) deleted.
 
 ## Purpose
 
@@ -100,3 +100,10 @@ Required for premise 1 node counts; each item is independent:
 - A proposal item is adopted only with a billed E2E demonstration on a real node reaching `aggregate_verdict=pass`.
 - Cost claims are verified with the timing-audit method (`skills/workflow-timing-audit/SKILL.md`); the per-node targets after R1+R2+R5 are ≤15 min wall and ≤150k output tokens (baseline: 43-62 min, 360-540k).
 - Any change that lowers certified-outcome accuracy is rejected regardless of cost savings.
+
+## Items not taken
+
+Recorded 2026-11-27. These parts of the roadmap are not open work.
+
+- **The adoption A/B of per-persona model tiering (R6).** A model is chosen per `substep` in the operator's configuration (`docs/ORCHESTRATION.md` "Leaf LLM configuration"), and choosing one is the operator's decision about their own input; the example configuration's choice states its ground in place (`docs/examples/llm_claude.example.yaml`).
+- **The per-node cost targets of §Decision Criteria** (≤15 min wall, ≤150k output tokens). No run is measured against them; `evidence_based_redesign.md` E11 records the measured cost.

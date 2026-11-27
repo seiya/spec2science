@@ -13,6 +13,12 @@
 > `problem` specs instead. The "前提（完了済み）" / main-task wording below
 > predates that and is kept only for historical context — defer to the
 > "Part 2 — dependency nodes" / "D1 (PRIMARY)" status in `docs/design/deterministic_followups.md`.
+> **STATUS NOTE (2026-11-27): the billed E2E run is no longer outstanding.** It ran on
+> 2026-06-25 (`orch_20260625T025619Z_3d1917e0` base / `…_9a123e7d` top): the closure built
+> under Model B and the target node stopped at the DAG-scope check of D2. After D2's fix, two
+> complete `--with-deps` closures ran at `61d5712` on 2026-09-04 and 09-05, ten node
+> orchestrations, all `pass` (`deterministic_followups.md`, D1 and the 2026-09-05 status note
+> of "Issue #153"). Nothing in this note is open.
 
 Paste the block below into a fresh session (in the `spec2science` checkout) to resume this
 work. It is self-contained; the canonical record is the "Known limitations & deferred work"
