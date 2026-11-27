@@ -95,7 +95,7 @@ Content of the current harness `spec` nodes, to be extended by `infrastructure` 
 
 ### Existing capability the migration uses
 
-Several operations per `component`; signature rank up to 15; procedure and derived arguments; a two-dimensional MPI decomposition with its sweep; the OpenMP backend; building at the execution site; dependency closure with `--jobs`; re-derivation on a dependency change. `CPP` and `ERB` are not required of generated code. A `domain` value is not constrained by code (`docs/GLOSSARY.md` calls it a fixed vocabulary, which is inconsistent).
+Several operations per `component`; signature rank up to 15; procedure and derived arguments; a two-dimensional MPI decomposition with its sweep; the OpenMP backend; building at the execution site; dependency closure with `--jobs`; re-derivation on a dependency change. `CPP` and `ERB` are not required of generated code. A `domain` value is not constrained by code (`docs/GLOSSARY.md` §10).
 
 ## Constraints on the new features
 
