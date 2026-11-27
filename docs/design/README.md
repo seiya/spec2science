@@ -25,7 +25,7 @@ This index classifies every note under `docs/design/` by one status word and poi
 | `producer_workshop_leaf.md` | landed | — |
 | `simplification_program.md` | landed | — |
 | `z4_enforcement_retirement.md` | landed | — |
-| `check_inventory_643/` | record | the residual its `README.md` lists ("what step 3 did not take"): not yet recorded |
+| `check_inventory_643/` | record | the residual its `README.md` lists ("what step 3 did not take"): [issue #740](https://github.com/seiya/spec2science/issues/740) |
 | `workflow_scaling_redesign.md` | proposed | `TODO.md` ("No test kind compares a node with its previously certified version"); the rest is in its §Items not taken |
 | `zero_base_architecture.md` | proposed | `TODO.md` ("A multi-node optimization unit is refused at assembly"); the rest is in its §Items not taken |
 | `scale_migration.md` | proposed | `TODO.md` (the item "Migrating SCALE onto this framework" and the items it lists); the residue the note names is listed in that item |
