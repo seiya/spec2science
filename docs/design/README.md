@@ -28,7 +28,7 @@ This index classifies every note under `docs/design/` by one status word and poi
 | `check_inventory_643/` | record | the residual its `README.md` lists ("what step 3 did not take"): not yet recorded |
 | `workflow_scaling_redesign.md` | proposed | not yet recorded |
 | `zero_base_architecture.md` | proposed | not yet recorded |
-| `scale_migration.md` | proposed | `TODO.md` (the item "Migrating SCALE onto this framework" and the items it lists) |
+| `scale_migration.md` | proposed | `TODO.md` (the item "Migrating SCALE onto this framework" and the items it lists); several of its expressiveness limits and LETKF not yet recorded |
 | `evidence_based_redesign.md` | proposed | [issue #737](https://github.com/seiya/spec2science/issues/737) for the IR's `algorithm` section; stages B and D not yet recorded |
 
 ## Operations Rules
